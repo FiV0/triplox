@@ -2,6 +2,7 @@ mod memory_node;
 mod remote_node;
 mod log;
 mod memory_log;
+mod datalog;
 
 struct TransactionResult {}
 struct Basis {}
