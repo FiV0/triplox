@@ -4,6 +4,9 @@ mod log;
 mod memory_log;
 mod datalog;
 mod ops;
+mod clock;
+mod transaction;
+mod local_log;
 
 struct TransactionResult {}
 struct Basis {}
