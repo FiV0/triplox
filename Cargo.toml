@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 slatedb = "0.2.0"
+bigdecimal = "0.4.5"
+uuid = "1.10.0"

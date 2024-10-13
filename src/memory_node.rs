@@ -5,17 +5,17 @@ struct MemoryNode {
 }
 
 impl SubmitNode for MemoryNode {
-    fn transact(&self) -> TransactionResult {
+    async fn transact(&self) -> TransactionResult {
         todo!()
     }
 }
 
 impl QueryNode for MemoryNode {
-    fn db(&self) -> DB {
+    async fn db(&self) -> DB {
         todo!()
     }
 
-    fn db_with_basis(&self, basis: Basis) -> DB {
+    async fn db_with_basis(&self, basis: Basis) -> DB {
         todo!()
     }
 }
