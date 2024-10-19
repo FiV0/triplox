@@ -6,9 +6,17 @@ use uuid::Uuid;
 use crate::transaction::Instant;
 use edn::symbols::{Keyword, NamespacedSymbol};
 
-type EntityId = i64;
-type Attribute = String;
-type Value = DataType;
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct EntityId(i64);
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Attribute(String);
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Value(DataType);
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Ref(i64);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 enum DataType {
@@ -22,7 +30,7 @@ enum DataType {
     Instant(Instant),                // Timestamps or instants
     // Keyword(Keyword),                 // Keywords (can be represented as strings)
     Long(i64),                       // Long integers
-    Ref(i64),                        // Reference (for shared ownership, like pointers)
+    Ref(Ref),                        // Reference (for shared ownership, like pointers)
     String(String),                  // Strings
     // Symbol(NamespacedSymbol),                  // Symbols (can be represented as strings)
     Tuple(Vec<DataType>),            // Tuples (can be represented as a vector of DataTypes)
@@ -31,37 +39,39 @@ enum DataType {
     //Uri(Uri),                        // URIs (could also be represented as strings)
 
     // Composite types
-    List(Vec<DataType>),             // List (vector of DataTypes)
+    Vector(Vec<DataType>),             // List (vector of DataTypes)
     // TODO there is an interesting note in the edn create about using a BTreeMap vs a HashMap
     // Set(HashSet<DataType>),         // Set (BTreeSet of DataTypes)
     Map(HashMap<String, DataType>),  // Map (BTreeMap of string keys and DataType values)
 }
 
-// macro_rules! impl_from_for_enum {
-//     ($enum_name:ident, $(($variant:ident, $type:ty)),*) => {
-//         $(
-//             impl From<$type> for $enum_name {
-//                 fn from(value: $type) -> Self {
-//                     $enum_name::$variant(value)
-//                 }
-//             }
-//         )*
-//     };
-// }
 
-// impl_from_for_enum!(DataType,
-//     (BigInt, i128),
-//     (Boolean, bool),
-//     (Bytes, Vec<u8>),
-//     (Double, f64),
-//     (Float, f32),
-//     (Keyword, Keyword),
-//     (Instant, Instant),
-//     (Long, i64),
-//     (String, String),
-//     (Symbol, String),
-//     (Uuid, Uuid),
-// );
+macro_rules! impl_from_for_enum {
+    ($enum_name:ident, $(($variant:ident, $type:ty)),*) => {
+        $(
+            impl From<$type> for $enum_name {
+                fn from(value: $type) -> Self {
+                    $enum_name::$variant(value)
+                }
+            }
+        )*
+    };
+}
+
+impl_from_for_enum!(DataType,
+    (BigInt, i128),
+    (Boolean, bool),
+    (Bytes, Vec<u8>),
+    (Double, f64),
+    (Float, f32),
+    (Instant, Instant),
+    (Long, i64),
+    (Ref, Ref),
+    (String, String),
+    (Uuid, Uuid),
+    (Vector, Vec<DataType>),
+    (Map, HashMap<String, DataType>)
+);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Document(HashMap<String, DataType>);
@@ -89,8 +99,52 @@ mod tests {
     use bincode;
 
     #[test]
-    fn test_op_serde() {
-        let op = TxOp::Put(Document(HashMap::new()));
+    fn test_op_put() {
+        let mut document : HashMap<String, DataType> = HashMap::new();
+        document.insert("string".to_string(), "string_value".to_string().into());
+        document.insert("int".to_string(), 1i64.into());
+        let op = TxOp::Put(Document(document));
+        let serialized = bincode::serialize(&op).unwrap();
+        let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(op, deserialized);
+    }
+
+    #[test]
+    fn test_op_add() {
+        let op = TxOp::Add(Triple {
+            entity: EntityId(1),
+            attribute: Attribute("string".to_string()),
+            value: Value(DataType::String("string_value".to_string())),
+        });
+        let serialized = bincode::serialize(&op).unwrap();
+        let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(op, deserialized);
+    }
+
+    #[test]
+    fn test_op_retract() {
+        let op = TxOp::Retract(Triple {
+            entity: EntityId(1),
+            attribute: Attribute("string".to_string()),
+            value: Value(DataType::String("string_value".to_string())),
+        });
+        let serialized = bincode::serialize(&op).unwrap();
+        let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(op, deserialized);
+    }
+
+
+    #[test]
+    fn test_op_delete() {
+        let op = TxOp::Delete(EntityId(1));
+        let serialized = bincode::serialize(&op).unwrap();
+        let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(op, deserialized);
+    }
+
+    #[test]
+    fn test_op_erase() {
+        let op = TxOp::Erase(EntityId(1));
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
