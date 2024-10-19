@@ -1,11 +1,12 @@
-use crate::{Basis, Node, QueryNode, SubmitNode, TransactionResult, DB};
+use crate::{Basis, Node, QueryNode, SubmitNode, TransactionResult, DB, Op};
 
+#[allow(unused)]
 struct MemoryNode {
 
 }
 
 impl SubmitNode for MemoryNode {
-    async fn transact(&self) -> TransactionResult {
+    async fn transact(&self, _ops: Vec<Op>) -> TransactionResult {
         todo!()
     }
 }
@@ -15,6 +16,7 @@ impl QueryNode for MemoryNode {
         todo!()
     }
 
+    #[allow(unused_variables)]
     async fn db_with_basis(&self, basis: Basis) -> DB {
         todo!()
     }

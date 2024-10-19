@@ -7,31 +7,41 @@ mod ops;
 mod clock;
 mod transaction;
 mod local_log;
+use ops::Op;
 
-struct TransactionResult {}
-struct Basis {}
+pub use transaction::TransactionResult;
+pub struct Basis {}
+
+// TODO: remove async_fn_in_trait warning
+#[allow(async_fn_in_trait)]
 pub trait SubmitNode {
-    async fn transact(&self, ) -> TransactionResult;
+    async fn transact(&self, ops: Vec<Op>) -> TransactionResult;
 
 }
 
+#[allow(async_fn_in_trait)]
 pub trait QueryNode {
     async fn db(&self) -> DB;
     async fn db_with_basis(&self, basis: Basis) -> DB;
-
 }
 
-struct DB {}
-struct Eid {}
+pub struct DB {}
 
-struct Query {}
-struct QueryResult{}
+#[allow(unused)]
+pub struct Eid {}
 
+#[allow(unused)]
+pub struct Query {}
+
+#[allow(unused)]
+pub struct QueryResult{}
+
+#[allow(unused)]
 impl DB {
-    fn entity(&self, eid: Eid) {
+    fn entity(&self, _eid: Eid) {
         todo!()
     }
-    fn query(&self, query: Query) {
+    fn query(&self, _query: Query) {
         todo!()
     }
 }

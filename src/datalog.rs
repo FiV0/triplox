@@ -1,3 +1,4 @@
+#![allow(unused)]
 
 // TODO
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

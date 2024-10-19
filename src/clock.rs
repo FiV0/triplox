@@ -1,4 +1,6 @@
-use std::time::{Instant, SystemTime};
+// TODO: remove unused warnings
+#![allow(unused)]
+use std::time::{SystemTime};
 
 pub trait SystemTimeSource {
     fn now(& mut self) -> SystemTime;
@@ -44,10 +46,12 @@ impl SystemTimeSource for FnMockClock {
     }
 }
 
+#[allow(unused)]
 pub fn st_from_unix_epoch(micros: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(micros)
 }
 
+#[allow(unused)]
 pub fn st_since_unix_epoch(st: SystemTime) -> u128 {
     st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros()
 }

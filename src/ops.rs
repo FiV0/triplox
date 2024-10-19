@@ -1,15 +1,17 @@
+use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
 use bigdecimal::BigDecimal;
 use std::collections::HashMap;
-use std::time::Instant;
 use uuid::Uuid;
+use crate::transaction::Instant;
 
 type EntityId = i64;
 type Attribute = String;
 type Value = DataType;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 enum DataType {
-    BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers
+    //BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers
     BigInt(i128),                    // Arbitrary large integers
     Boolean(bool),                   // Booleans (true or false)
     Bytes(Vec<u8>),                  // Binary data (as bytes)
@@ -31,22 +33,36 @@ enum DataType {
     Map(HashMap<String, DataType>),  // Map (HashMap of string keys and DataType values)
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Document(HashMap<String, DataType>);
 
 // either extend this with t and op as options or create another type for running through indices
 // make value optional ?
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Triple {
     entity: EntityId,
     attribute: Attribute,
     value: Value,
 }
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum Op {
     Put(Document),
     Add(Triple),
     Retract(Triple),
     Delete(EntityId),
     Erase(EntityId),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bincode;
+
+    #[test]
+    fn test_op_serde() {
+        let op = Op::Put(Document(HashMap::new()));
+        let serialized = bincode::serialize(&op).unwrap();
+        let deserialized: Op = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(op, deserialized);
+    }
 }
