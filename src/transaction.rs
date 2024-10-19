@@ -21,6 +21,7 @@ pub struct TxKey {
     pub system_time: Instant
 }
 
-pub struct TransactionResult {}
-pub struct TxCommited(TxKey);
-pub struct TxAborted(TxKey, dyn Error);
+pub enum TransactionResult {
+    TxCommited(TxKey),
+    TxAborted(TxKey, Box<dyn Error>),
+}

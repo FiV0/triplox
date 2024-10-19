@@ -1,4 +1,4 @@
-use crate::{Basis, Node, QueryNode, SubmitNode, TransactionResult, DB, Op};
+use crate::{Basis, Node, QueryNode, SubmitNode, TransactionResult, TxKey, TxOp, DB};
 
 #[allow(unused)]
 struct MemoryNode {
@@ -6,7 +6,10 @@ struct MemoryNode {
 }
 
 impl SubmitNode for MemoryNode {
-    async fn transact(&self, _ops: Vec<Op>) -> TransactionResult {
+    async fn submit_tx(&self, _ops: Vec<TxOp>) -> TxKey{
+        todo!()
+    }
+    async fn execute_tx(&self, _ops: Vec<TxOp>) -> TransactionResult {
         todo!()
     }
 }

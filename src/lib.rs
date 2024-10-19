@@ -7,15 +7,16 @@ mod ops;
 mod clock;
 mod transaction;
 mod local_log;
-use ops::Op;
+use ops::TxOp;
 
-pub use transaction::TransactionResult;
+pub use transaction::{TransactionResult, TxKey};
 pub struct Basis {}
 
 // TODO: remove async_fn_in_trait warning
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
-    async fn transact(&self, ops: Vec<Op>) -> TransactionResult;
+    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey;
+    async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult;
 
 }
 
