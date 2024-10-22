@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use bigdecimal::BigDecimal;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use crate::transaction::Instant;
 use edn::symbols::{Keyword, NamespacedSymbol};
+use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct EntityId(i64);
@@ -18,6 +18,7 @@ pub struct Value(DataType);
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Ref(i64);
 
+// TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 enum DataType {
     Nil,
@@ -27,7 +28,7 @@ enum DataType {
     Bytes(Vec<u8>),                  // Binary data (as bytes)
     Double(f64),                     // Double precision floating point
     Float(f32),                      // Single precision floating point
-    Instant(Instant),                // Timestamps or instants
+    Instant(DateTime<Utc>),          // Timestamps or instants
     // Keyword(Keyword),                 // Keywords (can be represented as strings)
     Long(i64),                       // Long integers
     Ref(Ref),                        // Reference (for shared ownership, like pointers)
@@ -40,9 +41,9 @@ enum DataType {
 
     // Composite types
     Vector(Vec<DataType>),             // List (vector of DataTypes)
-    // TODO there is an interesting note in the edn create about using a BTreeMap vs a HashMap
-    // Set(HashSet<DataType>),         // Set (BTreeSet of DataTypes)
-    Map(HashMap<String, DataType>),  // Map (BTreeMap of string keys and DataType values)
+    // TODO think about tradeoffs of using a BTreeSet vs a HashSet
+    //Set(BTreeSet<DataType>),         // Set (BTreeSet of DataTypes)
+    Map(BTreeMap<String, DataType>),  // Map (BTreeMap of string keys and DataType values)
 }
 
 
@@ -64,17 +65,18 @@ impl_from_for_enum!(DataType,
     (Bytes, Vec<u8>),
     (Double, f64),
     (Float, f32),
-    (Instant, Instant),
+    (Instant, DateTime<Utc>),
     (Long, i64),
     (Ref, Ref),
     (String, String),
     (Uuid, Uuid),
     (Vector, Vec<DataType>),
-    (Map, HashMap<String, DataType>)
+    //(Set, BTreeSet<DataType>),
+    (Map, BTreeMap<String, DataType>)
 );
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct Document(HashMap<String, DataType>);
+pub struct Document(BTreeMap<String, DataType>);
 
 // either extend this with t and op as options or create another type for running through indices
 // make value optional ?
@@ -100,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_op_put() {
-        let mut document : HashMap<String, DataType> = HashMap::new();
+        let mut document : BTreeMap<String, DataType> = BTreeMap::new();
         document.insert("string".to_string(), "string_value".to_string().into());
         document.insert("int".to_string(), 1i64.into());
         let op = TxOp::Put(Document(document));

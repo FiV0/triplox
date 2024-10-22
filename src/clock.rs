@@ -1,25 +1,27 @@
 // TODO: remove unused warnings
 #![allow(unused)]
-use std::time::{SystemTime};
+use chrono::{DateTime, Utc, TimeZone};
+
+pub type Instant = DateTime<Utc>;
 
 pub trait SystemTimeSource {
-    fn now(& mut self) -> SystemTime;
+    fn now(& mut self) -> Instant;
 }
 
 pub struct SystemClock;
 
 impl SystemTimeSource for SystemClock {
-    fn now(&mut self) -> SystemTime {
-        SystemTime::now()
+    fn now(&mut self) -> Instant {
+        Utc::now()
     }
 }
 
 pub struct MockClock {
-    sys_times : Vec<SystemTime>
+    sys_times : Vec<Instant>
 }
 
 impl SystemTimeSource for MockClock{
-    fn now(&mut self) -> SystemTime {
+    fn now(&mut self) -> Instant {
         if self.sys_times.len() == 0 {
             panic!("No more instants in the mock clock");
         }
@@ -30,30 +32,32 @@ impl SystemTimeSource for MockClock{
 }
 
 pub struct FnMockClock {
-    f: Box<dyn FnMut() -> SystemTime>,
+    f: Box<dyn FnMut() -> Instant>,
 }
 
 impl FnMockClock {
-    pub fn new(f: Box<dyn FnMut() -> SystemTime>) -> Self {
+    pub fn new(f: Box<dyn FnMut() -> Instant>) -> Self {
         FnMockClock { f }
     }
 
 }
 
 impl SystemTimeSource for FnMockClock {
-    fn now(&mut self) -> SystemTime {
+    fn now(&mut self) -> Instant {
         (self.f)() // Call the stored closure
     }
 }
 
-#[allow(unused)]
-pub fn st_from_unix_epoch(micros: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + std::time::Duration::from_micros(micros)
+#[allow(unused, deprecated)]
+pub fn st_from_unix_epoch(micros: u64) -> Instant {
+    let seconds = micros / 1_000_000;
+    let nanoseconds = (micros % 1_000_000) * 1000;
+    Utc.timestamp(seconds as i64, nanoseconds as u32)
 }
 
 #[allow(unused)]
-pub fn st_since_unix_epoch(st: SystemTime) -> u128 {
-    st.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros()
+pub fn st_micros_since_unix_epoch(inst: Instant) -> u128 {
+    inst.timestamp_micros() as u128
 }
 
 #[cfg(test)]

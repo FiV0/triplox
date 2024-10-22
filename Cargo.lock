@@ -2502,6 +2502,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -2654,10 +2655,13 @@ version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "bincode",
+ "chrono",
  "edn",
+ "log",
  "serde",
  "slatedb",
  "time",
+ "tokio",
  "uuid 1.10.0",
 ]
 

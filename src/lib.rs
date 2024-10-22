@@ -13,7 +13,7 @@ pub use transaction::{TransactionResult, TxKey};
 pub struct Basis {}
 
 // TODO: remove async_fn_in_trait warning
-#[allow(async_fn_in_trait)]
+// #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
     async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey;
     async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult;
