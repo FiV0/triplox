@@ -20,7 +20,13 @@ pub struct MockClock {
     sys_times : Vec<Instant>
 }
 
-impl SystemTimeSource for MockClock{
+impl MockClock {
+    pub fn new(sys_times: Vec<Instant>) -> Self {
+        Self { sys_times }
+    }
+}
+
+impl SystemTimeSource for MockClock {
     fn now(&mut self) -> Instant {
         if self.sys_times.len() == 0 {
             panic!("No more instants in the mock clock");
@@ -39,7 +45,6 @@ impl FnMockClock {
     pub fn new(f: Box<dyn FnMut() -> Instant>) -> Self {
         FnMockClock { f }
     }
-
 }
 
 impl SystemTimeSource for FnMockClock {
