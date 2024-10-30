@@ -1,20 +1,24 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use crate::clock::SystemTimeSource;
 use crate::log::{Record, Subscriber, SubscriberHandler, TxLog};
 use crate::transaction::TxKey;
 
-struct MemoryLog<'a> {
+struct MemoryLog {
     txs: Vec<Record>,
     subscriber_handler: SubscriberHandler,
-    clock: &'a mut dyn SystemTimeSource
+    clock: &'static mut dyn SystemTimeSource
 }
 
-impl<'a> MemoryLog<'a> {
-    pub fn new(clock: &mut dyn SystemTimeSource) -> Self {
+impl MemoryLog {
+    pub fn new(clock: &'static mut dyn SystemTimeSource) -> Self {
         MemoryLog { txs: vec![], subscriber_handler: SubscriberHandler::new(), clock }
     }
 }
 
-impl<'a> TxLog for MemoryLog<'a> {
+#[async_trait]
+impl TxLog for MemoryLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         self.txs.push(Record {
             tx_key: TxKey {
@@ -31,7 +35,7 @@ impl<'a> TxLog for MemoryLog<'a> {
         self.txs[tx_id as usize..tx_id as usize + limit as usize].to_vec()
     }
 
-    fn subscribe_txs(&mut self, after_tx_id: Option<i64>, subscriber: impl Subscriber) {
+    fn subscribe_txs(&mut self, after_tx_id: Option<i64>, subscriber: Box<dyn Subscriber>) {
         self.subscriber_handler.subscribe(self, after_tx_id, subscriber);
     }
 }

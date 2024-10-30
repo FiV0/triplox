@@ -1,10 +1,12 @@
 // TODO: remove unused warnings
 #![allow(unused)]
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc, TimeZone};
 
 pub type Instant = DateTime<Utc>;
 
-pub trait SystemTimeSource {
+pub(crate) trait SystemTimeSource : Send + Sync {
     fn now(& mut self) -> Instant;
 }
 
@@ -38,11 +40,11 @@ impl SystemTimeSource for MockClock {
 }
 
 pub struct FnMockClock {
-    f: Box<dyn FnMut() -> Instant>,
+    f: Arc<dyn FnMut() -> Instant + Send + Sync>,
 }
 
 impl FnMockClock {
-    pub fn new(f: Box<dyn FnMut() -> Instant>) -> Self {
+    pub fn new(f: Arc<dyn FnMut() -> Instant + Send + Sync>) -> Self {
         FnMockClock { f }
     }
 }
@@ -90,7 +92,7 @@ mod tests {
                                  base_instant + std::time::Duration::from_secs(1),
                                  base_instant + std::time::Duration::from_secs(2)];
 
-        let mut clock = FnMockClock::new(Box::new(move || {
+        let mut clock = FnMockClock::new(Arc::new(move || {
             if sys_times.len() == 0 {
                 panic!("No more instants in the mock clock");
             }
