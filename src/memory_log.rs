@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use log::warn;
 use tokio::sync::broadcast;
 use crate::clock::SystemTimeSource;
-use crate::log::{Record, TxLog};
+use crate::log::{Record, TxLog, TxLogReader, TxLogWriter};
 use crate::transaction::TxKey;
 use crate::log::TxId;
 
@@ -23,7 +23,19 @@ impl MemoryLog {
 }
 
 #[async_trait]
-impl TxLog for MemoryLog {
+impl TxLogReader for MemoryLog {
+    fn read_txs(&self, tx_id: TxId, limit: u16) -> Vec<Record> {
+        let available_records = min(self.txs.len().saturating_sub(tx_id as usize), limit as usize);
+        self.txs[tx_id as usize..tx_id as usize + available_records as usize].to_vec()
+    }
+
+    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
+        (self.txs.len() as TxId - 1, self.tx_sender.subscribe())
+    }
+}
+
+#[async_trait]
+impl TxLogWriter for MemoryLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let record = Record {
             tx_key: TxKey {
@@ -35,26 +47,18 @@ impl TxLog for MemoryLog {
         let tx_key = record.tx_key;
         self.txs.push(record.clone());
         if let Err(e) = self.tx_sender.send(record) {
-            // Log the error but continue - this isn't fatal
             warn!("Failed to send record from memory log to subscribers: {}", e);
         }
         tx_key
     }
-
-    fn read_txs(&self, tx_id: TxId, limit: u16) -> Vec<Record> {
-        let available_records = min(self.txs.len().saturating_sub(tx_id as usize), limit as usize);
-        self.txs[tx_id as usize..tx_id as usize + available_records as usize].to_vec()
-    }
-
-    // TODO: There is potentially a race here, but in the worst we read 
-    // a record once while catching up and once from the receiver.
-    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        (self.txs.len() as TxId - 1, self.tx_sender.subscribe())
-    }
 }
+
+impl TxLog for MemoryLog {}
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::Mutex;
+
     use super::*;
     use std::sync::Arc;
     use std::thread;
@@ -92,15 +96,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_memory_log() {
+    #[tokio::test]
+    async fn test_memory_log() {
         let subscriber = MockSubscriber::new();
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200)]);
-        let mut log = Arc::new(MemoryLog::new(Box::new(clock)));
-        subscribe(log.clone(), None, Box::new(subscriber));
-        log.append_tx(vec![1, 2, 3]);
-        log.append_tx(vec![4, 5, 6]);
-        log.append_tx(vec![7, 8, 9]);
+        let log = Arc::new(Mutex::new(MemoryLog::new(Box::new(clock))));
+        let log_reader: Arc<dyn TxLogReader> = log.clone();
+        let log_writer: Arc<Mutex<dyn TxLogWriter>> = log.clone();
+        subscribe(log_reader, None, Box::new(subscriber));
+        let mut writer = log_writer.lock().await;
+        writer.append_tx(vec![1, 2, 3]).await;
+        writer.append_tx(vec![4, 5, 6]).await;
+        writer.append_tx(vec![7, 8, 9]).await;
 
         thread::sleep(Duration::from_millis(100));
 

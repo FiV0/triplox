@@ -22,7 +22,7 @@ pub(crate) trait Subscriber : Send + Sync {
 
 pub(crate) type TxId = i64;
 
-pub(crate) fn subscribe(log: Arc<dyn TxLog>, after_tx_id: Option<TxId>, mut subscriber: Box<dyn Subscriber>) {
+pub(crate) fn subscribe(log: Arc<dyn TxLogReader>, after_tx_id: Option<TxId>, mut subscriber: Box<dyn Subscriber>) {
     let (latest_tx_id, mut tx_receiver) = log.subscribe_txs();
 
     tokio::spawn(async move {
@@ -79,9 +79,15 @@ pub(crate) fn subscribe(log: Arc<dyn TxLog>, after_tx_id: Option<TxId>, mut subs
     });
 }
 
-#[async_trait]
-pub(crate) trait TxLog : Send + Sync + 'static {
-    async fn append_tx(&mut self, record: Vec<u8>) -> TxKey;
+pub(crate) trait TxLogReader: Send + Sync + 'static {
     fn read_txs(&self, tx_id: TxId, limit: u16) -> Vec<Record>;
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
 }
+
+#[async_trait]
+pub(crate) trait TxLogWriter: Send + Sync + 'static {
+    async fn append_tx(&mut self, record: Vec<u8>) -> TxKey;
+}
+
+#[async_trait]
+pub(crate) trait TxLog: TxLogReader + TxLogWriter {}
