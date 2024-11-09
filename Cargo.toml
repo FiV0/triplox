@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0"
 async-trait = "0.1.83"
 bigdecimal = { version = "0.4.5", features = ["serde"] }
 bincode = "1.3"
@@ -12,6 +13,8 @@ edn = { path = "./edn" }
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 slatedb = "0.2.0"
+tempfile = "3.14.0"
+thiserror = "2.0.1"
 time = { version = "0.3.36", features = ["serde"] }
 tokio = { version = "1.40.0", features = ["full"] }
 uuid = { version = "1.10.0", features = ["serde"] }

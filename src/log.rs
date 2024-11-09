@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock};
-use log::{info, warn};
+use log::{info, warn, error};
 
 use serde::{Deserialize, Serialize};
 use crate::transaction::TxKey;
 use tokio::sync::broadcast;
+use anyhow::Result;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Record{
@@ -43,10 +44,17 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
 
         while after_tx_id < latest_tx_id {
             let log = log.read().unwrap();
-            let txs_to_process = log.read_txs(after_tx_id, 100);
-            after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
-            for tx in txs_to_process {
-                subscriber.write().unwrap().accept(tx);
+            match log.read_txs(after_tx_id, 100) {
+                Ok(txs_to_process) => {
+                    after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
+                    for tx in txs_to_process {
+                        subscriber.write().unwrap().accept(tx);
+                    }
+                },
+                Err(e) => {
+                    error!("Error reading txs: {}", e);
+                    // TODO: Handle error
+                }
             }
         }
 
@@ -63,10 +71,17 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
                     let log = log.read().unwrap();
                     // We fell behind, need to catch up using read_txs
                     // TODO should limit be cropped to a 100?
-                    let txs_to_process = log.read_txs(after_tx_id, missed.try_into().unwrap());
-                    after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
-                    for tx in txs_to_process {
-                        subscriber.write().unwrap().accept(tx);
+                    match log.read_txs(after_tx_id, missed.try_into().unwrap()) {
+                        Ok(txs_to_process) => {
+                            after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
+                            for tx in txs_to_process {
+                                subscriber.write().unwrap().accept(tx);
+                            }
+                        },
+                        Err(e) => {
+                            error!("Error reading txs: {}", e);
+                            // TODO: Handle error
+                        }
                     }
                 },
                 Err(broadcast::error::RecvError::Closed) => {
@@ -82,7 +97,7 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
 }
 
 pub(crate) trait TxLogReader: Send + Sync + 'static {
-    fn read_txs(&self, tx_id: TxId, limit: u16) -> Vec<Record>;
+    fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>>;
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
 }
 
@@ -93,3 +108,38 @@ pub(crate) trait TxLogWriter: Send + Sync + 'static {
 
 #[async_trait]
 pub(crate) trait TxLog: TxLogReader + TxLogWriter {}
+
+
+// Mock subscriber for testing
+#[allow(unused)]
+pub(crate) struct MockSubscriber {
+    close_hook: Option<Box<dyn FnOnce() + Send + Sync>>,
+    pub records: Vec<Record>
+}
+
+impl MockSubscriber {
+    pub fn new() -> Self {
+        Self {
+            close_hook: None,
+            records: vec![],
+        }
+    }
+
+    pub fn close(&mut self) {
+        if let Some(close_hook) = self.close_hook.take() {
+            close_hook();
+        } else {
+            panic!("close_hook not set");
+        }
+    }
+}
+
+impl Subscriber for MockSubscriber {
+    fn on_subscribe(&mut self, close_hook: Box<dyn FnOnce() + Send + Sync>) {
+        self.close_hook = Some(close_hook);
+    }
+
+    fn accept(&mut self, record: Record) {
+        self.records.push(record);
+    }
+}

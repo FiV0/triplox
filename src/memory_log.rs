@@ -9,6 +9,8 @@ use crate::clock::SystemTimeSource;
 use crate::log::{Record, TxLog, TxLogReader, TxLogWriter};
 use crate::transaction::TxKey;
 use crate::log::TxId;
+use crate::error::TriploxError;
+use anyhow::Result;
 
 struct MemoryLog {
     txs: Vec<Record>,
@@ -24,9 +26,9 @@ impl MemoryLog {
 
 #[async_trait]
 impl TxLogReader for MemoryLog {
-    fn read_txs(&self, tx_id: TxId, limit: u16) -> Vec<Record> {
+    fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>> {
         let available_records = min(self.txs.len().saturating_sub(tx_id as usize), limit as usize);
-        self.txs[tx_id as usize..tx_id as usize + available_records as usize].to_vec()
+        Ok(self.txs[tx_id as usize..tx_id as usize + available_records as usize].to_vec())
     }
 
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
@@ -65,41 +67,10 @@ mod tests {
     use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
-    use crate::log::{Subscriber, subscribe};
+    use crate::log::{Subscriber, subscribe, MockSubscriber};
     use crate::clock::{st_from_unix_epoch, MockClock};
 
-    struct MockSubscriber {
-        close_hook: Option<Box<dyn FnOnce() + Send + Sync>>,
-        records: Vec<Record>
-    }
-
-    impl MockSubscriber {
-        fn new() -> Self {
-            Self {
-                close_hook: None,
-                records: vec![],
-            }
-        }
-        fn close(&mut self) {
-            if let Some(close_hook) = self.close_hook.take() {
-                close_hook();
-            } else {
-                panic!("close_hook not set");
-            }
-        }
-    }
-
-    impl Subscriber for MockSubscriber {
-        fn on_subscribe(&mut self, close_hook: Box<dyn FnOnce() + Send + Sync>) {
-            self.close_hook = Some(close_hook);
-        }
-
-        fn accept(&mut self, record: Record) {
-            self.records.push(record);
-        }
-    }
-
-    #[tokio::test()]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_memory_log() {
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200)]);

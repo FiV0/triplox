@@ -6,7 +6,8 @@ mod datalog;
 mod ops;
 mod clock;
 mod transaction;
-mod local_log;
+mod file_log;
+mod error;
 use ops::TxOp;
 
 pub use transaction::{TransactionResult, TxKey};
