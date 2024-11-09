@@ -57,10 +57,12 @@ impl TxLog for MemoryLog {}
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::Mutex;
+    // use tokio::sync::Mutex;
 
     use super::*;
     use std::sync::Arc;
+    // use tokio::sync::RwLock;
+    use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
     use crate::log::{Subscriber, subscribe};
@@ -78,6 +80,13 @@ mod tests {
                 records: vec![],
             }
         }
+        fn close(&mut self) {
+            if let Some(close_hook) = self.close_hook.take() {
+                close_hook();
+            } else {
+                panic!("close_hook not set");
+            }
+        }
     }
 
     impl Subscriber for MockSubscriber {
@@ -90,28 +99,22 @@ mod tests {
         }
     }
 
-    impl Drop for MockSubscriber {
-        fn drop(&mut self) {
-            self.close_hook.take().unwrap()();
-        }
-    }
-
-    #[tokio::test]
+    #[tokio::test()]
     async fn test_memory_log() {
-        let subscriber = MockSubscriber::new();
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200)]);
-        let log = Arc::new(Mutex::new(MemoryLog::new(Box::new(clock))));
-        let log_reader: Arc<dyn TxLogReader> = log.clone();
-        let log_writer: Arc<Mutex<dyn TxLogWriter>> = log.clone();
-        subscribe(log_reader, None, Box::new(subscriber));
-        let mut writer = log_writer.lock().await;
+        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
+        subscribe(log.clone(), None, subscriber.clone());
+        let mut writer = log.write().unwrap();
         writer.append_tx(vec![1, 2, 3]).await;
         writer.append_tx(vec![4, 5, 6]).await;
         writer.append_tx(vec![7, 8, 9]).await;
 
         thread::sleep(Duration::from_millis(100));
 
-        drop(subscriber);
+        let mut subscriber = subscriber.write().unwrap();
+
+        subscriber.close();
 
         assert_eq!(subscriber.records.len(), 3);
         assert_eq!(subscriber.records[0], Record { tx_key: TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) }, record: vec![1, 2, 3] });
