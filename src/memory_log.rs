@@ -11,7 +11,7 @@ use crate::transaction::TxKey;
 use crate::log::TxId;
 use crate::error::TriploxError;
 use anyhow::Result;
-
+use crate::logging::init;
 struct MemoryLog {
     txs: Vec<Record>,
     tx_sender: broadcast::Sender<Record>,
@@ -59,11 +59,8 @@ impl TxLog for MemoryLog {}
 
 #[cfg(test)]
 mod tests {
-    // use tokio::sync::Mutex;
-
     use super::*;
     use std::sync::Arc;
-    // use tokio::sync::RwLock;
     use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
@@ -72,8 +69,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_memory_log() {
+        init();
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200)]);
+        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200), st_from_unix_epoch(300), st_from_unix_epoch(400)]);
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
         subscribe(log.clone(), None, subscriber.clone());
 
@@ -96,35 +94,27 @@ mod tests {
         assert_eq!(subscriber.records[2], Record { tx_key: TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) }, record: vec![7, 8, 9] });
 
         // wait for the subscriber to close
-        // std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // let tx_id_3 = subscriber.records[2].tx_key.tx_id;
+        let tx_id_2 = subscriber.records[2].tx_key.tx_id;
 
-        // // Create new clock for restarted log
-        // let clock = MockClock::new(vec![
-        //     st_from_unix_epoch(300),
-        //     st_from_unix_epoch(400)
-        // ]);
+        let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
+        subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
 
-        // // Restart log and subscribe from second transaction
-        // let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        // let log2 = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
-        // subscribe(log2.clone(), Some(tx_id_3), subscriber2.clone()); // Subscribe after third transaction
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![10, 11, 12]).await;
+            writer.append_tx(vec![13, 14, 15]).await;
+        }
 
-        // {
-        //     let mut writer = log2.write().unwrap();
-        //     writer.append_tx(vec![10, 11, 12]).await;
-        //     writer.append_tx(vec![13, 14, 15]).await;
-        // }
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut subscriber2 = subscriber2.write().unwrap();
+        subscriber2.close();
 
-        // let mut subscriber2 = subscriber2.write().unwrap();
-        // subscriber2.close();
-
-        // assert_eq!(subscriber2.records.len(), 3);
-        // assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
-        // assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
-        // assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
+        assert_eq!(subscriber2.records.len(), 3);
+        assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
+        assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
+        assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
 }

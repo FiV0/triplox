@@ -117,7 +117,10 @@ mod tests {
         let clock = MockClock::new(vec![
             st_from_unix_epoch(0),
             st_from_unix_epoch(100),
-            st_from_unix_epoch(200)
+            st_from_unix_epoch(200),
+            st_from_unix_epoch(300),
+            st_from_unix_epoch(400)
+
         ]);
         
         let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
@@ -143,21 +146,14 @@ mod tests {
         // wait for the subscriber to close
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let tx_id_3 = subscriber.records[2].tx_key.tx_id;
-
-        // Create new clock for restarted log
-        let clock = MockClock::new(vec![
-            st_from_unix_epoch(300),
-            st_from_unix_epoch(400)
-        ]);
+        let tx_id_2 = subscriber.records[2].tx_key.tx_id;
 
         // Restart log and subscribe from second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let log2 = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
-        subscribe(log2.clone(), Some(tx_id_3), subscriber2.clone()); // Subscribe after third transaction
+        subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
 
         {
-            let mut writer = log2.write().unwrap();
+            let mut writer = log.write().unwrap();
             writer.append_tx(vec![10, 11, 12]).await;
             writer.append_tx(vec![13, 14, 15]).await;
         }

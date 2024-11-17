@@ -45,7 +45,7 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
         info!("Starting subscriber thread");
 
 
-        while after_tx_id < latest_tx_id {
+        while after_tx_id <= latest_tx_id && latest_tx_id != -1 && stop_flag.load(Ordering::Relaxed) == false {
             let log = log.read().unwrap();
             match log.read_txs(after_tx_id, 100) {
                 Ok(txs_to_process) => {
@@ -84,6 +84,7 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
                                 let log = log.read().unwrap();
                                 // We fell behind, need to catch up using read_txs
                                 // TODO should limit be cropped to a 100?
+                                // This might be quite large if we have had lots of catching up to do initially.
                                 match log.read_txs(after_tx_id, missed.try_into().unwrap()) {
                                     Ok(txs_to_process) => {
                                         after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
