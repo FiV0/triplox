@@ -76,10 +76,13 @@ mod tests {
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200)]);
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
         subscribe(log.clone(), None, subscriber.clone());
-        let mut writer = log.write().unwrap();
-        writer.append_tx(vec![1, 2, 3]).await;
-        writer.append_tx(vec![4, 5, 6]).await;
-        writer.append_tx(vec![7, 8, 9]).await;
+
+        {   
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+            writer.append_tx(vec![4, 5, 6]).await;
+            writer.append_tx(vec![7, 8, 9]).await;
+        }
 
         thread::sleep(Duration::from_millis(100));
 
@@ -91,5 +94,37 @@ mod tests {
         assert_eq!(subscriber.records[0], Record { tx_key: TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) }, record: vec![1, 2, 3] });
         assert_eq!(subscriber.records[1], Record { tx_key: TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) }, record: vec![4, 5, 6] });
         assert_eq!(subscriber.records[2], Record { tx_key: TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) }, record: vec![7, 8, 9] });
+
+        // wait for the subscriber to close
+        // std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // let tx_id_3 = subscriber.records[2].tx_key.tx_id;
+
+        // // Create new clock for restarted log
+        // let clock = MockClock::new(vec![
+        //     st_from_unix_epoch(300),
+        //     st_from_unix_epoch(400)
+        // ]);
+
+        // // Restart log and subscribe from second transaction
+        // let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
+        // let log2 = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
+        // subscribe(log2.clone(), Some(tx_id_3), subscriber2.clone()); // Subscribe after third transaction
+
+        // {
+        //     let mut writer = log2.write().unwrap();
+        //     writer.append_tx(vec![10, 11, 12]).await;
+        //     writer.append_tx(vec![13, 14, 15]).await;
+        // }
+
+        // std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // let mut subscriber2 = subscriber2.write().unwrap();
+        // subscriber2.close();
+
+        // assert_eq!(subscriber2.records.len(), 3);
+        // assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
+        // assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
+        // assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
 }

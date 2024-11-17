@@ -8,6 +8,7 @@ mod clock;
 mod transaction;
 mod file_log;
 mod error;
+mod logging;
 use ops::TxOp;
 
 pub use transaction::{TransactionResult, TxKey};

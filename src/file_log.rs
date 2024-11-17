@@ -60,7 +60,7 @@ impl TxLogReader for FileLog {
 
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
         let current_pos = self.file.get_ref()
-            .seek(SeekFrom::Current(0))
+            .seek(SeekFrom::End(0))
             .unwrap_or(0) as TxId;
         
         (current_pos - 1, self.tx_sender.subscribe())
@@ -104,10 +104,12 @@ mod tests {
     use crate::clock::{MockClock, st_from_unix_epoch};
     use crate::log::{MockSubscriber, subscribe};
 
+    use crate::logging::init;
     // Reuse your MockSubscriber implementation here...
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_file_log() {
+        init();
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.log");
         
@@ -121,10 +123,12 @@ mod tests {
         let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
         subscribe(log.clone(), None, subscriber.clone());
 
-        let mut writer = log.write().unwrap();
-        writer.append_tx(vec![1, 2, 3]).await;
-        writer.append_tx(vec![4, 5, 6]).await;
-        writer.append_tx(vec![7, 8, 9]).await;
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+            writer.append_tx(vec![4, 5, 6]).await;
+            writer.append_tx(vec![7, 8, 9]).await;
+        }
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -136,31 +140,36 @@ mod tests {
         assert_eq!(subscriber.records[1].record, vec![4, 5, 6]);
         assert_eq!(subscriber.records[2].record, vec![7, 8, 9]);
 
-        // let tx_id_3 = subscriber.records[2].tx_key.tx_id;
+        // wait for the subscriber to close
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // // Create new clock for restarted log
-        // let clock = MockClock::new(vec![
-        //     st_from_unix_epoch(300),
-        //     st_from_unix_epoch(400)
-        // ]);
+        let tx_id_3 = subscriber.records[2].tx_key.tx_id;
 
-        // // Restart log and subscribe from second transaction
-        // let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        // let log2 = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
-        // subscribe(log2.clone(), Some(tx_id_3), subscriber2.clone()); // Subscribe after third transaction
+        // Create new clock for restarted log
+        let clock = MockClock::new(vec![
+            st_from_unix_epoch(300),
+            st_from_unix_epoch(400)
+        ]);
 
-        // let mut writer = log2.write().unwrap();
-        // writer.append_tx(vec![10, 11, 12]).await;
-        // writer.append_tx(vec![13, 14, 15]).await;
+        // Restart log and subscribe from second transaction
+        let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
+        let log2 = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+        subscribe(log2.clone(), Some(tx_id_3), subscriber2.clone()); // Subscribe after third transaction
 
-        // std::thread::sleep(std::time::Duration::from_millis(100));
+        {
+            let mut writer = log2.write().unwrap();
+            writer.append_tx(vec![10, 11, 12]).await;
+            writer.append_tx(vec![13, 14, 15]).await;
+        }
 
-        // let mut subscriber2 = subscriber2.write().unwrap();
-        // subscriber2.close();
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // assert_eq!(subscriber2.records.len(), 3);
-        // assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
-        // assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
-        // assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
+        let mut subscriber2 = subscriber2.write().unwrap();
+        subscriber2.close();
+
+        assert_eq!(subscriber2.records.len(), 3);
+        assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
+        assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
+        assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
 }
