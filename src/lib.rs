@@ -9,7 +9,11 @@ mod transaction;
 mod file_log;
 mod error;
 mod logging;
+mod indexer;
+mod codec;
+mod slate;
 use ops::TxOp;
+use indexer::Indexer;
 
 pub use transaction::{TransactionResult, TxKey};
 pub struct Basis {}
@@ -28,7 +32,8 @@ pub trait QueryNode {
     async fn db_with_basis(&self, basis: Basis) -> DB;
 }
 
-pub struct DB {}
+pub struct DB { }
+
 
 #[allow(unused)]
 pub struct Eid {}
@@ -50,4 +55,21 @@ impl DB {
 }
 
 
-pub trait Node : SubmitNode + QueryNode {}
+pub struct Node : SubmitNode + QueryNode {
+    log: Box<dyn TxLog>,
+    indexer: Box<dyn Indexer>,
+    slatedb: Arc<slatedb::db::Db>,
+}
+
+impl Node {
+    fn memory_node() -> Self {
+        let slatedb = Arc::new(in_memory_slate());
+        Node { 
+            log: Box::new(MemoryLog::new(Box::new(clock::SystemTimeSource::new()))), 
+            indexer: Box::new(Indexer::new(slatedb.clone())), 
+            slatedb: slatedb.clone()
+        }
+    }
+}
+
+
