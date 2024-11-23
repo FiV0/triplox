@@ -2,14 +2,18 @@ use std::sync::Arc;
 use slatedb::db::Db;
 use anyhow::{Result, Error};
 
+use crate::ops::{TxOp, Document, Triple};
+use crate::codec;
+use crate::transaction::TxKey;
+
 struct Indexer {
     slatedb: Arc<Db>,
 }
 
-struct TxKeys {
-    eav: Vec<&[u8]>,
-    ave: Vec<&[u8]>,
-    aev: Vec<&[u8]>,
+struct TxIndexPermutations<'a> {
+    eav: Vec<&'a [u8]>,
+    ave: Vec<&'a [u8]>,
+    aev: Vec<&'a [u8]>,
 }
 
 fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
@@ -31,7 +35,7 @@ impl Indexer {
         Indexer { slatedb }
     }
 
-    fn op_to_keys(&self, tx_key: TxKey, tx_op: TxOp) -> Result<TxKeys, Error> {
+    fn op_to_keys(&self, tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexPermutations, Error> {
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -52,7 +56,7 @@ impl Indexer {
                 let ave: Vec<u8> = [&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]].concat();
                 let aev: Vec<u8> = [&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]].concat();
 
-                Ok(TxKeys { 
+                Ok(TxIndexPermutations { 
                     eav: vec![&eav], 
                     ave: vec![&ave], 
                     aev: vec![&aev] 
@@ -67,7 +71,7 @@ impl Indexer {
                 let ave: Vec<u8> = [&[codec::AVE], &attribute, &value, &entity_id, &[codec::DELETE]].concat();
                 let aev: Vec<u8> = [&[codec::AEV], &attribute, &entity_id, &value, &[codec::DELETE]].concat();
 
-                Ok(TxKeys { 
+                Ok(TxIndexPermutations { 
                     eav: vec![&eav], 
                     ave: vec![&ave], 
                     aev: vec![&aev] 

@@ -1,5 +1,3 @@
-mod memory_node;
-mod remote_node;
 mod log;
 mod memory_log;
 mod datalog;
@@ -12,8 +10,10 @@ mod logging;
 mod indexer;
 mod codec;
 mod slate;
+mod util;
 use ops::TxOp;
-use indexer::Indexer;
+use std::sync::Arc;
+use crate::slate::in_memory_slate;
 
 pub use transaction::{TransactionResult, TxKey};
 pub struct Basis {}
@@ -46,16 +46,20 @@ pub struct QueryResult{}
 
 #[allow(unused)]
 impl DB {
-    fn entity(&self, _eid: Eid) {
+    pub fn entity(&self, _eid: Eid) {
         todo!()
     }
-    fn query(&self, _query: Query) {
+    pub fn query(&self, _query: Query) {
         todo!()
     }
+    // pub fn pull(&self, _pattern: Any) { 
+    //     todo!()
+    // }
+    // pub fn pull_many(&self, _pattern: Any) {
+    //     todo!()
+    // }
 }
-
-
-pub struct Node : SubmitNode + QueryNode {
+pub struct Node {
     log: Box<dyn TxLog>,
     indexer: Box<dyn Indexer>,
     slatedb: Arc<slatedb::db::Db>,
@@ -72,4 +76,21 @@ impl Node {
     }
 }
 
+impl SubmitNode for Node {
+    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey {
+        todo!()
+    }
+    async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult {
+        todo!()
+    }
+}
+
+impl QueryNode for Node {
+    async fn db(&self) -> DB {
+        todo!()
+    }
+    async fn db_with_basis(&self, basis: Basis) -> DB {
+        todo!()
+    }
+}
 
