@@ -13,7 +13,11 @@ mod slate;
 mod util;
 use ops::TxOp;
 use std::sync::Arc;
+
 use crate::slate::in_memory_slate;
+use crate::log::TxLog;
+use crate::indexer::Indexer;
+use crate::memory_log::MemoryLog;
 
 pub use transaction::{TransactionResult, TxKey};
 pub struct Basis {}
@@ -61,15 +65,15 @@ impl DB {
 }
 pub struct Node {
     log: Box<dyn TxLog>,
-    indexer: Box<dyn Indexer>,
+    indexer: Box<Indexer>,
     slatedb: Arc<slatedb::db::Db>,
 }
 
 impl Node {
-    fn memory_node() -> Self {
-        let slatedb = Arc::new(in_memory_slate());
+    async fn memory_node() -> Self {
+        let slatedb = Arc::new(in_memory_slate().await);
         Node { 
-            log: Box::new(MemoryLog::new(Box::new(clock::SystemTimeSource::new()))), 
+            log: Box::new(MemoryLog::new(Box::new(clock::SystemClock))), 
             indexer: Box::new(Indexer::new(slatedb.clone())), 
             slatedb: slatedb.clone()
         }
@@ -77,10 +81,10 @@ impl Node {
 }
 
 impl SubmitNode for Node {
-    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey {
+    async fn submit_tx(&self, _ops: Vec<TxOp>) -> TxKey {
         todo!()
     }
-    async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult {
+    async fn execute_tx(&self, _ops: Vec<TxOp>) -> TransactionResult {
         todo!()
     }
 }
@@ -89,7 +93,7 @@ impl QueryNode for Node {
     async fn db(&self) -> DB {
         todo!()
     }
-    async fn db_with_basis(&self, basis: Basis) -> DB {
+    async fn db_with_basis(&self, _basis: Basis) -> DB {
         todo!()
     }
 }

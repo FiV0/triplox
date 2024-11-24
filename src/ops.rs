@@ -17,12 +17,11 @@ pub struct Attribute(String);
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Value(DataType);
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Ref(i64);
+pub type Ref = i64;
 
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-enum DataType {
+pub enum DataType {
     Nil,
     //BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers
     BigInt(i128),                    // Arbitrary large integers
@@ -69,7 +68,8 @@ impl_from_for_enum!(DataType,
     (Float, f32),
     (Instant, DateTime<Utc>),
     (Long, i64),
-    (Ref, Ref),
+    // as Ref is a type alias for i64, we can't have From for both of them 
+    // (Ref, Ref),
     (String, String),
     (Uuid, Uuid),
     (Vector, Vec<DataType>),
@@ -78,15 +78,15 @@ impl_from_for_enum!(DataType,
 );
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct Document(BTreeMap<String, DataType>);
+pub struct Document(pub BTreeMap<String, DataType>);
 
 // either extend this with t and op as options or create another type for running through indices
 // make value optional ?
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Triple {
-    entity: EntityId,
-    attribute: Attribute,
-    value: Value,
+    pub entity: EntityId,
+    pub attribute: Attribute,
+    pub value: Value,
 }
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum TxOp {

@@ -1,19 +1,20 @@
 use std::sync::Arc;
 use slatedb::db::Db;
-use anyhow::{Result, Error};
+use anyhow::{Error, Ok, Result};
 
 use crate::ops::{TxOp, Document, Triple};
 use crate::codec;
 use crate::transaction::TxKey;
+use crate::ops::DataType;
 
-struct Indexer {
+pub struct Indexer {
     slatedb: Arc<Db>,
 }
 
-struct TxIndexPermutations<'a> {
-    eav: Vec<&'a [u8]>,
-    ave: Vec<&'a [u8]>,
-    aev: Vec<&'a [u8]>,
+struct TxIndexPermutations {
+    eav: Vec<Vec<u8>>,
+    ave: Vec<Vec<u8>>,
+    aev: Vec<Vec<u8>>,
 }
 
 fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
@@ -35,7 +36,15 @@ impl Indexer {
         Indexer { slatedb }
     }
 
-    fn op_to_keys(&self, tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexPermutations, Error> {
+    fn concat_index(parts: &[&[u8]]) -> Vec<u8> {
+        let mut result = Vec::new();
+        for part in parts {
+            result.extend(*part);
+        }
+        result
+    }
+
+    fn op_to_keys(&self, _tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexPermutations, Error> {
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -43,23 +52,46 @@ impl Indexer {
                     Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
-                let other_keys = doc.keys().filter(|k| k != "db/id").collect::<Vec<_>>();
-                assert_attributes(&other_keys)?;
+                let attribute_and_values = doc.iter().filter(|(k, _)| *k != "db/id").collect::<Vec<_>>();
+                assert_attributes(&attribute_and_values.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>())?;
+
+                let entity_id = bincode::serialize(&entity_id)?;
+                let attribute_and_values = attribute_and_values
+                    .iter()
+                    .map(|(k, v)| -> Result<(Vec<u8>, Vec<u8>)> {
+                        Ok((bincode::serialize(k)?, bincode::serialize(v)?))
+                    }).collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()?;
+
+                let mut eav : Vec<Vec<u8>> = Vec::new();
+                let mut ave : Vec<Vec<u8>> = Vec::new();
+                let mut aev : Vec<Vec<u8>> = Vec::new();
+
+                for (attribute, value) in attribute_and_values {
+                    eav.push(Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
+                    ave.push(Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
+                    aev.push(Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
+                }
+
+                Ok(TxIndexPermutations { 
+                    eav: eav, 
+                    ave: ave, 
+                    aev: aev 
+                })
+
             },
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
-
                 let entity_id = bincode::serialize(&entity_id)?;
                 let attribute = bincode::serialize(&attribute)?;
                 let value = bincode::serialize(&value)?;
 
-                let eav: Vec<u8> = [&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]].concat();
-                let ave: Vec<u8> = [&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]].concat();
-                let aev: Vec<u8> = [&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]].concat();
+                let eav = Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
+                let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
+                let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
 
                 Ok(TxIndexPermutations { 
-                    eav: vec![&eav], 
-                    ave: vec![&ave], 
-                    aev: vec![&aev] 
+                    eav: vec![eav], 
+                    ave: vec![ave], 
+                    aev: vec![aev] 
                 })
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
@@ -67,23 +99,23 @@ impl Indexer {
                 let attribute = bincode::serialize(&attribute)?;
                 let value = bincode::serialize(&value)?;
 
-                let eav: Vec<u8> = [&[codec::EAV], &entity_id, &attribute, &value, &[codec::DELETE]].concat();
-                let ave: Vec<u8> = [&[codec::AVE], &attribute, &value, &entity_id, &[codec::DELETE]].concat();
-                let aev: Vec<u8> = [&[codec::AEV], &attribute, &entity_id, &value, &[codec::DELETE]].concat();
+                let eav = Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
+                let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
+                let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
 
                 Ok(TxIndexPermutations { 
-                    eav: vec![&eav], 
-                    ave: vec![&ave], 
-                    aev: vec![&aev] 
+                    eav: vec![eav], 
+                    ave: vec![ave], 
+                    aev: vec![aev] 
                 })  
             },
-            TxOp::Delete(entity) => todo!(),
-            TxOp::Erase(entity) => todo!(),
+            TxOp::Delete(_entity) => todo!(),
+            TxOp::Erase(_entity) => todo!(),
         }
     }
 
 
-    pub fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+    pub fn transact_tx(&mut self, _tx_key: TxKey, _tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         todo!()
     }
 }
