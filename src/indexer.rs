@@ -11,7 +11,7 @@ pub struct Indexer {
     slatedb: Arc<Db>,
 }
 
-struct TxIndexPermutations {
+struct TxIndexKeys {
     eav: Vec<Vec<u8>>,
     ave: Vec<Vec<u8>>,
     aev: Vec<Vec<u8>>,
@@ -44,7 +44,7 @@ impl Indexer {
         result
     }
 
-    fn op_to_keys(&self, _tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexPermutations, Error> {
+    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexKeys, Error> {
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -72,7 +72,7 @@ impl Indexer {
                     aev.push(Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
                 }
 
-                Ok(TxIndexPermutations { 
+                Ok(TxIndexKeys { 
                     eav: eav, 
                     ave: ave, 
                     aev: aev 
@@ -88,7 +88,7 @@ impl Indexer {
                 let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
                 let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
 
-                Ok(TxIndexPermutations { 
+                Ok(TxIndexKeys { 
                     eav: vec![eav], 
                     ave: vec![ave], 
                     aev: vec![aev] 
@@ -103,7 +103,7 @@ impl Indexer {
                 let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
                 let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
 
-                Ok(TxIndexPermutations { 
+                Ok(TxIndexKeys { 
                     eav: vec![eav], 
                     ave: vec![ave], 
                     aev: vec![aev] 
@@ -115,7 +115,10 @@ impl Indexer {
     }
 
 
-    pub fn transact_tx(&mut self, _tx_key: TxKey, _tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        todo!()
+    pub fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        let index_keys = tx_ops.iter().map(|op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
+
+
+        Ok(tx_key)
     }
 }

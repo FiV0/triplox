@@ -17,3 +17,11 @@ pub async fn in_memory_slate() -> Db {
     .unwrap();
     kv_store
 }
+
+pub async fn transact(db: Db, tx_ops: Vec<(Vec<u8>, Vec<u8>)>) -> Result<Future, Error> {
+    let mut last_put = None;
+    for (key, value) in tx_ops {
+        last_put = Some(db.put(&key, &value));
+    }
+    Ok(last_put.unwrap())
+}
