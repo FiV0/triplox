@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use slatedb::db::Db;
+use slatedb::batch::{WriteBatch, WriteOp};
 use anyhow::{Error, Ok, Result};
 
 use crate::ops::{TxOp, Document, Triple};
 use crate::codec;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
+use crate::slate::DEFAULT_WRITE_OPTIONS;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
@@ -116,8 +118,16 @@ impl Indexer {
 
 
     pub fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let index_keys = tx_ops.iter().map(|op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
+        let index_keys = tx_ops.iter().map(|&op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
+        let write_batch = WriteBatch::new();
 
+        for (i, index_keys) in index_keys.iter().enumerate() {
+            write_batch.put(index_keys.eav[i].as_slice(), &[]);
+            write_batch.put(index_keys.ave[i].as_slice(), &[]);
+            write_batch.put(index_keys.aev[i].as_slice(), &[]);
+        }
+
+        self.slatedb.write_with_options(write_batch, DEFAULT_WRITE_OPTIONS).await?;
 
         Ok(tx_key)
     }

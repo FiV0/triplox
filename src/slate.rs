@@ -1,5 +1,6 @@
 use slatedb::db::Db;
-use object_store::{ObjectStore, memory::InMemory, path::Path};
+use object_store::{ObjectStore, memory::InMemory, path::Path}; 
+use object_store::lcoal::LocalFileSystem;
 use slatedb::config::DbOptions;
 use std::sync::Arc;
 
@@ -18,10 +19,17 @@ pub async fn in_memory_slate() -> Db {
     kv_store
 }
 
-pub async fn transact(db: Db, tx_ops: Vec<(Vec<u8>, Vec<u8>)>) -> Result<Future, Error> {
-    let mut last_put = None;
-    for (key, value) in tx_ops {
-        last_put = Some(db.put(&key, &value));
-    }
-    Ok(last_put.unwrap())
+pub async fn local_slate(path: &str) -> Db {
+    let object_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new(path));
+    let options = DbOptions::default();
+    let kv_store = Db::open_with_opts(Path::from(path), options, object_store).await.unwrap();
+    kv_store
 }
+
+pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
+    read_level: ReadLevel::Uncommitted,
+};
+
+pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
+    await_durable: false,
+};
