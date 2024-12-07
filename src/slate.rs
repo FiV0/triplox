@@ -9,6 +9,8 @@ use crate::util::random_string;
 
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::ops::{Bound, RangeBounds};
+use bytes::Bytes;
 
 pub async fn in_memory_slate() -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
@@ -44,7 +46,10 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     cache_blocks: false
 };
 
-pub fn read_attribute_to_id(_slatedb: Arc<Db>) -> HashMap<String, u64> {
+pub async fn read_attribute_to_id(slatedb: Arc<Db>) -> HashMap<String, u64> {
     let attribute_to_id = HashMap::new();
+    // let range : RangeBounds<Bytes> = BytesRange::new(Bound::Included(Bytes::copy_from_slice()), Bound::Included(Bytes::copy_from_slice(b":db/ident\u0000")));
+    // let mut iter = slatedb.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await.unwrap();
+
     attribute_to_id
 }

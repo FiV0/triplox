@@ -69,6 +69,7 @@ mod tests {
     use crate::clock::{st_from_unix_epoch, MockClock};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // TODO: refactor with file log test into a single test where only the log is changed
     async fn test_memory_log() {
         init();
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));

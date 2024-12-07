@@ -1824,7 +1824,7 @@ dependencies = [
 [[package]]
 name = "slatedb"
 version = "0.3.0"
-source = "git+https://github.com/hachikuji/slatedb.git?branch=range-scans#7b40a1bb54203a3958d35ee70e5989e6b8c6a74a"
+source = "git+https://github.com/fiv0/slatedb.git?branch=range-scans#9c6a77a52846a7c0de392c264a18c57f28b114b4"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -2214,6 +2214,7 @@ dependencies = [
  "async-trait",
  "bigdecimal",
  "bincode",
+ "bytes",
  "chrono",
  "edn",
  "log",

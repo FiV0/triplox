@@ -11,6 +11,7 @@ mod indexer;
 mod codec;
 mod slate;
 mod util;
+mod scratch;
 use ops::TxOp;
 use std::sync::Arc;
 

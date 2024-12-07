@@ -1,16 +1,17 @@
-#[allow(dead_code)]
-pub const VERSION: u8 = 1;
+#![allow(dead_code)]
+// TODO should this become 16 bytes?
+pub const INDEX_VERSION: u8 = 1;
 
-// indices prefixes
 pub const EAV: u8 = 0;
 pub const AVE: u8 = 1;
 pub const AEV: u8 = 2;
+// TODO move this to normal entities
+// {:db/id ... :db/ident ...}
+pub const ATTRIBUTE_TO_ID: u8 = 3;
 
-#[allow(dead_code)]
-pub const META_INDEX: u8 = 128;
+pub const STATS_INDEX: u8 = 128;
+pub const META_INDEX: u8 = 129;
 
-// operations
 pub const ADD: u8 = 0;
-pub const RETRACT: u8 = 1;
-#[allow(dead_code)]
-pub const ERASE: u8 = 2;
+pub const DELETE: u8 = 1;
+pub const RETRACT: u8 = 2;
