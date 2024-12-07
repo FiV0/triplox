@@ -1,6 +1,9 @@
+#![allow(dead_code, unused)]
+
+use std::collections::HashMap;
 use std::sync::Arc;
 use slatedb::db::Db;
-use slatedb::batch::{WriteBatch, WriteOp};
+use slatedb::batch::WriteBatch;
 use anyhow::{Error, Ok, Result};
 
 use crate::ops::{TxOp, Document, Triple};
@@ -11,6 +14,7 @@ use crate::slate::DEFAULT_WRITE_OPTIONS;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
+    attribute_to_id: HashMap<String, u64>
 }
 
 struct TxIndexKeys {
@@ -35,10 +39,11 @@ fn assert_attributes(attributes: &[&str]) -> Result<(), Error> {
 
 impl Indexer {
     pub fn new(slatedb: Arc<Db>) -> Self {
-        Indexer { slatedb }
+        let attribute_to_id = HashMap::new();
+        Indexer { slatedb, attribute_to_id }
     }
 
-    fn concat_index(parts: &[&[u8]]) -> Vec<u8> {
+    pub fn concat_index(parts: &[&[u8]]) -> Vec<u8> {
         let mut result = Vec::new();
         for part in parts {
             result.extend(*part);
@@ -46,11 +51,11 @@ impl Indexer {
         result
     }
 
-    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: TxOp) -> Result<TxIndexKeys, Error> {
+    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
-                    Some(DataType::Long(uuid)) => uuid,
+                    Some(DataType::Long(id)) => id,
                     Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
@@ -118,8 +123,8 @@ impl Indexer {
 
 
     pub fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let index_keys = tx_ops.iter().map(|&op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
-        let write_batch = WriteBatch::new();
+        let index_keys = tx_ops.iter().map(|op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
+        let mut write_batch = WriteBatch::new();
 
         for (i, index_keys) in index_keys.iter().enumerate() {
             write_batch.put(index_keys.eav[i].as_slice(), &[]);
@@ -127,8 +132,21 @@ impl Indexer {
             write_batch.put(index_keys.aev[i].as_slice(), &[]);
         }
 
-        self.slatedb.write_with_options(write_batch, DEFAULT_WRITE_OPTIONS).await?;
+        self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS);
 
         Ok(tx_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_concat_index() {
+        let part1 = bincode::serialize(&42u64).unwrap();
+        let part2 = bincode::serialize(&"hello".as_bytes()).unwrap();
+        let result = Indexer::concat_index(&[&part1, &part2]);
+
     }
 }

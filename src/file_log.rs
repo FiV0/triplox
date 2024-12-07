@@ -16,6 +16,7 @@ pub struct FileLog {
 }
 
 impl FileLog {
+    #[allow(unused)]
     pub fn new(path: &Path, clock: Box<dyn SystemTimeSource>) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)

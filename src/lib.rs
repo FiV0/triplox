@@ -63,6 +63,8 @@ impl DB {
     //     todo!()
     // }
 }
+
+#[allow(unused)]
 pub struct Node {
     log: Box<dyn TxLog>,
     indexer: Box<Indexer>,
@@ -70,7 +72,7 @@ pub struct Node {
 }
 
 impl Node {
-    async fn memory_node() -> Self {
+    pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
         Node { 
             log: Box::new(MemoryLog::new(Box::new(clock::SystemClock))), 
