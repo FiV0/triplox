@@ -5,12 +5,16 @@ use std::sync::Arc;
 use slatedb::db::Db;
 use slatedb::batch::WriteBatch;
 use anyhow::{Error, Ok, Result};
+use bincode;
 
 use crate::ops::{TxOp, Document, Triple};
 use crate::codec;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
 use crate::slate::DEFAULT_WRITE_OPTIONS;
+use crate::slate::{get_and_create_attribute_id, in_memory_slate, read_attribute_map};
+use crate::util::concat_bytes;
+use crate::clock::Instant;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
@@ -43,15 +47,8 @@ impl Indexer {
         Indexer { slatedb, attribute_to_id }
     }
 
-    pub fn concat_index(parts: &[&[u8]]) -> Vec<u8> {
-        let mut result = Vec::new();
-        for part in parts {
-            result.extend(*part);
-        }
-        result
-    }
-
-    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
+    async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
+        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -66,7 +63,8 @@ impl Indexer {
                 let attribute_and_values = attribute_and_values
                     .iter()
                     .map(|(k, v)| -> Result<(Vec<u8>, Vec<u8>)> {
-                        Ok((bincode::serialize(k)?, bincode::serialize(v)?))
+                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &attribute_map).await;
+                        Ok((bincode::serialize(&attribute_id)?, bincode::serialize(v)?))
                     }).collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()?;
 
                 let mut eav : Vec<Vec<u8>> = Vec::new();
@@ -74,9 +72,10 @@ impl Indexer {
                 let mut aev : Vec<Vec<u8>> = Vec::new();
 
                 for (attribute, value) in attribute_and_values {
-                    eav.push(Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
-                    ave.push(Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
-                    aev.push(Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
+                    let value_len = bincode::serialize(&(value.len() as u64)).unwrap();
+                    eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value_len, &value, &[codec::ADD]]));
+                    ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value_len, &value, &entity_id, &[codec::ADD]]));
+                    aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value_len, &value, &[codec::ADD]]));
                 }
 
                 Ok(TxIndexKeys { 
@@ -88,12 +87,13 @@ impl Indexer {
             },
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute = bincode::serialize(&attribute)?;
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attribute).await;
+                let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
-                let eav = Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
-                let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
-                let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
+                let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
+                let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
+                let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
 
                 Ok(TxIndexKeys { 
                     eav: vec![eav], 
@@ -103,12 +103,13 @@ impl Indexer {
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute = bincode::serialize(&attribute)?;
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attribute, &attribute_map).await;
+                let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
-                let eav = Self::concat_index(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
-                let ave = Self::concat_index(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
-                let aev = Self::concat_index(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
+                let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
+                let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
+                let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
 
                 Ok(TxIndexKeys { 
                     eav: vec![eav], 
@@ -143,10 +144,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_concat_index() {
-        let part1 = bincode::serialize(&42u64).unwrap();
-        let part2 = bincode::serialize(&"hello".as_bytes()).unwrap();
-        let result = Indexer::concat_index(&[&part1, &part2]);
-
+    async fn test_indexer() {
+        let indexer = Indexer::new(Arc::new(in_memory_slate().await));
+        let tx_key = TxKey { tx_id: 0, system_time: Instant::now() };
+        let doc = Document(HashMap::new().insert("db/id".to_string(), DataType::Long(1)).insert("name".to_string(), DataType::String("alan".to_string())));
+        let tx_ops = vec![TxOp::Put(doc)];
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
     }
 }
