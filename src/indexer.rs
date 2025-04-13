@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use slatedb::db::Db;
-use slatedb::batch::WriteBatch;
+use slatedb::Db;
+use slatedb::WriteBatch;
 use anyhow::{Error, Ok, Result};
 use bincode;
 
-use crate::ops::{TxOp, Document, Triple};
+use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
@@ -63,7 +63,7 @@ impl Indexer {
                 let attribute_and_values = attribute_and_values
                     .iter()
                     .map(|(k, v)| -> Result<(Vec<u8>, Vec<u8>)> {
-                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &attribute_map).await;
+                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &attribute_map);
                         Ok((bincode::serialize(&attribute_id)?, bincode::serialize(v)?))
                     }).collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()?;
 
@@ -86,8 +86,9 @@ impl Indexer {
 
             },
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
+                let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attribute).await;
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &attribute_map);
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -102,8 +103,9 @@ impl Indexer {
                 })
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
+                let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attribute, &attribute_map).await;
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &attribute_map);
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 

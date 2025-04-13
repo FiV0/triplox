@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 pub struct EntityId(i64);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct Attribute(String);
+pub struct Attribute(pub String);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Value(DataType);

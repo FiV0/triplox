@@ -69,7 +69,7 @@ impl DB {
 pub struct Node {
     log: Box<dyn TxLog>,
     indexer: Box<Indexer>,
-    slatedb: Arc<slatedb::db::Db>,
+    slatedb: Arc<slatedb::Db>,
 }
 
 impl Node {

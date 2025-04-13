@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use bytes::Bytes;
-use slatedb::{db::Db, config::ScanOptions, config::ReadLevel, error::SlateDBError};
+use slatedb::{Db, config::ScanOptions, config::ReadLevel, SlateDBError};
 use slatedb::object_store::{ObjectStore, memory::InMemory};
 use std::sync::Arc;
 

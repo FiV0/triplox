@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 // TODO should this become 2 bytes?
 pub const INDEX_VERSION: u8 = 1;
-pub const CODEC_LENGTH: u8 = 1;
+pub const CODEC_LENGTH: usize = 1;
 
 pub const EAV: u8 = 0;
 pub const AVE: u8 = 1;
