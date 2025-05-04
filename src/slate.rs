@@ -67,7 +67,7 @@ pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {
     attribute_to_id
 }
 
-pub fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_map: &HashMap<String, u64>) -> u64 {
+pub fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_map: &mut HashMap<String, u64>) -> u64 {
     let size = attribute_map.len() as u64;
     let attribute_id = match attribute_map.get(attribute) {
         Some(id) => id,

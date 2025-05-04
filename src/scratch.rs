@@ -19,6 +19,8 @@ fn create_prefix_range(prefix: &[u8]) -> (Bound<Bytes>, Bound<Bytes>) {
 
 #[cfg(test)]
 mod tests {
+    use slatedb::KeyValue;
+
     use super::*;
 
     #[tokio::test]
@@ -35,8 +37,15 @@ mod tests {
             read_level: ReadLevel::Uncommitted,
             ..ScanOptions::default()
         }).await?;
-        assert_eq!(Some((b"ab" as &[u8], b"ab_value" as &[u8]).into()) , iter.next().await?);
-        assert_eq!(Some((b"ac" as &[u8], b"ac_value" as &[u8]).into()) , iter.next().await?);
+        
+        if let Some(kv1) = iter.next().await? {
+            assert_eq!(kv1.key, Bytes::from("ab"));
+            assert_eq!(kv1.value, Bytes::from("ab_value"));
+        }
+        if let Some(kv2) = iter.next().await? {
+            assert_eq!(kv2.key, Bytes::from("ac"));
+            assert_eq!(kv2.value, Bytes::from("ac_value"));
+        }
         assert_eq!(None , iter.next().await?);
         Ok(())
     }

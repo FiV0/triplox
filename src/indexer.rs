@@ -6,6 +6,7 @@ use slatedb::Db;
 use slatedb::WriteBatch;
 use anyhow::{Error, Ok, Result};
 use bincode;
+use futures::future::try_join_all;
 
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
@@ -125,8 +126,12 @@ impl Indexer {
     }
 
 
-    pub fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let index_keys = tx_ops.iter().map(|op| self.op_to_index_keys(tx_key, op)).collect::<Result<Vec<TxIndexKeys>>>()?;
+    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        let futures = tx_ops.iter()
+            .map(|op| self.op_to_index_keys(tx_key, op));
+
+        let index_keys = try_join_all(futures).await?;
+
         let mut write_batch = WriteBatch::new();
 
         for (i, index_keys) in index_keys.iter().enumerate() {
@@ -143,13 +148,20 @@ impl Indexer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::clock::st_from_unix_epoch;
+
     use super::*;
 
     #[tokio::test]
     async fn test_indexer() {
-        let indexer = Indexer::new(Arc::new(in_memory_slate().await));
-        let tx_key = TxKey { tx_id: 0, system_time: Instant::now() };
-        let doc = Document(HashMap::new().insert("db/id".to_string(), DataType::Long(1)).insert("name".to_string(), DataType::String("alan".to_string())));
+        let mut indexer = Indexer::new(Arc::new(in_memory_slate().await));
+        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alan".to_string()));
+        let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
     }
