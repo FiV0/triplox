@@ -7,19 +7,10 @@ use std::sync::Arc;
 
 use std::ops::Bound;
 
-fn create_prefix_range(prefix: &[u8]) -> (Bound<Bytes>, Bound<Bytes>) {
-    let start = Bound::Included(Bytes::copy_from_slice(prefix));
-    
-    let mut end_bytes = prefix.to_vec();
-    end_bytes.push(0xFF);
-    let end = Bound::Included(Bytes::copy_from_slice(&end_bytes));
-    
-    (start, end)
-}
-
 #[cfg(test)]
 mod tests {
     use slatedb::KeyValue;
+    use crate::util::create_prefix_range;
 
     use super::*;
 

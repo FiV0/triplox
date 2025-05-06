@@ -7,6 +7,8 @@ use slatedb::WriteBatch;
 use anyhow::{Error, Ok, Result};
 use bincode;
 use futures::future::try_join_all;
+use std::io::Cursor;
+use bytes::Bytes;
 
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
@@ -42,6 +44,7 @@ fn assert_attributes(attributes: &[&str]) -> Result<(), Error> {
     Ok(())
 }
 
+
 impl Indexer {
     pub fn new(slatedb: Arc<Db>) -> Self {
         let attribute_to_id = HashMap::new();
@@ -49,6 +52,7 @@ impl Indexer {
     }
 
     async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
+        // TODO: maybe move this to Bytes
         // TODO: this can likely be moved from the hotpath
         let mut attribute_map = read_attribute_map(self.slatedb.clone()).await;
         match tx_op {
@@ -73,11 +77,12 @@ impl Indexer {
                 let mut ave : Vec<Vec<u8>> = Vec::new();
                 let mut aev : Vec<Vec<u8>> = Vec::new();
 
+                // TODO: would it be good to have length prefixed encoding here? 
                 for (attribute, value) in attribute_and_values {
                     let value_len = bincode::serialize(&(value.len() as u64)).unwrap();
-                    eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value_len, &value, &[codec::ADD]]));
-                    ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value_len, &value, &entity_id, &[codec::ADD]]));
-                    aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value_len, &value, &[codec::ADD]]));
+                    eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
+                    ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
+                    aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
                 }
 
                 Ok(TxIndexKeys { 
@@ -147,17 +152,83 @@ impl Indexer {
     }
 }
 
+fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
+    let key = key.as_ref();
+
+    if key.is_empty() || key[0] != codec::EAV {
+        return Err(anyhow::anyhow!("Not an EAV key"));
+    }
+
+    if key.len() < 2 {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let without_prefix = &key[1..key.len()-1];
+    let suffix = key[key.len()-1];
+
+    let mut cursor = Cursor::new(without_prefix);
+    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+
+    Ok((entity_id, attribute, value, suffix))
+}
+
+fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
+    let key = key.as_ref();
+
+    if key.is_empty() || key[0] != codec::AVE {
+        return Err(anyhow::anyhow!("Not an AVE key"));
+    }
+
+    if key.len() < 2 {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let without_prefix = &key[1..key.len()-1];
+    let suffix = key[key.len()-1];
+
+    let mut cursor = Cursor::new(without_prefix);
+    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+
+    Ok((attribute, value, entity_id, suffix))
+}
+
+fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
+    let key = key.as_ref();
+
+    if key.is_empty() || key[0] != codec::AEV {
+        return Err(anyhow::anyhow!("Not an AEV key"));
+    }
+
+    if key.len() < 2 {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let without_prefix = &key[1..key.len()-1];
+    let suffix = key[key.len()-1];
+
+    let mut cursor = std::io::Cursor::new(without_prefix);
+    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+
+    Ok((attribute, entity_id, value, suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use slatedb::{Db, config::ScanOptions, config::ReadLevel, SlateDBError};
+
 
     use crate::clock::st_from_unix_epoch;
-
+    use crate::util::create_prefix_range;
     use super::*;
 
     #[tokio::test]
-    async fn test_indexer() {
-        let mut indexer = Indexer::new(Arc::new(in_memory_slate().await));
+    async fn test_indexer() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
         let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(1));
@@ -165,5 +236,49 @@ mod tests {
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+
+        let mut attribute_map = read_attribute_map(slate.clone()).await;
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        if let Some(kv2) = iter.next().await? {
+            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv2.key).unwrap();
+            assert_eq!(entity_id, 1);
+            assert_eq!(attribute, name_id);
+            assert_eq!(value, DataType::String("alan".to_string()));
+            assert_eq!(suffix, codec::ADD);
+            assert_eq!(kv2.value, Bytes::from(""));
+        }
+        assert_eq!(None , iter.next().await?);
+
+
+        let ave_range = create_prefix_range(&[codec::AVE]);
+        let mut iter = slate.scan_with_options(ave_range, &ScanOptions::default()).await.unwrap();
+        if let Some(kv2) = iter.next().await? {
+            let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv2.key).unwrap();
+            assert_eq!(entity_id, 1);
+            assert_eq!(attribute, name_id);
+            assert_eq!(value, DataType::String("alan".to_string()));
+            assert_eq!(suffix, codec::ADD);
+            assert_eq!(kv2.value, Bytes::from(""));
+        }
+        assert_eq!(None , iter.next().await?);
+
+
+        let aev_range = create_prefix_range(&[codec::AEV]);
+        let mut iter = slate.scan_with_options(aev_range, &ScanOptions::default()).await.unwrap();
+        if let Some(kv2) = iter.next().await? {
+            let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv2.key).unwrap();
+            assert_eq!(entity_id, 1);
+            assert_eq!(attribute, name_id);
+            assert_eq!(value, DataType::String("alan".to_string()));
+            assert_eq!(suffix, codec::ADD);
+            assert_eq!(kv2.value, Bytes::from(""));
+        }
+        assert_eq!(None , iter.next().await?);
+
+
+        Ok(())
     }
 }
