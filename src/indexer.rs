@@ -49,7 +49,8 @@ impl Indexer {
     }
 
     async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
-        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
+        // TODO: this can likely be moved from the hotpath
+        let mut attribute_map = read_attribute_map(self.slatedb.clone()).await;
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -64,7 +65,7 @@ impl Indexer {
                 let attribute_and_values = attribute_and_values
                     .iter()
                     .map(|(k, v)| -> Result<(Vec<u8>, Vec<u8>)> {
-                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &attribute_map);
+                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &mut attribute_map);
                         Ok((bincode::serialize(&attribute_id)?, bincode::serialize(v)?))
                     }).collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()?;
 
@@ -89,7 +90,7 @@ impl Indexer {
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &attribute_map);
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map);
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -106,7 +107,7 @@ impl Indexer {
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &attribute_map);
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map);
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
