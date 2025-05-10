@@ -12,9 +12,12 @@ mod codec;
 mod slate;
 mod util;
 mod scratch;
-use ops::TxOp;
+mod index;
+mod algo;
+
 use std::sync::Arc;
 
+use crate::ops::TxOp;
 use crate::slate::in_memory_slate;
 use crate::log::TxLog;
 use crate::indexer::Indexer;

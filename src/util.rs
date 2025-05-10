@@ -14,7 +14,9 @@ pub fn random_string(length: usize) -> String {
         .collect()
 }
 
-pub fn create_prefix_range(prefix: &[u8]) -> (Bound<Bytes>, Bound<Bytes>) {
+pub type Range = (Bound<Bytes>, Bound<Bytes>);
+
+pub fn create_prefix_range(prefix: &[u8]) -> Range {
     let start = Bound::Included(Bytes::copy_from_slice(prefix));
     
     let mut end_bytes = prefix.to_vec();

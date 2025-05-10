@@ -20,7 +20,7 @@ pub struct Value(DataType);
 pub type Ref = i64;
 
 // TODO maybe use also clock::Instant here
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {
     Nil,
     //BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers

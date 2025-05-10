@@ -152,6 +152,9 @@ impl Indexer {
     }
 }
 
+
+// TODO: something to refactor
+
 fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
     let key = key.as_ref();
 
