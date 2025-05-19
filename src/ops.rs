@@ -26,6 +26,7 @@ pub enum DataType {
     //BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers
     BigInt(i128),                    // Arbitrary large integers
     Boolean(bool),                   // Booleans (true or false)
+    // TODO: use Bytes instead of Vec<u8> ?
     Bytes(Vec<u8>),                  // Binary data (as bytes)
     Double(f64),                     // Double precision floating point
     Float(f32),                      // Single precision floating point

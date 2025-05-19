@@ -3,7 +3,9 @@ use anyhow::Error;
 
 use crate::datalog::{DataPattern, PatternClause, Variable};
 
+#[derive(Debug, Clone, Copy)]
 pub enum IndexType { EAV, AVE, AEV, VAE }
+
 
 pub (crate) fn pattern_clause_to_index_type(clause: &PatternClause, join_order: Vec<Variable>) -> Result<IndexType, Error> {
     match clause {
@@ -14,6 +16,7 @@ pub (crate) fn pattern_clause_to_index_type(clause: &PatternClause, join_order: 
                 (DataPattern::Constant(_), DataPattern::Constant(_), _) => Ok(IndexType::EAV),
                 (DataPattern::Wildcard, DataPattern::Constant(_), _) => Ok(IndexType::AVE),
                 (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Constant(_)) => Ok(IndexType::AVE),
+                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Wildcard) => Ok(IndexType::AVE),
                 (DataPattern::Variable(v1), DataPattern::Constant(_), DataPattern::Variable(v2)) => {
                     let entity_pos = join_order.iter().position(|v| v == v1);
                     let value_pos = join_order.iter().position(|v| v == v2);
@@ -32,6 +35,7 @@ pub (crate) fn pattern_clause_to_index_type(clause: &PatternClause, join_order: 
             }
     }
 }
+
 
 pub (crate) trait Index {
     fn seek_values(&self, key: Bytes) -> Option<Bytes>;

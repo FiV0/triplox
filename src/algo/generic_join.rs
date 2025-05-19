@@ -19,14 +19,6 @@ pub trait PrefixExtender<Prefix, Extension> {
     fn intersect(&self, prefix:&Prefix, extensions:&mut Vec<Extension>);
 }
 
-fn align_pattern_clause(pattern: &PatternClause, index_type: IndexType) -> Result<Vec<DataPattern>, Error> {
-    match index_type {
-        IndexType::EAV => Ok(vec![pattern.entity, pattern.attribute, pattern.value]),
-        IndexType::AVE => Ok(vec![pattern.attribute, pattern.value, pattern.entity]),
-        IndexType::AEV => Ok(vec![pattern.attribute, pattern.entity, pattern.value]),
-        _ => Err(anyhow::anyhow!("VAE index not (yet) supported"))
-    }
-}
 
 pub struct PatternPrefixExtender {
     pub join_order: Vec<Variable>,
@@ -39,11 +31,17 @@ pub struct PatternPrefixExtender {
 
 impl PatternPrefixExtender {
 
-    pub fn new(join_order: Vec<Variable>, pattern: PatternClause, slate: Arc<slatedb::Db>) -> Self {
-        let vars = join_order.iter().map(|v| v.clone()).collect();
-        let index_type = index_type_to_prefix(self::index_type);
-        let var_to_index = vars.iter().enumerate().map(|(i, v)| (v.clone(), i)).collect();
-        Self { join_order, pattern, slate, vars, index_type, var_to_index }
+    pub fn new(join_order: Vec<Variable>, pattern: PatternClause, slate: Arc<slatedb::Db>) -> Result<Self, Error> {
+        let index_type = pattern.index_type(join_order.clone())?;
+        let mut var_to_index = HashMap::new();
+        let mut vars = pattern.variables();
+        for (i, var) in join_order.iter().enumerate() {
+            if vars.contains(var) {
+                var_to_index.insert(var.clone(), i);
+            }
+        }
+        vars.sort_by_key(|v : &Variable|  var_to_index.get(v).unwrap());
+        Ok(Self { join_order, pattern, slate, vars, index_type, var_to_index })
     }
 
     pub fn participates(&self, var: Variable) -> bool {
@@ -51,23 +49,28 @@ impl PatternPrefixExtender {
     }
 
 
-    fn create_range(&self, prefix: &Prefix) -> Range {
-        let index_prefix = index_type_to_prefix(self.index_type);
-        let patterns = align_pattern_clause(&self.pattern, self.index_type);
-        let mut prefix = vec![&[index_prefix]];
-        for pattern in patterns {
-            prefix.push(pattern);
-        }
+    fn create_range(&self, prefix: &Prefix) -> Result<Range, Error> {
+        panic!("Not implemented");
+
+        // let index_prefix = index_type_to_prefix(self.index_type)?;
+        // let patterns = self.pattern.align_pattern_clause(self.index_type)?;
+        // let mut prefix = vec![&[index_prefix]];
+
+        // for var in self.vars.iter() {
+        //     if self.var_to_index[var] < prefix.len() {
+        //         prefix.push(patterns[self.var_to_index[var]].pattern_prefix(self.index_type)?);
+        //     }
+        // }
 
 
 
 
 
-        let mut range = create_prefix_range(prefix);
+        // let mut range = create_prefix_range(prefix);
     }
 
     pub async fn count(&self, prefix: &Prefix) -> u64 {
-        0
+        panic!("Not implemented");
         // let mut count = 0;
         // let mut iter = self.slate.scan_with_options(prefix, &slatedb::config::ScanOptions::default()).await.unwrap();
         // while let Some(kv) = iter.next().await.unwrap() {
