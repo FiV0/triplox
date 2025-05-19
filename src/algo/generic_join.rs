@@ -1,38 +1,36 @@
+use anyhow::Error;
 use bytes::Bytes;
-use std::sync::Arc;
 use slatedb::Db;
 use std::collections::HashMap;
-use anyhow::Error;
+use std::sync::Arc;
 
-use crate::datalog::{Variable, PatternClause};
-use crate::util::{create_prefix_range, concat_bytes, Range};
 use crate::codec::index_type_to_prefix;
-use crate::index::IndexType;
 use crate::datalog::DataPattern;
+use crate::datalog::{PatternClause, Variable};
+use crate::index::{IndexIterator, IndexType, SlateIterator, VecIterator};
+use crate::util::{concat_bytes, create_prefix_range, Range};
 
 type Prefix = Vec<Bytes>;
 type Extension = Bytes;
-
-pub trait PrefixExtender<Prefix, Extension> {
-    fn count(&self, prefix:&Prefix) -> u64;
-    fn propose(&self, prefix:&Prefix) -> Vec<Extension>;
-    fn intersect(&self, prefix:&Prefix, extensions:&mut Vec<Extension>);
-}
-
 
 pub struct PatternPrefixExtender {
     pub join_order: Vec<Variable>,
     pub pattern: PatternClause,
     pub slate: Arc<slatedb::Db>,
     pub vars: Vec<Variable>,
-    pub index_type: IndexType,
-    pub var_to_index: HashMap<Variable, usize>
+    pub var_to_index: HashMap<Variable, usize>,
+}
+
+pub struct PatternPrefixExtenderIterator<'a> {
+    iterator: SlateIterator<'a>,
 }
 
 impl PatternPrefixExtender {
-
-    pub fn new(join_order: Vec<Variable>, pattern: PatternClause, slate: Arc<slatedb::Db>) -> Result<Self, Error> {
-        let index_type = pattern.index_type(join_order.clone())?;
+    pub fn new(
+        join_order: Vec<Variable>,
+        pattern: PatternClause,
+        slate: Arc<slatedb::Db>,
+    ) -> Result<Self, Error> {
         let mut var_to_index = HashMap::new();
         let mut vars = pattern.variables();
         for (i, var) in join_order.iter().enumerate() {
@@ -40,44 +38,60 @@ impl PatternPrefixExtender {
                 var_to_index.insert(var.clone(), i);
             }
         }
-        vars.sort_by_key(|v : &Variable|  var_to_index.get(v).unwrap());
-        Ok(Self { join_order, pattern, slate, vars, index_type, var_to_index })
+        vars.sort_by_key(|v: &Variable| var_to_index.get(v).unwrap());
+        Ok(Self {
+            join_order,
+            pattern,
+            slate,
+            vars,
+            var_to_index,
+        })
     }
 
     pub fn participates(&self, var: Variable) -> bool {
         self.vars.contains(&var)
     }
 
-
-    fn create_range(&self, prefix: &Prefix) -> Result<Range, Error> {
-        panic!("Not implemented");
-
-        // let index_prefix = index_type_to_prefix(self.index_type)?;
-        // let patterns = self.pattern.align_pattern_clause(self.index_type)?;
-        // let mut prefix = vec![&[index_prefix]];
-
-        // for var in self.vars.iter() {
-        //     if self.var_to_index[var] < prefix.len() {
-        //         prefix.push(patterns[self.var_to_index[var]].pattern_prefix(self.index_type)?);
-        //     }
-        // }
-
-
-
-
-
-        // let mut range = create_prefix_range(prefix);
-    }
-
-    pub async fn count(&self, prefix: &Prefix) -> u64 {
-        panic!("Not implemented");
-        // let mut count = 0;
-        // let mut iter = self.slate.scan_with_options(prefix, &slatedb::config::ScanOptions::default()).await.unwrap();
-        // while let Some(kv) = iter.next().await.unwrap() {
-        //     count += 1;
-        // }
-        // count
+    pub fn create_iterator(&self, prefix: &Prefix) -> Result<PatternPrefixExtenderIterator, Error> {
+        todo!()
     }
 }
 
+pub trait PrefixExtender<Prefix, Extension> {
+    fn count(&self, prefix: &Prefix) -> Result<u64, Error>;
+    fn propose(&mut self, prefix: &Prefix) -> Result<Vec<Extension>, Error>;
+    fn intersect(&mut self, prefix: &Prefix, extensions: &Vec<Extension>) -> Result<Vec<Extension>, Error>;
+}
 
+impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator<'_> {
+    //  all methods assume they participate in the join of the current variable
+    fn count(&self, prefix: &Prefix) -> Result<u64, Error> {
+        self.iterator.count()
+    }
+
+    fn propose(&mut self, prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        let mut extensions = Vec::new();
+        while let Some(extension) = self.iterator.next()? {
+            extensions.push(extension);
+        }
+        Ok(extensions)
+    }
+
+    fn intersect(&mut self, prefix: &Prefix, extensions: &Vec<Extension>) -> Result<Vec<Extension>, Error> {
+
+        let mut new_extensions = Vec::new();
+        let mut ext_iter = VecIterator::new(extensions.clone());
+        
+        while let (Some(key1), Some(key2)) = (self.iterator.next()?, ext_iter.next()?) {
+            if key1 == key2 {
+                new_extensions.push(key1);
+            } else if key1 < key2 {
+                self.iterator.seek(key2);
+            } else {
+                ext_iter.seek(key1);
+            }
+        }
+        
+        Ok(new_extensions)
+    }
+}

@@ -10,9 +10,12 @@ pub const CODEC_LENGTH: usize = 1;
 pub const EAV: u8 = 0;
 pub const AVE: u8 = 1;
 pub const AEV: u8 = 2;
+pub const AE: u8 = 3;
+pub const AV: u8 = 4;
+
 // TODO move this to normal entities
 // {:db/id ... :db/ident ...}
-pub const ATTRIBUTE_TO_ID: u8 = 3;
+pub const ATTRIBUTE_TO_ID: u8 = 5;
 
 pub const STATS_INDEX: u8 = 128;
 pub const META_INDEX: u8 = 129;
@@ -27,6 +30,8 @@ pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
         IndexType::EAV => Ok(EAV),
         IndexType::AVE => Ok(AVE),
         IndexType::AEV => Ok(AEV),
+        IndexType::AE => Ok(AE),
+        IndexType::AV => Ok(AV),
         _ => Err(anyhow::anyhow!("VAE index not (yet) supported"))
     }
 }

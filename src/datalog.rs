@@ -119,9 +119,9 @@ impl PatternClause {
                     "Variable not supported in attribute position!"
                 )),
                 (DataPattern::Constant(_), DataPattern::Constant(_), _) => Ok(IndexType::EAV),
-                (DataPattern::Wildcard, DataPattern::Constant(_), _) => Ok(IndexType::AVE),
+                (DataPattern::Wildcard, DataPattern::Constant(_), _) => Ok(IndexType::AV),
                 (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Constant(_)) => Ok(IndexType::AVE),
-                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Wildcard) => Ok(IndexType::AVE),
+                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Wildcard) => Ok(IndexType::AE),
                 (
                     DataPattern::Variable(v1),
                     DataPattern::Constant(_),
