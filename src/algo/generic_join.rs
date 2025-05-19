@@ -60,7 +60,11 @@ impl PatternPrefixExtender {
 pub trait PrefixExtender<Prefix, Extension> {
     fn count(&self, prefix: &Prefix) -> Result<u64, Error>;
     fn propose(&mut self, prefix: &Prefix) -> Result<Vec<Extension>, Error>;
-    fn intersect(&mut self, prefix: &Prefix, extensions: &Vec<Extension>) -> Result<Vec<Extension>, Error>;
+    fn intersect(
+        &mut self,
+        prefix: &Prefix,
+        extensions: &Vec<Extension>,
+    ) -> Result<Vec<Extension>, Error>;
 }
 
 impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator<'_> {
@@ -77,11 +81,14 @@ impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator<'_> {
         Ok(extensions)
     }
 
-    fn intersect(&mut self, prefix: &Prefix, extensions: &Vec<Extension>) -> Result<Vec<Extension>, Error> {
-
+    fn intersect(
+        &mut self,
+        prefix: &Prefix,
+        extensions: &Vec<Extension>,
+    ) -> Result<Vec<Extension>, Error> {
         let mut new_extensions = Vec::new();
         let mut ext_iter = VecIterator::new(extensions.clone());
-        
+
         while let (Some(key1), Some(key2)) = (self.iterator.next()?, ext_iter.next()?) {
             if key1 == key2 {
                 new_extensions.push(key1);
@@ -91,7 +98,63 @@ impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator<'_> {
                 ext_iter.seek(key1);
             }
         }
-        
+
         Ok(new_extensions)
+    }
+}
+
+pub struct GenericJoin {
+    pub join_order: Vec<Variable>,
+    pub pattern_extenders: Vec<PatternPrefixExtender>,
+    pub slate: Arc<slatedb::Db>,
+}
+
+type Tuple = Vec<Bytes>;
+
+impl GenericJoin {
+    pub fn new(
+        join_order: Vec<Variable>,
+        patterns: Vec<PatternClause>,
+        slate: Arc<slatedb::Db>,
+    ) -> Result<Self, Error> {
+        let pattern_extenders = patterns
+            .iter()
+            .map(|p| PatternPrefixExtender::new(join_order.clone(), p.clone(), slate.clone()))
+            .collect();
+        Ok(Self {
+            join_order,
+            pattern_extenders,
+            slate,
+        })
+    }
+
+    pub fn join(&self) -> Result<Vec<Tuple>, Error> {
+        let mut tuples = Vec::new(!vec[]);
+        let mut extensions = Vec::new();
+
+
+        for var in self.join_order.iter() {
+            let new_tuples = Vec::new();
+            for prefix in tuples.iter() {
+                let mut pattern_extenders = self
+                .pattern_extenders
+                .iter_mut()
+                .filter(|pe| pe.participates(var))
+                .map(|pe| pe.create_iterator(prefix)?)
+                .collect()?;
+
+                pattern_extenders.sort_by_key(|pe| pe.count());
+
+                let extensions = pattern_extenders.first().unwrap().propose(prefix)?;
+
+
+
+            }
+
+
+            tuples = new_tuples;
+        }
+
+        Ok(tuples)
     }
 }
