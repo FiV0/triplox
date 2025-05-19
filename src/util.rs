@@ -16,13 +16,15 @@ pub fn random_string(length: usize) -> String {
 
 pub type Range = (Bound<Bytes>, Bound<Bytes>);
 
+pub fn prefix_successor(prefix: &[u8]) -> Vec<u8> {
+    let mut successor = prefix.to_vec();
+    successor.push(0xFF);
+    successor
+}
+
 pub fn create_prefix_range(prefix: &[u8]) -> Range {
     let start = Bound::Included(Bytes::copy_from_slice(prefix));
-    
-    let mut end_bytes = prefix.to_vec();
-    end_bytes.push(0xFF);
-    let end = Bound::Included(Bytes::copy_from_slice(&end_bytes));
-    
+    let end = Bound::Included(Bytes::copy_from_slice(&prefix_successor(prefix)));
     (start, end)
 }
 
