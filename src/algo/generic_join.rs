@@ -117,44 +117,46 @@ impl GenericJoin {
         patterns: Vec<PatternClause>,
         slate: Arc<slatedb::Db>,
     ) -> Result<Self, Error> {
-        let pattern_extenders = patterns
-            .iter()
-            .map(|p| PatternPrefixExtender::new(join_order.clone(), p.clone(), slate.clone()))
-            .collect();
-        Ok(Self {
-            join_order,
-            pattern_extenders,
-            slate,
-        })
+        // let pattern_extenders = patterns
+        //     .iter()
+        //     .map(|p| PatternPrefixExtender::new(join_order.clone(), p.clone(), slate.clone()))
+        //     .collect();
+        // Ok(Self {
+        //     join_order,
+        //     pattern_extenders,
+        //     slate,
+        // })
+        todo!()
     }
 
     pub fn join(&self) -> Result<Vec<Tuple>, Error> {
-        let mut tuples = Vec::new(!vec[]);
-        let mut extensions = Vec::new();
+        // let mut tuples = Vec::new(!vec[]);
+        // let mut extensions = Vec::new();
 
 
-        for var in self.join_order.iter() {
-            let new_tuples = Vec::new();
-            for prefix in tuples.iter() {
-                let mut pattern_extenders = self
-                .pattern_extenders
-                .iter_mut()
-                .filter(|pe| pe.participates(var))
-                .map(|pe| pe.create_iterator(prefix)?)
-                .collect()?;
+        // for var in self.join_order.iter() {
+        //     let new_tuples = Vec::new();
+        //     for prefix in tuples.iter() {
+        //         let mut pattern_extenders = self
+        //         .pattern_extenders
+        //         .iter_mut()
+        //         .filter(|pe| pe.participates(var))
+        //         .map(|pe| pe.create_iterator(prefix)?)
+        //         .collect()?;
 
-                pattern_extenders.sort_by_key(|pe| pe.count());
+        //         pattern_extenders.sort_by_key(|pe| pe.count());
 
-                let extensions = pattern_extenders.first().unwrap().propose(prefix)?;
-
-
-
-            }
+        //         let extensions = pattern_extenders.first().unwrap().propose(prefix)?;
 
 
-            tuples = new_tuples;
-        }
 
-        Ok(tuples)
+        //     }
+
+
+        //     tuples = new_tuples;
+        // }
+
+        // Ok(tuples)
+        todo!()
     }
 }
