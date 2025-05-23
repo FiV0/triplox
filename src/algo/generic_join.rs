@@ -13,6 +13,10 @@ use crate::util::{concat_bytes, create_prefix_range, Range};
 type Prefix = Vec<Bytes>;
 type Extension = Bytes;
 
+// generic-join based on
+// http://www.frankmcsherry.org/dataflow/relational/join/2015/04/11/genericjoin.html
+// https://arxiv.org/abs/1310.3314
+
 pub struct PatternPrefixExtender {
     pub join_order: Vec<Variable>,
     pub pattern: PatternClause,

@@ -3,10 +3,22 @@ use std::sync::Arc;
 use bytes::Bytes;
 use anyhow::Error;
 
-use crate::{datalog::{DataPattern, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range, prefix_end}};
+use crate::{datalog::{DataPattern, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range}};
 
 #[derive(Debug, Clone, Copy)]
 pub enum IndexType { EAV, AVE, AEV, VAE , AE, AV}
+
+pub (crate) fn remove_index_type(bytes: Bytes) -> Bytes {
+    let mut bytes = bytes.to_vec();
+    let _ = bytes.split_off(1);      
+    Bytes::from(bytes)
+}
+
+pub (crate) fn add_index_type(bytes: Bytes, index_type: IndexType) -> Bytes {
+    let mut bytes = bytes.to_vec();
+    bytes.insert(0, index_type as u8);
+    Bytes::from(bytes)
+}
 
 pub (crate) fn pattern_clause_to_index_type(clause: &PatternClause, join_order: Vec<Variable>) -> Result<IndexType, Error> {
     match clause {
@@ -62,7 +74,6 @@ impl<'a> SlateIterator<'a> {
     }
 
     pub async fn new(prefix: &[u8], slate: &'a slatedb::Db) -> Result<Self, Error> {
-        let prefix_successor = prefix_end(prefix);
         let count = Self::calculate_count(slate, prefix).await?;
         let range = create_prefix_range(prefix);
         let mut iterator = slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await?;
