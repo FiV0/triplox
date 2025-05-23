@@ -1,4 +1,4 @@
 use bytes::Bytes;
 use anyhow::Error;
 
-type Tuple = Vec<Bytes>;
+pub type Tuple = Vec<Bytes>;
