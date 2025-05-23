@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use anyhow::Error;
 
-use crate::{datalog::{DataPattern, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range, prefix_successor}};
+use crate::{datalog::{DataPattern, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range, prefix_end}};
 
 #[derive(Debug, Clone, Copy)]
 pub enum IndexType { EAV, AVE, AEV, VAE , AE, AV}
@@ -62,7 +62,7 @@ impl<'a> SlateIterator<'a> {
     }
 
     pub async fn new(prefix: &[u8], slate: &'a slatedb::Db) -> Result<Self, Error> {
-        let prefix_successor = prefix_successor(prefix);
+        let prefix_successor = prefix_end(prefix);
         let count = Self::calculate_count(slate, prefix).await?;
         let range = create_prefix_range(prefix);
         let mut iterator = slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await?;
