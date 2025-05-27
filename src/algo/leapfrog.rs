@@ -111,7 +111,7 @@ impl<'a> LayeredIndex for JoinIterator<'a> {
             return Err(anyhow::anyhow!("Min level reached"));
         }
         self.slate_iterators.pop();
-        self.current_level -= 1;
+        self.current_level = self.current_level.checked_sub(1).expect("Current level must be at least 1");
         self.current_prefix = self.slate_iterators[self.current_level].get_value()?.expect("One level above must have a value when closing current level");
         Ok(())
     }
@@ -212,15 +212,16 @@ impl<'a> LeapfrogJoin<'a> {
                     }
                 }
                 None => {
-                    for &i in &participants[variable_level] {
-                        self.iterators[i].close_level()?;
-                    }
-                    if candidate.len() == variable_level {
-                        candidate.pop();
-                    }
                     match variable_level.checked_sub(1) {
                         Some(new_level) => variable_level = new_level,
                         None => break,
+                    }
+                    let old_level = variable_level + 1;
+                    for &i in &participants[old_level] {
+                        self.iterators[i].close_level()?;
+                    }
+                    if candidate.len() == old_level {
+                        candidate.pop();
                     }
                 }
             }
