@@ -28,6 +28,8 @@ struct TxIndexKeys {
     eav: Vec<Vec<u8>>,
     ave: Vec<Vec<u8>>,
     aev: Vec<Vec<u8>>,
+    ae: Vec<Vec<u8>>,
+    av: Vec<Vec<u8>>,
 }
 
 fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
@@ -76,6 +78,8 @@ impl Indexer {
                 let mut eav : Vec<Vec<u8>> = Vec::new();
                 let mut ave : Vec<Vec<u8>> = Vec::new();
                 let mut aev : Vec<Vec<u8>> = Vec::new();
+                let mut ae : Vec<Vec<u8>> = Vec::new();
+                let mut av : Vec<Vec<u8>> = Vec::new();
 
                 // TODO: would it be good to have length prefixed encoding here? 
                 for (attribute, value) in attribute_and_values {
@@ -83,12 +87,16 @@ impl Indexer {
                     eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
                     ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
                     aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
+                    ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]));
+                    av.push(concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]));
                 }
 
                 Ok(TxIndexKeys { 
                     eav: eav, 
                     ave: ave, 
-                    aev: aev 
+                    aev: aev,
+                    ae: ae,
+                    av: av
                 })
 
             },
@@ -102,11 +110,15 @@ impl Indexer {
                 let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
                 let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
                 let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
+                let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]);
+                let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]);
 
                 Ok(TxIndexKeys { 
                     eav: vec![eav], 
                     ave: vec![ave], 
-                    aev: vec![aev] 
+                    aev: vec![aev],
+                    ae: vec![ae],
+                    av: vec![av]
                 })
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
@@ -119,11 +131,15 @@ impl Indexer {
                 let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
                 let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
                 let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
+                let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::RETRACT]]);
+                let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::RETRACT]]);
 
                 Ok(TxIndexKeys { 
                     eav: vec![eav], 
                     ave: vec![ave], 
-                    aev: vec![aev] 
+                    aev: vec![aev],
+                    ae: vec![ae],
+                    av: vec![av]
                 })  
             },
             TxOp::Delete(_entity) => todo!(),
@@ -144,6 +160,8 @@ impl Indexer {
             write_batch.put(index_keys.eav[i].as_slice(), &[]);
             write_batch.put(index_keys.ave[i].as_slice(), &[]);
             write_batch.put(index_keys.aev[i].as_slice(), &[]);
+            write_batch.put(index_keys.ae[i].as_slice(), &[]);
+            write_batch.put(index_keys.av[i].as_slice(), &[]);
         }
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS);
@@ -218,6 +236,46 @@ fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
     Ok((attribute, entity_id, value, suffix))
 }
 
+fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
+    let key = key.as_ref();
+
+    if key.is_empty() || key[0] != codec::AE {
+        return Err(anyhow::anyhow!("Not an AE key"));
+    }
+
+    if key.len() < 2 {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let without_prefix = &key[1..key.len()-1];
+    let suffix = key[key.len()-1];
+
+    let mut cursor = std::io::Cursor::new(without_prefix);
+    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+
+    Ok((attribute, entity_id, suffix))
+}
+
+fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
+    let key = key.as_ref();
+
+    if key.is_empty() || key[0] != codec::AV {
+        return Err(anyhow::anyhow!("Not an AV key"));
+    }
+
+    if key.len() < 2 {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let without_prefix = &key[1..key.len()-1];
+    let suffix = key[key.len()-1];
+
+    let mut cursor = std::io::Cursor::new(without_prefix); 
+    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+
+    Ok((attribute, value, suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -281,7 +339,28 @@ mod tests {
         }
         assert_eq!(None , iter.next().await?);
 
+        let ae_range = create_prefix_range(&[codec::AE]);
+        let mut iter = slate.scan_with_options(ae_range, &ScanOptions::default()).await.unwrap();
+        if let Some(kv2) = iter.next().await? {
+            let (attribute, entity_id, suffix) = ae_key_to_parts(kv2.key).unwrap();
+            assert_eq!(entity_id, 1);
+            assert_eq!(attribute, name_id);
+            assert_eq!(suffix, codec::ADD);
+            assert_eq!(kv2.value, Bytes::from(""));
+        }
+        assert_eq!(None , iter.next().await?);
 
+        let av_range = create_prefix_range(&[codec::AV]);
+        let mut iter = slate.scan_with_options(av_range, &ScanOptions::default()).await.unwrap();
+        if let Some(kv2) = iter.next().await? {
+            let (attribute, value, suffix) = av_key_to_parts(kv2.key).unwrap();
+            assert_eq!(attribute, name_id);
+            assert_eq!(value, DataType::String("alan".to_string()));
+            assert_eq!(suffix, codec::ADD);
+            assert_eq!(kv2.value, Bytes::from(""));
+        }
+        assert_eq!(None , iter.next().await?);
         Ok(())
+
     }
 }
