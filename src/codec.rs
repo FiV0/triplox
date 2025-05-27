@@ -5,7 +5,13 @@ use crate::index::IndexType;
 
 // TODO should this become 2 bytes?
 pub const INDEX_VERSION: u8 = 1;
+
+// TODO use these throughout the codebase
 pub const CODEC_LENGTH: usize = 1;
+pub const ENTITY_LENGTH: usize = 8;
+pub const ATTRIBUTE_LENGTH: usize = 8;
+pub const OP_LENGTH: usize = 1;
+pub const TIMESTAMP_LENGTH: usize = 8;
 
 pub const EAV: u8 = 0;
 pub const AVE: u8 = 1;
@@ -23,6 +29,7 @@ pub const META_INDEX: u8 = 129;
 pub const ADD: u8 = 0;
 pub const DELETE: u8 = 1;
 pub const RETRACT: u8 = 2;
+
 
 // TODO move this to lazy_static
 pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {

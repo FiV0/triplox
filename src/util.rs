@@ -1,11 +1,13 @@
+use bytes::Bytes;
 use rand::Rng;
 use std::ops::Bound;
-use bytes::Bytes;
+
+use crate::{codec, index::IndexType};
 
 pub fn random_string(length: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
-    
+
     (0..length)
         .map(|_| {
             let idx = rng.gen_range(0..CHARSET.len());
@@ -36,28 +38,142 @@ pub fn concat_bytes(parts: &[&[u8]]) -> Vec<u8> {
     result
 }
 
+pub trait GetSlice {
+    fn get_slice(&self, start: usize, end: usize) -> Self;
+}
+
+impl GetSlice for &[u8] {
+    fn get_slice(&self, start: usize, end: usize) -> Self {
+        &self[start..end]
+    }
+}
+
+impl GetSlice for Vec<u8> {
+    fn get_slice(&self, start: usize, end: usize) -> Self {
+        self[start..end].to_vec()
+    }
+}
+
+impl GetSlice for Bytes {
+    fn get_slice(&self, start: usize, end: usize) -> Self {
+        Bytes::copy_from_slice(&self[start..end])
+    }
+}
+
+pub fn get_slice<T: GetSlice>(bytes: T, start: usize, end: usize) -> T {
+    bytes.get_slice(start, end)
+}
+
 pub trait StripPrefix {
     fn strip_prefix(&self, prefix_len: usize) -> Self;
 }
 
-impl StripPrefix for &[u8] {
+impl<T: GetSlice + AsRef<[u8]>> StripPrefix for T {
     fn strip_prefix(&self, prefix_len: usize) -> Self {
-        &self[prefix_len..]
-    }
-}
-
-impl StripPrefix for Vec<u8> {
-    fn strip_prefix(&self, prefix_len: usize) -> Self {
-        self[prefix_len..].to_vec()
-    }
-}
-
-impl StripPrefix for Bytes {
-    fn strip_prefix(&self, prefix_len: usize) -> Self {
-        Bytes::copy_from_slice(&self[prefix_len..])
+        self.get_slice(prefix_len, self.as_ref().len())
     }
 }
 
 pub fn strip_prefix<T: StripPrefix>(bytes: T, prefix_len: usize) -> T {
     bytes.strip_prefix(prefix_len)
+}
+
+pub trait StripSuffix {
+    fn strip_suffix(&self, suffix_len: usize) -> Self;
+}
+
+impl<T: GetSlice + AsRef<[u8]>> StripSuffix for T {
+    fn strip_suffix(&self, suffix_len: usize) -> Self {
+        self.get_slice(0, self.as_ref().len() - suffix_len)
+    }
+}
+
+pub fn strip_suffix<T: StripSuffix>(bytes: T, suffix_len: usize) -> T {
+    bytes.strip_suffix(suffix_len)
+}
+
+pub fn extract_value<T: GetSlice + AsRef<[u8]>>(
+    bytes: T,
+    position: usize,
+    index: IndexType,
+) -> T {
+    match index {
+        IndexType::EAV | IndexType::AVE | IndexType::AEV => {
+            assert!(position < 3, "Position must be less than 3");
+        }
+        IndexType::AE | IndexType::AV => {
+            assert!(position < 2, "Position must be less than 2");
+        }
+        IndexType::VAE => {
+            todo!("VAE index not (yet) supported")
+        }
+    }
+
+    let total_length = bytes.as_ref().len();
+
+    let (start, end) = match index {
+        IndexType::EAV => {
+            match position {
+                0 => {
+                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ENTITY_LENGTH)
+                }
+                1 => {
+                    (codec::CODEC_LENGTH + codec::ENTITY_LENGTH, codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH)
+                }
+                2.. => {
+                    (codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
+                }
+            }
+        }
+        IndexType::AVE => {
+            match position {
+                0 => {
+                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
+                }
+                1 => {
+                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH)
+                }
+                2.. => {
+                    (total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH, total_length - codec::OP_LENGTH)
+                }
+            }
+        }
+        IndexType::AEV => {
+            match position {
+                0 => {
+                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
+                }
+                1 => {
+                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH)
+                }
+                2.. => {
+                   (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH, total_length - codec::OP_LENGTH)
+                }
+            }
+        }
+        IndexType::AE => {
+            match position {
+                0 => {
+                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
+                }
+                1.. => {
+                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
+                } 
+            } 
+        }
+        IndexType::AV => {
+            match position {
+                0 => {
+                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
+                }
+                1.. => {
+                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
+                }
+            }
+        }
+        IndexType::VAE => {
+            todo!("VAE index not (yet) supported")
+        }
+    };
+    bytes.get_slice(start, end)
 }
