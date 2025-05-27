@@ -35,3 +35,29 @@ pub fn concat_bytes(parts: &[&[u8]]) -> Vec<u8> {
     }
     result
 }
+
+pub trait StripPrefix {
+    fn strip_prefix(&self, prefix_len: usize) -> Self;
+}
+
+impl StripPrefix for &[u8] {
+    fn strip_prefix(&self, prefix_len: usize) -> Self {
+        &self[prefix_len..]
+    }
+}
+
+impl StripPrefix for Vec<u8> {
+    fn strip_prefix(&self, prefix_len: usize) -> Self {
+        self[prefix_len..].to_vec()
+    }
+}
+
+impl StripPrefix for Bytes {
+    fn strip_prefix(&self, prefix_len: usize) -> Self {
+        Bytes::copy_from_slice(&self[prefix_len..])
+    }
+}
+
+pub fn strip_prefix<T: StripPrefix>(bytes: T, prefix_len: usize) -> T {
+    bytes.strip_prefix(prefix_len)
+}

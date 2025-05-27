@@ -31,6 +31,7 @@ impl<'a> SlateIterator<'a> {
     }
 }
 
+// TODO: move to &[u8]
 impl<'a> Index for SlateIterator<'a> {
     async fn seek(&mut self, key: Bytes) -> Result<(), Error> {
         self.inner.seek(key).await?;
