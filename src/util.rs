@@ -92,11 +92,7 @@ pub fn strip_suffix<T: StripSuffix>(bytes: T, suffix_len: usize) -> T {
     bytes.strip_suffix(suffix_len)
 }
 
-pub fn extract_value<T: GetSlice + AsRef<[u8]>>(
-    bytes: T,
-    position: usize,
-    index: IndexType,
-) -> T {
+fn check_position(position: usize, index: IndexType) {
     match index {
         IndexType::EAV | IndexType::AVE | IndexType::AEV => {
             assert!(position < 3, "Position must be less than 3");
@@ -108,72 +104,133 @@ pub fn extract_value<T: GetSlice + AsRef<[u8]>>(
             todo!("VAE index not (yet) supported")
         }
     }
+}
 
-    let total_length = bytes.as_ref().len();
+// TODO  refactor this and prefix_len
+pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
+    position: usize,
+    index: IndexType,
+) -> impl Fn(T) -> T {
+    move |bytes: T| {
+        check_position(position, index);
+        let total_length = bytes.as_ref().len();
 
-    let (start, end) = match index {
-        IndexType::EAV => {
-            match position {
-                0 => {
-                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ENTITY_LENGTH)
-                }
-                1 => {
-                    (codec::CODEC_LENGTH + codec::ENTITY_LENGTH, codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH)
-                }
-                2.. => {
-                    (codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
-                }
+        let (start, end) = match index {
+            IndexType::EAV => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    codec::CODEC_LENGTH + codec::ENTITY_LENGTH,
+                ),
+                1 => (
+                    codec::CODEC_LENGTH + codec::ENTITY_LENGTH,
+                    codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
+                ),
+                2.. => (
+                    codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
+                    total_length - codec::OP_LENGTH,
+                ),
+            },
+            IndexType::AVE => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                ),
+                1 => (
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                ),
+                2.. => (
+                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                    total_length - codec::OP_LENGTH,
+                ),
+            },
+            IndexType::AEV => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                ),
+                1 => (
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
+                ),
+                2.. => (
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
+                    total_length - codec::OP_LENGTH,
+                ),
+            },
+            IndexType::AE => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                ),
+                1.. => (
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                    total_length - codec::OP_LENGTH,
+                ),
+            },
+            IndexType::AV => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                ),
+                1.. => (
+                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                    total_length - codec::OP_LENGTH,
+                ),
+            },
+            IndexType::VAE => {
+                todo!("VAE index not (yet) supported")
             }
-        }
-        IndexType::AVE => {
-            match position {
-                0 => {
-                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
-                }
-                1 => {
-                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH)
-                }
-                2.. => {
-                    (total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH, total_length - codec::OP_LENGTH)
-                }
+        };
+        bytes.get_slice(start, end)
+    }
+}
+
+pub fn extract_value<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
+    make_extractor(position, index)(bytes)
+}
+
+
+pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
+    position: usize,
+    index: IndexType,
+) -> impl Fn(T) -> T {
+    move |bytes: T| {
+        check_position(position, index);
+        let total_length = bytes.as_ref().len();
+
+        let end= match index {
+            IndexType::EAV => match position {
+                0 => codec::CODEC_LENGTH,
+                1 => codec::CODEC_LENGTH + codec::ENTITY_LENGTH,
+                2.. => codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
+            },
+            IndexType::AVE => match position {
+                0 => codec::CODEC_LENGTH,
+                1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                2.. => total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+            },
+            IndexType::AEV => match position {
+                0 => codec::CODEC_LENGTH,
+                1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+                2.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
+            },
+            IndexType::AE => match position {
+                0 => codec::CODEC_LENGTH,
+                1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+            },
+            IndexType::AV => match position {
+                0 => codec::CODEC_LENGTH,
+                1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
+            },
+            IndexType::VAE => {
+                todo!("VAE index not (yet) supported")
             }
-        }
-        IndexType::AEV => {
-            match position {
-                0 => {
-                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
-                }
-                1 => {
-                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH)
-                }
-                2.. => {
-                   (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH, total_length - codec::OP_LENGTH)
-                }
-            }
-        }
-        IndexType::AE => {
-            match position {
-                0 => {
-                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
-                }
-                1.. => {
-                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
-                } 
-            } 
-        }
-        IndexType::AV => {
-            match position {
-                0 => {
-                    (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH)
-                }
-                1.. => {
-                    (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length - codec::OP_LENGTH)
-                }
-            }
-        }
-        IndexType::VAE => {
-            todo!("VAE index not (yet) supported")
-        }
-    };
-    bytes.get_slice(start, end)
+        };
+        bytes.get_slice(0, end)
+    }
+}
+
+pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
+    prefix_extractor(position, index)(bytes)
 }
