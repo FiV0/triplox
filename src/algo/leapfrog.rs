@@ -9,7 +9,7 @@ use crate::algo::join::Tuple;
 use crate::algo::slate_iterator::{Index, SlateIterator};
 use crate::datalog::{PatternClause, Variable};
 use crate::index::{add_index_type, remove_index_type, IndexType};
-use crate::util::strip_prefix;
+use crate::util::{extract_prefix, strip_prefix};
 
 // Leapfrog Triejoin
 // https://arxiv.org/pdf/1210.0481.pdf
@@ -25,11 +25,10 @@ pub(crate) trait LayeredIndex {
 struct JoinIterator<'a> {
     vars: Vec<Variable>,
     pattern: PatternClause,
-    fixed_prefix: Bytes,
-    current_prefix: Bytes,
     current_level: usize,
     max_level: usize,
     index_types: Vec<IndexType>,
+    value_extractors: Vec<fn(Bytes) -> Bytes>,
     slate_iterators: Vec<SlateIterator<'a>>,
     slate: &'a slatedb::Db,
 }
@@ -37,6 +36,7 @@ struct JoinIterator<'a> {
 impl<'a> JoinIterator<'a> {
     pub fn new(join_order: Vec<Variable>, pattern: PatternClause, slate: Arc<slatedb::Db>) -> Self {
         todo!()
+
     }
 
     pub fn participates(&self, variable: &Variable) -> bool {
@@ -44,8 +44,7 @@ impl<'a> JoinIterator<'a> {
     }
 }
 
-// seek and next errors returned from slatedb should only happen if
-// we have setup something incorrectly, if the iterator goes out of bounds
+// seek and next errors returned from slatedb should not happen 
 // we should just get None
 impl<'a> Index for JoinIterator<'a> {
     async fn seek(&mut self, key: Bytes) -> Result<(), Error> {
@@ -56,7 +55,7 @@ impl<'a> Index for JoinIterator<'a> {
     async fn next(&mut self) -> Result<Option<Bytes>, Error> {
         match self.slate_iterators[self.current_level].next().await? {
             Some(value) => {
-                Ok(Some(strip_prefix(value, self.current_prefix.len())))
+                Ok(Some(self.value_extractors[self.current_level](value)))
             }
             None => Ok(None),
         }
@@ -65,7 +64,7 @@ impl<'a> Index for JoinIterator<'a> {
     fn get_value(&self) -> Result<Option<Bytes>, Error> {
         match self.slate_iterators[self.current_level].get_value()? {
             Some(value) => {
-                Ok(Some(strip_prefix(value, self.current_prefix.len())))
+                Ok(Some(self.value_extractors[self.current_level](value)))
             }
             None => Ok(None),
         }
@@ -87,8 +86,8 @@ impl<'a> LayeredIndex for JoinIterator<'a> {
 
         match self.slate_iterators[self.current_level].get_value()? {
             Some(value) => {
-                self.current_prefix = value.clone();
-                current_value = remove_index_type(value);
+                // this is the index value without index type prefix
+                current_value = remove_index_type(extract_prefix(value, self.current_level+1, index_type));
             }
             None => {
                 return Err(anyhow::anyhow!(
@@ -112,7 +111,6 @@ impl<'a> LayeredIndex for JoinIterator<'a> {
         }
         self.slate_iterators.pop();
         self.current_level = self.current_level.checked_sub(1).expect("Current level must be at least 1");
-        self.current_prefix = self.slate_iterators[self.current_level].get_value()?.expect("One level above must have a value when closing current level");
         Ok(())
     }
 
@@ -230,3 +228,22 @@ impl<'a> LeapfrogJoin<'a> {
         Ok(result)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use slatedb::{Db, config::ScanOptions, config::ReadLevel, SlateDBError};
+
+
+    use crate::clock::st_from_unix_epoch;
+    use crate::util::create_prefix_range;
+    use super::*;
+
+    #[tokio::test]
+    async fn test_indexer() -> Result<(), Error> {
+        todo!()
+    }
+}
+
+
