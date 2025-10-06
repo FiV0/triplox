@@ -11,6 +11,7 @@ use std::ops::Bound;
 mod tests {
     use slatedb::KeyValue;
     use crate::util::create_prefix_range;
+    use anyhow::Error;
 
     use super::*;
 
@@ -38,6 +39,16 @@ mod tests {
             assert_eq!(kv2.value, Bytes::from("ac_value"));
         }
         assert_eq!(None , iter.next().await?);
+        Ok(())
+    }
+    
+    use bincode;
+
+    #[tokio::test]
+    async fn test_anything() -> Result<(), Error> {
+        let value = 1 as u64;
+        let attribute_length = bincode::serialize(&value)?;
+        println!("{:?}", attribute_length.len());
         Ok(())
     }
 }
