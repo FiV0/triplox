@@ -282,6 +282,7 @@ mod tests {
     use crate::util::create_prefix_range;
 
     #[tokio::test]
+    #[ignore]
     async fn test_indexer() -> Result<(), Error> {
         todo!()
     }

@@ -45,9 +45,9 @@ impl Value {
     where A: pretty::DocAllocator<'a>, T: Into<Cow<'a, str>>, I: IntoIterator<Item=&'a Value> {
         let open = open.into();
         let n = open.len();
-        let i = vs.into_iter().map(|v| v.as_doc(allocator)).intersperse(allocator.space());
+        let i = vs.into_iter().map(|v| v.as_doc(allocator)).intersperse_with(|| allocator.space());
         allocator.text(open)
-            .append(allocator.concat(i).nest(n))
+            .append(allocator.concat(i).nest(n as isize))
             .append(allocator.text(close))
             .group()
     }
@@ -62,7 +62,7 @@ impl Value {
             Value::List(ref vs) => self.bracket(pp, "(", vs, ")"),
             Value::Set(ref vs) => self.bracket(pp, "#{", vs, "}"),
             Value::Map(ref vs) => {
-                let xs = vs.iter().rev().map(|(k, v)| k.as_doc(pp).append(pp.space()).append(v.as_doc(pp)).group()).intersperse(pp.space());
+                let xs = vs.iter().rev().map(|(k, v)| k.as_doc(pp).append(pp.space()).append(v.as_doc(pp)).group()).intersperse_with(|| pp.space());
                 pp.text("{")
                     .append(pp.concat(xs).nest(1))
                     .append(pp.text("}"))
