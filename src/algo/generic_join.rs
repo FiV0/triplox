@@ -56,7 +56,10 @@ impl PatternPrefixExtender {
         self.vars.contains(&var)
     }
 
-    pub fn create_iterator(&self, prefix: &Prefix) -> Result<PatternPrefixExtenderIterator, Error> {
+    pub fn create_iterator(
+        &self,
+        prefix: &Prefix,
+    ) -> Result<PatternPrefixExtenderIterator<'_>, Error> {
         todo!()
     }
 }
@@ -137,7 +140,6 @@ impl GenericJoin {
         // let mut tuples = Vec::new(!vec[]);
         // let mut extensions = Vec::new();
 
-
         // for var in self.join_order.iter() {
         //     let new_tuples = Vec::new();
         //     for prefix in tuples.iter() {
@@ -152,10 +154,7 @@ impl GenericJoin {
 
         //         let extensions = pattern_extenders.first().unwrap().propose(prefix)?;
 
-
-
         //     }
-
 
         //     tuples = new_tuples;
         // }
