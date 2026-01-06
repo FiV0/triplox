@@ -56,14 +56,14 @@ pub trait IndexIterator<T: Ord> {
     fn next(&mut self) -> Result<Option<T>, Error>;
 }
 
-pub (crate) struct SlateIterator<'a> {
+pub (crate) struct SlateIterator {
     count: u64,
-    slate_iterator: slatedb::DbIterator<'a>,
+    slate_iterator: slatedb::DbIterator,
 }
 
-impl<'a> SlateIterator<'a> {
+impl SlateIterator {
 
-    async fn calculate_count(slate: &'a slatedb::Db, prefix: &[u8]) -> Result<u64, Error> {
+    async fn calculate_count(slate: &slatedb::Db, prefix: &[u8]) -> Result<u64, Error> {
         let range = create_prefix_range(prefix);
         let mut iterator = slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await?;
         let mut count = 0 as u64;
@@ -73,7 +73,7 @@ impl<'a> SlateIterator<'a> {
         Ok(count)
     }
 
-    pub async fn new(prefix: &[u8], slate: &'a slatedb::Db) -> Result<Self, Error> {
+    pub async fn new(prefix: &[u8], slate: &slatedb::Db) -> Result<Self, Error> {
         let count = Self::calculate_count(slate, prefix).await?;
         let range = create_prefix_range(prefix);
         let mut iterator = slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await?;
@@ -82,7 +82,7 @@ impl<'a> SlateIterator<'a> {
 
 }
 
-impl<'a> IndexIterator<Bytes> for SlateIterator<'a> {
+impl IndexIterator<Bytes> for SlateIterator {
     fn count(&self) -> Result<u64, Error> {
         Ok(self.count)
     }

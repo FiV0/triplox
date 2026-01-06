@@ -25,8 +25,8 @@ pub struct PatternPrefixExtender {
     pub var_to_index: HashMap<Variable, usize>,
 }
 
-pub struct PatternPrefixExtenderIterator<'a> {
-    iterator: SlateIterator<'a>,
+pub struct PatternPrefixExtenderIterator {
+    iterator: SlateIterator,
 }
 
 impl PatternPrefixExtender {
@@ -59,7 +59,7 @@ impl PatternPrefixExtender {
     pub fn create_iterator(
         &self,
         prefix: &Prefix,
-    ) -> Result<PatternPrefixExtenderIterator<'_>, Error> {
+    ) -> Result<PatternPrefixExtenderIterator, Error> {
         todo!()
     }
 }
@@ -74,7 +74,7 @@ pub trait PrefixExtender<Prefix, Extension> {
     ) -> Result<Vec<Extension>, Error>;
 }
 
-impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator<'_> {
+impl PrefixExtender<Prefix, Extension> for PatternPrefixExtenderIterator {
     //  all methods assume they participate in the join of the current variable
     fn count(&self, prefix: &Prefix) -> Result<u64, Error> {
         self.iterator.count()

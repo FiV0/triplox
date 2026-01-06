@@ -21,20 +21,18 @@ pub(crate) trait LayeredIndex {
     fn max_level(&self) -> usize;
 }
 
-// TODO: fully undestand lifetime passing for structs and traits
-// especially why slate need the lifetime 'a here
-struct JoinIterator<'a> {
+struct JoinIterator {
     vars: Vec<Variable>,
     pattern: PatternClause,
     current_level: usize,
     max_level: usize,
     index_types: Vec<IndexType>,
     value_extractors: Vec<fn(Bytes) -> Bytes>,
-    slate_iterators: Vec<SlateIterator<'a>>,
-    slate: &'a slatedb::Db,
+    slate_iterators: Vec<SlateIterator>,
+    slate: Arc<slatedb::Db>,
 }
 
-impl<'a> JoinIterator<'a> {
+impl JoinIterator {
     pub fn new(join_order: Vec<Variable>, pattern: PatternClause, slate: Arc<slatedb::Db>) -> Self {
         todo!()
     }
@@ -46,7 +44,7 @@ impl<'a> JoinIterator<'a> {
 
 // seek and next errors returned from slatedb should not happen
 // we should just get None
-impl<'a> Index for JoinIterator<'a> {
+impl Index for JoinIterator {
     fn seek(&mut self, key: Bytes) -> Result<(), Error> {
         self.slate_iterators[self.current_level].seek(key)?;
         Ok(())
@@ -72,7 +70,7 @@ impl<'a> Index for JoinIterator<'a> {
 }
 
 //  TODO figure out how to deal with the first level
-impl<'a> LayeredIndex for JoinIterator<'a> {
+impl LayeredIndex for JoinIterator {
     fn open_level(&mut self) -> Result<(), Error> {
         if self.current_level == self.max_level {
             return Err(anyhow::anyhow!("Max level reached"));
@@ -119,16 +117,16 @@ impl<'a> LayeredIndex for JoinIterator<'a> {
     }
 }
 
-pub struct LeapfrogJoin<'a> {
+pub struct LeapfrogJoin {
     join_order: Vec<Variable>,
-    iterators: Vec<JoinIterator<'a>>,
+    iterators: Vec<JoinIterator>,
     slate: Arc<slatedb::Db>,
     participants: Vec<Vec<usize>>,
     variable_level: usize,
     candidate: Vec<Bytes>,
 }
 
-impl<'a> LeapfrogJoin<'a> {
+impl LeapfrogJoin {
     pub fn new(
         join_order: Vec<Variable>,
         patterns: Vec<PatternClause>,
@@ -233,7 +231,7 @@ impl<'a> LeapfrogJoin<'a> {
     }
 }
 
-impl<'a> FallibleIterator for LeapfrogJoin<'a> {
+impl FallibleIterator for LeapfrogJoin {
     type Item = Vec<Bytes>;
     type Error = Error;
 
@@ -274,7 +272,7 @@ impl<'a> FallibleIterator for LeapfrogJoin<'a> {
 
 #[cfg(test)]
 mod tests {
-    use slatedb::{config::ReadLevel, config::ScanOptions, Db, SlateDBError};
+    use slatedb::{Error as SlateDBError, config::ScanOptions, Db};
     use std::collections::BTreeMap;
 
     use super::*;

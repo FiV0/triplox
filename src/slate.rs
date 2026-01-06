@@ -1,9 +1,9 @@
 #![allow(dead_code, unused)]
 
 use slatedb::{Db, KeyValue};
-use slatedb::object_store::{ObjectStore, memory::InMemory, path::Path}; 
+use slatedb::object_store::{ObjectStore, memory::InMemory, path::Path};
 use slatedb::object_store::local::LocalFileSystem;
-use slatedb::config::{DbOptions, ReadLevel, ReadOptions, ScanOptions, WriteOptions};
+use slatedb::config::{DurabilityLevel, ReadOptions, ScanOptions, WriteOptions};
 use bincode;
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -16,10 +16,8 @@ use crate::codec;
 
 pub async fn in_memory_slate() -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let options = DbOptions::default();
-    let kv_store = Db::open_with_opts(
+    let kv_store = Db::open(
         format!("tmp/{}", random_string(10)),
-        options,
         object_store,
     )
     .await
@@ -29,13 +27,14 @@ pub async fn in_memory_slate() -> Db {
 
 pub async fn local_slate(path: &str) -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    let options = DbOptions::default();
-    let kv_store = Db::open_with_opts(path, options, object_store).await.unwrap();
+    let kv_store = Db::open(path, object_store).await.unwrap();
     kv_store
 }
 
 pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
-    read_level: ReadLevel::Uncommitted,
+    durability_filter: DurabilityLevel::Memory,
+    dirty: true,
+    cache_blocks: true,
 };
 
 pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
@@ -43,9 +42,11 @@ pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
 };
 
 pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
-    read_level: ReadLevel::Uncommitted,
+    durability_filter: DurabilityLevel::Memory,
+    dirty: true,
     read_ahead_bytes: 1,
-    cache_blocks: false
+    cache_blocks: false,
+    max_fetch_tasks: 1,
 };
 
 pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {

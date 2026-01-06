@@ -16,13 +16,13 @@ pub (crate) trait Index {
     fn has_next(&self) -> bool;
 }
 
-pub (crate) struct SlateIterator<'a> {
-    inner : slatedb::DbIterator<'a>,
+pub (crate) struct SlateIterator {
+    inner : slatedb::DbIterator,
     current_key: Option<Bytes>
 }
 
-impl<'a> SlateIterator<'a> {
-    pub fn new(prefix: &[u8], slate: &'a slatedb::Db) -> Result<Self, Error> {
+impl SlateIterator {
+    pub fn new(prefix: &[u8], slate: &slatedb::Db) -> Result<Self, Error> {
         let range = create_prefix_range(prefix);
         let mut iterator = Handle::current().block_on(slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS))?;
         let mut current_key = None;
@@ -34,7 +34,7 @@ impl<'a> SlateIterator<'a> {
 }
 
 // TODO: move to &[u8]
-impl<'a> Index for SlateIterator<'a> {
+impl Index for SlateIterator {
     fn seek(&mut self, key: Bytes) -> Result<(), Error> {
         Handle::current().block_on(self.inner.seek(key))?;
         Ok(())

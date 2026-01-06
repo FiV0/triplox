@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use bytes::Bytes;
-use slatedb::{Db, config::ScanOptions, config::ReadLevel, SlateDBError};
+use slatedb::{Db, Error as SlateDBError, config::{ScanOptions, DurabilityLevel}};
 use slatedb::object_store::{ObjectStore, memory::InMemory};
 use std::sync::Arc;
 
@@ -26,7 +26,8 @@ mod tests {
         let range = create_prefix_range(b"a");
 
         let mut iter = db.scan_with_options(range, &ScanOptions {
-            read_level: ReadLevel::Uncommitted,
+            durability_filter: DurabilityLevel::Memory,
+            dirty: true,
             ..ScanOptions::default()
         }).await?;
         

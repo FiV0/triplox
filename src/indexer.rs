@@ -279,7 +279,7 @@ fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use slatedb::{Db, config::ScanOptions, config::ReadLevel, SlateDBError};
+    use slatedb::{Db, Error as SlateDBError, config::ScanOptions};
 
 
     use crate::clock::st_from_unix_epoch;
