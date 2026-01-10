@@ -3,12 +3,12 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 
 use anyhow::Error;
-use slatedb::{DbIterator};
+use slatedb::DbIterator;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::create_prefix_range;
 
-pub (crate) trait Index {
+pub(crate) trait Index {
     // TODO: move back to async
     fn seek(&mut self, key: Bytes) -> Result<(), Error>;
     fn next(&mut self) -> Result<Option<Bytes>, Error>;
@@ -16,20 +16,24 @@ pub (crate) trait Index {
     fn has_next(&self) -> bool;
 }
 
-pub (crate) struct SlateIterator {
-    inner : slatedb::DbIterator,
-    current_key: Option<Bytes>
+pub(crate) struct SlateIterator {
+    inner: slatedb::DbIterator,
+    current_key: Option<Bytes>,
 }
 
 impl SlateIterator {
     pub fn new(prefix: &[u8], slate: &slatedb::Db) -> Result<Self, Error> {
         let range = create_prefix_range(prefix);
-        let mut iterator = Handle::current().block_on(slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS))?;
+        let mut iterator =
+            Handle::current().block_on(slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS))?;
         let mut current_key = None;
         if let Some(next_key) = Handle::current().block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());
         }
-        Ok(Self { inner: iterator, current_key })
+        Ok(Self {
+            inner: iterator,
+            current_key,
+        })
     }
 }
 
