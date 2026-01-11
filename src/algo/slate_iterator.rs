@@ -37,7 +37,6 @@ impl SlateIterator {
     }
 }
 
-// TODO: move to &[u8]
 impl Index for SlateIterator {
     fn seek(&mut self, key: Bytes) -> Result<(), Error> {
         Handle::current().block_on(self.inner.seek(key))?;
