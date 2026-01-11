@@ -2375,8 +2375,7 @@ dependencies = [
 [[package]]
 name = "slatedb"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bab45c2940c214e8f9e80d100f74b90cc3f1cc3b62b9caef0369060612c83b9"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-approximate-size2#de2fe1e1e4e922c4b9b0a883afd9b0018324f4d5"
 dependencies = [
  "anyhow",
  "async-trait",

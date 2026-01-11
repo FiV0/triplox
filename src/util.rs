@@ -56,7 +56,7 @@ impl GetSlice for Vec<u8> {
 
 impl GetSlice for Bytes {
     fn get_slice(&self, start: usize, end: usize) -> Self {
-        Bytes::copy_from_slice(&self[start..end])
+        self.slice(start..end)
     }
 }
 
