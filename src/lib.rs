@@ -13,6 +13,7 @@ mod slate;
 mod util;
 mod scratch;
 mod index;
+mod iterator;
 mod algo;
 
 use std::sync::Arc;
