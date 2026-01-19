@@ -260,6 +260,9 @@ impl<'a> LeapfrogSingleJoin<'a> {
 }
 
 /// Multi-level leapfrog join
+// TODO: Consider replacing Box<dyn Trait> with enum dispatch for better performance.
+// Dynamic dispatch has overhead (vtable lookup, no inlining, cache-unfriendly).
+// Enum dispatch would eliminate heap allocation per index and allow compiler optimizations.
 pub struct LeapfrogJoin {
     indexes: Vec<Box<dyn LeapfrogIndex>>,
     levels: usize,
