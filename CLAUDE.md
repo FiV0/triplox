@@ -1,9 +1,3 @@
 # Claude Code Instructions
 
-## Testing
-
-Once the new tests pass, also run all tests with:
-
-```bash
-cargo test
-```
+See [AGENTS.md](AGENTS.md) for all instructions.
