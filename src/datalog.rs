@@ -23,7 +23,7 @@ pub enum FindElement {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FindSpec {
-    FineRel(Vec<FindElement>),
+    FindRel(Vec<FindElement>),
     // Todo rest
 }
 
@@ -40,20 +40,23 @@ pub enum Constant {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum DataPattern {
+pub enum PatternElement {
     Variable(Variable),
     Constant(DataType),
     Wildcard,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriplePattern {
+    pub entity: PatternElement,
+    pub attribute: PatternElement,
+    pub value: PatternElement,
+}
+
 // TODO And doesn't make sense at the toplevel
 #[derive(Debug, Clone, PartialEq)]
 pub enum WhereClause {
-    Pattern {
-        entity: DataPattern,
-        attribute: DataPattern,
-        value: DataPattern,
-    },
+    Triple(TriplePattern),
     Not(Vec<WhereClause>),
     And(Vec<WhereClause>),
     Or(Vec<WhereClause>),
@@ -70,18 +73,18 @@ pub enum Query {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternClause {
-    pub entity: DataPattern,
-    pub attribute: DataPattern,
-    pub value: DataPattern,
+    pub entity: PatternElement,
+    pub attribute: PatternElement,
+    pub value: PatternElement,
 }
 
 impl From<PatternClause> for WhereClause {
     fn from(pattern: PatternClause) -> Self {
-        WhereClause::Pattern {
+        WhereClause::Triple(TriplePattern {
             entity: pattern.entity,
             attribute: pattern.attribute,
             value: pattern.value,
-        }
+        })
     }
 }
 
@@ -90,16 +93,32 @@ impl TryFrom<WhereClause> for PatternClause {
 
     fn try_from(clause: WhereClause) -> Result<Self, Self::Error> {
         match clause {
-            WhereClause::Pattern {
-                entity,
-                attribute,
-                value,
-            } => Ok(PatternClause {
-                entity,
-                attribute,
-                value,
+            WhereClause::Triple(triple) => Ok(PatternClause {
+                entity: triple.entity,
+                attribute: triple.attribute,
+                value: triple.value,
             }),
-            _ => Err(anyhow::anyhow!("Not a Pattern clause")),
+            _ => Err(anyhow::anyhow!("Not a Triple clause")),
+        }
+    }
+}
+
+impl From<TriplePattern> for PatternClause {
+    fn from(triple: TriplePattern) -> Self {
+        PatternClause {
+            entity: triple.entity,
+            attribute: triple.attribute,
+            value: triple.value,
+        }
+    }
+}
+
+impl From<PatternClause> for TriplePattern {
+    fn from(pattern: PatternClause) -> Self {
+        TriplePattern {
+            entity: pattern.entity,
+            attribute: pattern.attribute,
+            value: pattern.value,
         }
     }
 }
@@ -112,20 +131,20 @@ impl PatternClause {
                 attribute,
                 value,
             } => match (entity, attribute, value) {
-                (_, DataPattern::Wildcard, _) => Err(anyhow::anyhow!(
+                (_, PatternElement::Wildcard, _) => Err(anyhow::anyhow!(
                     "Wildcard not supported in attribute position!"
                 )),
-                (_, DataPattern::Variable(_), _) => Err(anyhow::anyhow!(
+                (_, PatternElement::Variable(_), _) => Err(anyhow::anyhow!(
                     "Variable not supported in attribute position!"
                 )),
-                (DataPattern::Constant(_), DataPattern::Constant(_), _) => Ok(IndexType::EAV),
-                (DataPattern::Wildcard, DataPattern::Constant(_), _) => Ok(IndexType::AV),
-                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Constant(_)) => Ok(IndexType::AVE),
-                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Wildcard) => Ok(IndexType::AE),
+                (PatternElement::Constant(_), PatternElement::Constant(_), _) => Ok(IndexType::EAV),
+                (PatternElement::Wildcard, PatternElement::Constant(_), _) => Ok(IndexType::AV),
+                (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Constant(_)) => Ok(IndexType::AVE),
+                (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Wildcard) => Ok(IndexType::AE),
                 (
-                    DataPattern::Variable(v1),
-                    DataPattern::Constant(_),
-                    DataPattern::Variable(v2),
+                    PatternElement::Variable(v1),
+                    PatternElement::Constant(_),
+                    PatternElement::Variable(v2),
                 ) => {
                     let entity_pos = join_order.iter().position(|v| v == v1);
                     let value_pos = join_order.iter().position(|v| v == v2);
@@ -145,8 +164,8 @@ impl PatternClause {
         }
     }
 
-    fn collect_vars(pattern: &DataPattern, vars: &mut Vec<Variable>) {
-        if let DataPattern::Variable(v) = pattern {
+    fn collect_vars(pattern: &PatternElement, vars: &mut Vec<Variable>) {
+        if let PatternElement::Variable(v) = pattern {
             vars.push(v.clone());
         }
     }
@@ -167,7 +186,7 @@ impl PatternClause {
         vars
     }
 
-    pub fn align_pattern_clause(&self, index_type: IndexType) -> Result<Vec<DataPattern>, Error> {
+    pub fn align_pattern_clause(&self, index_type: IndexType) -> Result<Vec<PatternElement>, Error> {
         match index_type {
             IndexType::EAV => Ok(vec![self.entity.clone(), self.attribute.clone(), self.value.clone()]),
             IndexType::AVE => Ok(vec![self.attribute.clone(), self.value.clone(), self.entity.clone()]),
@@ -184,13 +203,13 @@ impl PatternClause {
         let [v1, v2, v3] = &pattern[..] else {
             return Err(anyhow::anyhow!("Should not happen!"));
         };
-        if let DataPattern::Variable(v1) = v1 {
+        if let PatternElement::Variable(v1) = v1 {
             prefix.push(v1.as_bytes());
         }
-        if let DataPattern::Variable(v2) = v2 {
+        if let PatternElement::Variable(v2) = v2 {
             prefix.push(v2.as_bytes());
         }
-        if let DataPattern::Variable(v3) = v3 {
+        if let PatternElement::Variable(v3) = v3 {
             prefix.push(v3.as_bytes());
         }
         Ok(concat_bytes(&prefix))

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use anyhow::Error;
 
-use crate::{datalog::{DataPattern, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range}};
+use crate::{datalog::{PatternElement, PatternClause, Variable}, slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS}, util::{create_prefix_range}};
 
 #[derive(Debug, Clone, Copy)]
 pub enum IndexType { EAV, AVE, AEV, VAE , AE, AV}
@@ -25,13 +25,13 @@ pub (crate) fn pattern_clause_to_index_type(clause: &PatternClause, join_order: 
         PatternClause { entity, attribute, value } => 
             // TODO: deal with two wildcards
             match (entity, attribute, value) {
-                (_, DataPattern::Wildcard,_) =>  Err(anyhow::anyhow!("Wildcard not supported in attribute position!")),
-                (_, DataPattern::Variable(_),_) =>  Err(anyhow::anyhow!("Variable not supported in attribute position!")),
-                (DataPattern::Constant(_), DataPattern::Constant(_), _) => Ok(IndexType::EAV),
-                (DataPattern::Wildcard, DataPattern::Constant(_), _) => Ok(IndexType::AV),
-                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Constant(_)) => Ok(IndexType::AVE),
-                (DataPattern::Variable(_), DataPattern::Constant(_), DataPattern::Wildcard) => Ok(IndexType::AE),
-                (DataPattern::Variable(v1), DataPattern::Constant(_), DataPattern::Variable(v2)) => {
+                (_, PatternElement::Wildcard,_) =>  Err(anyhow::anyhow!("Wildcard not supported in attribute position!")),
+                (_, PatternElement::Variable(_),_) =>  Err(anyhow::anyhow!("Variable not supported in attribute position!")),
+                (PatternElement::Constant(_), PatternElement::Constant(_), _) => Ok(IndexType::EAV),
+                (PatternElement::Wildcard, PatternElement::Constant(_), _) => Ok(IndexType::AV),
+                (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Constant(_)) => Ok(IndexType::AVE),
+                (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Wildcard) => Ok(IndexType::AE),
+                (PatternElement::Variable(v1), PatternElement::Constant(_), PatternElement::Variable(v2)) => {
                     let entity_pos = join_order.iter().position(|v| v == v1);
                     let value_pos = join_order.iter().position(|v| v == v2);
                     
