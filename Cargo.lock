@@ -478,7 +478,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2126,7 +2126,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2375,7 +2375,7 @@ dependencies = [
 [[package]]
 name = "slatedb"
 version = "0.10.0"
-source = "git+https://github.com/FiV0/slatedb.git?branch=range-approximate-size2#de2fe1e1e4e922c4b9b0a883afd9b0018324f4d5"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2404,6 +2404,8 @@ dependencies = [
  "serde",
  "serde_json",
  "siphasher",
+ "slatedb-common",
+ "slatedb-txn-obj",
  "sysinfo",
  "thiserror 1.0.64",
  "thread_local",
@@ -2414,6 +2416,30 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "slatedb-common"
+version = "0.10.0"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
+dependencies = [
+ "chrono",
+ "tokio",
+]
+
+[[package]]
+name = "slatedb-txn-obj"
+version = "0.10.0"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "log",
+ "object_store 0.12.4",
+ "slatedb-common",
+ "thiserror 1.0.64",
 ]
 
 [[package]]
