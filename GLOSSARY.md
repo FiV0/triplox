@@ -26,11 +26,11 @@ This multi-index strategy represents a classic database trade-off: write amplifi
 
 ## Indexer
 
-The indexer is the write-side component responsible for transforming transaction data into queryable structures. When transactions are processed, the indexer takes the operations and materializes them across all five index views simultaneously.
+The indexer is the write-side component responsible for transforming transaction data into queryable structures. It receives transactions from the LogProcessor and materializes them across all five index views simultaneously.
 
-This component bridges the gap between the append-only transaction log and the indexed storage layer. It takes incoming transaction operations, determines how they affect each index view, and writes the appropriate key-value pairs to storage. This process ensures that no matter what kind of query you run later, there's always an optimized index available to serve it efficiently.
+The indexer takes incoming transaction operations, determines how they affect each index view, and writes the appropriate key-value pairs to storage. This process ensures that no matter what kind of query you run later, there's always an optimized index available to serve it efficiently.
 
-The indexer enables the system's query performance—without it, querying would require scanning through the entire transaction log to find relevant data.
+The indexer enables the system's query performance—without it, querying would require scanning through the entire transaction log to find relevant data. By receiving transactions asynchronously from the LogProcessor, the indexer can operate independently from the write path, allowing for more flexible scaling and deployment strategies.
 
 ---
 
@@ -44,11 +44,21 @@ Different implementations of the log exist for different deployment scenarios—
 
 ---
 
+## LogProcessor
+
+The LogProcessor is an event-driven component that acts as the bridge between the transaction log and the indexer. It subscribes to the log and asynchronously processes each transaction as it arrives, decoupling the write path from the indexing path.
+
+This decoupling enables a more flexible architecture. The Node can focus solely on accepting transactions and appending them to the log, while the LogProcessor independently consumes those transactions and coordinates indexing. This separation allows for different deployment topologies—you could have multiple LogProcessors consuming the same log for parallel processing, or scale the write and read paths independently.
+
+By making the log the single source of truth with independent consumers, the LogProcessor enables an event-driven architecture where different components can react to transactions without tight coupling. This improves system modularity and allows components to evolve independently.
+
+---
+
 ## Node
 
-The node is the central orchestration component that ties together the log, indexer, and storage layer. It acts as the "database instance" that applications interact with, providing a unified interface for both submitting transactions and running queries.
+The node is the central component that applications interact with, acting as the "database instance" that provides a unified interface for both submitting transactions and running queries.
 
-When you submit a transaction to a node, it coordinates the process of appending to the log, updating the indices, and persisting to storage. When you query a node, it uses the query compiler to analyze your Datalog query and execute it against the indexed data.
+When you submit a transaction to a node, it appends the transaction to the log where it receives a unique ID and timestamp. The LogProcessor then asynchronously picks up the transaction and coordinates the indexing process. When you query a node, it uses the query compiler to analyze your Datalog query and execute it against the indexed data.
 
 The node design allows for different deployment topologies—you can have multiple nodes reading from the same shared log for read scaling, or a single node combining all functionality for simplicity. It encapsulates the complexity of the underlying components and presents a clean database-like API.
 
@@ -78,6 +88,6 @@ All indexed data created by the indexer is ultimately stored in this layer. When
 
 A transaction is a unit of change submitted to the database. It represents a batch of operations that modify data—adding new facts, updating existing information, or removing data. Each transaction is atomic, meaning all operations within it succeed or fail together.
 
-When you submit a transaction to a node, it begins a journey through the system: first, it's appended to the log where it receives a unique transaction ID and timestamp. Next, the indexer processes the transaction, updating all relevant index views. Finally, the changes are persisted to the storage layer. This pipeline ensures that every modification is recorded, indexed, and made queryable.
+When you submit a transaction to a node, it begins a journey through the system: first, it's appended to the log where it receives a unique transaction ID and timestamp. Next, the LogProcessor consumes the transaction from the log and sends it to the indexer, which updates all relevant index views. Finally, the changes are persisted to the storage layer. This event-driven pipeline ensures that every modification is recorded, asynchronously indexed, and made queryable.
 
 Transactions enable ordered, consistent changes to the database state. The transaction ID creates a total ordering of all modifications, allowing the system to reconstruct any historical state and reason about the sequence of changes over time.
