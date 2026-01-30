@@ -2,6 +2,8 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+**New to the project?** See [GLOSSARY.md](GLOSSARY.md) for explanations of key concepts.
+
 ## Quick Reference
 
 ```bash
