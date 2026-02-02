@@ -49,6 +49,7 @@ impl TxLogWriter for MemoryLog {
         };
         let tx_key = record.tx_key;
         self.txs.push(record.clone());
+        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
         if let Err(e) = self.tx_sender.send(record) {
             warn!("Failed to send record from memory log to subscribers: {}", e);
         }

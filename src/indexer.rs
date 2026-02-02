@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::WriteBatch;
-use anyhow::{Error, Ok, Result};
+use anyhow::{Error, Result};
 use bincode;
 use futures::future::try_join_all;
 use std::io::Cursor;
 use bytes::Bytes;
+use tokio::sync::broadcast;
+use log::warn;
 
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
@@ -21,7 +23,9 @@ use crate::clock::Instant;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
-    attribute_to_id: HashMap<String, u64>
+    attribute_to_id: HashMap<String, u64>,
+    latest_indexed_tx: Option<TxKey>,
+    tx_completion_sender: broadcast::Sender<TxKey>,
 }
 
 struct TxIndexKeys {
@@ -50,7 +54,13 @@ fn assert_attributes(attributes: &[&str]) -> Result<(), Error> {
 impl Indexer {
     pub fn new(slatedb: Arc<Db>) -> Self {
         let attribute_to_id = HashMap::new();
-        Indexer { slatedb, attribute_to_id }
+        let (tx_completion_sender, _) = broadcast::channel(1024);
+        Indexer {
+            slatedb,
+            attribute_to_id,
+            latest_indexed_tx: None,
+            tx_completion_sender,
+        }
     }
 
     async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
@@ -166,7 +176,77 @@ impl Indexer {
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS);
 
+        // Update latest indexed tx and broadcast completion
+        self.latest_indexed_tx = Some(tx_key);
+
+        // Send notification (warn if no receivers, matching memory_log.rs:51-52)
+        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
+        if let Err(e) = self.tx_completion_sender.send(tx_key) {
+            warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
+        }
+
         Ok(tx_key)
+    }
+
+    /// Wait until the specified transaction has been indexed.
+    /// Returns immediately if the transaction is already indexed (based on TxKey ordering).
+    ///
+    /// This method returns a future that does NOT borrow `self`, so it's safe to use
+    /// with RwLock - the lock can be dropped before awaiting the returned future.
+    ///
+    /// # Arguments
+    /// * `tx_key` - The transaction to wait for
+    ///
+    /// # Returns
+    /// * A future that resolves to `Ok(())` when the transaction is indexed
+    ///
+    /// # Example
+    /// ```ignore
+    /// // With RwLock - lock is dropped before waiting
+    /// let future = indexer.read().await.await_tx(tx_key);
+    /// future.await?;
+    ///
+    /// // With timeout
+    /// let future = indexer.read().await.await_tx(tx_key);
+    /// tokio::time::timeout(Duration::from_millis(500), future).await??;
+    /// ```
+    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
+        // Capture everything we need from self (clone/copy)
+        let latest_tx = self.latest_indexed_tx;
+        let mut rx = self.tx_completion_sender.subscribe();
+
+        // Return a future that doesn't borrow self
+        async move {
+            // Fast path: Check if already indexed
+            if let Some(latest) = latest_tx {
+                if tx_key <= latest {
+                    return Ok(());
+                }
+            }
+
+            // Wait for matching or later transaction
+            loop {
+                match rx.recv().await {
+                    Ok(completed_tx_key) => {
+                        if completed_tx_key >= tx_key {
+                            return Ok(());
+                        }
+                        // Keep waiting for higher tx_id
+                    },
+                    Err(broadcast::error::RecvError::Lagged(_count)) => {
+                        // Channel overflowed. Just continue waiting - we'll eventually
+                        // get the notification or the channel will close.
+                        continue;
+                    },
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(anyhow::anyhow!(
+                            "Indexer shutdown while waiting for tx {}",
+                            tx_key.tx_id
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -361,6 +441,157 @@ mod tests {
         }
         assert_eq!(None , iter.next().await?);
         Ok(())
+    }
 
+    #[tokio::test]
+    async fn test_await_tx_already_indexed() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+
+        // Index transaction
+        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        let tx_ops = vec![TxOp::Put(Document(map))];
+        indexer.transact_tx(tx_key, tx_ops).await?;
+
+        // await_tx should return immediately
+        let start = std::time::Instant::now();
+        indexer.await_tx(tx_key).await?;
+        let elapsed = start.elapsed();
+
+        assert!(elapsed < std::time::Duration::from_millis(10),
+                "Should return immediately for already indexed tx");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_waits_for_future_tx() -> Result<(), Error> {
+        use tokio::sync::RwLock;
+
+        let slate = Arc::new(in_memory_slate().await);
+        let indexer = Arc::new(RwLock::new(Indexer::new(slate.clone())));
+
+        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+
+        // Spawn task that calls await_tx - lock is dropped before awaiting
+        let indexer_clone = indexer.clone();
+        let wait_handle = tokio::spawn(async move {
+            let future = indexer_clone.read().await.await_tx(tx_key_1);
+            // Lock is dropped here, before we await
+            future.await
+        });
+
+        // Give wait task time to subscribe
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Now index the transaction - can acquire write lock
+        {
+            let mut guard = indexer.write().await;
+            let mut map = BTreeMap::new();
+            map.insert("db/id".to_string(), DataType::Long(1));
+            map.insert("name".to_string(), DataType::String("bob".to_string()));
+            let tx_ops = vec![TxOp::Put(Document(map))];
+            guard.transact_tx(tx_key_1, tx_ops).await?;
+        }
+
+        // Wait task should complete successfully
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            wait_handle
+        ).await;
+
+        assert!(result.is_ok(), "Should complete before timeout");
+        assert!(result.unwrap()?.is_ok(), "Should return Ok");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_timeout() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let indexer = Indexer::new(slate.clone());
+
+        let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(999) };
+
+        // Wait for transaction that never arrives
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            indexer.await_tx(tx_key)
+        ).await;
+
+        assert!(result.is_err(), "Should timeout waiting for non-existent tx");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_ordering() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+
+        // Index tx 0 and tx 1
+        for i in 0..2 {
+            let tx_key = TxKey { tx_id: i, system_time: st_from_unix_epoch(i as u64 * 100) };
+            let mut map = BTreeMap::new();
+            map.insert("db/id".to_string(), DataType::Long(i + 1));
+            map.insert("name".to_string(), DataType::String(format!("user{}", i)));
+            let tx_ops = vec![TxOp::Put(Document(map))];
+            indexer.transact_tx(tx_key, tx_ops).await?;
+        }
+
+        // Waiting for tx 0 should return immediately
+        let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        indexer.await_tx(tx_key_0).await?;
+
+        // Waiting for tx 1 should also return immediately
+        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        indexer.await_tx(tx_key_1).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_multiple_waiters() -> Result<(), Error> {
+        use tokio::sync::RwLock;
+
+        let slate = Arc::new(in_memory_slate().await);
+        let indexer = Arc::new(RwLock::new(Indexer::new(slate.clone())));
+
+        let tx_key = TxKey { tx_id: 5, system_time: st_from_unix_epoch(500) };
+
+        // Spawn multiple tasks that call await_tx
+        let handles: Vec<_> = (0..5).map(|_| {
+            let indexer_clone = indexer.clone();
+            tokio::spawn(async move {
+                let future = indexer_clone.read().await.await_tx(tx_key);
+                // Lock dropped before awaiting
+                future.await
+            })
+        }).collect();
+
+        // Give waiters time to subscribe
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Index the transaction - can acquire write lock
+        {
+            let mut guard = indexer.write().await;
+            let mut map = BTreeMap::new();
+            map.insert("db/id".to_string(), DataType::Long(1));
+            map.insert("name".to_string(), DataType::String("shared".to_string()));
+            let tx_ops = vec![TxOp::Put(Document(map))];
+            guard.transact_tx(tx_key, tx_ops).await?;
+        }
+
+        // All waiters should complete
+        for handle in handles {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                handle
+            ).await;
+            assert!(result.is_ok(), "Task should complete before timeout");
+            assert!(result.unwrap()?.is_ok(), "Task should succeed");
+        }
+
+        Ok(())
     }
 }
