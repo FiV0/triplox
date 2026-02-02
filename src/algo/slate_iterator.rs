@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use std::sync::Arc;
-use tokio::runtime::Handle;
 
 use anyhow::Error;
 use slatedb::DbIterator;
@@ -8,10 +7,10 @@ use slatedb::DbIterator;
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::create_prefix_range;
 
+#[allow(async_fn_in_trait)]
 pub(crate) trait Index {
-    // TODO: move back to async
-    fn seek(&mut self, key: Bytes) -> Result<(), Error>;
-    fn next(&mut self) -> Result<Option<Bytes>, Error>;
+    async fn seek(&mut self, key: Bytes) -> Result<(), Error>;
+    async fn next(&mut self) -> Result<Option<Bytes>, Error>;
     fn get_value(&self) -> Result<Option<Bytes>, Error>;
     fn has_next(&self) -> bool;
 }
@@ -22,12 +21,11 @@ pub(crate) struct SlateIterator {
 }
 
 impl SlateIterator {
-    pub fn new(prefix: &[u8], slate: &slatedb::Db) -> Result<Self, Error> {
+    pub async fn new(prefix: &[u8], slate: &slatedb::Db) -> Result<Self, Error> {
         let range = create_prefix_range(prefix);
-        let mut iterator =
-            Handle::current().block_on(slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS))?;
+        let mut iterator = slate.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await?;
         let mut current_key = None;
-        if let Some(next_key) = Handle::current().block_on(iterator.next())? {
+        if let Some(next_key) = iterator.next().await? {
             current_key = Some(next_key.key.clone());
         }
         Ok(Self {
@@ -38,13 +36,13 @@ impl SlateIterator {
 }
 
 impl Index for SlateIterator {
-    fn seek(&mut self, key: Bytes) -> Result<(), Error> {
-        Handle::current().block_on(self.inner.seek(key))?;
+    async fn seek(&mut self, key: Bytes) -> Result<(), Error> {
+        self.inner.seek(key).await?;
         Ok(())
     }
 
-    fn next(&mut self) -> Result<Option<Bytes>, Error> {
-        let next_key = Handle::current().block_on(self.inner.next())?;
+    async fn next(&mut self) -> Result<Option<Bytes>, Error> {
+        let next_key = self.inner.next().await?;
         if let Some(next_key) = next_key {
             self.current_key = Some(next_key.key.clone());
         } else {
