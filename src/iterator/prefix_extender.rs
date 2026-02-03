@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::algo::generic_join::{Prefix, PrefixExtender};
 use crate::datalog::{PatternClause, Variable};
-use crate::index::SlateIterator;
+use super::slate_iterator::SlateIterator;
 
 pub struct PatternPrefixExtender {
     pub join_order: Vec<Variable>,
