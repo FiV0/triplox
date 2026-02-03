@@ -234,3 +234,38 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
 pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
     prefix_extractor(position, index)(bytes)
 }
+
+/// Extract the next component after the prefix from a SlateDB key
+///
+/// This is used by GenericPrefixExtender to extract extensions from scanned keys.
+/// The function handles both fixed-size components (entity, attribute) and variable-size
+/// components (values).
+pub fn extract_next_component(key: &[u8], prefix: &[u8]) -> anyhow::Result<Bytes> {
+    use anyhow::anyhow;
+
+    if key.len() <= prefix.len() {
+        return Err(anyhow!("Key not longer than prefix"));
+    }
+
+    // Get bytes after prefix
+    let remaining = &key[prefix.len()..];
+
+    // Determine if we're extracting a fixed or variable-length component
+    // Fixed-length components are entity (8 bytes) or attribute (8 bytes)
+    // Variable-length components are values (everything up to OP byte at end)
+
+    // Check if we have enough bytes for a fixed-size component
+    if remaining.len() >= codec::ENTITY_LENGTH + codec::OP_LENGTH {
+        // Could be entity or attribute - extract 8 bytes
+        Ok(Bytes::copy_from_slice(
+            &remaining[..codec::ENTITY_LENGTH],
+        ))
+    } else if remaining.len() > codec::OP_LENGTH {
+        // Variable-length value - everything except OP byte at end
+        Ok(Bytes::copy_from_slice(
+            &remaining[..remaining.len() - codec::OP_LENGTH],
+        ))
+    } else {
+        Err(anyhow!("Remaining bytes too short to extract component"))
+    }
+}
