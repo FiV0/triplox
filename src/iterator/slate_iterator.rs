@@ -50,7 +50,19 @@ impl Index for SlateIterator {
     fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
         let mut full_key = self.prefix.to_vec();
         full_key.extend_from_slice(&extension);
-        self.handle.block_on(self.inner.seek(Bytes::from(full_key)))?;
+        let full_key = Bytes::from(full_key);
+
+        // SlateDB forbids backward seeks. If already at or past the target, skip the seek.
+        match &self.current_key {
+            Some(current) if current.as_ref() >= full_key.as_ref() => return Ok(()),
+            _ => {}
+        }
+
+        self.handle.block_on(self.inner.seek(full_key))?;
+
+        // Update current_key so get_value() reflects the new position.
+        let next_entry = self.handle.block_on(self.inner.next())?;
+        self.current_key = next_entry.map(|e| e.key.clone());
         Ok(())
     }
 
@@ -252,7 +264,7 @@ mod tests {
             let mut iter = SlateIterator::new(PFX, &slate, handle).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("cc")));
+            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
             assert_eq!(iter.next().unwrap(), Some(Bytes::from("ee")));
             assert_eq!(iter.next().unwrap(), None);
         }).await.unwrap();

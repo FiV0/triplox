@@ -104,32 +104,13 @@ impl PrefixExtender for GenericPrefixExtender {
 
         let mut result = Vec::new();
         for ext in extensions {
-            // Check current position before seeking — SlateDB does not allow seeking backwards.
-            let current = iter
-                .get_value()
-                .unwrap_or_else(|e| panic!("Failed to get iterator value: {}", e));
-
-            match current {
-                Some(ref val) if val.as_ref() >= ext.as_ref() => {
-                    if val == ext {
-                        result.push(ext.clone());
-                    }
-                }
-                Some(_) => {
-                    iter.seek(ext.clone())
-                        .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
-
-                    match iter.next() {
-                        Ok(Some(val)) => {
-                            if val == *ext {
-                                result.push(ext.clone());
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(e) => panic!("Failed to advance iterator: {}", e),
-                    }
-                }
-                None => break,
+            iter.seek(ext.clone())
+                .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
+            if !iter.has_next() {
+                break;
+            }
+            if iter.get_value().unwrap_or(None).as_ref() == Some(ext) {
+                result.push(ext.clone());
             }
         }
         result
