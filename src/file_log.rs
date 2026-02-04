@@ -103,7 +103,7 @@ mod tests {
     use std::sync::RwLock;
     use tempfile::tempdir;
     use crate::clock::{MockClock, st_from_unix_epoch};
-    use crate::log::{MockSubscriber, subscribe};
+    use crate::log::{subscribe, MockSubscriber};
 
     use crate::logging::init;
     // Reuse your MockSubscriber implementation here...
@@ -125,7 +125,7 @@ mod tests {
         ]);
         
         let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
-        subscribe(log.clone(), None, subscriber.clone());
+        let token = subscribe(log.clone(), None, subscriber.clone());
 
         {
             let mut writer = log.write().unwrap();
@@ -136,22 +136,21 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let mut subscriber = subscriber.write().unwrap();
-        subscriber.close();
+        token.cancel();
+
+        let subscriber = subscriber.read().unwrap();
 
         assert_eq!(subscriber.records.len(), 3);
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
         assert_eq!(subscriber.records[1].record, vec![4, 5, 6]);
         assert_eq!(subscriber.records[2].record, vec![7, 8, 9]);
 
-        // wait for the subscriber to close
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
         let tx_id_2 = subscriber.records[2].tx_key.tx_id;
+        drop(subscriber);
 
         // Restart log and subscribe from second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
+        let token2 = subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
 
         {
             let mut writer = log.write().unwrap();
@@ -161,8 +160,9 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let mut subscriber2 = subscriber2.write().unwrap();
-        subscriber2.close();
+        token2.cancel();
+
+        let subscriber2 = subscriber2.read().unwrap();
 
         assert_eq!(subscriber2.records.len(), 3);
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
