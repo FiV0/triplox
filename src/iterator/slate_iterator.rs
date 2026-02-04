@@ -4,7 +4,7 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
-use crate::util::{self, create_prefix_range};
+use crate::util::{self, create_prefix_range, extract_next_component};
 
 pub(crate) trait Index {
     fn count(&self) -> Result<u64, Error>;
@@ -17,12 +17,14 @@ pub(crate) trait Index {
 pub(crate) struct SlateIterator {
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
+    prefix: Bytes,
     handle: Handle,
     count: u64,
 }
 
 impl SlateIterator {
     pub fn new(prefix: &[u8], slate: &slatedb::Db, handle: Handle) -> Result<Self, Error> {
+        let prefix_bytes = Bytes::from(prefix.to_vec());
         let prefix_range = create_prefix_range(prefix);
         let count = handle.block_on(slate.estimate_key_count(prefix_range.clone()))?;
         let mut iterator = handle.block_on(slate.scan_with_options(prefix_range, &DEFAULT_SCAN_OPTIONS))?;
@@ -33,6 +35,7 @@ impl SlateIterator {
         Ok(Self {
             inner: iterator,
             current_key,
+            prefix: prefix_bytes,
             handle,
             count,
         })
@@ -44,8 +47,10 @@ impl Index for SlateIterator {
         Ok(self.count)
     }
 
-    fn seek(&mut self, key: Bytes) -> Result<(), Error> {
-        self.handle.block_on(self.inner.seek(key))?;
+    fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
+        let mut full_key = self.prefix.to_vec();
+        full_key.extend_from_slice(&extension);
+        self.handle.block_on(self.inner.seek(Bytes::from(full_key)))?;
         Ok(())
     }
 
@@ -53,14 +58,18 @@ impl Index for SlateIterator {
         let next_key = self.handle.block_on(self.inner.next())?;
         if let Some(next_key) = next_key {
             self.current_key = Some(next_key.key.clone());
+            Ok(Some(extract_next_component(&next_key.key, &self.prefix)?))
         } else {
             self.current_key = None;
+            Ok(None)
         }
-        Ok(self.current_key.clone())
     }
 
     fn get_value(&self) -> Result<Option<Bytes>, Error> {
-        Ok(self.current_key.clone())
+        match &self.current_key {
+            Some(key) => Ok(Some(extract_next_component(key, &self.prefix)?)),
+            None => Ok(None),
+        }
     }
 
     fn has_next(&self) -> bool {
@@ -121,6 +130,7 @@ impl Index for VecIterator {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use crate::codec::ADD;
     use crate::slate::in_memory_slate;
 
     #[test]
@@ -195,24 +205,35 @@ mod tests {
         assert_eq!(iter.get_value().unwrap(), None);
     }
 
+    /// Build a key: prefix + value + ADD byte
+    fn make_key(prefix: &[u8], value: &[u8]) -> Vec<u8> {
+        let mut key = prefix.to_vec();
+        key.extend_from_slice(value);
+        key.push(ADD);
+        key
+    }
+
+    const PFX: &[u8] = b"\x01";
+    const OTHER_PFX: &[u8] = b"\x02";
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_basic() {
         let slate = in_memory_slate().await;
         let handle = Handle::current();
 
-        slate.put(b"pfx/a", b"").await;
-        slate.put(b"pfx/b", b"").await;
-        slate.put(b"pfx/c", b"").await;
-        slate.put(b"other/x", b"").await;
+        slate.put(&make_key(PFX, b"aa"), b"").await;
+        slate.put(&make_key(PFX, b"bb"), b"").await;
+        slate.put(&make_key(PFX, b"cc"), b"").await;
+        slate.put(&make_key(OTHER_PFX, b"xx"), b"").await;
 
         tokio::task::spawn_blocking(move || {
-            let mut iter = SlateIterator::new(b"pfx/", &slate, handle).unwrap();
+            let mut iter = SlateIterator::new(PFX, &slate, handle).unwrap();
 
             assert!(iter.has_next());
-            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("pfx/a")));
+            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
 
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("pfx/b")));
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("pfx/c")));
+            assert_eq!(iter.next().unwrap(), Some(Bytes::from("bb")));
+            assert_eq!(iter.next().unwrap(), Some(Bytes::from("cc")));
             assert_eq!(iter.next().unwrap(), None);
             assert!(!iter.has_next());
         }).await.unwrap();
@@ -223,16 +244,16 @@ mod tests {
         let slate = in_memory_slate().await;
         let handle = Handle::current();
 
-        slate.put(b"pfx/a", b"").await;
-        slate.put(b"pfx/c", b"").await;
-        slate.put(b"pfx/e", b"").await;
+        slate.put(&make_key(PFX, b"aa"), b"").await;
+        slate.put(&make_key(PFX, b"cc"), b"").await;
+        slate.put(&make_key(PFX, b"ee"), b"").await;
 
         tokio::task::spawn_blocking(move || {
-            let mut iter = SlateIterator::new(b"pfx/", &slate, handle).unwrap();
+            let mut iter = SlateIterator::new(PFX, &slate, handle).unwrap();
 
-            iter.seek(Bytes::from("pfx/c")).unwrap();
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("pfx/c")));
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("pfx/e")));
+            iter.seek(Bytes::from("cc")).unwrap();
+            assert_eq!(iter.next().unwrap(), Some(Bytes::from("cc")));
+            assert_eq!(iter.next().unwrap(), Some(Bytes::from("ee")));
             assert_eq!(iter.next().unwrap(), None);
         }).await.unwrap();
     }
@@ -242,10 +263,10 @@ mod tests {
         let slate = in_memory_slate().await;
         let handle = Handle::current();
 
-        slate.put(b"other/a", b"").await;
+        slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
 
         tokio::task::spawn_blocking(move || {
-            let iter = SlateIterator::new(b"pfx/", &slate, handle).unwrap();
+            let iter = SlateIterator::new(PFX, &slate, handle).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         }).await.unwrap();
@@ -256,12 +277,12 @@ mod tests {
         let slate = in_memory_slate().await;
         let handle = Handle::current();
 
-        slate.put(b"pfx/a", b"").await;
-        slate.put(b"pfx/b", b"").await;
-        slate.put(b"pfx/c", b"").await;
+        slate.put(&make_key(PFX, b"aa"), b"").await;
+        slate.put(&make_key(PFX, b"bb"), b"").await;
+        slate.put(&make_key(PFX, b"cc"), b"").await;
 
         tokio::task::spawn_blocking(move || {
-            let iter = SlateIterator::new(b"pfx/", &slate, handle).unwrap();
+            let iter = SlateIterator::new(PFX, &slate, handle).unwrap();
             let count = iter.count().unwrap();
             // estimate_key_count is an approximation, so just check it's reasonable
             assert!(count >= 1, "count should be at least 1, got {}", count);

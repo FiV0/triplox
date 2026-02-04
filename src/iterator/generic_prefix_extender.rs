@@ -7,7 +7,6 @@ use tokio::runtime::Handle;
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::index_type_to_prefix;
 use crate::index::IndexType;
-use crate::util::extract_next_component;
 
 use super::slate_iterator::{Index, SlateIterator};
 
@@ -85,11 +84,8 @@ impl PrefixExtender for GenericPrefixExtender {
             .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
 
         let mut extensions = Vec::new();
-        while let Ok(Some(key)) = iter.get_value() {
-            // Deduplications should happen lower level. Let's write a non historic version first.
-            if let Ok(extension) = extract_next_component(&key, &slate_prefix) {
-                extensions.push(extension);
-            }
+        while let Ok(Some(extension)) = iter.get_value() {
+            extensions.push(extension);
             iter.next()
                 .unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
         }
@@ -108,30 +104,24 @@ impl PrefixExtender for GenericPrefixExtender {
 
         let mut result = Vec::new();
         for ext in extensions {
-            let mut seek_key = slate_prefix.to_vec();
-            seek_key.extend_from_slice(ext);
-
-            // Check current position before seeking - the iterator may already be at or past the target.
-            // SlateDB does not allow seeking backwards, so we only seek when the target is ahead.
+            // Check current position before seeking — SlateDB does not allow seeking backwards.
             let current = iter
                 .get_value()
                 .unwrap_or_else(|e| panic!("Failed to get iterator value: {}", e));
 
             match current {
-                Some(ref key) if key.as_ref() >= seek_key.as_slice() => {
-                    // Already at or past the target, check for match without advancing
-                    if key.starts_with(&seek_key) {
+                Some(ref val) if val.as_ref() >= ext.as_ref() => {
+                    if val == ext {
                         result.push(ext.clone());
                     }
                 }
                 Some(_) => {
-                    // Current key is before the target, seek forward
-                    iter.seek(Bytes::from(seek_key.clone()))
+                    iter.seek(ext.clone())
                         .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
 
                     match iter.next() {
-                        Ok(Some(key)) => {
-                            if key.starts_with(&seek_key) {
+                        Ok(Some(val)) => {
+                            if val == *ext {
                                 result.push(ext.clone());
                             }
                         }
@@ -139,7 +129,7 @@ impl PrefixExtender for GenericPrefixExtender {
                         Err(e) => panic!("Failed to advance iterator: {}", e),
                     }
                 }
-                None => break, // Iterator exhausted
+                None => break,
             }
         }
         result
