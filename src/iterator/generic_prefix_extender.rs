@@ -103,19 +103,46 @@ impl PrefixExtender for GenericPrefixExtender {
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
 
-        // TODO: do a version with seek
-        extensions
-            .iter()
-            .filter(|ext| {
-                let mut full_key = slate_prefix.to_vec();
-                full_key.extend_from_slice(ext);
+        let mut iter = SlateIterator::new(&slate_prefix, &self.slate, self.handle.clone())
+            .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
 
-                SlateIterator::new(&full_key, &self.slate, self.handle.clone())
-                    .map(|iter| iter.has_next())
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect()
+        let mut result = Vec::new();
+        for ext in extensions {
+            let mut seek_key = slate_prefix.to_vec();
+            seek_key.extend_from_slice(ext);
+
+            // Check current position before seeking - the iterator may already be at or past the target.
+            // SlateDB does not allow seeking backwards, so we only seek when the target is ahead.
+            let current = iter
+                .get_value()
+                .unwrap_or_else(|e| panic!("Failed to get iterator value: {}", e));
+
+            match current {
+                Some(ref key) if key.as_ref() >= seek_key.as_slice() => {
+                    // Already at or past the target, check for match without advancing
+                    if key.starts_with(&seek_key) {
+                        result.push(ext.clone());
+                    }
+                }
+                Some(_) => {
+                    // Current key is before the target, seek forward
+                    iter.seek(Bytes::from(seek_key.clone()))
+                        .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
+
+                    match iter.next() {
+                        Ok(Some(key)) => {
+                            if key.starts_with(&seek_key) {
+                                result.push(ext.clone());
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => panic!("Failed to advance iterator: {}", e),
+                    }
+                }
+                None => break, // Iterator exhausted
+            }
+        }
+        result
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -278,8 +305,8 @@ mod tests {
 
         let candidates = vec![
             encode_string("Alice"),
-            encode_string("Charlie"),
             encode_string("Bob"),
+            encode_string("Charlie"),
         ];
 
         let filtered = extender.intersect(&vec![], &candidates);
