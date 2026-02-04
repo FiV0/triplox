@@ -14,6 +14,10 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Git
+
+Only commit and push when explicitly asked to by the user.
+
 ## Testing
 
 Once the new tests pass, also run all tests with:
