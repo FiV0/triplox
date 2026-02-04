@@ -166,15 +166,15 @@ impl Indexer {
 
         let mut write_batch = WriteBatch::new();
 
-        for (i, index_keys) in index_keys.iter().enumerate() {
-            write_batch.put(index_keys.eav[i].as_slice(), &[]);
-            write_batch.put(index_keys.ave[i].as_slice(), &[]);
-            write_batch.put(index_keys.aev[i].as_slice(), &[]);
-            write_batch.put(index_keys.ae[i].as_slice(), &[]);
-            write_batch.put(index_keys.av[i].as_slice(), &[]);
+        for index_keys in index_keys.iter() {
+            for key in &index_keys.eav { write_batch.put(key.as_slice(), &[]); }
+            for key in &index_keys.ave { write_batch.put(key.as_slice(), &[]); }
+            for key in &index_keys.aev { write_batch.put(key.as_slice(), &[]); }
+            for key in &index_keys.ae { write_batch.put(key.as_slice(), &[]); }
+            for key in &index_keys.av { write_batch.put(key.as_slice(), &[]); }
         }
 
-        self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS);
+        self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
@@ -440,6 +440,65 @@ mod tests {
             assert_eq!(kv2.value, Bytes::from(""));
         }
         assert_eq!(None , iter.next().await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_indexer_write_persisted() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alan".to_string()));
+        let doc = Document(map);
+        let tx_ops = vec![TxOp::Put(doc)];
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+
+        // Verify EAV entry actually exists (not silently skipped like test_indexer's if-let)
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await?;
+        assert!(kv.is_some(), "Expected EAV entry to be written to the database");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_indexer_multi_attribute_document() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alan".to_string()));
+        map.insert("age".to_string(), DataType::Long(30));
+        let doc = Document(map);
+        let tx_ops = vec![TxOp::Put(doc)];
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+
+        // Verify all attributes are indexed in EAV
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+
+        let mut eav_count = 0;
+        while let Some(_kv) = iter.next().await? {
+            eav_count += 1;
+        }
+        assert_eq!(eav_count, 2, "Expected 2 EAV entries (one per non-db/id attribute)");
+
+        // Verify all attributes are indexed in AE
+        let ae_range = create_prefix_range(&[codec::AE]);
+        let mut iter = slate.scan_with_options(ae_range, &ScanOptions::default()).await.unwrap();
+
+        let mut ae_count = 0;
+        while let Some(_kv) = iter.next().await? {
+            ae_count += 1;
+        }
+        assert_eq!(ae_count, 2, "Expected 2 AE entries (one per non-db/id attribute)");
+
         Ok(())
     }
 
