@@ -1,13 +1,15 @@
 #![allow(unused)]
 
+use std::future::Future;
 use std::sync::{Arc, RwLock};
-use log::{info, warn, error, trace};
 
+use anyhow::Result;
+use log::{info, warn, error, trace};
 use serde::{Deserialize, Serialize};
-use crate::transaction::TxKey;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use anyhow::Result;
+
+use crate::transaction::TxKey;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Record{
@@ -17,7 +19,7 @@ pub struct Record{
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait Subscriber : Send + Sync {
-    fn accept(&mut self, record: Record) -> impl std::future::Future<Output = ()> + Send;
+    fn accept(&mut self, record: Record) -> impl Future<Output = ()> + Send;
 }   
 
 pub type TxId = i64;

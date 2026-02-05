@@ -41,32 +41,17 @@ Implement the complete transaction processing pipeline to get transactions flowi
 **Implement Subscriber trait:**
 ```rust
 impl Subscriber for Indexer {
-    fn on_subscribe(&mut self, _close_hook: Box<dyn FnOnce() + Send + Sync>) {
-        // No action needed - indexer doesn't require cleanup on shutdown
-    }
-
-    fn accept(&mut self, record: Record) {
-        // Deserialize record.record (Vec<u8>) to Vec<TxOp>
-        let tx_ops: Vec<TxOp> = match bincode::deserialize(&record.record) {
-            Ok(ops) => ops,
-            Err(e) => {
-                error!("Failed to deserialize transaction: {}", e);
-                return;
-            }
-        };
-
-        // Call transact_tx using futures::executor::block_on
-        // transact_tx already updates latest_indexed_tx and broadcasts via tx_completion_sender
-        match futures::executor::block_on(self.transact_tx(record.tx_key, tx_ops)) {
-            Ok(_) => trace!("Indexed tx {}", record.tx_key.tx_id),
-            Err(e) => error!("Failed to index tx {}: {}", record.tx_key.tx_id, e),
-        }
+    async fn accept(&mut self, record: Record) {
+        let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
+            .expect("Failed to deserialize TxOps from log record");
+        self.transact_tx(record.tx_key, tx_ops).await
+            .expect("Indexer failed to process transaction");
     }
 }
 ```
 
 **Design Decisions:**
-- Use `futures::executor::block_on()` to handle async transact_tx in sync accept()
+- accept() is async, so transact_tx can be awaited directly (no block_in_place needed)
 - Log errors without panicking (system continues running)
 - No new fields needed - existing broadcast channel handles synchronization
 - Keep attribute_to_id as regular HashMap (no Arc<RwLock> needed since Indexer is already behind RwLock)
