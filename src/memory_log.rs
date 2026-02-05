@@ -60,11 +60,11 @@ impl TxLog for MemoryLog {}
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::RwLock;
     use std::thread;
     use std::time::Duration;
     use crate::log::{subscribe, MockSubscriber};
     use crate::clock::{st_from_unix_epoch, MockClock};
+    use tokio::sync::RwLock;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     // TODO: refactor with file log test into a single test where only the log is changed
@@ -72,7 +72,7 @@ mod tests {
         init();
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200), st_from_unix_epoch(300), st_from_unix_epoch(400)]);
-        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
+        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
         let token = subscribe(log.clone(), None, subscriber.clone());
 
         {
@@ -86,7 +86,7 @@ mod tests {
 
         token.cancel();
 
-        let subscriber = subscriber.read().unwrap();
+        let subscriber = subscriber.read().await;
 
         assert_eq!(subscriber.records.len(), 3);
         assert_eq!(subscriber.records[0], Record { tx_key: TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) }, record: vec![1, 2, 3] });
@@ -109,7 +109,7 @@ mod tests {
 
         token2.cancel();
 
-        let subscriber2 = subscriber2.read().unwrap();
+        let subscriber2 = subscriber2.read().await;
 
         assert_eq!(subscriber2.records.len(), 3);
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log

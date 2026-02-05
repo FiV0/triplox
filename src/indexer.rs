@@ -12,6 +12,7 @@ use bytes::Bytes;
 use tokio::sync::broadcast;
 use log::warn;
 
+use crate::log::{Record, Subscriber};
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
 use crate::transaction::TxKey;
@@ -250,6 +251,15 @@ impl Indexer {
     }
 }
 
+
+impl Subscriber for Indexer {
+    async fn accept(&mut self, record: Record) {
+        let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
+            .expect("Failed to deserialize TxOps from log record");
+        self.transact_tx(record.tx_key, tx_ops).await
+            .expect("Indexer failed to process transaction");
+    }
+}
 
 // TODO: something to refactor
 

@@ -97,10 +97,10 @@ impl TxLog for FileLog {}
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::RwLock;
     use tempfile::tempdir;
     use crate::clock::{MockClock, st_from_unix_epoch};
     use crate::log::{subscribe, MockSubscriber};
+    use tokio::sync::RwLock;
 
     use crate::logging::init;
     // Reuse your MockSubscriber implementation here...
@@ -120,8 +120,8 @@ mod tests {
             st_from_unix_epoch(400)
 
         ]);
-        
-        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+
+        let log = Arc::new(std::sync::RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
         let token = subscribe(log.clone(), None, subscriber.clone());
 
         {
@@ -135,7 +135,7 @@ mod tests {
 
         token.cancel();
 
-        let subscriber = subscriber.read().unwrap();
+        let subscriber = subscriber.read().await;
 
         assert_eq!(subscriber.records.len(), 3);
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
@@ -159,7 +159,7 @@ mod tests {
 
         token2.cancel();
 
-        let subscriber2 = subscriber2.read().unwrap();
+        let subscriber2 = subscriber2.read().await;
 
         assert_eq!(subscriber2.records.len(), 3);
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
