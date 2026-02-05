@@ -10,12 +10,10 @@ use crate::clock;
 pub use crate::transaction::{TransactionResult, TxKey};
 pub struct Basis {}
 
-// TODO: remove async_fn_in_trait warning
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
     async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey;
     async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult;
-
 }
 
 #[allow(async_fn_in_trait)]
@@ -53,24 +51,24 @@ impl DB {
 }
 
 #[allow(unused)]
-pub struct Node {
-    log: Box<dyn TxLog>,
+pub struct Node<L: TxLog> {
+    log: L,
     indexer: Box<Indexer>,
     slatedb: Arc<slatedb::Db>,
 }
 
-impl Node {
+impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        Node { 
-            log: Box::new(MemoryLog::new(Box::new(clock::SystemClock))), 
-            indexer: Box::new(Indexer::new(slatedb.clone())), 
+        Node {
+            log: MemoryLog::new(Box::new(clock::SystemClock)),
+            indexer: Box::new(Indexer::new(slatedb.clone())),
             slatedb: slatedb.clone()
         }
     }
 }
 
-impl SubmitNode for Node {
+impl<L: TxLog> SubmitNode for Node<L> {
     async fn submit_tx(&self, _ops: Vec<TxOp>) -> TxKey {
         todo!()
     }
@@ -79,7 +77,7 @@ impl SubmitNode for Node {
     }
 }
 
-impl QueryNode for Node {
+impl<L: TxLog> QueryNode for Node<L> {
     async fn db(&self) -> DB {
         todo!()
     }

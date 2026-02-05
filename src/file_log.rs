@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
-use async_trait::async_trait;
 use tokio::sync::broadcast;
 use log::{error, warn};
 use crate::clock::SystemTimeSource;
@@ -36,7 +35,6 @@ impl FileLog {
     }
 }
 
-#[async_trait]
 impl TxLogReader for FileLog {
     fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>> {
         let mut file = self.file.get_ref().try_clone().unwrap();
@@ -68,7 +66,6 @@ impl TxLogReader for FileLog {
     }
 }
 
-#[async_trait]
 impl TxLogWriter for FileLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let tx_id = self.current_offset().unwrap();

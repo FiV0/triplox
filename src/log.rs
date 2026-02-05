@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-use async_trait::async_trait;
 use std::sync::{Arc, RwLock};
 use log::{info, warn, error, trace};
 
@@ -11,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use anyhow::Result;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Record{
+pub struct Record{
     pub tx_key: TxKey,
     pub record: Vec<u8>,
 }
@@ -21,7 +20,7 @@ pub(crate) trait Subscriber : Send + Sync {
     fn accept(&mut self, record: Record);
 }   
 
-pub(crate) type TxId = i64;
+pub type TxId = i64;
 
 pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<TxId>, subscriber: Arc<RwLock<dyn Subscriber>>) -> CancellationToken {
     let (latest_tx_id, mut tx_receiver) = log.read().unwrap().subscribe_txs();
@@ -97,18 +96,17 @@ pub(crate) fn subscribe(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<T
     token
 }
 
-pub(crate) trait TxLogReader: Send + Sync + 'static {
+pub trait TxLogReader: Send + Sync + 'static {
     fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>>;
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
 }
 
-#[async_trait]
-pub(crate) trait TxLogWriter: Send + Sync + 'static {
+#[allow(async_fn_in_trait)]
+pub trait TxLogWriter: Send + Sync + 'static {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey;
 }
 
-#[async_trait]
-pub(crate) trait TxLog: TxLogReader + TxLogWriter {}
+pub trait TxLog: TxLogReader + TxLogWriter {}
 
 
 // Mock subscriber for testing

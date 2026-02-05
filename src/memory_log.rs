@@ -2,7 +2,6 @@
 
 use std::cmp::min;
 
-use async_trait::async_trait;
 use log::warn;
 use tokio::sync::broadcast;
 use crate::clock::SystemTimeSource;
@@ -25,7 +24,6 @@ impl MemoryLog {
     }
 }
 
-#[async_trait]
 impl TxLogReader for MemoryLog {
     fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>> {
         let available_records = min(self.txs.len().saturating_sub(tx_id as usize), limit as usize);
@@ -37,7 +35,6 @@ impl TxLogReader for MemoryLog {
     }
 }
 
-#[async_trait]
 impl TxLogWriter for MemoryLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let record = Record {
