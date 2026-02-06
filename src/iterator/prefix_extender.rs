@@ -9,7 +9,7 @@ use super::slate_iterator::SlateIterator;
 pub struct PatternPrefixExtender {
     pub join_order: Vec<Variable>,
     pub pattern: PatternClause,
-    pub slate: Arc<slatedb::Db>,
+    pub slate: Arc<slatedb::DbSnapshot>,
     pub vars: Vec<Variable>,
     pub var_to_index: HashMap<Variable, usize>,
 }
@@ -22,7 +22,7 @@ impl PatternPrefixExtender {
     pub fn new(
         join_order: Vec<Variable>,
         pattern: PatternClause,
-        slate: Arc<slatedb::Db>,
+        slate: Arc<slatedb::DbSnapshot>,
     ) -> Result<Self, Error> {
         let mut var_to_index = HashMap::new();
         let mut vars = pattern.variables();
