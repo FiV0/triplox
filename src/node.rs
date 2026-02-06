@@ -24,17 +24,23 @@ pub trait QueryNode {
     async fn db_with_basis(&self, basis: Basis) -> DB;
 }
 
-pub struct DB { }
-
+pub struct DB {
+    snapshot: Arc<slatedb::DbSnapshot>,
+}
 
 #[allow(unused)]
 pub struct Eid {}
 
 #[allow(unused)]
 impl DB {
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>) -> Self {
+        Self { snapshot }
+    }
+
     pub fn entity(&self, _eid: Eid) {
         todo!()
     }
+
     pub fn query(&self, _query: Query) {
         todo!()
     }
@@ -84,7 +90,8 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
 impl<L: TxLog> QueryNode for Node<L> {
     async fn db(&self) -> DB {
-        todo!()
+        let snapshot = self.slatedb.snapshot().await.expect("Failed to create snapshot");
+        DB::new(snapshot)
     }
     async fn db_with_basis(&self, _basis: Basis) -> DB {
         todo!()
