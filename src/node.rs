@@ -111,7 +111,7 @@ mod tests {
 
     use crate::codec;
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{DataType, Document, TxOp};
+    use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
     use crate::slate::{get_and_create_attribute_id, read_attribute_map};
     use crate::transaction::TransactionResult;
     use crate::util::create_prefix_range;
@@ -217,5 +217,34 @@ mod tests {
         assert_eq!(value, DataType::String("bob".to_string()));
         assert_eq!(suffix, codec::ADD);
         assert_eq!(kv.value, Bytes::from(""));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tx_with_add_triple() {
+        let node = Node::memory_node().await;
+
+        let triple = Triple {
+            entity: EntityId::new(10),
+            attribute: Attribute("email".to_string()),
+            value: Value::new(DataType::String("test@example.com".to_string())),
+        };
+        let tx_ops = vec![TxOp::Add(triple)];
+
+        let result = node.execute_tx(tx_ops).await;
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let slate = node.slatedb.clone();
+        let mut attribute_map = read_attribute_map(slate.clone()).await;
+        let email_id = get_and_create_attribute_id(slate.clone(), "email", &mut attribute_map);
+
+        // Check EAV index
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
+        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 10);
+        assert_eq!(attribute, email_id);
+        assert_eq!(value, DataType::String("test@example.com".to_string()));
+        assert_eq!(suffix, codec::ADD);
     }
 }

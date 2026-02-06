@@ -11,11 +11,23 @@ use chrono::{DateTime, Utc};
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct EntityId(i64);
 
+impl EntityId {
+    pub fn new(id: i64) -> Self {
+        EntityId(id)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Attribute(pub String);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Value(DataType);
+
+impl Value {
+    pub fn new(data: DataType) -> Self {
+        Value(data)
+    }
+}
 
 pub type Ref = i64;
 
