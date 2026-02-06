@@ -263,7 +263,7 @@ impl Subscriber for Indexer {
 
 // TODO: something to refactor
 
-fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
+pub fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::EAV {
@@ -284,7 +284,7 @@ fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
     Ok((entity_id, attribute, value, suffix))
 }
 
-fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
+pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AVE {
@@ -305,7 +305,7 @@ fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
     Ok((attribute, value, entity_id, suffix))
 }
 
-fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
+pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AEV {
@@ -326,7 +326,7 @@ fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
     Ok((attribute, entity_id, value, suffix))
 }
 
-fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
+pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AE {
@@ -346,7 +346,7 @@ fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
     Ok((attribute, entity_id, suffix))
 }
 
-fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
+pub fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AV {

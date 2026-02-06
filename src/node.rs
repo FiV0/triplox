@@ -72,8 +72,11 @@ impl Node<MemoryLog> {
 }
 
 impl<L: TxLog> SubmitNode for Node<L> {
-    async fn submit_tx(&self, _ops: Vec<TxOp>) -> TxKey {
-        todo!()
+    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey {
+        let serialized = bincode::serialize(&ops)
+            .expect("Failed to serialize TxOps");
+
+        self.log.write().unwrap().append_tx(serialized).await
     }
 
     async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult {
@@ -96,5 +99,123 @@ impl<L: TxLog> QueryNode for Node<L> {
     }
     async fn db_with_basis(&self, _basis: Basis) -> DB {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use bytes::Bytes;
+    use slatedb::config::ScanOptions;
+
+    use crate::codec;
+    use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
+    use crate::ops::{DataType, Document, TxOp};
+    use crate::slate::{get_and_create_attribute_id, read_attribute_map};
+    use crate::transaction::TransactionResult;
+    use crate::util::create_prefix_range;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_execute_tx_updates_indices() {
+        let node = Node::memory_node().await;
+
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        let doc = Document(map);
+        let tx_ops = vec![TxOp::Put(doc)];
+
+        let result = node.execute_tx(tx_ops).await;
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let slate = node.slatedb.clone();
+        let mut attribute_map = read_attribute_map(slate.clone()).await;
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+
+        // Check EAV index
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
+        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 1);
+        assert_eq!(attribute, name_id);
+        assert_eq!(value, DataType::String("alice".to_string()));
+        assert_eq!(suffix, codec::ADD);
+        assert_eq!(kv.value, Bytes::from(""));
+
+        // Check AVE index
+        let ave_range = create_prefix_range(&[codec::AVE]);
+        let mut iter = slate.scan_with_options(ave_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("AVE index should have an entry");
+        let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 1);
+        assert_eq!(attribute, name_id);
+        assert_eq!(value, DataType::String("alice".to_string()));
+        assert_eq!(suffix, codec::ADD);
+
+        // Check AEV index
+        let aev_range = create_prefix_range(&[codec::AEV]);
+        let mut iter = slate.scan_with_options(aev_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("AEV index should have an entry");
+        let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 1);
+        assert_eq!(attribute, name_id);
+        assert_eq!(value, DataType::String("alice".to_string()));
+        assert_eq!(suffix, codec::ADD);
+
+        // Check AE index
+        let ae_range = create_prefix_range(&[codec::AE]);
+        let mut iter = slate.scan_with_options(ae_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("AE index should have an entry");
+        let (attribute, entity_id, suffix) = ae_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 1);
+        assert_eq!(attribute, name_id);
+        assert_eq!(suffix, codec::ADD);
+
+        // Check AV index
+        let av_range = create_prefix_range(&[codec::AV]);
+        let mut iter = slate.scan_with_options(av_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("AV index should have an entry");
+        let (attribute, value, suffix) = av_key_to_parts(kv.key).unwrap();
+        assert_eq!(attribute, name_id);
+        assert_eq!(value, DataType::String("alice".to_string()));
+        assert_eq!(suffix, codec::ADD);
+    }
+
+    #[tokio::test]
+    async fn test_submit_tx_returns_tx_key_and_indices_updated_async() {
+        let node = Node::memory_node().await;
+
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(2));
+        map.insert("name".to_string(), DataType::String("bob".to_string()));
+        let doc = Document(map);
+        let tx_ops = vec![TxOp::Put(doc)];
+
+        // submit_tx returns immediately with a TxKey
+        let tx_key = node.submit_tx(tx_ops).await;
+        assert_eq!(tx_key.tx_id, 0);
+
+        // Wait for indexer to process the transaction
+        let wait_future = node.indexer.read().await.await_tx(tx_key);
+        wait_future.await.expect("Transaction should be indexed");
+
+        // Verify indices are updated
+        let slate = node.slatedb.clone();
+        let mut attribute_map = read_attribute_map(slate.clone()).await;
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+
+        let eav_range = create_prefix_range(&[codec::EAV]);
+        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
+        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+        assert_eq!(entity_id, 2);
+        assert_eq!(attribute, name_id);
+        assert_eq!(value, DataType::String("bob".to_string()));
+        assert_eq!(suffix, codec::ADD);
+        assert_eq!(kv.value, Bytes::from(""));
     }
 }
