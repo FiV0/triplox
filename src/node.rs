@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use crate::clock;
+use crate::datalog::Query;
 use crate::indexer::Indexer;
 use crate::log::{subscribe, TxLog};
 use crate::memory_log::MemoryLog;
@@ -30,12 +31,6 @@ pub struct DB { }
 pub struct Eid {}
 
 #[allow(unused)]
-pub struct Query {}
-
-#[allow(unused)]
-pub struct QueryResult{}
-
-#[allow(unused)]
 impl DB {
     pub fn entity(&self, _eid: Eid) {
         todo!()
@@ -43,12 +38,6 @@ impl DB {
     pub fn query(&self, _query: Query) {
         todo!()
     }
-    // pub fn pull(&self, _pattern: Any) {
-    //     todo!()
-    // }
-    // pub fn pull_many(&self, _pattern: Any) {
-    //     todo!()
-    // }
 }
 
 #[allow(unused)]

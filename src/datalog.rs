@@ -65,10 +65,11 @@ pub enum WhereClause {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Query {
-    Find(FindSpec),
-    Where(Vec<WhereClause>), // todo :in :order-by :limit :offset
-                             // :rules think about where they should go
+pub struct Query {
+    pub find: FindSpec,
+    pub where_clauses: Vec<WhereClause>,
+    // TODO: :in :order-by :limit :offset
+    // :rules think about where they should go
 }
 
 #[derive(Debug, Clone, PartialEq)]
