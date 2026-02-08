@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use rand::Rng;
-use std::ops::Bound;
 
 use crate::{codec, index::IndexType};
 
@@ -14,20 +13,6 @@ pub fn random_string(length: usize) -> String {
             CHARSET[idx] as char
         })
         .collect()
-}
-
-pub type Range = (Bound<Bytes>, Bound<Bytes>);
-
-pub fn prefix_end(prefix: &[u8]) -> Vec<u8> {
-    let mut successor = prefix.to_vec();
-    successor.push(0xFF);
-    successor
-}
-
-pub fn create_prefix_range(prefix: &[u8]) -> Range {
-    let start = Bound::Included(Bytes::copy_from_slice(prefix));
-    let end = Bound::Included(Bytes::copy_from_slice(&prefix_end(prefix)));
-    (start, end)
 }
 
 pub fn concat_bytes(parts: &[&[u8]]) -> Vec<u8> {

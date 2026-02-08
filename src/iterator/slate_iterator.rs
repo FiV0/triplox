@@ -4,7 +4,7 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
-use crate::util::{self, create_prefix_range, extract_next_component};
+use crate::util::extract_next_component;
 
 pub(crate) trait Index {
     fn count(&self) -> Result<u64, Error>;
@@ -24,9 +24,8 @@ pub(crate) struct SlateIterator {
 impl SlateIterator {
     pub fn new(prefix: &[u8], slate: &slatedb::DbSnapshot, handle: Handle) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
-        let prefix_range = create_prefix_range(prefix);
         let mut iterator =
-            handle.block_on(slate.scan_with_options(prefix_range, &DEFAULT_SCAN_OPTIONS))?;
+            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
         let mut current_key = None;
         if let Some(next_key) = handle.block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());

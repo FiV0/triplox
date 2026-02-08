@@ -5,12 +5,9 @@ use slatedb::{Db, Error as SlateDBError, config::{ScanOptions, DurabilityLevel}}
 use slatedb::object_store::{ObjectStore, memory::InMemory};
 use std::sync::Arc;
 
-use std::ops::Bound;
-
 #[cfg(test)]
 mod tests {
     use slatedb::KeyValue;
-    use crate::util::create_prefix_range;
     use anyhow::Error;
 
     use super::*;
@@ -23,9 +20,7 @@ mod tests {
         db.put(b"ac", b"ac_value").await?;
         db.put(b"b", b"b_value").await?;
 
-        let range = create_prefix_range(b"a");
-
-        let mut iter = db.scan_with_options(range, &ScanOptions {
+        let mut iter = db.scan_prefix_with_options(b"a", &ScanOptions {
             durability_filter: DurabilityLevel::Memory,
             dirty: true,
             ..ScanOptions::default()

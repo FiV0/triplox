@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ops::{Bound, RangeBounds};
 use bytes::Bytes;
 
-use crate::util::{random_string, concat_bytes, create_prefix_range};
+use crate::util::{random_string, concat_bytes};
 use crate::codec;
 
 
@@ -52,9 +52,7 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
 pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {
     let mut attribute_to_id = HashMap::new();
 
-    let range = create_prefix_range(&[codec::ATTRIBUTE_TO_ID]);
-
-    let mut iter = slatedb.scan_with_options(range, &DEFAULT_SCAN_OPTIONS).await.unwrap();
+    let mut iter = slatedb.scan_prefix_with_options(&[codec::ATTRIBUTE_TO_ID], &DEFAULT_SCAN_OPTIONS).await.unwrap();
 
     while let Some(KeyValue { key, ..}) = iter.next().await.unwrap() {
         let attribute_range = codec::CODEC_LENGTH as usize..key.len() - codec::CODEC_LENGTH - 8;

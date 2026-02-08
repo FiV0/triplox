@@ -373,7 +373,6 @@ mod tests {
 
 
     use crate::clock::st_from_unix_epoch;
-    use crate::util::create_prefix_range;
     use super::*;
 
     #[tokio::test]
@@ -391,8 +390,7 @@ mod tests {
         let mut attribute_map = read_attribute_map(slate.clone()).await;
         let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
 
-        let eav_range = create_prefix_range(&[codec::EAV]);
-        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv2.key).unwrap();
             assert_eq!(entity_id, 1);
@@ -404,8 +402,7 @@ mod tests {
         assert_eq!(None , iter.next().await?);
 
 
-        let ave_range = create_prefix_range(&[codec::AVE]);
-        let mut iter = slate.scan_with_options(ave_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv2.key).unwrap();
             assert_eq!(entity_id, 1);
@@ -417,8 +414,7 @@ mod tests {
         assert_eq!(None , iter.next().await?);
 
 
-        let aev_range = create_prefix_range(&[codec::AEV]);
-        let mut iter = slate.scan_with_options(aev_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv2.key).unwrap();
             assert_eq!(entity_id, 1);
@@ -429,8 +425,7 @@ mod tests {
         }
         assert_eq!(None , iter.next().await?);
 
-        let ae_range = create_prefix_range(&[codec::AE]);
-        let mut iter = slate.scan_with_options(ae_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, entity_id, suffix) = ae_key_to_parts(kv2.key).unwrap();
             assert_eq!(entity_id, 1);
@@ -440,8 +435,7 @@ mod tests {
         }
         assert_eq!(None , iter.next().await?);
 
-        let av_range = create_prefix_range(&[codec::AV]);
-        let mut iter = slate.scan_with_options(av_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, value, suffix) = av_key_to_parts(kv2.key).unwrap();
             assert_eq!(attribute, name_id);
@@ -467,8 +461,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify EAV entry actually exists (not silently skipped like test_indexer's if-let)
-        let eav_range = create_prefix_range(&[codec::EAV]);
-        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await?;
         assert!(kv.is_some(), "Expected EAV entry to be written to the database");
 
@@ -490,8 +483,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify all attributes are indexed in EAV
-        let eav_range = create_prefix_range(&[codec::EAV]);
-        let mut iter = slate.scan_with_options(eav_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
 
         let mut eav_count = 0;
         while let Some(_kv) = iter.next().await? {
@@ -500,8 +492,7 @@ mod tests {
         assert_eq!(eav_count, 2, "Expected 2 EAV entries (one per non-db/id attribute)");
 
         // Verify all attributes are indexed in AE
-        let ae_range = create_prefix_range(&[codec::AE]);
-        let mut iter = slate.scan_with_options(ae_range, &ScanOptions::default()).await.unwrap();
+        let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
 
         let mut ae_count = 0;
         while let Some(_kv) = iter.next().await? {
