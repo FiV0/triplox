@@ -127,7 +127,8 @@ mod tests {
     use crate::slate::in_memory_slate;
 
     fn encode_u64(val: u64) -> Bytes {
-        Bytes::from(val.to_be_bytes().to_vec())
+        // Use bincode serialization to match how indexer stores entity IDs
+        Bytes::from(bincode::serialize(&val).unwrap())
     }
 
     fn encode_string(s: &str) -> Bytes {
