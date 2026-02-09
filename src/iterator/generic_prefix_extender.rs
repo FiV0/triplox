@@ -77,12 +77,15 @@ impl GenericPrefixExtender {
     /// Create an extractor function for the current index type and position.
     ///
     /// Uses `make_extractor` from util.rs which knows the key layout for each index type.
-    /// Position is pattern_level + 1 (since position 0 is always attribute, which is in the prefix).
     fn make_extractor_fn(&self, join_prefix: &Prefix) -> Extractor {
         let pattern_level = self.pattern_level(join_prefix);
         let index_type = self.index_types[pattern_level];
-        // Position 0 = attribute (always in prefix), so we extract position 1 or 2
-        let position = pattern_level + 1;
+        let position = match index_type {
+            // 3-component indices: if this is a single-variable pattern,
+            // the variable is at position 2 (after attribute and the constant)
+            IndexType::AVE | IndexType::AEV if self.participating_levels.len() == 1 => 2,
+            _ => pattern_level + 1,
+        };
 
         Box::new(move |key: Bytes| make_extractor(position, index_type)(key))
     }
@@ -346,6 +349,43 @@ mod tests {
         assert!(filtered.contains(&encode_string("Alice")));
         assert!(filtered.contains(&encode_string("Bob")));
         assert!(!filtered.contains(&encode_string("Charlie")));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_single_variable_ave_extracts_entity_not_value() -> anyhow::Result<()> {
+        // Simulates pattern [?e "name" "alice"] — single variable, AVE index.
+        // The constant_prefix includes the serialized value ("alice").
+        // The extender should extract the entity (position 2 in AVE layout),
+        // but make_extractor_fn computes position = pattern_level + 1 = 1,
+        // which extracts the value (position 1) instead.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let slate = runtime.block_on(in_memory_slate());
+        let attr_name = 42u64;
+
+        let value_bytes = Bytes::from(bincode::serialize(&DataType::String("alice".to_string()))?);
+        runtime.block_on(insert_ave(&slate, attr_name, value_bytes.clone(), 1))?;
+
+        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
+
+        // This mirrors how compile_pattern sets up a single-variable AVE pattern:
+        // - index_types: [AVE]
+        // - constant_prefix: serialized value bytes
+        // - participating_levels: [0] (only one variable)
+        let extender = GenericPrefixExtender::new(
+            snapshot,
+            runtime.handle().clone(),
+            vec![IndexType::AVE],
+            attr_name,
+            value_bytes.to_vec(),
+            vec![0],
+        );
+
+        let proposed = extender.propose(&vec![]);
+        assert_eq!(proposed.len(), 1);
+        // Should extract entity (DataType::Long(1)), not the value (DataType::String("alice"))
+        assert_eq!(proposed[0], encode_entity(1));
 
         Ok(())
     }
