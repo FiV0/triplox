@@ -23,7 +23,7 @@ Every message on the wire uses the following envelope:
 
 - **type**: 1-byte message type identifier.
 - **length**: 4-byte big-endian unsigned integer. Includes itself (4 bytes) but does NOT include the type byte. Total bytes on the wire = 1 + length. Payload size = length - 4.
-- **payload**: Message-specific data, serialized with bincode.
+- **payload**: Message-specific data, serialized per [Section 10 (Wire Encoding)](#10-wire-encoding).
 
 **Exception**: The initial Startup message from the client has no type byte. It consists only of `[length][payload]`. The server identifies it by context -- the first message on any new connection is always a Startup.
 
@@ -129,17 +129,26 @@ Each ColumnDescription:
 | name      | String      | Variable name, e.g. "?name"          |
 | data_type | DataTypeTag | Type discriminant (see section 9)     |
 
-Sent before the first DataRow of a query result or subscription.
+Sent before the first DataRow of a query result or subscription. Describes the data columns only (does not include the `tpx_diff` metadata field used in subscription mode).
 
 ### 4.6 DataRow (Backend, `D`)
 
-One row of result data.
+One row of result data. The payload format depends on the connection state:
 
-| Field  | Type             | Description                            |
-|--------|------------------|----------------------------------------|
-| values | Vec\<DataType\>  | One value per column, bincode-encoded  |
+**Query mode** (in response to a Query message):
 
-Uses the existing `DataType` enum directly (Nil, BigInt, Boolean, Bytes, Double, Float, Instant, Long, Ref, String, Tuple, Uuid, Vector, Map).
+| Field  | Type             | Description                    |
+|--------|------------------|--------------------------------|
+| values | Vec\<DataType\>  | One value per column           |
+
+**Subscription mode** (while subscribed):
+
+| Field    | Type             | Description                        |
+|----------|------------------|------------------------------------|
+| tpx_diff | i8              | `+1` = row added, `-1` = row retracted |
+| values   | Vec\<DataType\>  | One value per column               |
+
+In subscription mode, updates to existing data are represented as a retraction (`tpx_diff = -1`) of the old row followed by an addition (`tpx_diff = +1`) of the new row, both within the same transaction batch.
 
 ### 4.7 CommandComplete (Backend, `C`)
 
@@ -156,10 +165,10 @@ Submit a transaction.
 
 | Field          | Type          | Description                                        |
 |----------------|---------------|----------------------------------------------------|
-| ops            | Vec\<TxOp\>   | Transaction operations (bincode-serialized)        |
+| ops            | Vec\<TxOp\>   | Transaction operations                             |
 | await_indexing | bool          | If true, server waits for indexer before responding |
 
-Uses the existing `TxOp` enum directly (Put, Add, Retract, Delete, Erase).
+Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 10.7](#107-txop-encoding) for wire encoding.
 
 ### 4.9 TxResult (Backend, `G`)
 
@@ -169,7 +178,7 @@ Transaction outcome.
 |---------------|----------------|------------------------------------------|
 | status        | u8             | 0 = committed, 1 = aborted              |
 | tx_id         | i64            | Transaction ID assigned by the server    |
-| system_time   | DateTime\<Utc\>| Timestamp of the transaction             |
+| system_time   | Instant        | Timestamp of the transaction (microseconds since epoch) |
 | error_message | Option\<String\>| Present if status = aborted            |
 
 ### 4.10 Subscribe (Frontend, `S`)
@@ -184,10 +193,10 @@ Start a live push subscription. Blocks the connection until cancelled.
 On receiving Subscribe, the server:
 1. Validates and compiles the query.
 2. Sends RowDescription with the result schema.
-3. Sends initial results as DataRow messages, followed by a DataBatchComplete.
+3. Sends initial results as DataRow messages (with `tpx_diff = +1`), followed by a DataBatchComplete.
 4. Enters subscription mode. As new transactions arrive and affect the query results, sends additional DataRow messages followed by DataBatchComplete for each transaction.
 
-While subscribed, the only valid client messages are Unsubscribe and Terminate.
+While subscribed, the only valid client messages are Unsubscribe and Terminate. The server concurrently reads client messages and writes subscription data using asynchronous I/O.
 
 ### 4.11 DataBatchComplete (Backend, `B`)
 
@@ -198,6 +207,8 @@ Marks the end of a batch of DataRow messages produced by a single transaction wi
 | tx_id | i64  | Transaction that produced this batch of rows  |
 
 The server flushes its write buffer after sending DataBatchComplete. Clients use this to group rows by originating transaction.
+
+A `tx_id` of `-1` indicates a **heartbeat** (see [Section 12](#12-connection-keepalive-and-timeouts)). Clients should treat this as a no-op and not process any data rows.
 
 ### 4.12 Unsubscribe (Frontend, `U`)
 
@@ -215,15 +226,17 @@ Followed by ReadyForQuery with status `I`.
 
 ### 4.14 ErrorResponse (Backend, `W`)
 
-| Field   | Type            | Description                         |
-|---------|-----------------|-------------------------------------|
-| code    | u16             | Error code (see section 8)          |
-| message | String          | Human-readable error message        |
-| detail  | Option\<String\>| Optional additional detail          |
+| Field    | Type            | Description                                         |
+|----------|-----------------|-----------------------------------------------------|
+| severity | u8              | `E` (0x45) = ERROR, `F` (0x46) = FATAL             |
+| code     | u16             | Error code (see [section 8](#8-error-codes))        |
+| message  | String          | Human-readable error message                        |
+| detail   | Option\<String\>| Optional additional detail                          |
+| hint     | Option\<String\>| Optional suggestion for how to fix the problem      |
 
-**Fatal errors** (e.g. protocol version mismatch): server sends ErrorResponse then closes the connection.
+**FATAL** errors (e.g. protocol version mismatch, subscription write timeout): the server sends ErrorResponse then closes the connection. The `severity` byte is `F` (0x46).
 
-**Non-fatal errors** (e.g. bad query syntax): server sends ErrorResponse followed by ReadyForQuery, allowing the client to continue.
+**Non-fatal** errors (e.g. bad query syntax): the server sends ErrorResponse followed by ReadyForQuery, allowing the client to continue. The `severity` byte is `E` (0x45).
 
 ### 4.15 Terminate (Frontend, `X`)
 
@@ -297,20 +310,19 @@ Client                                Server
   |--- Subscribe(edn, after_tx) ----->|
   |                                     |  compile query, run initial
   |<------------ RowDescription ------|
-  |<------------ DataRow -------------|  } initial results
-  |<------------ DataRow -------------|
+  |<------------ DataRow(+1, ...) ----|  } initial results (all +1)
+  |<------------ DataRow(+1, ...) ----|
   |<------------ DataBatchComplete ---|
   |                                     |
   |        ... DB changes (tx 42) ...
   |                                     |
-  |<------------ DataRow -------------|  } pushed results from tx 42
+  |<------------ DataRow(+1, ...) ----|  } additions from tx 42
+  |<------------ DataRow(-1, ...) ----|  } retractions from tx 42
   |<------------ DataBatchComplete ---|
   |                                     |
-  |        ... DB changes (tx 43) ...
+  |        ... heartbeat (no changes) ...
   |                                     |
-  |<------------ DataRow -------------|  } pushed results from tx 43
-  |<------------ DataRow -------------|
-  |<------------ DataBatchComplete ---|
+  |<------------ DataBatchComplete(-1)|  } heartbeat
   |                                     |
   |--- Unsubscribe ------------------>|
   |<------------ UnsubscribeComplete -|
@@ -339,6 +351,12 @@ There is no protocol-level batching for query results. Each DataRow is an indivi
 ### Subscription Results
 
 When a transaction causes query results to change, the server sends all affected DataRow messages followed by a DataBatchComplete message carrying the originating tx_id. The server flushes its write buffer after each DataBatchComplete. This provides transaction-level grouping without a batching envelope.
+
+### Subscription Backpressure
+
+Subscription uses **in-band** Unsubscribe. The server concurrently reads client messages (Unsubscribe, Terminate) and writes DataRow/DataBatchComplete using asynchronous I/O (e.g. `tokio::select!`).
+
+**Write timeout**: If the server cannot write to a subscribed client within a configurable timeout (default 30 seconds), it SHOULD terminate the subscription by sending `ErrorResponse(severity='F', code=4001, message="subscription write timeout")` and closing the connection. This prevents unbounded server-side buffering for slow clients.
 
 ---
 
@@ -390,19 +408,28 @@ When a transaction causes query results to change, the server sends all affected
 
 ## 8. Error Codes
 
-| Range | Category              | Codes                                          |
-|-------|-----------------------|------------------------------------------------|
-| 1xxx  | Connection errors     | 1000 ProtocolVersionMismatch, 1001 InvalidStartup |
-| 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery |
-| 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted                   |
-| 4xxx  | Subscription errors   | 4000 SubscriptionError                         |
-| 5xxx  | Internal/protocol     | 5000 InternalError, 5001 MessageTooLarge, 5002 InvalidMessageType |
+| Range | Category              | Codes                                                              |
+|-------|-----------------------|--------------------------------------------------------------------|
+| 1xxx  | Connection errors     | 1000 ProtocolVersionMismatch, 1001 InvalidStartup                  |
+| 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
+| 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted                                      |
+| 4xxx  | Subscription errors   | 4000 SubscriptionError, 4001 SubscriptionTimeout                   |
+| 5xxx  | Internal/protocol     | 5000 InternalError, 5001 MessageTooLarge, 5002 InvalidMessageType, 5003 QueryCancelled, 5004 ServerShuttingDown |
+
+### Severity
+
+Error severity is encoded in the `severity` field of ErrorResponse:
+
+| Byte | Name  | Meaning                                                |
+|------|-------|--------------------------------------------------------|
+| `E` (0x45) | ERROR | Non-fatal. ReadyForQuery follows. Connection continues. |
+| `F` (0x46) | FATAL | Fatal. Connection will be closed after this message.    |
 
 ---
 
 ## 9. Data Type Tags
 
-Used in RowDescription to describe column types. Maps from the existing `DataType` enum.
+Used in RowDescription to describe column types and as the discriminant byte in the wire encoding of `DataType` values.
 
 | Tag | Name    |
 |-----|---------|
@@ -423,3 +450,251 @@ Used in RowDescription to describe column types. Maps from the existing `DataTyp
 | 255 | Unknown |
 
 `Unknown` (255) is used when the column type is not uniform or cannot be determined in advance.
+
+---
+
+## 10. Wire Encoding
+
+All message payloads are encoded using the binary format described in this section. The encoding is language-neutral and designed to be straightforward to implement in any language (Rust, Java, Clojure, etc.).
+
+All multi-byte integers use **big-endian** (network) byte order.
+
+### 10.1 Primitive Types
+
+| Type   | Encoding                                         |
+|--------|--------------------------------------------------|
+| `bool` | 1 byte: `0x00` = false, `0x01` = true            |
+| `u8`   | 1 byte, unsigned                                  |
+| `i8`   | 1 byte, signed two's complement                   |
+| `u16`  | 2 bytes, big-endian, unsigned                      |
+| `u32`  | 4 bytes, big-endian, unsigned                      |
+| `i64`  | 8 bytes, big-endian, signed two's complement       |
+| `u64`  | 8 bytes, big-endian, unsigned                      |
+| `i128` | 16 bytes, big-endian, signed two's complement      |
+| `f32`  | 4 bytes, IEEE 754 binary32, big-endian             |
+| `f64`  | 8 bytes, IEEE 754 binary64, big-endian             |
+
+### 10.2 Strings
+
+```
++----------+------------------+
+| len: u32 | UTF-8 bytes      |
++----------+------------------+
+```
+
+`len` is the byte count of the UTF-8 encoded string (not the character count).
+
+### 10.3 Byte Arrays
+
+```
++----------+------------------+
+| len: u32 | raw bytes        |
++----------+------------------+
+```
+
+### 10.4 Optional Values (`Option<T>`)
+
+```
++----------+-----------+
+| tag: u8  | value: T  |    (if tag = 0x01)
++----------+-----------+
+```
+
+- `0x00` = None (no following bytes)
+- `0x01` = Some, followed by the encoded value of type T
+
+### 10.5 Sequences (`Vec<T>`)
+
+```
++-----------+-------------------+
+| count: u32| elements: T × N   |
++-----------+-------------------+
+```
+
+`count` elements encoded sequentially.
+
+### 10.6 Maps (`Map<K, V>`)
+
+```
++-----------+----------------------------+
+| count: u32| entries: (K, V) × N         |
++-----------+----------------------------+
+```
+
+`count` key-value pairs encoded sequentially. Keys are sorted lexicographically (for `Map<String, V>`).
+
+### 10.7 DataType Encoding
+
+A `DataType` value is encoded as a 1-byte type tag (from [Section 9](#9-data-type-tags)) followed by the variant payload:
+
+| Tag | Name    | Payload                                          |
+|-----|---------|--------------------------------------------------|
+| 0   | Nil     | *(empty — no payload)*                           |
+| 1   | BigInt  | `i128` (16 bytes)                                |
+| 2   | Boolean | `bool` (1 byte)                                  |
+| 3   | Bytes   | `Bytes` (u32 length + raw bytes)                 |
+| 4   | Double  | `f64` (8 bytes)                                  |
+| 5   | Float   | `f32` (4 bytes)                                  |
+| 6   | Instant | `i64` (microseconds since Unix epoch)            |
+| 7   | Long    | `i64` (8 bytes)                                  |
+| 8   | Ref     | `i64` (8 bytes, entity reference)                |
+| 9   | String  | `String` (u32 length + UTF-8 bytes)              |
+| 10  | Tuple   | `Vec<DataType>` (u32 count + elements)           |
+| 11  | Uuid    | 16 bytes, raw RFC 4122 layout                    |
+| 12  | Vector  | `Vec<DataType>` (u32 count + elements)           |
+| 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |
+
+### 10.8 TxOp Encoding
+
+A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payload:
+
+| Tag | Name     | Payload                                    |
+|-----|----------|--------------------------------------------|
+| 0   | Put      | `Document` (encoded as `Map<String, DataType>`) |
+| 1   | Add      | `Triple` (see below)                       |
+| 2   | Retract  | `Triple` (see below)                       |
+| 3   | Delete   | `EntityId` (`i64`)                         |
+| 4   | Erase    | `EntityId` (`i64`)                         |
+
+**Triple encoding**:
+
+```
++-------------------+---------------------+------------------+
+| entity: i64       | attribute: String    | value: DataType  |
++-------------------+---------------------+------------------+
+```
+
+### 10.9 Message Payloads
+
+Each message payload is the concatenation of its fields in declaration order, encoded using the types above.
+
+**Startup** (no type byte):
+```
+version_major : u16
+version_minor : u16
+params        : Map<String, String>
+```
+
+**AuthenticationOk** (`R`):
+```
+server_version : String
+```
+
+**ReadyForQuery** (`Z`):
+```
+status : u8
+```
+
+**Query** (`Q`):
+```
+query_string : String
+basis_tx_id  : Option<i64>
+```
+
+**RowDescription** (`T`):
+```
+columns : Vec<ColumnDescription>
+```
+where each ColumnDescription is:
+```
+name      : String
+data_type : u8          (DataTypeTag from Section 9)
+```
+
+**DataRow** (`D`) — query mode:
+```
+values : Vec<DataType>
+```
+
+**DataRow** (`D`) — subscription mode:
+```
+tpx_diff : i8           (+1 or -1)
+values   : Vec<DataType>
+```
+
+**CommandComplete** (`C`):
+```
+tag       : String
+row_count : u64
+```
+
+**Execute** (`E`):
+```
+ops            : Vec<TxOp>
+await_indexing : bool
+```
+
+**TxResult** (`G`):
+```
+status        : u8         (0 = committed, 1 = aborted)
+tx_id         : i64
+system_time   : i64        (microseconds since Unix epoch)
+error_message : Option<String>
+```
+
+**Subscribe** (`S`):
+```
+query_string : String
+after_tx_id  : Option<i64>
+```
+
+**DataBatchComplete** (`B`):
+```
+tx_id : i64              (-1 = heartbeat)
+```
+
+**Unsubscribe** (`U`):
+```
+(empty)
+```
+
+**UnsubscribeComplete** (`N`):
+```
+(empty)
+```
+
+**ErrorResponse** (`W`):
+```
+severity : u8            ('E' or 'F')
+code     : u16
+message  : String
+detail   : Option<String>
+hint     : Option<String>
+```
+
+**Terminate** (`X`):
+```
+(empty)
+```
+
+---
+
+## 11. Connection Keepalive and Timeouts
+
+The protocol does NOT define a ping/pong mechanism. Connection liveness is handled at two levels:
+
+### TCP Keepalive
+
+Implementations SHOULD configure TCP keepalive on both client and server sockets (`SO_KEEPALIVE` with a recommended interval of 60 seconds). This detects dead peers and prevents silent connection drops due to NAT timeouts or network failures.
+
+### Subscription Heartbeat
+
+During an active subscription, if no real data has been sent within the keepalive interval, the server SHOULD send a `DataBatchComplete` message with `tx_id = -1` as a heartbeat. Clients MUST treat `tx_id = -1` as a no-op and not process any data rows. This serves two purposes:
+1. Confirms the subscription is still alive.
+2. Prevents intermediate network equipment from timing out the connection.
+
+### Idle Connection Timeout
+
+Servers MAY enforce an idle connection timeout for connections in the Idle state (configurable, suggested default 5 minutes). After the timeout, the server sends `ErrorResponse(severity='F', code=5004)` and closes the connection.
+
+---
+
+## 12. Future Extensions
+
+The following features are deliberately deferred to a later protocol version. They are documented here to inform client and server implementations of planned evolution:
+
+- **SSL/TLS negotiation**: Pre-Startup SSLRequest exchange (pgwire pattern). Client sends magic number, server responds with `S`/`N`, TLS handshake follows if accepted.
+- **Query cancellation**: BackendKeyData message during startup (connection ID + secret key). CancelRequest on a separate TCP connection to cancel long-running queries without closing the main connection.
+- **NoticeResponse**: Non-fatal informational messages (warnings, deprecation notices). Same structure as ErrorResponse but does not affect protocol flow.
+- **Authentication**: Methods beyond version check (password, SCRAM, certificate). Would reuse the `R` type byte with sub-type codes.
+- **Prepared statements / extended query protocol**: Parse, Bind, Describe, Execute, Sync flow for parameterized queries.
