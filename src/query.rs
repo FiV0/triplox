@@ -1,0 +1,319 @@
+#![allow(unused)]
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use anyhow::Error;
+use bytes::Bytes;
+use tokio::runtime::Handle;
+
+use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
+use crate::datalog::{
+    FindElement, FindSpec, PatternClause, PatternElement, Query, TriplePattern, Variable,
+    WhereClause,
+};
+use crate::index::IndexType;
+use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
+use crate::ops::DataType;
+
+/// Result is Vec<Vec<Bytes>> - each inner Vec is a projected row.
+/// Decoding to DataType is a separate step.
+pub type QueryResult = Vec<Vec<Bytes>>;
+
+/// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
+pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
+    let mut seen = HashSet::new();
+    let mut order = Vec::new();
+
+    for clause in where_clauses {
+        if let WhereClause::Triple(triple) = clause {
+            let pattern = PatternClause::from(triple.clone());
+            for var in pattern.variables() {
+                if seen.insert(var.clone()) {
+                    order.push(var);
+                }
+            }
+        }
+    }
+    order
+}
+
+/// Determine index types for each participating level.
+///
+/// For single-variable patterns: use the appropriate index based on what's constant.
+/// For two-variable patterns:
+///   - Level 0: use AE or AV (just attribute + one component) to propose first variable
+///   - Level 1: use AEV or AVE (attribute + both components) to verify/propose second variable
+fn determine_index_types(
+    pattern: &PatternClause,
+    join_order: &[Variable],
+    participating_levels: &[usize],
+) -> Result<Vec<IndexType>, Error> {
+    let pattern_vars = pattern.variables();
+
+    if pattern_vars.len() == 1 {
+        // Single variable pattern - use the standard index_type
+        let index_type = pattern.index_type(join_order.to_vec())?;
+        Ok(vec![index_type])
+    } else if pattern_vars.len() == 2 {
+        // Two variable pattern - need different indices for each level
+        // Determine which variable comes first in join order
+        let first_var_pos = join_order.iter().position(|v| v == &pattern_vars[0]);
+        let second_var_pos = join_order.iter().position(|v| v == &pattern_vars[1]);
+
+        match (first_var_pos, second_var_pos) {
+            (Some(e_pos), Some(v_pos)) => {
+                // Both vars are entity and value (attribute is always constant for now)
+                if e_pos < v_pos {
+                    // Entity comes first: AE for level 0, AEV for level 1
+                    Ok(vec![IndexType::AE, IndexType::AEV])
+                } else {
+                    // Value comes first: AV for level 0, AVE for level 1
+                    Ok(vec![IndexType::AV, IndexType::AVE])
+                }
+            }
+            _ => Err(anyhow::anyhow!("Variables not found in join order")),
+        }
+    } else if pattern_vars.is_empty() {
+        // No variables - pattern is fully constant (existence check)
+        Ok(vec![])
+    } else {
+        Err(anyhow::anyhow!("Patterns with more than 2 variables not supported"))
+    }
+}
+
+/// Compute the constant prefix bytes for a pattern based on index type.
+/// For AVE index with constant value: include serialized value.
+/// For AEV index with constant entity: include serialized entity.
+fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Result<Vec<u8>, Error> {
+    match index_type {
+        IndexType::AVE => {
+            // AVE key order: [attr, value, entity]
+            // If value is constant, include it in prefix
+            if let PatternElement::Constant(value) = &pattern.value {
+                Ok(bincode::serialize(value)?)
+            } else {
+                Ok(vec![])
+            }
+        }
+        IndexType::AEV => {
+            // AEV key order: [attr, entity, value]
+            // If entity is constant, include it in prefix
+            if let PatternElement::Constant(entity) = &pattern.entity {
+                Ok(bincode::serialize(entity)?)
+            } else {
+                Ok(vec![])
+            }
+        }
+        IndexType::AE | IndexType::AV => {
+            // These are used for two-variable patterns at level 0
+            // No constants to add (we just scan all entities or values for an attribute)
+            Ok(vec![])
+        }
+        _ => Ok(vec![]),
+    }
+}
+
+/// Compile a TriplePattern into a PrefixExtender.
+pub fn compile_pattern(
+    pattern: &TriplePattern,
+    join_order: &[Variable],
+    attribute_id: u64,
+    slate: Arc<slatedb::DbSnapshot>,
+    handle: Handle,
+) -> Result<GenericPrefixExtender, Error> {
+    let pattern_clause = PatternClause::from(pattern.clone());
+    let pattern_vars = pattern_clause.variables();
+
+    // Determine participating levels
+    let participating_levels: Vec<usize> = pattern_vars
+        .iter()
+        .filter_map(|v| join_order.iter().position(|jv| jv == v))
+        .collect();
+
+    // Determine index types for each level
+    let index_types = determine_index_types(&pattern_clause, join_order, &participating_levels)?;
+
+    // Compute constant prefix (for patterns with constant entity or value)
+    let constant_prefix = if !index_types.is_empty() {
+        compute_constant_prefix(&pattern_clause, index_types[0])?
+    } else {
+        vec![]
+    };
+
+    Ok(GenericPrefixExtender::new(
+        slate,
+        handle,
+        index_types,
+        attribute_id,
+        constant_prefix,
+        participating_levels,
+    ))
+}
+
+/// Create indices for projecting find variables from join results.
+pub fn compile_find(find: &FindSpec, join_order: &[Variable]) -> Result<Vec<usize>, Error> {
+    match find {
+        FindSpec::FindRel(elements) => elements
+            .iter()
+            .map(|elem| match elem {
+                FindElement::Variable(var) => join_order
+                    .iter()
+                    .position(|v| v == var)
+                    .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var)),
+                _ => Err(anyhow::anyhow!(
+                    "Only Variable find elements supported in MVP"
+                )),
+            })
+            .collect(),
+    }
+}
+
+/// Extract attribute name from a DataType constant.
+fn extract_attribute_name(data: &DataType) -> Result<String, Error> {
+    match data {
+        DataType::String(s) => Ok(s.clone()),
+        _ => Err(anyhow::anyhow!("Attribute must be a string")),
+    }
+}
+
+/// Resolve attribute PatternElement to attribute ID.
+fn resolve_attribute(
+    elem: &PatternElement,
+    attribute_map: &HashMap<String, u64>,
+) -> Result<u64, Error> {
+    match elem {
+        PatternElement::Constant(data) => {
+            let name = extract_attribute_name(data)?;
+            attribute_map
+                .get(&name)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", name))
+        }
+        _ => Err(anyhow::anyhow!("Attribute must be a constant")),
+    }
+}
+
+/// Execute a query against the database.
+pub fn execute_query(
+    query: &Query,
+    slate: Arc<slatedb::DbSnapshot>,
+    handle: Handle,
+    attribute_map: &HashMap<String, u64>,
+) -> Result<QueryResult, Error> {
+    // 1. Extract variable order
+    let join_order = query_variable_order(&query.where_clauses);
+    let num_levels = join_order.len();
+
+    if num_levels == 0 {
+        return Err(anyhow::anyhow!("Query has no variables"));
+    }
+
+    // 2. Compile patterns into extenders
+    let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
+
+    for clause in &query.where_clauses {
+        if let WhereClause::Triple(pattern) = clause {
+            let attr_id = resolve_attribute(&pattern.attribute, attribute_map)?;
+            let extender = compile_pattern(
+                pattern,
+                &join_order,
+                attr_id,
+                slate.clone(),
+                handle.clone(),
+            )?;
+            extenders.push(Box::new(extender));
+        }
+    }
+
+    // 3. Run GenericJoin
+    let extender_refs: Vec<&dyn PrefixExtender> = extenders.iter().map(|e| e.as_ref()).collect();
+    let join = GenericJoin::new(extender_refs, num_levels);
+    let results = join.join();
+
+    // 4. Project results based on find clause
+    let projection_indices = compile_find(&query.find, &join_order)?;
+
+    let rows: QueryResult = results
+        .into_iter()
+        .map(|tuple| {
+            projection_indices
+                .iter()
+                .map(|&i| tuple[i].clone())
+                .collect()
+        })
+        .collect();
+
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_variable_order_single_pattern() {
+        let where_clauses = vec![WhereClause::Triple(TriplePattern {
+            entity: PatternElement::Variable("?e".to_string()),
+            attribute: PatternElement::Constant(DataType::String("name".to_string())),
+            value: PatternElement::Variable("?name".to_string()),
+        })];
+
+        let order = query_variable_order(&where_clauses);
+        assert_eq!(order, vec!["?e", "?name"]);
+    }
+
+    #[test]
+    fn test_query_variable_order_multiple_patterns() {
+        let where_clauses = vec![
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Variable("?name".to_string()),
+            }),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                value: PatternElement::Variable("?age".to_string()),
+            }),
+        ];
+
+        let order = query_variable_order(&where_clauses);
+        // ?e appears first in pattern 1, ?name second in pattern 1, ?age in pattern 2
+        assert_eq!(order, vec!["?e", "?name", "?age"]);
+    }
+
+    #[test]
+    fn test_query_variable_order_with_constants() {
+        let where_clauses = vec![WhereClause::Triple(TriplePattern {
+            entity: PatternElement::Variable("?e".to_string()),
+            attribute: PatternElement::Constant(DataType::String("name".to_string())),
+            value: PatternElement::Constant(DataType::String("Alice".to_string())),
+        })];
+
+        let order = query_variable_order(&where_clauses);
+        assert_eq!(order, vec!["?e"]);
+    }
+
+    #[test]
+    fn test_compile_find() {
+        let find = FindSpec::FindRel(vec![
+            FindElement::Variable("?name".to_string()),
+            FindElement::Variable("?e".to_string()),
+        ]);
+        let join_order = vec!["?e".to_string(), "?name".to_string()];
+
+        let indices = compile_find(&find, &join_order).unwrap();
+        // ?name is at index 1, ?e is at index 0
+        assert_eq!(indices, vec![1, 0]);
+    }
+
+    #[test]
+    fn test_compile_find_missing_variable() {
+        let find = FindSpec::FindRel(vec![FindElement::Variable("?missing".to_string())]);
+        let join_order = vec!["?e".to_string(), "?name".to_string()];
+
+        let result = compile_find(&find, &join_order);
+        assert!(result.is_err());
+    }
+}

@@ -7,8 +7,9 @@ use tokio::runtime::Handle;
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::index_type_to_prefix;
 use crate::index::IndexType;
+use crate::util::make_extractor;
 
-use super::slate_iterator::{Index, SlateIterator};
+use super::slate_iterator::{Extractor, Index, SlateIterator};
 
 /// GenericPrefixExtender implements PrefixExtender using SlateDB with byte prefixes.
 ///
@@ -17,7 +18,7 @@ pub struct GenericPrefixExtender {
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
-    attribute_id: u64,                // The attribute this pattern queries
+    constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
 }
 
@@ -27,37 +28,63 @@ impl GenericPrefixExtender {
         handle: Handle,
         index_types: Vec<IndexType>,
         attribute_id: u64,
+        constant_prefix: Vec<u8>,
         participating_levels: Vec<usize>,
     ) -> Self {
+        let mut full_prefix = bincode::serialize(&attribute_id)
+            .expect("Failed to serialize attribute_id");
+        full_prefix.extend_from_slice(&constant_prefix);
+
         Self {
             slate,
             handle,
             index_types,
-            attribute_id,
+            constant_prefix: full_prefix,
             participating_levels,
         }
+    }
+
+    /// Get the pattern-internal level (how many of this pattern's variables we've already bound)
+    fn pattern_level(&self, join_prefix: &Prefix) -> usize {
+        self.participating_levels
+            .iter()
+            .filter(|&&level| level < join_prefix.len())
+            .count()
     }
 
     /// Build SlateDB key prefix from join prefix
     ///
     /// Selects index type based on join depth and constructs the appropriate byte prefix.
     fn build_slate_prefix(&self, join_prefix: &Prefix) -> Result<Bytes, Error> {
-        // Index type is determined by current join depth
-        let index_type = self.index_types[join_prefix.len()];
+        let pattern_level = self.pattern_level(join_prefix);
+        let index_type = self.index_types[pattern_level];
         let codec = index_type_to_prefix(index_type)?;
 
         let mut key = vec![codec];
-        key.extend_from_slice(&self.attribute_id.to_be_bytes());
+        key.extend_from_slice(&self.constant_prefix);
 
         // Append components from join prefix at participating levels
-        for (idx, &level) in self.participating_levels.iter().enumerate() {
-            if idx >= join_prefix.len() {
+        for &level in self.participating_levels.iter() {
+            if level >= join_prefix.len() {
                 break;
             }
             key.extend_from_slice(&join_prefix[level]);
         }
 
         Ok(Bytes::from(key))
+    }
+
+    /// Create an extractor function for the current index type and position.
+    ///
+    /// Uses `make_extractor` from util.rs which knows the key layout for each index type.
+    /// Position is pattern_level + 1 (since position 0 is always attribute, which is in the prefix).
+    fn make_extractor_fn(&self, join_prefix: &Prefix) -> Extractor {
+        let pattern_level = self.pattern_level(join_prefix);
+        let index_type = self.index_types[pattern_level];
+        // Position 0 = attribute (always in prefix), so we extract position 1 or 2
+        let position = pattern_level + 1;
+
+        Box::new(move |key: Bytes| make_extractor(position, index_type)(key))
     }
 }
 
@@ -67,9 +94,15 @@ impl PrefixExtender for GenericPrefixExtender {
         let slate_prefix = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+        let extractor = self.make_extractor_fn(join_prefix);
 
-        let iter = SlateIterator::new(&slate_prefix, self.slate.as_ref(), self.handle.clone())
-            .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
+        let iter = SlateIterator::new(
+            &slate_prefix,
+            self.slate.as_ref(),
+            self.handle.clone(),
+            extractor,
+        )
+        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
 
         iter.count().unwrap_or(0) as usize
     }
@@ -79,9 +112,15 @@ impl PrefixExtender for GenericPrefixExtender {
         let slate_prefix = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+        let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = SlateIterator::new(&slate_prefix, self.slate.as_ref(), self.handle.clone())
-            .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
+        let mut iter = SlateIterator::new(
+            &slate_prefix,
+            self.slate.as_ref(),
+            self.handle.clone(),
+            extractor,
+        )
+        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
 
         let mut extensions = Vec::new();
         while let Ok(Some(extension)) = iter.get_value() {
@@ -98,9 +137,15 @@ impl PrefixExtender for GenericPrefixExtender {
         let slate_prefix = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+        let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = SlateIterator::new(&slate_prefix, self.slate.as_ref(), self.handle.clone())
-            .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
+        let mut iter = SlateIterator::new(
+            &slate_prefix,
+            self.slate.as_ref(),
+            self.handle.clone(),
+            extractor,
+        )
+        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
 
         let mut result = Vec::new();
         for ext in extensions {
@@ -142,9 +187,9 @@ mod tests {
         entity: u64,
     ) -> anyhow::Result<()> {
         let mut key = vec![crate::codec::AVE];
-        key.extend_from_slice(&attribute.to_be_bytes());
+        key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
-        key.extend_from_slice(&entity.to_be_bytes());
+        key.extend_from_slice(&bincode::serialize(&entity)?);
         key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
@@ -153,7 +198,7 @@ mod tests {
 
     async fn insert_av(slate: &slatedb::Db, attribute: u64, value: Bytes) -> anyhow::Result<()> {
         let mut key = vec![crate::codec::AV];
-        key.extend_from_slice(&attribute.to_be_bytes());
+        key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
         key.push(crate::codec::ADD);
 
@@ -172,6 +217,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV, IndexType::AVE],
             42,
+            vec![],
             vec![0, 1],
         );
 
@@ -197,6 +243,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV],
             attr_name,
+            vec![],
             vec![0],
         );
 
@@ -223,6 +270,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV],
             attr_name,
+            vec![],
             vec![0],
         );
 
@@ -252,6 +300,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV, IndexType::AVE],
             attr_name,
+            vec![],
             vec![0, 1],
         );
 
@@ -281,6 +330,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV],
             attr_name,
+            vec![],
             vec![0],
         );
 
@@ -312,6 +362,7 @@ mod tests {
             runtime.handle().clone(),
             vec![IndexType::AV],
             attr_name,
+            vec![],
             vec![0],
         );
 

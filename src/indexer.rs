@@ -44,14 +44,6 @@ fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn assert_attributes(attributes: &[&str]) -> Result<(), Error> {
-    for attribute in attributes {
-        assert_valid_attribute(attribute)?;
-    }
-    Ok(())
-}
-
-
 impl Indexer {
     pub fn new(slatedb: Arc<Db>) -> Self {
         let attribute_to_id = HashMap::new();
@@ -75,16 +67,13 @@ impl Indexer {
                     Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
-                let attribute_and_values = doc.iter().filter(|(k, _)| *k != "db/id").collect::<Vec<_>>();
-                assert_attributes(&attribute_and_values.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>())?;
-
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_and_values = attribute_and_values
-                    .iter()
-                    .map(|(k, v)| -> Result<(Vec<u8>, Vec<u8>)> {
-                        let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &mut attribute_map);
-                        Ok((bincode::serialize(&attribute_id)?, bincode::serialize(v)?))
-                    }).collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()?;
+                let mut attribute_and_values = Vec::new();
+                for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
+                    assert_valid_attribute(k)?;
+                    let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &mut attribute_map).await;
+                    attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
+                }
 
                 let mut eav : Vec<Vec<u8>> = Vec::new();
                 let mut ave : Vec<Vec<u8>> = Vec::new();
@@ -114,7 +103,7 @@ impl Indexer {
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map);
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -135,7 +124,7 @@ impl Indexer {
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
                 let entity_id = bincode::serialize(&entity_id)?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map);
+                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -388,7 +377,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
 
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {

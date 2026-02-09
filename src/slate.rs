@@ -55,8 +55,9 @@ pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {
     let mut iter = slatedb.scan_prefix_with_options(&[codec::ATTRIBUTE_TO_ID], &DEFAULT_SCAN_OPTIONS).await.unwrap();
 
     while let Some(KeyValue { key, ..}) = iter.next().await.unwrap() {
-        let attribute_range = codec::CODEC_LENGTH as usize..key.len() - codec::CODEC_LENGTH - 8;
-        let id_range = key.len() - 8 - codec::CODEC_LENGTH..key.len() - codec::CODEC_LENGTH;
+        // Key format: [ATTRIBUTE_TO_ID (1 byte)] + [attribute (bincode)] + [id (8 bytes bincode)]
+        let attribute_range = codec::CODEC_LENGTH as usize..key.len() - 8;
+        let id_range = key.len() - 8..key.len();
 
         let attribute = bincode::deserialize::<String>(&key.slice(attribute_range)).unwrap();
         let id = bincode::deserialize::<u64>(&key.slice(id_range)).unwrap();
@@ -66,7 +67,7 @@ pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {
     attribute_to_id
 }
 
-pub fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_map: &mut HashMap<String, u64>) -> u64 {
+pub async fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_map: &mut HashMap<String, u64>) -> u64 {
     let size = attribute_map.len() as u64;
     let attribute_id = match attribute_map.get(attribute) {
         Some(id) => id,
@@ -74,7 +75,7 @@ pub fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_
             attribute_map.insert(attribute.to_string(), size);
             let attribute = bincode::serialize(attribute).unwrap();
             let id = bincode::serialize(&size).unwrap();
-            slatedb.put(&concat_bytes(&[&[codec::ATTRIBUTE_TO_ID], &attribute, &id]), &[]);
+            slatedb.put(&concat_bytes(&[&[codec::ATTRIBUTE_TO_ID], &attribute, &id]), &[]).await;
             return size
         }
     };

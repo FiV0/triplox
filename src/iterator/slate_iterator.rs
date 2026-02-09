@@ -4,7 +4,6 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
-use crate::util::extract_next_component;
 
 pub(crate) trait Index {
     fn count(&self) -> Result<u64, Error>;
@@ -14,15 +13,24 @@ pub(crate) trait Index {
     fn has_next(&self) -> bool;
 }
 
+/// Type alias for extractor functions that extract a component from a full key.
+pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
+
 pub(crate) struct SlateIterator {
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
     prefix: Bytes,
     handle: Handle,
+    extractor: Extractor,
 }
 
 impl SlateIterator {
-    pub fn new(prefix: &[u8], slate: &slatedb::DbSnapshot, handle: Handle) -> Result<Self, Error> {
+    pub fn new(
+        prefix: &[u8],
+        slate: &slatedb::DbSnapshot,
+        handle: Handle,
+        extractor: Extractor,
+    ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let mut iterator =
             handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
@@ -35,6 +43,7 @@ impl SlateIterator {
             current_key,
             prefix: prefix_bytes,
             handle,
+            extractor,
         })
     }
 }
@@ -70,7 +79,7 @@ impl Index for SlateIterator {
         let next_key = self.handle.block_on(self.inner.next())?;
         if let Some(next_key) = next_key {
             self.current_key = Some(next_key.key.clone());
-            Ok(Some(extract_next_component(&next_key.key, &self.prefix)?))
+            Ok(Some((self.extractor)(next_key.key)))
         } else {
             self.current_key = None;
             Ok(None)
@@ -79,7 +88,7 @@ impl Index for SlateIterator {
 
     fn get_value(&self) -> Result<Option<Bytes>, Error> {
         match &self.current_key {
-            Some(key) => Ok(Some(extract_next_component(key, &self.prefix)?)),
+            Some(key) => Ok(Some((self.extractor)(key.clone()))),
             None => Ok(None),
         }
     }
@@ -141,9 +150,7 @@ impl Index for VecIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::ADD;
     use crate::slate::in_memory_slate;
-    use std::sync::Arc;
 
     #[test]
     fn test_vec_iterator_basic_operations() {
@@ -217,16 +224,24 @@ mod tests {
         assert_eq!(iter.get_value().unwrap(), None);
     }
 
-    /// Build a key: prefix + value + ADD byte
+    /// Build a key: prefix + value + OP byte (0x01 for ADD)
     fn make_key(prefix: &[u8], value: &[u8]) -> Vec<u8> {
         let mut key = prefix.to_vec();
         key.extend_from_slice(value);
-        key.push(ADD);
+        key.push(0x01); // ADD op
         key
     }
 
     const PFX: &[u8] = b"\x01";
     const OTHER_PFX: &[u8] = b"\x02";
+
+    /// Create an extractor that strips prefix and suffix (OP byte) from the key
+    fn make_test_extractor(prefix_len: usize) -> Extractor {
+        Box::new(move |key: Bytes| {
+            // Extract everything after prefix and before the OP byte
+            key.slice(prefix_len..key.len() - 1)
+        })
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_basic() {
@@ -241,7 +256,8 @@ mod tests {
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle).unwrap();
+            let extractor = make_test_extractor(PFX.len());
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -265,7 +281,8 @@ mod tests {
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle).unwrap();
+            let extractor = make_test_extractor(PFX.len());
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -284,7 +301,8 @@ mod tests {
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
-            let iter = SlateIterator::new(PFX, &snapshot, handle).unwrap();
+            let extractor = make_test_extractor(PFX.len());
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         }).await.unwrap();
@@ -302,7 +320,8 @@ mod tests {
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
-            let iter = SlateIterator::new(PFX, &snapshot, handle).unwrap();
+            let extractor = make_test_extractor(PFX.len());
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
             let count = iter.count().unwrap();
             // TODO: count() currently returns 100 as estimate_key_count is not on DbSnapshot
             assert_eq!(count, 100);

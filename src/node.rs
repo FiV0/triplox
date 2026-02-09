@@ -1,4 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+use anyhow::Error;
+use tokio::runtime::Handle;
 
 use crate::clock;
 use crate::datalog::Query;
@@ -6,7 +10,8 @@ use crate::indexer::Indexer;
 use crate::log::{subscribe, TxLog};
 use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
-use crate::slate::in_memory_slate;
+use crate::query::{execute_query, QueryResult};
+use crate::slate::{in_memory_slate, read_attribute_map};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +31,8 @@ pub trait QueryNode {
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
+    attribute_map: HashMap<String, u64>,
+    handle: Handle,
 }
 
 #[allow(unused)]
@@ -33,16 +40,27 @@ pub struct Eid {}
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>) -> Self {
-        Self { snapshot }
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, u64>, handle: Handle) -> Self {
+        Self { snapshot, attribute_map, handle }
     }
 
     pub fn entity(&self, _eid: Eid) {
         todo!()
     }
 
-    pub fn query(&self, _query: Query) {
-        todo!()
+    /// Execute a query against this database snapshot.
+    /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
+    pub async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
+        let snapshot = self.snapshot.clone();
+        let handle = self.handle.clone();
+        let attribute_map = self.attribute_map.clone();
+        let query = query.clone();
+
+        tokio::task::spawn_blocking(move || {
+            execute_query(&query, snapshot, handle, &attribute_map)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
     }
 }
 
@@ -91,7 +109,9 @@ impl<L: TxLog> SubmitNode for Node<L> {
 impl<L: TxLog> QueryNode for Node<L> {
     async fn db(&self) -> DB {
         let snapshot = self.slatedb.snapshot().await.expect("Failed to create snapshot");
-        DB::new(snapshot)
+        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
+        let handle = Handle::current();
+        DB::new(snapshot, attribute_map, handle)
     }
     async fn db_with_basis(&self, _basis: Basis) -> DB {
         todo!()
@@ -106,6 +126,7 @@ mod tests {
     use slatedb::config::ScanOptions;
 
     use crate::codec;
+    use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
     use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
     use crate::slate::{get_and_create_attribute_id, read_attribute_map};
@@ -127,7 +148,7 @@ mod tests {
 
         let slate = node.slatedb.clone();
         let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
 
         // Check EAV index
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -195,7 +216,7 @@ mod tests {
         // Verify indices are updated
         let slate = node.slatedb.clone();
         let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map);
+        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
 
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
@@ -223,7 +244,7 @@ mod tests {
 
         let slate = node.slatedb.clone();
         let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let email_id = get_and_create_attribute_id(slate.clone(), "email", &mut attribute_map);
+        let email_id = get_and_create_attribute_id(slate.clone(), "email", &mut attribute_map).await;
 
         // Check EAV index
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -233,5 +254,121 @@ mod tests {
         assert_eq!(attribute, email_id);
         assert_eq!(value, DataType::String("test@example.com".to_string()));
         assert_eq!(suffix, codec::ADD);
+    }
+
+    // End-to-end query tests
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_single_pattern_var_const_var() {
+        // Insert data: entity 1 has name "alice", entity 2 has name "bob"
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+
+        // Query: {:find [?e ?name] :where [[?e "name" ?name]]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?name".to_string()),
+            ]),
+            where_clauses: vec![WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Variable("?name".to_string()),
+            })],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        // Should have 2 rows
+        assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_single_pattern_var_const_const() {
+        // Insert data
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+
+        // Query: {:find [?e] :where [[?e "name" "alice"]]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Constant(DataType::String("alice".to_string())),
+            })],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        // Should have 1 row (only alice)
+        assert_eq!(result.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_two_patterns_join() {
+        // Insert data: entity 1 has name "alice" and age 30
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        doc1.insert("age".to_string(), DataType::Long(30));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+        // bob has no age
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+
+        // Query: {:find [?name ?age] :where [[?e "name" ?name] [?e "age" ?age]]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?name".to_string()),
+                FindElement::Variable("?age".to_string()),
+            ]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                    value: PatternElement::Variable("?age".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        // Should have 1 row (only alice has both name and age)
+        assert_eq!(result.len(), 1);
     }
 }

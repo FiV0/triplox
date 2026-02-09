@@ -1,7 +1,7 @@
 mod log;
 mod memory_log;
 mod datalog;
-mod ops;
+pub mod ops;
 mod clock;
 mod transaction;
 mod file_log;
@@ -15,6 +15,7 @@ mod scratch;
 mod index;
 mod iterator;
 mod algo;
+mod query;
 
 pub mod node;
 
