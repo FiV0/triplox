@@ -67,7 +67,9 @@ impl Indexer {
                     Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
-                let entity_id = bincode::serialize(&entity_id)?;
+                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+                // Revisit with schema/custom encoding.
+                let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
                 let mut attribute_and_values = Vec::new();
                 for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
                     assert_valid_attribute(k)?;
@@ -102,7 +104,8 @@ impl Indexer {
             },
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
-                let entity_id = bincode::serialize(&entity_id)?;
+                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+                let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
                 let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
@@ -123,7 +126,8 @@ impl Indexer {
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
                 let Attribute(attr)= attribute;
-                let entity_id = bincode::serialize(&entity_id)?;
+                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+                let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
                 let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
@@ -252,7 +256,7 @@ impl Subscriber for Indexer {
 
 // TODO: something to refactor
 
-pub fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
+pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, u64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::EAV {
@@ -266,14 +270,14 @@ pub fn eav_key_to_parts(key: Bytes) -> Result<(i64, u64, DataType, u8), Error> {
     let suffix = key[key.len()-1];
 
     let mut cursor = Cursor::new(without_prefix);
-    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
     let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((entity_id, attribute, value, suffix))
 }
 
-pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
+pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AVE {
@@ -289,12 +293,12 @@ pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, i64, u8), Error> {
     let mut cursor = Cursor::new(without_prefix);
     let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, value, entity_id, suffix))
 }
 
-pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
+pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AEV {
@@ -309,13 +313,13 @@ pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, i64, DataType, u8), Error> {
 
     let mut cursor = std::io::Cursor::new(without_prefix);
     let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, entity_id, value, suffix))
 }
 
-pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
+pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AE {
@@ -330,7 +334,7 @@ pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, i64, u8), Error> {
 
     let mut cursor = std::io::Cursor::new(without_prefix);
     let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: i64 = bincode::deserialize_from(&mut cursor)?;
+    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, entity_id, suffix))
 }
@@ -382,7 +386,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, 1);
+            assert_eq!(entity_id, DataType::Long(1));
             assert_eq!(attribute, name_id);
             assert_eq!(value, DataType::String("alan".to_string()));
             assert_eq!(suffix, codec::ADD);
@@ -394,7 +398,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, 1);
+            assert_eq!(entity_id, DataType::Long(1));
             assert_eq!(attribute, name_id);
             assert_eq!(value, DataType::String("alan".to_string()));
             assert_eq!(suffix, codec::ADD);
@@ -406,7 +410,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, 1);
+            assert_eq!(entity_id, DataType::Long(1));
             assert_eq!(attribute, name_id);
             assert_eq!(value, DataType::String("alan".to_string()));
             assert_eq!(suffix, codec::ADD);
@@ -417,7 +421,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
         if let Some(kv2) = iter.next().await? {
             let (attribute, entity_id, suffix) = ae_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, 1);
+            assert_eq!(entity_id, DataType::Long(1));
             assert_eq!(attribute, name_id);
             assert_eq!(suffix, codec::ADD);
             assert_eq!(kv2.value, Bytes::from(""));

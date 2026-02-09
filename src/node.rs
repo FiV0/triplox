@@ -154,7 +154,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
         let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 1);
+        assert_eq!(entity_id, DataType::Long(1));
         assert_eq!(attribute, name_id);
         assert_eq!(value, DataType::String("alice".to_string()));
         assert_eq!(suffix, codec::ADD);
@@ -164,7 +164,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("AVE index should have an entry");
         let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 1);
+        assert_eq!(entity_id, DataType::Long(1));
         assert_eq!(attribute, name_id);
         assert_eq!(value, DataType::String("alice".to_string()));
         assert_eq!(suffix, codec::ADD);
@@ -173,7 +173,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("AEV index should have an entry");
         let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 1);
+        assert_eq!(entity_id, DataType::Long(1));
         assert_eq!(attribute, name_id);
         assert_eq!(value, DataType::String("alice".to_string()));
         assert_eq!(suffix, codec::ADD);
@@ -182,7 +182,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("AE index should have an entry");
         let (attribute, entity_id, suffix) = ae_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 1);
+        assert_eq!(entity_id, DataType::Long(1));
         assert_eq!(attribute, name_id);
         assert_eq!(suffix, codec::ADD);
 
@@ -221,7 +221,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
         let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 2);
+        assert_eq!(entity_id, DataType::Long(2));
         assert_eq!(attribute, name_id);
         assert_eq!(value, DataType::String("bob".to_string()));
         assert_eq!(suffix, codec::ADD);
@@ -250,7 +250,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
         let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, 10);
+        assert_eq!(entity_id, DataType::Long(10));
         assert_eq!(attribute, email_id);
         assert_eq!(value, DataType::String("test@example.com".to_string()));
         assert_eq!(suffix, codec::ADD);
@@ -369,6 +369,51 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         // Should have 1 row (only alice has both name and age)
+        assert_eq!(result.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_entity_value_join() {
+        // Entity 1 (alice) follows entity 2 (bob)
+        // Entity 2 (bob) has name "bob"
+        // ?friend appears in value position of :follows and entity position of :name.
+        // Works because entity IDs are encoded as DataType::Long in both positions.
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        doc1.insert("follows".to_string(), DataType::Long(2));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+
+        // Query: {:find [?name] :where [[?e :follows ?friend] [?friend :name ?name]]}
+        // ?friend is in value position of :follows and entity position of :name
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("follows".to_string())),
+                    value: PatternElement::Variable("?friend".to_string()),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?friend".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        // Should have 1 row: alice follows bob, so we find bob's name
         assert_eq!(result.len(), 1);
     }
 }

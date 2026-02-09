@@ -169,11 +169,12 @@ impl PrefixExtender for GenericPrefixExtender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::DataType;
     use crate::slate::in_memory_slate;
 
-    fn encode_u64(val: u64) -> Bytes {
-        // Use bincode serialization to match how indexer stores entity IDs
-        Bytes::from(bincode::serialize(&val).unwrap())
+    fn encode_entity(val: i64) -> Bytes {
+        // Entity IDs are encoded as DataType::Long to match value-position encoding
+        Bytes::from(bincode::serialize(&DataType::Long(val)).unwrap())
     }
 
     fn encode_string(s: &str) -> Bytes {
@@ -184,12 +185,12 @@ mod tests {
         slate: &slatedb::Db,
         attribute: u64,
         value: Bytes,
-        entity: u64,
+        entity: i64,
     ) -> anyhow::Result<()> {
         let mut key = vec![crate::codec::AVE];
         key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
-        key.extend_from_slice(&bincode::serialize(&entity)?);
+        key.extend_from_slice(&bincode::serialize(&DataType::Long(entity))?);
         key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
@@ -309,7 +310,7 @@ mod tests {
 
         let entities = extender.propose(&vec![encode_string("Alice")]);
         assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0], encode_u64(1));
+        assert_eq!(entities[0], encode_entity(1));
 
         Ok(())
     }

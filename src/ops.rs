@@ -9,7 +9,7 @@ use edn::symbols::{Keyword, NamespacedSymbol};
 use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct EntityId(i64);
+pub struct EntityId(pub i64);
 
 impl EntityId {
     pub fn new(id: i64) -> Self {
@@ -29,7 +29,9 @@ impl Value {
     }
 }
 
-pub type Ref = i64;
+// TODO: Ref commented out for now — entity refs are stored as DataType::Long.
+// Revisit when schema is added (ref-typed attributes should use entity encoding).
+// pub type Ref = i64;
 
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -45,7 +47,8 @@ pub enum DataType {
     Instant(DateTime<Utc>),          // Timestamps or instants
     // Keyword(Keyword),                 // Keywords (can be represented as strings)
     Long(i64),                       // Long integers
-    Ref(Ref),                        // Reference (for shared ownership, like pointers)
+    // TODO: Ref commented out — entity refs stored as Long for now. Revisit with schema.
+    // Ref(Ref),                     // Reference (for shared ownership, like pointers)
     String(String),                  // Strings
     // Symbol(NamespacedSymbol),                  // Symbols (can be represented as strings)
     Tuple(Vec<DataType>),            // Tuples (can be represented as a vector of DataTypes)
