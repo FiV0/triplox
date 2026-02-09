@@ -290,8 +290,9 @@ mod tests {
         let db = node.db().await;
         let result = db.query(&query).await.unwrap();
 
-        // Should have 2 rows
         assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
+        assert!(result.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -323,8 +324,8 @@ mod tests {
         let db = node.db().await;
         let result = db.query(&query).await.unwrap();
 
-        // Should have 1 row (only alice)
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::Long(1)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -368,8 +369,8 @@ mod tests {
         let db = node.db().await;
         let result = db.query(&query).await.unwrap();
 
-        // Should have 1 row (only alice has both name and age)
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("alice".to_string()), DataType::Long(30)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -413,7 +414,7 @@ mod tests {
         let db = node.db().await;
         let result = db.query(&query).await.unwrap();
 
-        // Should have 1 row: alice follows bob, so we find bob's name
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("bob".to_string())]);
     }
 }

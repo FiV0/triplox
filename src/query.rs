@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Error;
-use bytes::Bytes;
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
@@ -16,9 +15,8 @@ use crate::index::IndexType;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::DataType;
 
-/// Result is Vec<Vec<Bytes>> - each inner Vec is a projected row.
-/// Decoding to DataType is a separate step.
-pub type QueryResult = Vec<Vec<Bytes>>;
+/// Each inner Vec is a projected row of decoded DataType values.
+pub type QueryResult = Vec<Vec<DataType>>;
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
 pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
@@ -239,10 +237,10 @@ pub fn execute_query(
         .map(|tuple| {
             projection_indices
                 .iter()
-                .map(|&i| tuple[i].clone())
-                .collect()
+                .map(|&i| bincode::deserialize::<DataType>(&tuple[i]))
+                .collect::<Result<Vec<_>, _>>()
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(rows)
 }
