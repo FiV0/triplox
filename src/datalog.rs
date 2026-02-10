@@ -53,15 +53,21 @@ pub struct TriplePattern {
     pub value: PatternElement,
 }
 
-// TODO And doesn't make sense at the toplevel
+/// A branch inside an Or/OrJoin clause.
+/// And only makes sense inside Or (top-level patterns are implicitly AND'd by the join).
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrBranch {
+    Clause(WhereClause),
+    And(Vec<WhereClause>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WhereClause {
     Triple(TriplePattern),
     Not(Vec<WhereClause>),
-    And(Vec<WhereClause>),
-    Or(Vec<WhereClause>),
+    Or(Vec<OrBranch>),
     NotJoin(Vec<Variable>, Vec<WhereClause>),
-    OrJoin(Vec<Variable>, Vec<WhereClause>),
+    OrJoin(Vec<Variable>, Vec<OrBranch>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

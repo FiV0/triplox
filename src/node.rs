@@ -128,7 +128,7 @@ mod tests {
     use slatedb::config::ScanOptions;
 
     use crate::codec;
-    use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
+    use crate::datalog::{FindElement, FindSpec, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
     use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
     use crate::slate::{get_and_create_attribute_id, read_attribute_map};
@@ -446,16 +446,16 @@ mod tests {
         let query = Query {
             find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
             where_clauses: vec![WhereClause::Or(vec![
-                WhereClause::Triple(TriplePattern {
+                OrBranch::Clause(WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(DataType::String("name".to_string())),
                     value: PatternElement::Constant(DataType::String("alice".to_string())),
-                }),
-                WhereClause::Triple(TriplePattern {
+                })),
+                OrBranch::Clause(WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(DataType::String("name".to_string())),
                     value: PatternElement::Constant(DataType::String("bob".to_string())),
-                }),
+                })),
             ])],
         };
 
@@ -503,7 +503,7 @@ mod tests {
             ]),
             where_clauses: vec![
                 WhereClause::Or(vec![
-                    WhereClause::Triple(TriplePattern {
+                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
                         entity: PatternElement::Variable("?e".to_string()),
                         attribute: PatternElement::Constant(DataType::String(
                             "name".to_string(),
@@ -511,14 +511,14 @@ mod tests {
                         value: PatternElement::Constant(DataType::String(
                             "alice".to_string(),
                         )),
-                    }),
-                    WhereClause::Triple(TriplePattern {
+                    })),
+                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
                         entity: PatternElement::Variable("?e".to_string()),
                         attribute: PatternElement::Constant(DataType::String(
                             "name".to_string(),
                         )),
                         value: PatternElement::Constant(DataType::String("bob".to_string())),
-                    }),
+                    })),
                 ]),
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
@@ -534,5 +534,88 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::Long(1), DataType::Long(30)]));
         assert!(result.contains(&vec![DataType::Long(2), DataType::Long(25)]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_and_inside_or() {
+        // Entity 1: name "alice", age 30
+        // Entity 2: name "bob", age 25
+        // Entity 3: name "charlie", age 35
+        // Query: OR of two AND branches:
+        //   (or (and [?e "name" "alice"] [?e "age" 30])    -> entity 1
+        //       (and [?e "name" "charlie"] [?e "age" 35])) -> entity 3
+        // Should return entities 1 and 3 but not 2
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        doc1.insert("age".to_string(), DataType::Long(30));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+        doc2.insert("age".to_string(), DataType::Long(25));
+
+        let mut doc3 = BTreeMap::new();
+        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
+        doc3.insert("age".to_string(), DataType::Long(35));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+
+        // Query: {:find [?e] :where [(or (and [?e "name" "alice"] [?e "age" 30])
+        //                                (and [?e "name" "charlie"] [?e "age" 35]))]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![WhereClause::Or(vec![
+                OrBranch::And(vec![
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "name".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::String(
+                            "alice".to_string(),
+                        )),
+                    }),
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "age".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::Long(30)),
+                    }),
+                ]),
+                OrBranch::And(vec![
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "name".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::String(
+                            "charlie".to_string(),
+                        )),
+                    }),
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "age".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::Long(35)),
+                    }),
+                ]),
+            ])],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::Long(1)]));
+        assert!(result.contains(&vec![DataType::Long(3)]));
+        assert!(!result.contains(&vec![DataType::Long(2)]));
     }
 }
