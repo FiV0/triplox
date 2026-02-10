@@ -44,15 +44,25 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
             };
             match txs {
                 Ok(txs_to_process) => {
-                    after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
+                    if txs_to_process.is_empty() {
+                        break;  // No more transactions to process
+                    }
+                    let last_id = txs_to_process.last().unwrap().tx_key.tx_id;
                     trace!("Processing {} txs catching up", txs_to_process.len());
                     let mut subscriber = subscriber.write().await;
                     for tx in txs_to_process {
                         subscriber.accept(tx).await;
                     }
+                    // Check if we've caught up before updating after_tx_id
+                    if last_id >= latest_tx_id {
+                        after_tx_id = last_id;
+                        break;
+                    }
+                    after_tx_id = last_id;
                 },
                 Err(e) => {
                     error!("Error reading txs: {}", e);
+                    break;
                 }
             }
         }
@@ -73,19 +83,21 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
                             let txs = {
                                 let log = log.read().unwrap();
-                                log.read_txs(after_tx_id, missed.try_into().unwrap())
+                                log.read_txs(after_tx_id + 1, missed.try_into().unwrap())
                             };
                             match txs {
                                 Ok(txs_to_process) => {
-                                    after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
-                                    info!("Processing {} txs catching up", txs_to_process.len());
-                                    let mut subscriber = subscriber.write().await;
-                                    for tx in txs_to_process {
-                                        subscriber.accept(tx).await;
+                                    if !txs_to_process.is_empty() {
+                                        after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
+                                        info!("Processing {} txs after lagged", txs_to_process.len());
+                                        let mut subscriber = subscriber.write().await;
+                                        for tx in txs_to_process {
+                                            subscriber.accept(tx).await;
+                                        }
                                     }
                                 },
                                 Err(e) => {
-                                    error!("Error reading txs: {}", e);
+                                    error!("Error reading txs after lagged: {}", e);
                                 }
                             }
                         },
