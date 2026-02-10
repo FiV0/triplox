@@ -12,11 +12,28 @@ use crate::datalog::{
     WhereClause,
 };
 use crate::index::IndexType;
+use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::DataType;
 
 /// Each inner Vec is a projected row of decoded DataType values.
 pub type QueryResult = Vec<Vec<DataType>>;
+
+/// Recursively extract variables from a single WhereClause.
+fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
+    match clause {
+        WhereClause::Triple(triple) => PatternClause::from(triple.clone()).variables(),
+        WhereClause::Or(branches) => {
+            // All branches must have the same free variables (validated in execute_query).
+            // Extract from the first branch only.
+            branches
+                .first()
+                .map(|b| collect_variables_from_clause(b))
+                .unwrap_or_default()
+        }
+        _ => vec![],
+    }
+}
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
 pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
@@ -24,12 +41,9 @@ pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut order = Vec::new();
 
     for clause in where_clauses {
-        if let WhereClause::Triple(triple) = clause {
-            let pattern = PatternClause::from(triple.clone());
-            for var in pattern.variables() {
-                if seen.insert(var.clone()) {
-                    order.push(var);
-                }
+        for var in collect_variables_from_clause(clause) {
+            if seen.insert(var.clone()) {
+                order.push(var);
             }
         }
     }
@@ -192,6 +206,71 @@ fn resolve_attribute(
     }
 }
 
+/// Validate that all OR branches have the same free variables.
+fn validate_or_branches(branches: &[WhereClause]) -> Result<(), Error> {
+    if branches.is_empty() {
+        return Err(anyhow::anyhow!("OR clause must have at least one branch"));
+    }
+
+    let first_vars: HashSet<Variable> = collect_variables_from_clause(&branches[0])
+        .into_iter()
+        .collect();
+
+    for (i, branch) in branches.iter().enumerate().skip(1) {
+        let branch_vars: HashSet<Variable> = collect_variables_from_clause(branch)
+            .into_iter()
+            .collect();
+        if branch_vars != first_vars {
+            return Err(anyhow::anyhow!(
+                "OR branch {} has different free variables {:?} than branch 0 {:?}",
+                i,
+                branch_vars,
+                first_vars
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a query before execution.
+pub fn validate_query(query: &Query) -> Result<(), Error> {
+    for clause in &query.where_clauses {
+        if let WhereClause::Or(branches) = clause {
+            validate_or_branches(branches)?;
+        }
+    }
+    Ok(())
+}
+
+/// Compile a single WhereClause into a PrefixExtender, recursively handling nested clauses.
+fn compile_where_clause(
+    clause: &WhereClause,
+    join_order: &[Variable],
+    slate: &Arc<slatedb::DbSnapshot>,
+    handle: &Handle,
+    attribute_map: &HashMap<String, u64>,
+) -> Result<Box<dyn PrefixExtender>, Error> {
+    match clause {
+        WhereClause::Triple(pattern) => {
+            let attr_id = resolve_attribute(&pattern.attribute, attribute_map)?;
+            let extender =
+                compile_pattern(pattern, join_order, attr_id, slate.clone(), handle.clone())?;
+            Ok(Box::new(extender))
+        }
+        WhereClause::Or(branches) => {
+            let children: Vec<Box<dyn PrefixExtender>> = branches
+                .iter()
+                .map(|b| compile_where_clause(b, join_order, slate, handle, attribute_map))
+                .collect::<Result<_, _>>()?;
+            Ok(Box::new(GenericOrPrefixExtender::new(children)))
+        }
+        _ => Err(anyhow::anyhow!(
+            "Unsupported where clause type: {:?}",
+            clause
+        )),
+    }
+}
+
 /// Execute a query against the database.
 pub fn execute_query(
     query: &Query,
@@ -211,17 +290,13 @@ pub fn execute_query(
     let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
 
     for clause in &query.where_clauses {
-        if let WhereClause::Triple(pattern) = clause {
-            let attr_id = resolve_attribute(&pattern.attribute, attribute_map)?;
-            let extender = compile_pattern(
-                pattern,
-                &join_order,
-                attr_id,
-                slate.clone(),
-                handle.clone(),
-            )?;
-            extenders.push(Box::new(extender));
-        }
+        extenders.push(compile_where_clause(
+            clause,
+            &join_order,
+            &slate,
+            &handle,
+            attribute_map,
+        )?);
     }
 
     // 3. Run GenericJoin
@@ -313,5 +388,50 @@ mod tests {
 
         let result = compile_find(&find, &join_order);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_query_variable_order_with_or_clause() {
+        let where_clauses = vec![WhereClause::Or(vec![
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Constant(DataType::String("alice".to_string())),
+            }),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Constant(DataType::String("bob".to_string())),
+            }),
+        ])];
+
+        let order = query_variable_order(&where_clauses);
+        assert_eq!(order, vec!["?e"]);
+    }
+
+    #[test]
+    fn test_query_variable_order_or_and_triple() {
+        let where_clauses = vec![
+            WhereClause::Or(vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("alice".to_string())),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("bob".to_string())),
+                }),
+            ]),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                value: PatternElement::Variable("?age".to_string()),
+            }),
+        ];
+
+        let order = query_variable_order(&where_clauses);
+        assert_eq!(order, vec!["?e", "?age"]);
     }
 }
