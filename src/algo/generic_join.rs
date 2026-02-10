@@ -329,6 +329,87 @@ impl<'a> GenericSingleJoin<'a> {
     }
 }
 
+/// A prefix extender that pins the inner join to a fixed prefix and a set of candidate extensions.
+///
+/// Used by GenericNotPrefixExtender to constrain the inner join: at levels below the extension
+/// level it matches exact prefix values, and at the extension level it proposes/intersects
+/// from the candidate set.
+pub struct PrefixAndExtensionsExtender {
+    fixed_prefix: Prefix,
+    fixed_extensions: Vec<Extension>,
+    extension_set: HashSet<Extension>,
+}
+
+impl PrefixAndExtensionsExtender {
+    pub fn new(fixed_prefix: Prefix, fixed_extensions: Vec<Extension>) -> Self {
+        let extension_set = fixed_extensions.iter().cloned().collect();
+        Self {
+            fixed_prefix,
+            fixed_extensions,
+            extension_set,
+        }
+    }
+
+    fn is_prefix_matching(&self, prefix: &Prefix) -> bool {
+        prefix.len() <= self.fixed_prefix.len()
+            && prefix
+                .iter()
+                .zip(self.fixed_prefix.iter())
+                .all(|(a, b)| a == b)
+    }
+}
+
+impl PrefixExtender for PrefixAndExtensionsExtender {
+    fn count(&self, prefix: &Prefix) -> usize {
+        if self.is_prefix_matching(prefix) {
+            if prefix.len() < self.fixed_prefix.len() {
+                1
+            } else {
+                self.fixed_extensions.len()
+            }
+        } else {
+            0
+        }
+    }
+
+    fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
+        if self.is_prefix_matching(prefix) {
+            if prefix.len() < self.fixed_prefix.len() {
+                vec![self.fixed_prefix[prefix.len()].clone()]
+            } else {
+                self.fixed_extensions.clone()
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+        if self.is_prefix_matching(prefix) {
+            if prefix.len() < self.fixed_prefix.len() {
+                let next_val = &self.fixed_prefix[prefix.len()];
+                if extensions.contains(next_val) {
+                    vec![next_val.clone()]
+                } else {
+                    vec![]
+                }
+            } else {
+                extensions
+                    .iter()
+                    .filter(|ext| self.extension_set.contains(*ext))
+                    .cloned()
+                    .collect()
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    fn participates_in_level(&self, level: usize) -> bool {
+        level <= self.fixed_prefix.len()
+    }
+}
+
 /// Multi-level generic join
 pub struct GenericJoin<'a> {
     extenders: Vec<&'a dyn PrefixExtender>,

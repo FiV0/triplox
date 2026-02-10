@@ -13,6 +13,7 @@ use crate::datalog::{
 };
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
+use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
 use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::DataType;
@@ -48,6 +49,8 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
 }
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
+/// Only positive (Triple) clauses contribute to the variable order. NOT clauses do not
+/// introduce new variables — they must only reference variables already bound by positive clauses.
 pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
@@ -60,6 +63,41 @@ pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
         }
     }
     order
+}
+
+/// Collect all variables referenced by inner clauses of a NOT.
+fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
+    let mut vars = Vec::new();
+    let mut seen = HashSet::new();
+    for clause in inner_clauses {
+        if let WhereClause::Triple(triple) = clause {
+            let pattern = PatternClause::from(triple.clone());
+            for var in pattern.variables() {
+                if seen.insert(var.clone()) {
+                    vars.push(var);
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// Validate that all variables in NOT clauses are bound by positive clauses.
+fn validate_not_clauses(where_clauses: &[WhereClause], join_order: &[Variable]) -> Result<(), Error> {
+    let bound: HashSet<&Variable> = join_order.iter().collect();
+    for clause in where_clauses {
+        if let WhereClause::Not(inner) = clause {
+            for var in not_clause_variables(inner) {
+                if !bound.contains(&var) {
+                    return Err(anyhow::anyhow!(
+                        "Variable {} in NOT clause is not bound by positive clauses",
+                        var
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Determine index types for each participating level.
@@ -244,13 +282,21 @@ fn validate_or_branches(branches: &[OrBranch]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validate a query before execution.
+/// Validate a query before execution. Checks:
+/// - The query has at least one variable
+/// - All OR branches have the same free variables
+/// - All variables in NOT clauses are bound by positive clauses
 pub fn validate_query(query: &Query) -> Result<(), Error> {
+    let join_order = query_variable_order(&query.where_clauses);
+    if join_order.is_empty() {
+        return Err(anyhow::anyhow!("Query has no variables"));
+    }
     for clause in &query.where_clauses {
         if let WhereClause::Or(branches) = clause {
             validate_or_branches(branches)?;
         }
     }
+    validate_not_clauses(&query.where_clauses, &join_order)?;
     Ok(())
 }
 
@@ -298,6 +344,14 @@ fn compile_where_clause(
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericOrPrefixExtender::new(children)))
         }
+        WhereClause::Not(inner_clauses) => {
+            let children: Vec<Box<dyn PrefixExtender>> = inner_clauses
+                .iter()
+                .map(|c| compile_where_clause(c, join_order, slate, handle, attribute_map))
+                .collect::<Result<_, _>>()?;
+            let not_level = join_order.len() - 1;
+            Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
+        }
         _ => Err(anyhow::anyhow!(
             "Unsupported where clause type: {:?}",
             clause
@@ -315,10 +369,6 @@ pub fn execute_query(
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);
     let num_levels = join_order.len();
-
-    if num_levels == 0 {
-        return Err(anyhow::anyhow!("Query has no variables"));
-    }
 
     // 2. Compile patterns into extenders
     let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
