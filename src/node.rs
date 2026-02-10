@@ -10,7 +10,7 @@ use crate::indexer::Indexer;
 use crate::log::{subscribe, TxLog};
 use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
-use crate::query::{execute_query, QueryResult};
+use crate::query::{execute_query, validate_query, QueryResult};
 use crate::slate::{in_memory_slate, read_attribute_map};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
@@ -51,6 +51,8 @@ impl DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
     pub async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
+        validate_query(query)?;
+
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
         let attribute_map = self.attribute_map.clone();
@@ -416,5 +418,121 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("bob".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_or_clause_basic() {
+        // Entity 1: name "alice", Entity 2: name "bob", Entity 3: name "charlie"
+        // OR query for alice or bob should return entities 1 and 2
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        let mut doc3 = BTreeMap::new();
+        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+
+        // Query: {:find [?e] :where [(or [?e "name" "alice"] [?e "name" "bob"])]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![WhereClause::Or(vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("alice".to_string())),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("bob".to_string())),
+                }),
+            ])],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::Long(1)]));
+        assert!(result.contains(&vec![DataType::Long(2)]));
+        assert!(!result.contains(&vec![DataType::Long(3)]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_or_clause_with_additional_join() {
+        // Entity 1: name "alice", age 30
+        // Entity 2: name "bob", age 25
+        // Entity 3: name "charlie", age 35
+        // OR for name + join on age: only alice and bob should appear
+        let node = Node::memory_node().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        doc1.insert("age".to_string(), DataType::Long(30));
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+        doc2.insert("age".to_string(), DataType::Long(25));
+
+        let mut doc3 = BTreeMap::new();
+        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
+        doc3.insert("age".to_string(), DataType::Long(35));
+
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+
+        // Query: {:find [?e ?age] :where [(or [?e "name" "alice"] [?e "name" "bob"]) [?e "age" ?age]]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?age".to_string()),
+            ]),
+            where_clauses: vec![
+                WhereClause::Or(vec![
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "name".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::String(
+                            "alice".to_string(),
+                        )),
+                    }),
+                    WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(DataType::String(
+                            "name".to_string(),
+                        )),
+                        value: PatternElement::Constant(DataType::String("bob".to_string())),
+                    }),
+                ]),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                    value: PatternElement::Variable("?age".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await;
+        let result = db.query(&query).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::Long(1), DataType::Long(30)]));
+        assert!(result.contains(&vec![DataType::Long(2), DataType::Long(25)]));
     }
 }
