@@ -116,4 +116,38 @@ mod tests {
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_memory_log_infinite_loop_bug() {
+        // This test reproduces the infinite loop bug that causes flakiness
+        // When after_tx_id == latest_tx_id, the catch-up loop would infinitely re-read the same transaction
+        init();
+
+        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
+        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
+
+        // Write a single transaction before subscribing
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+        }
+
+        // Subscribe with after_tx_id = 0, which equals latest_tx_id = 0
+        // This is the exact scenario that causes the infinite loop
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), Some(0), subscriber.clone());
+
+        // Wait for the subscriber to process
+        thread::sleep(Duration::from_millis(100));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // With the bug, this would fail because the subscriber processes the same transaction multiple times
+        // The test would be flaky because it depends on how many times the loop runs before cancellation
+        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not multiple times");
+        assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
+        assert_eq!(subscriber.records[0].tx_key.tx_id, 0);
+    }
 }

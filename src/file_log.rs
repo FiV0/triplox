@@ -110,7 +110,7 @@ mod tests {
         init();
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.log");
-        
+
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![
             st_from_unix_epoch(0),
@@ -165,5 +165,47 @@ mod tests {
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_file_log_infinite_loop_bug() {
+        // This test reproduces the infinite loop bug that causes flakiness
+        // When after_tx_id == latest_tx_id, the catch-up loop would infinitely re-read the same transaction
+        init();
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_infinite_loop.log");
+
+        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
+        let log = Arc::new(std::sync::RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+
+        // Write a single transaction before subscribing
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+        }
+
+        let tx_id_0 = {
+            let reader = log.read().unwrap();
+            let records = reader.read_txs(0, 1).unwrap();
+            records[0].tx_key.tx_id
+        };
+
+        // Subscribe with after_tx_id equal to the last transaction's tx_id
+        // This is the exact scenario that causes the infinite loop
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), Some(tx_id_0), subscriber.clone());
+
+        // Wait for the subscriber to process
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // With the bug, this would fail because the subscriber processes the same transaction multiple times
+        // The test would be flaky because it depends on how many times the loop runs before cancellation
+        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not multiple times");
+        assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
     }
 }
