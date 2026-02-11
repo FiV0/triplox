@@ -116,4 +116,55 @@ mod tests {
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_memory_log_infinite_loop_bug() {
+        // This test specifically reproduces the infinite loop bug where after_tx_id == latest_tx_id
+        // The bug would cause the same transaction to be processed repeatedly in a loop
+        init();
+
+        let clock = MockClock::new(vec![
+            st_from_unix_epoch(0),
+            st_from_unix_epoch(100),
+            st_from_unix_epoch(200),
+            st_from_unix_epoch(300),
+        ]);
+
+        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
+
+        // Write 3 transactions (tx_id 0, 1, 2)
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1]).await;
+            writer.append_tx(vec![2]).await;
+            writer.append_tx(vec![3]).await;
+        }
+
+        // Subscribe starting from tx_id 2 (the last transaction)
+        // This creates the scenario where after_tx_id == latest_tx_id == 2
+        // Without the fix, this would cause an infinite loop processing tx_id 2 repeatedly
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), Some(2), subscriber.clone());
+
+        // Add a new transaction after subscribing
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![4]).await;
+        }
+
+        // Wait for subscriber to process
+        thread::sleep(Duration::from_millis(100));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // Should have processed exactly 2 records:
+        // 1. The catch-up transaction at tx_id 2 (vec![3])
+        // 2. The new live transaction at tx_id 3 (vec![4])
+        // NOT infinite copies of tx_id 2
+        assert_eq!(subscriber.records.len(), 2);
+        assert_eq!(subscriber.records[0].record, vec![3]);
+        assert_eq!(subscriber.records[1].record, vec![4]);
+    }
 }
