@@ -10,7 +10,13 @@ pub struct TxKey {
     pub system_time: Instant
 }
 
+#[derive(Clone, Debug)]
+pub struct Basis {
+    pub tx_key: TxKey,
+    pub seq_num: u64,
+}
+
 pub enum TransactionResult {
-    TxCommited(TxKey),
+    TxCommited(Basis),
     TxAborted(TxKey, Box<dyn Error>),
 }

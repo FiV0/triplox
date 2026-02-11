@@ -2375,7 +2375,7 @@ dependencies = [
 [[package]]
 name = "slatedb"
 version = "0.10.0"
-source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#6c5c8dfb969a7abf0f1e7af53ae81ec91ae90c84"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2421,7 +2421,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.10.0"
-source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#6c5c8dfb969a7abf0f1e7af53ae81ec91ae90c84"
 dependencies = [
  "chrono",
  "tokio",
@@ -2430,7 +2430,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.10.0"
-source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#5eb4fbd91aa589d93de4d3e8b29252b603a33461"
+source = "git+https://github.com/FiV0/slatedb.git?branch=range-apis#6c5c8dfb969a7abf0f1e7af53ae81ec91ae90c84"
 dependencies = [
  "async-trait",
  "bytes",

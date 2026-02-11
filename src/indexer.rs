@@ -25,8 +25,8 @@ use crate::clock::Instant;
 pub struct Indexer {
     slatedb: Arc<Db>,
     attribute_to_id: HashMap<String, u64>,
-    latest_indexed_tx: Option<TxKey>,
-    tx_completion_sender: broadcast::Sender<TxKey>,
+    latest_indexed_tx: Option<(TxKey, u64)>,
+    tx_completion_sender: broadcast::Sender<(TxKey, u64)>,
 }
 
 struct TxIndexKeys {
@@ -152,6 +152,8 @@ impl Indexer {
     }
 
 
+    // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
+    // when a Put/Add overwrites an existing entity+attribute pair.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         let futures = tx_ops.iter()
             .map(|op| self.op_to_index_keys(tx_key, op));
@@ -170,12 +172,14 @@ impl Indexer {
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
+        let seq_num = self.slatedb.last_committed_seq();
+
         // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = Some(tx_key);
+        self.latest_indexed_tx = Some((tx_key, seq_num));
 
         // Send notification (warn if no receivers, matching memory_log.rs:51-52)
         // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
-        if let Err(e) = self.tx_completion_sender.send(tx_key) {
+        if let Err(e) = self.tx_completion_sender.send((tx_key, seq_num)) {
             warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
         }
 
@@ -204,7 +208,7 @@ impl Indexer {
     /// let future = indexer.read().await.await_tx(tx_key);
     /// tokio::time::timeout(Duration::from_millis(500), future).await??;
     /// ```
-    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
+    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<u64, Error>> + 'static {
         // Capture everything we need from self (clone/copy)
         let latest_tx = self.latest_indexed_tx;
         let mut rx = self.tx_completion_sender.subscribe();
@@ -212,18 +216,18 @@ impl Indexer {
         // Return a future that doesn't borrow self
         async move {
             // Fast path: Check if already indexed
-            if let Some(latest) = latest_tx {
-                if tx_key <= latest {
-                    return Ok(());
+            if let Some((latest_key, seq_num)) = latest_tx {
+                if tx_key <= latest_key {
+                    return Ok(seq_num);
                 }
             }
 
             // Wait for matching or later transaction
             loop {
                 match rx.recv().await {
-                    Ok(completed_tx_key) => {
+                    Ok((completed_tx_key, seq_num)) => {
                         if completed_tx_key >= tx_key {
-                            return Ok(());
+                            return Ok(seq_num);
                         }
                         // Keep waiting for higher tx_id
                     },

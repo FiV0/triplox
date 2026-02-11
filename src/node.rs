@@ -12,10 +12,8 @@ use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::slate::{in_memory_slate, read_attribute_map};
-pub use crate::transaction::{TransactionResult, TxKey};
+pub use crate::transaction::{Basis, TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
-
-pub struct Basis {}
 
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
@@ -102,7 +100,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let wait_future = self.indexer.read().await.await_tx(tx_key);
         match wait_future.await {
-            Ok(_) => TransactionResult::TxCommited(tx_key),
+            Ok(seq_num) => TransactionResult::TxCommited(Basis { tx_key, seq_num }),
             Err(e) => TransactionResult::TxAborted(tx_key, e.into()),
         }
     }
@@ -115,8 +113,11 @@ impl<L: TxLog> QueryNode for Node<L> {
         let handle = Handle::current();
         DB::new(snapshot, attribute_map, handle)
     }
-    async fn db_with_basis(&self, _basis: Basis) -> DB {
-        todo!()
+    async fn db_with_basis(&self, basis: Basis) -> DB {
+        let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await.expect("Failed to create snapshot at basis");
+        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
+        let handle = Handle::current();
+        DB::new(snapshot, attribute_map, handle)
     }
 }
 
@@ -617,5 +618,58 @@ mod tests {
         assert!(result.contains(&vec![DataType::Long(1)]));
         assert!(result.contains(&vec![DataType::Long(3)]));
         assert!(!result.contains(&vec![DataType::Long(2)]));
+    }
+
+    // TODO(triplox-5ox): Once cardinality/one override is implemented, update this test to use
+    // the same entity in both transactions and verify only the latest value is returned.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_db_with_basis_time_travel() {
+        let node = Node::memory_node().await;
+
+        // Tx1: entity 1 with name "alice"
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let basis1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await {
+            TransactionResult::TxCommited(basis) => basis,
+            _ => panic!("Tx1 should commit"),
+        };
+
+        // Tx2: entity 2 with name "bob"
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        let basis2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await {
+            TransactionResult::TxCommited(basis) => basis,
+            _ => panic!("Tx2 should commit"),
+        };
+
+        // Query: {:find [?e ?name] :where [[?e "name" ?name]]}
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?name".to_string()),
+            ]),
+            where_clauses: vec![WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Variable("?name".to_string()),
+            })],
+        };
+
+        // db_with_basis(basis1): should only see entity 1
+        let db1 = node.db_with_basis(basis1).await;
+        let result1 = db1.query(&query).await.unwrap();
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+        // db_with_basis(basis2): should see both entities
+        let db2 = node.db_with_basis(basis2).await;
+        let result2 = db2.query(&query).await.unwrap();
+        assert_eq!(result2.len(), 2);
+        assert!(result2.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
+        assert!(result2.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
     }
 }
