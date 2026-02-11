@@ -40,8 +40,9 @@ impl TxLogReader for FileLog {
         let mut file = self.file.get_ref().try_clone().unwrap();
         let mut records = Vec::new();
         
-        // Seek to the position indicated by tx_id
-        if let Err(e) = file.seek(SeekFrom::Start(tx_id as u64)) {
+        // Seek to the position indicated by tx_id (clamp negative to 0)
+        let seek_pos = std::cmp::max(0, tx_id) as u64;
+        if let Err(e) = file.seek(SeekFrom::Start(seek_pos)) {
             error!("Failed to seek to position {}: {}", tx_id, e);
             return Err(e.into());
         }

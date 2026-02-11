@@ -43,7 +43,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
                 log.read_txs(after_tx_id, 100)
             };
             match txs {
-                Ok(txs_to_process) => {
+                Ok(txs_to_process) if !txs_to_process.is_empty() => {
                     after_tx_id = txs_to_process.last().unwrap().tx_key.tx_id;
                     trace!("Processing {} txs catching up", txs_to_process.len());
                     let mut subscriber = subscriber.write().await;
@@ -51,8 +51,10 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
                         subscriber.accept(tx).await;
                     }
                 },
+                Ok(_) => break,
                 Err(e) => {
                     error!("Error reading txs: {}", e);
+                    break;
                 }
             }
         }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Error;
@@ -6,12 +7,13 @@ use tokio::runtime::Handle;
 
 use crate::clock;
 use crate::datalog::Query;
+use crate::file_log::FileLog;
 use crate::indexer::Indexer;
-use crate::log::{subscribe, TxLog};
+use crate::log::{subscribe, TxLog, TxLogReader};
 use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
 use crate::query::{execute_query, validate_query, QueryResult};
-use crate::slate::{in_memory_slate, read_attribute_map};
+use crate::slate::{in_memory_slate, local_slate, read_attribute_map};
 pub use crate::transaction::{Basis, TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
 
@@ -69,7 +71,7 @@ pub struct Node<L: TxLog> {
     log: Arc<RwLock<L>>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
     slatedb: Arc<slatedb::Db>,
-    _subscription: CancellationToken,
+    subscription: CancellationToken,
 }
 
 impl Node<MemoryLog> {
@@ -80,7 +82,42 @@ impl Node<MemoryLog> {
 
         let subscription = subscribe(log.clone(), None, indexer.clone());
 
-        Node { log, indexer, slatedb, _subscription: subscription }
+        Node { log, indexer, slatedb, subscription: subscription }
+    }
+}
+
+impl Node<FileLog> {
+    pub async fn local_node(root_path: &Path) -> Self {
+        std::fs::create_dir_all(root_path.join("db")).unwrap();
+        let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
+        let log = Arc::new(RwLock::new(
+            FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),
+        ));
+
+        // Read the last tx_key from the log before subscribing (for catch-up awaiting)
+        let last_tx_key = {
+            let log_reader = log.read().unwrap();
+            let records = log_reader.read_txs(0, u16::MAX).unwrap();
+            records.last().map(|r| r.tx_key)
+        };
+
+        let subscription = subscribe(log.clone(), None, indexer.clone());
+
+        // Wait for catch-up to complete if there are existing transactions
+        if let Some(tx_key) = last_tx_key {
+            let wait = indexer.read().await.await_tx(tx_key);
+            wait.await.unwrap();
+        }
+
+        Node { log, indexer, slatedb, subscription: subscription }
+    }
+}
+
+impl<L: TxLog> Node<L> {
+    pub async fn close(self) {
+        self.subscription.cancel();
+        self.slatedb.close().await.unwrap();
     }
 }
 
@@ -671,5 +708,63 @@ mod tests {
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?name".to_string()),
+            ]),
+            where_clauses: vec![WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                value: PatternElement::Variable("?name".to_string()),
+            })],
+        };
+
+        // First node: insert data
+        let node = Node::local_node(&root_path).await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let result = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await;
+        let results = db.query(&query).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+        node.close().await;
+
+        // Second node: reopen at same path, verify data persisted, add more
+        let node = Node::local_node(&root_path).await;
+
+        let db = node.db().await;
+        let results = db.query(&query).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        let result = node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await;
+        let results = db.query(&query).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
+        assert!(results.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+
+        node.close().await;
     }
 }
