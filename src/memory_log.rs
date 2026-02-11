@@ -116,4 +116,38 @@ mod tests {
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_memory_log_infinite_loop_bug() {
+        init();
+        let clock = MockClock::new(vec![
+            st_from_unix_epoch(0),
+            st_from_unix_epoch(100),
+        ]);
+        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
+
+        // Write one transaction
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+        }
+
+        // Subscribe starting at tx_id=0 (the transaction we just wrote)
+        // This creates the scenario where after_tx_id == latest_tx_id
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), Some(0), subscriber.clone());
+
+        // Give it some time to process
+        thread::sleep(Duration::from_millis(150));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // Without the fix, the subscriber would process the same transaction
+        // multiple times in an infinite loop until cancellation
+        // With the fix, it should process it exactly once
+        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not in an infinite loop");
+        assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
+    }
 }
