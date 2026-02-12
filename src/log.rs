@@ -40,7 +40,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
         while after_tx_id <= latest_tx_id && latest_tx_id != -1 && !task_token.is_cancelled() {
             let txs = {
                 let log = log.read().unwrap();
-                log.read_txs(after_tx_id, 100)
+                log.read_txs(after_tx_id.max(0), 100)
             };
             match txs {
                 Ok(txs_to_process) if !txs_to_process.is_empty() => {
