@@ -25,13 +25,20 @@ impl MemoryLog {
 }
 
 impl TxLogReader for MemoryLog {
-    fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>> {
-        let available_records = min(self.txs.len().saturating_sub(tx_id as usize), limit as usize);
-        Ok(self.txs[tx_id as usize..tx_id as usize + available_records as usize].to_vec())
+    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
+        let start = match after_tx_id {
+            None => 0,
+            Some(id) => id as usize + 1,
+        };
+        let end = min(start + limit as usize, self.txs.len());
+        if start >= self.txs.len() {
+            return Ok(vec![]);
+        }
+        Ok(self.txs[start..end].to_vec())
     }
 
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        (self.txs.len() as TxId - 1, self.tx_sender.subscribe())
+        (self.txs.len() as TxId, self.tx_sender.subscribe())
     }
 }
 
@@ -93,11 +100,11 @@ mod tests {
         assert_eq!(subscriber.records[1], Record { tx_key: TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) }, record: vec![4, 5, 6] });
         assert_eq!(subscriber.records[2], Record { tx_key: TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) }, record: vec![7, 8, 9] });
 
-        let tx_id_2 = subscriber.records[2].tx_key.tx_id;
+        let tx_id_1 = subscriber.records[1].tx_key.tx_id;
         drop(subscriber);
 
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
+        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()); // Subscribe after second transaction
 
         {
             let mut writer = log.write().unwrap();
@@ -115,5 +122,38 @@ mod tests {
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_memory_log_infinite_loop_bug() {
+        init();
+        let clock = MockClock::new(vec![
+            st_from_unix_epoch(0),
+            st_from_unix_epoch(100),
+        ]);
+        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
+
+        // Write one transaction
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+        }
+
+        // Subscribe from the beginning — should process the one transaction exactly once
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), None, subscriber.clone());
+
+        // Give it some time to process
+        thread::sleep(Duration::from_millis(150));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // Without the fix, the subscriber would process the same transaction
+        // multiple times in an infinite loop until cancellation
+        // With the fix, it should process it exactly once
+        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not in an infinite loop");
+        assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
     }
 }

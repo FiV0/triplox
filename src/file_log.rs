@@ -36,17 +36,24 @@ impl FileLog {
 }
 
 impl TxLogReader for FileLog {
-    fn read_txs(&self, tx_id: TxId, limit: u16) -> Result<Vec<Record>> {
+    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
         let mut file = self.file.get_ref().try_clone().unwrap();
         let mut records = Vec::new();
-        
-        // Seek to the position indicated by tx_id
-        if let Err(e) = file.seek(SeekFrom::Start(tx_id as u64)) {
-            error!("Failed to seek to position {}: {}", tx_id, e);
-            return Err(e.into());
+
+        match after_tx_id {
+            None => {
+                file.seek(SeekFrom::Start(0))?;
+            }
+            Some(id) => {
+                file.seek(SeekFrom::Start(id as u64))?;
+                // Skip the record at `id` — we've already processed it
+                let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
+                if _skipped.is_err() {
+                    return Ok(records); // nothing after this record
+                }
+            }
         }
 
-        // Read records until we hit limit or EOF
         for _ in 0..limit {
             match bincode::deserialize_from(&mut file) {
                 Ok(record) => records.push(record),
@@ -58,11 +65,11 @@ impl TxLogReader for FileLog {
     }
 
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        let current_pos = self.file.get_ref()
+        let end_of_file = self.file.get_ref()
             .seek(SeekFrom::End(0))
             .unwrap_or(0) as TxId;
-        
-        (current_pos - 1, self.tx_sender.subscribe())
+
+        (end_of_file, self.tx_sender.subscribe())
     }
 }
 
@@ -142,12 +149,12 @@ mod tests {
         assert_eq!(subscriber.records[1].record, vec![4, 5, 6]);
         assert_eq!(subscriber.records[2].record, vec![7, 8, 9]);
 
-        let tx_id_2 = subscriber.records[2].tx_key.tx_id;
+        let tx_id_1 = subscriber.records[1].tx_key.tx_id;
         drop(subscriber);
 
-        // Restart log and subscribe from second transaction
+        // Restart log and subscribe after second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_2), subscriber2.clone()); // Subscribe after third transaction
+        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()); // Subscribe after second transaction
 
         {
             let mut writer = log.write().unwrap();
@@ -165,5 +172,42 @@ mod tests {
         assert_eq!(subscriber2.records[0].record, vec![7, 8, 9]); // Third tx from first log
         assert_eq!(subscriber2.records[1].record, vec![10, 11, 12]); // First tx after restart
         assert_eq!(subscriber2.records[2].record, vec![13, 14, 15]); // Second tx after restart
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_file_log_infinite_loop_bug() {
+        init();
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_infinite_loop.log");
+
+        let clock = MockClock::new(vec![
+            st_from_unix_epoch(0),
+            st_from_unix_epoch(100),
+        ]);
+
+        let log = Arc::new(std::sync::RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+
+        // Write one transaction
+        {
+            let mut writer = log.write().unwrap();
+            writer.append_tx(vec![1, 2, 3]).await;
+        }
+
+        // Subscribe from the beginning — should process the one transaction exactly once
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), None, subscriber.clone());
+
+        // Give it some time to process
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+
+        // Without the fix, the subscriber would process the same transaction
+        // multiple times in an infinite loop until cancellation
+        // With the fix, it should process it exactly once
+        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not in an infinite loop");
+        assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
     }
 }

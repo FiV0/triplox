@@ -98,7 +98,7 @@ impl Node<FileLog> {
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
             let log_reader = log.read().unwrap();
-            let records = log_reader.read_txs(0, u16::MAX).unwrap();
+            let records = log_reader.read_txs_after(None, u16::MAX).unwrap();
             records.last().map(|r| r.tx_key)
         };
 
