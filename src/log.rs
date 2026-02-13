@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
-use log::{info, warn, error, trace};
+use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -12,19 +12,23 @@ use tokio_util::sync::CancellationToken;
 use crate::transaction::TxKey;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub struct Record{
+pub struct Record {
     pub tx_key: TxKey,
     pub record: Vec<u8>,
 }
 
 #[allow(async_fn_in_trait)]
-pub(crate) trait Subscriber : Send + Sync {
+pub(crate) trait Subscriber: Send + Sync {
     fn accept(&mut self, record: Record) -> impl Future<Output = ()> + Send;
-}   
+}
 
 pub type TxId = i64;
 
-pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader>>, after_tx_id: Option<TxId>, subscriber: Arc<tokio::sync::RwLock<S>>) -> CancellationToken {
+pub(crate) fn subscribe<S: Subscriber + 'static>(
+    log: Arc<RwLock<dyn TxLogReader>>,
+    after_tx_id: Option<TxId>,
+    subscriber: Arc<tokio::sync::RwLock<S>>,
+) -> CancellationToken {
     let (latest_tx_id, mut tx_receiver) = log.read().unwrap().subscribe_txs();
     trace!("Latest tx id: {}", latest_tx_id);
 
@@ -32,6 +36,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
     let task_token = token.clone();
 
     tokio::spawn(async move {
+        // TODO try to remove this -1 hack and do a cleaner approach
         let mut after_tx_id = after_tx_id.unwrap_or(-1);
         info!("After tx id: {}", after_tx_id);
         info!("Starting subscriber thread");
@@ -50,7 +55,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(log: Arc<RwLock<dyn TxLogReader
                     for tx in txs_to_process {
                         subscriber.accept(tx).await;
                     }
-                },
+                }
                 Ok(_) => break,
                 Err(e) => {
                     error!("Error reading txs: {}", e);
@@ -118,18 +123,15 @@ pub trait TxLogWriter: Send + Sync + 'static {
 
 pub trait TxLog: TxLogReader + TxLogWriter {}
 
-
 // Mock subscriber for testing
 #[allow(unused)]
 pub(crate) struct MockSubscriber {
-    pub records: Vec<Record>
+    pub records: Vec<Record>,
 }
 
 impl MockSubscriber {
     pub fn new() -> Self {
-        Self {
-            records: vec![],
-        }
+        Self { records: vec![] }
     }
 }
 
