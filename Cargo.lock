@@ -456,6 +456,8 @@ dependencies = [
  "ordered-float",
  "peg",
  "pretty",
+ "serde",
+ "serde_derive",
  "uuid",
 ]
 
