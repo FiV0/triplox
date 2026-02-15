@@ -88,6 +88,7 @@ impl TxLogWriter for FileLog {
         // Serialize and write the record
         bincode::serialize_into(&mut self.file, &record).unwrap();
         self.file.flush().unwrap();
+        self.file.get_ref().sync_data().unwrap();
 
         // Notify subscribers
         if let Err(e) = self.tx_sender.send(record.clone()) {
