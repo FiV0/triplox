@@ -201,8 +201,8 @@ impl fmt::Display for NamespaceableName {
 // friendly and automatic (e.g. `derive`d), and just pass all work off to it in our custom
 // implementation of Serialize and Deserialize.
 #[cfg(feature = "serde_support")]
-#[cfg_attr(feature = "serde_support", serde(rename = "NamespaceableName"))]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde_support", serde(rename = "NamespaceableName"))]
 struct SerializedNamespaceableName<'a> {
     namespace: Option<&'a str>,
     name: &'a str,
