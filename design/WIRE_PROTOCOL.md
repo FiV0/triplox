@@ -1,6 +1,6 @@
 # Triplox Wire Protocol Specification
 
-Version 1.0
+Version 0.1
 
 ## Overview
 
@@ -33,7 +33,7 @@ Every message on the wire uses the following envelope:
 
 ## 2. Version Negotiation
 
-The Startup message carries a protocol version as two 16-bit unsigned integers: major and minor. The initial version is **1.0** (major=1, minor=0).
+The Startup message carries a protocol version as two 16-bit unsigned integers: major and minor. The initial version is **0.1** (major=0, minor=1).
 
 The server checks the version:
 - Compatible: responds with AuthenticationOk.
@@ -48,6 +48,8 @@ The server checks the version:
 | Type Byte  | Name        | Description                     |
 |------------|-------------|---------------------------------|
 | *(none)*   | Startup     | Connection handshake            |
+| `O` (0x4F) | OpenDb      | Open a DB snapshot              |
+| `L` (0x4C) | CloseDb     | Release a DB snapshot           |
 | `Q` (0x51) | Query       | Execute a Datalog query         |
 | `E` (0x45) | Execute     | Submit a transaction            |
 | `S` (0x53) | Subscribe   | Start a live query subscription |
@@ -59,6 +61,8 @@ The server checks the version:
 | Type Byte  | Name                | Description                              |
 |------------|---------------------|------------------------------------------|
 | `R` (0x52) | AuthenticationOk    | Handshake accepted                       |
+| `H` (0x48) | DbOpened            | DB snapshot handle returned              |
+| `J` (0x4A) | DbClosed            | DB snapshot released                     |
 | `T` (0x54) | RowDescription      | Result schema (column names and types)   |
 | `D` (0x44) | DataRow             | One row of result data                   |
 | `C` (0x43) | CommandComplete     | Query finished                           |
@@ -66,6 +70,7 @@ The server checks the version:
 | `Z` (0x5A) | ReadyForQuery       | Server is ready for the next request     |
 | `G` (0x47) | TxResult            | Transaction outcome                      |
 | `N` (0x4E) | UnsubscribeComplete | Subscription cancelled                   |
+| `K` (0x4B) | Heartbeat           | Subscription keepalive                   |
 | `W` (0x57) | ErrorResponse       | Error                                    |
 
 ---
@@ -78,8 +83,8 @@ Sent as the first message after TCP connection is established.
 
 | Field          | Type                  | Description                            |
 |----------------|-----------------------|----------------------------------------|
-| version_major  | u16                   | Protocol major version (1)             |
-| version_minor  | u16                   | Protocol minor version (0)             |
+| version_major  | u16                   | Protocol major version (0)             |
+| version_minor  | u16                   | Protocol minor version (1)             |
 | params         | Map\<String, String\> | Reserved. May contain `client_name`.   |
 
 ### 4.2 AuthenticationOk (Backend, `R`)
@@ -90,7 +95,44 @@ Sent after successful version negotiation.
 |----------------|--------|--------------------------------------|
 | server_version | String | Server identifier, e.g. "triplox 0.1.0" |
 
-### 4.3 ReadyForQuery (Backend, `Z`)
+### 4.3 OpenDb (Frontend, `O`)
+
+Open a DB snapshot. The server pins a point-in-time database view and returns a handle the client uses for subsequent queries.
+
+| Field       | Type          | Description                                          |
+|-------------|---------------|------------------------------------------------------|
+| basis_tx_id | Option\<i64\> | If set, snapshot at this tx; otherwise latest indexed |
+
+### 4.4 DbOpened (Backend, `H`)
+
+Confirms a DB snapshot has been opened.
+
+| Field  | Type | Description                                |
+|--------|------|--------------------------------------------|
+| db_id  | u32  | Server-assigned handle for this DB         |
+| tx_id  | i64  | Actual tx_id the snapshot is pinned to     |
+
+Followed by ReadyForQuery with status `I`.
+
+### 4.5 CloseDb (Frontend, `L`)
+
+Release a previously opened DB snapshot.
+
+| Field | Type | Description       |
+|-------|------|-------------------|
+| db_id | u32  | Handle to release |
+
+### 4.6 DbClosed (Backend, `J`)
+
+Confirms a DB snapshot has been released.
+
+| Field | Type | Description              |
+|-------|------|--------------------------|
+| db_id | u32  | Handle that was released |
+
+Followed by ReadyForQuery with status `I`.
+
+### 4.7 ReadyForQuery (Backend, `Z`)
 
 Sent when the server is ready for the next client request. Acts as a sync/flush point.
 
@@ -98,23 +140,25 @@ Sent when the server is ready for the next client request. Acts as a sync/flush 
 |--------|------|------------------------------------------------|
 | status | u8   | `I` (0x49) = idle, `S` (0x53) = subscribed    |
 
-Sent after: AuthenticationOk, CommandComplete, TxResult, UnsubscribeComplete, non-fatal ErrorResponse.
+Sent after: AuthenticationOk, DbOpened, DbClosed, CommandComplete, TxResult, UnsubscribeComplete, non-fatal ErrorResponse.
 
-### 4.4 Query (Frontend, `Q`)
+### 4.8 Query (Frontend, `Q`)
 
-Execute a one-shot Datalog query.
+Execute a one-shot Datalog query against an open DB snapshot.
 
-| Field        | Type         | Description                                      |
-|--------------|--------------|--------------------------------------------------|
-| query_string | String       | Datalog query in EDN text                        |
-| basis_tx_id  | Option\<i64\> | If set, query at this transaction point in time |
+| Field        | Type   | Description                          |
+|--------------|--------|--------------------------------------|
+| query_string | String | Datalog query in EDN text            |
+| db_id        | u32    | DB snapshot handle to query against  |
+
+The client must open a DB with OpenDb before issuing a Query.
 
 Example query string:
 ```edn
-[:find ?name ?age :where [?e :person/name ?name] [?e :person/age ?age]]
+{:find [?name ?age] :where [[?e :person/name ?name] [?e :person/age ?age]]}
 ```
 
-### 4.5 RowDescription (Backend, `T`)
+### 4.9 RowDescription (Backend, `T`)
 
 Describes the schema of the result set that follows.
 
@@ -127,11 +171,11 @@ Each ColumnDescription:
 | Field     | Type        | Description                           |
 |-----------|-------------|---------------------------------------|
 | name      | String      | Variable name, e.g. "?name"          |
-| data_type | DataTypeTag | Type discriminant (see section 9)     |
+| data_type | DataTypeTag | Type discriminant (see section 10)    |
 
 Sent before the first DataRow of a query result or subscription. Describes the data columns only (does not include the `tpx_diff` metadata field used in subscription mode).
 
-### 4.6 DataRow (Backend, `D`)
+### 4.10 DataRow (Backend, `D`)
 
 One row of result data. The payload format depends on the connection state:
 
@@ -150,7 +194,7 @@ One row of result data. The payload format depends on the connection state:
 
 In subscription mode, updates to existing data are represented as a retraction (`tpx_diff = -1`) of the old row followed by an addition (`tpx_diff = +1`) of the new row, both within the same transaction batch.
 
-### 4.7 CommandComplete (Backend, `C`)
+### 4.11 CommandComplete (Backend, `C`)
 
 Signals that a query has finished producing results.
 
@@ -159,7 +203,7 @@ Signals that a query has finished producing results.
 | tag       | String | Command tag, e.g. "SELECT"             |
 | row_count | u64    | Number of DataRow messages sent        |
 
-### 4.8 Execute (Frontend, `E`)
+### 4.12 Execute (Frontend, `E`)
 
 Submit a transaction.
 
@@ -170,7 +214,7 @@ Submit a transaction.
 
 Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 10.7](#107-txop-encoding) for wire encoding.
 
-### 4.9 TxResult (Backend, `G`)
+### 4.13 TxResult (Backend, `G`)
 
 Transaction outcome.
 
@@ -181,14 +225,16 @@ Transaction outcome.
 | system_time   | Instant        | Timestamp of the transaction (microseconds since epoch) |
 | error_message | Option\<String\>| Present if status = aborted            |
 
-### 4.10 Subscribe (Frontend, `S`)
+### 4.14 Subscribe (Frontend, `S`)
 
 Start a live push subscription. Blocks the connection until cancelled.
 
-| Field        | Type          | Description                                        |
-|--------------|---------------|----------------------------------------------------|
-| query_string | String        | Datalog query in EDN text                          |
-| after_tx_id  | Option\<i64\> | If set, only stream changes after this transaction |
+| Field        | Type   | Description                                                    |
+|--------------|--------|----------------------------------------------------------------|
+| query_string | String | Datalog query in EDN text                                      |
+| db_id        | u32    | DB snapshot; subscription streams changes after this point     |
+
+The client must open a DB with OpenDb before subscribing. The subscription uses the DB's tx_id as the starting point: initial results are computed from that snapshot, and subsequent pushes contain changes from later transactions.
 
 On receiving Subscribe, the server:
 1. Validates and compiles the query.
@@ -198,7 +244,7 @@ On receiving Subscribe, the server:
 
 While subscribed, the only valid client messages are Unsubscribe and Terminate. The server concurrently reads client messages and writes subscription data using asynchronous I/O.
 
-### 4.11 DataBatchComplete (Backend, `B`)
+### 4.15 DataBatchComplete (Backend, `B`)
 
 Marks the end of a batch of DataRow messages produced by a single transaction within a subscription stream.
 
@@ -208,15 +254,13 @@ Marks the end of a batch of DataRow messages produced by a single transaction wi
 
 The server flushes its write buffer after sending DataBatchComplete. Clients use this to group rows by originating transaction.
 
-A `tx_id` of `-1` indicates a **heartbeat** (see [Section 12](#12-connection-keepalive-and-timeouts)). Clients should treat this as a no-op and not process any data rows.
-
-### 4.12 Unsubscribe (Frontend, `U`)
+### 4.16 Unsubscribe (Frontend, `U`)
 
 Cancel the active subscription.
 
 Payload: empty (length = 4).
 
-### 4.13 UnsubscribeComplete (Backend, `N`)
+### 4.17 UnsubscribeComplete (Backend, `N`)
 
 Confirms the subscription has been torn down.
 
@@ -224,7 +268,7 @@ Payload: empty (length = 4).
 
 Followed by ReadyForQuery with status `I`.
 
-### 4.14 ErrorResponse (Backend, `W`)
+### 4.18 ErrorResponse (Backend, `W`)
 
 | Field    | Type            | Description                                         |
 |----------|-----------------|-----------------------------------------------------|
@@ -238,13 +282,19 @@ Followed by ReadyForQuery with status `I`.
 
 **Non-fatal** errors (e.g. bad query syntax): the server sends ErrorResponse followed by ReadyForQuery, allowing the client to continue. The `severity` byte is `E` (0x45).
 
-### 4.15 Terminate (Frontend, `X`)
+### 4.19 Terminate (Frontend, `X`)
 
 Graceful connection close.
 
 Payload: empty (length = 4).
 
 The server closes the TCP connection after receiving this. No response is sent.
+
+### 4.20 Heartbeat (Backend, `K`)
+
+Sent by the server during an active subscription when no data has been sent within the keepalive interval (see [Section 11](#11-connection-keepalive-and-timeouts)). The client MUST silently ignore this message (no response required).
+
+Payload: empty (length = 4).
 
 ---
 
@@ -262,12 +312,24 @@ Client                                Server
   |                                     |
 ```
 
-### 5.2 Query
+### 5.2 Open DB
 
 ```
 Client                                Server
   |                                     |
-  |--- Query(edn, basis) ------------>|
+  |--- OpenDb(basis_tx_id?) --------->|
+  |                                     |  obtain snapshot
+  |<------------ DbOpened(db_id, tx) -|
+  |<------------ ReadyForQuery('I') --|
+  |                                     |
+```
+
+### 5.3 Query
+
+```
+Client                                Server
+  |                                     |
+  |--- Query(edn, db_id) ------------>|
   |                                     |  parse, compile, execute
   |<------------ RowDescription ------|
   |<------------ DataRow -------------|  \
@@ -278,19 +340,19 @@ Client                                Server
   |                                     |
 ```
 
-### 5.3 Query Error
+### 5.4 Query Error
 
 ```
 Client                                Server
   |                                     |
-  |--- Query(bad_edn) --------------->|
+  |--- Query(bad_edn, db_id) -------->|
   |                                     |  parse fails
   |<------------ ErrorResponse -------|
   |<------------ ReadyForQuery('I') --|
   |                                     |
 ```
 
-### 5.4 Transaction
+### 5.5 Transaction
 
 ```
 Client                                Server
@@ -302,12 +364,16 @@ Client                                Server
   |                                     |
 ```
 
-### 5.5 Subscription
+### 5.6 Subscription
 
 ```
 Client                                Server
   |                                     |
-  |--- Subscribe(edn, after_tx) ----->|
+  |--- OpenDb(basis_tx_id?) --------->|
+  |<------------ DbOpened(db_id, tx) -|
+  |<------------ ReadyForQuery('I') --|
+  |                                     |
+  |--- Subscribe(edn, db_id) -------->|
   |                                     |  compile query, run initial
   |<------------ RowDescription ------|
   |<------------ DataRow(+1, ...) ----|  } initial results (all +1)
@@ -322,7 +388,7 @@ Client                                Server
   |                                     |
   |        ... heartbeat (no changes) ...
   |                                     |
-  |<------------ DataBatchComplete(-1)|  } heartbeat
+  |<------------ Heartbeat ------------|  } keepalive
   |                                     |
   |--- Unsubscribe ------------------>|
   |<------------ UnsubscribeComplete -|
@@ -330,7 +396,18 @@ Client                                Server
   |                                     |
 ```
 
-### 5.6 Termination
+### 5.7 Close DB
+
+```
+Client                                Server
+  |                                     |
+  |--- CloseDb(db_id) --------------->|
+  |<------------ DbClosed(db_id) -----|
+  |<------------ ReadyForQuery('I') --|
+  |                                     |
+```
+
+### 5.8 Termination
 
 ```
 Client                                Server
@@ -370,39 +447,45 @@ Subscription uses **in-band** Unsubscribe. The server concurrently reads client 
                      ▼
               ┌──────────────┐
          ┌───>│    Idle      │<───────────────────────┐
-         │    └──┬───┬───┬───┘                        │
-         │       │   │   │                            │
-         │  Query│   │   │Subscribe                   │
-         │       │   │   │                            │
-         │       ▼   │   ▼                            │
-         │  ┌──────┐ │ ┌────────────┐                 │
-         │  │Query │ │ │ Subscribed │──Unsubscribe───>│
-         │  │  In  │ │ └────────────┘                 │
-         │  │Progr.│ │                                │
-         │  └──┬───┘ │Execute                         │
-         │     │     │                                │
-         │     │     ▼                                │
-         │     │ ┌───────────┐                        │
-         │     │ │ Executing │                        │
-         │     │ └─────┬─────┘                        │
-         │     │       │                              │
-         └─────┴───────┘                              │
-                                                      │
-         Terminate from any state ──> Closed           │
-         ErrorResponse (non-fatal) ───────────────────┘
+         │    └─┬──┬──┬──┬─┬─┘                        │
+         │      │  │  │  │ │                           │
+         │ Open/│  │  │  │ │Subscribe                  │
+         │ Close│  │  │  │ │                           │
+         │  Db  │  │  │  │ ▼                           │
+         │      │  │  │  │┌────────────┐               │
+         │      │  │  │  ││ Subscribed │─Unsubscribe──>│
+         │  Query  │  │  │└────────────┘               │
+         │      │  │  │  │                             │
+         │      ▼  │  │  │                             │
+         │  ┌──────┐  │  │                             │
+         │  │Query │  │  │                             │
+         │  │  In  │  │  │                             │
+         │  │Progr.│  │  │                             │
+         │  └──┬───┘  │  │                             │
+         │     │   Execute│                            │
+         │     │      │   │                            │
+         │     │      ▼   │                            │
+         │     │ ┌───────────┐                         │
+         │     │ │ Executing │                         │
+         │     │ └─────┬─────┘                         │
+         │     │       │                               │
+         └─────┴───────┘                               │
+                                                       │
+         Terminate from any state ──> Closed            │
+         ErrorResponse (non-fatal) ────────────────────┘
          ErrorResponse (fatal) ──> Closed
 ```
 
 ### Valid Messages Per State
 
-| State           | Valid Frontend Messages          | Server Sends                                                |
-|-----------------|----------------------------------|-------------------------------------------------------------|
-| Startup         | Startup                          | AuthenticationOk + ReadyForQuery, or ErrorResponse + close  |
-| Idle            | Query, Execute, Subscribe, Terminate | --                                                      |
-| QueryInProgress | *(client waits)*                 | RowDescription, DataRow, CommandComplete, ReadyForQuery     |
-| Executing       | *(client waits)*                 | TxResult, ReadyForQuery                                     |
-| Subscribed      | Unsubscribe, Terminate           | RowDescription, DataRow, DataBatchComplete, ErrorResponse   |
-| Closed          | *(none)*                         | *(none)*                                                    |
+| State           | Valid Frontend Messages                            | Server Sends                                                |
+|-----------------|----------------------------------------------------|-------------------------------------------------------------|
+| Startup         | Startup                                            | AuthenticationOk + ReadyForQuery, or ErrorResponse + close  |
+| Idle            | OpenDb, CloseDb, Query, Execute, Subscribe, Terminate | --                                                       |
+| QueryInProgress | *(client waits)*                                   | RowDescription, DataRow, CommandComplete, ReadyForQuery     |
+| Executing       | *(client waits)*                                   | TxResult, ReadyForQuery                                     |
+| Subscribed      | Unsubscribe, Terminate                             | RowDescription, DataRow, DataBatchComplete, Heartbeat, ErrorResponse |
+| Closed          | *(none)*                                           | *(none)*                                                    |
 
 ---
 
@@ -415,6 +498,7 @@ Subscription uses **in-band** Unsubscribe. The server concurrently reads client 
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted                                      |
 | 4xxx  | Subscription errors   | 4000 SubscriptionError, 4001 SubscriptionTimeout                   |
 | 5xxx  | Internal/protocol     | 5000 InternalError, 5001 MessageTooLarge, 5002 InvalidMessageType, 5003 QueryCancelled, 5004 ServerShuttingDown |
+| 6xxx  | DB handle errors      | 6000 InvalidDbHandle, 6001 TooManyOpenDbs                          |
 
 ### Severity
 
@@ -427,7 +511,18 @@ Error severity is encoded in the `severity` field of ErrorResponse:
 
 ---
 
-## 9. Data Type Tags
+## 9. DB Handle Management
+
+The server maintains a set of open DB snapshots per connection. Each snapshot is identified by a `db_id` (u32) assigned by the server.
+
+- **Lifetime**: A DB handle is valid from `DbOpened` until `DbClosed` or connection close.
+- **Cleanup**: When a connection closes (via Terminate or TCP drop), all open DB handles for that connection are released.
+- **Limits**: Servers should enforce a configurable maximum number of open DB handles per connection (default 16). Exceeding this limit returns an `ErrorResponse` with code 6001 (TooManyOpenDbs).
+- **Invalid handles**: Using an invalid or closed `db_id` in a Query or Subscribe message returns an `ErrorResponse` with code 6000 (InvalidDbHandle).
+
+---
+
+## 10. Data Type Tags
 
 Used in RowDescription to describe column types and as the discriminant byte in the wire encoding of `DataType` values.
 
@@ -447,6 +542,7 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 | 11  | Uuid    |
 | 12  | Vector  |
 | 13  | Map     |
+| 14  | Keyword |
 | 255 | Unknown |
 
 `Unknown` (255) is used when the column type is not uniform or cannot be determined in advance.
@@ -543,6 +639,7 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 9](#9-data-typ
 | 11  | Uuid    | 16 bytes, raw RFC 4122 layout                    |
 | 12  | Vector  | `Vec<DataType>` (u32 count + elements)           |
 | 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |
+| 14  | Keyword | `String` (u32 length + UTF-8 bytes)              |
 
 ### 10.8 TxOp Encoding
 
@@ -640,7 +737,12 @@ after_tx_id  : Option<i64>
 
 **DataBatchComplete** (`B`):
 ```
-tx_id : i64              (-1 = heartbeat)
+tx_id : i64
+```
+
+**Heartbeat** (`K`):
+```
+(empty)
 ```
 
 **Unsubscribe** (`U`):
@@ -671,7 +773,7 @@ hint     : Option<String>
 
 ## 11. Connection Keepalive and Timeouts
 
-The protocol does NOT define a ping/pong mechanism. Connection liveness is handled at two levels:
+Connection liveness is handled at two levels:
 
 ### TCP Keepalive
 
@@ -679,9 +781,9 @@ Implementations SHOULD configure TCP keepalive on both client and server sockets
 
 ### Subscription Heartbeat
 
-During an active subscription, if no real data has been sent within the keepalive interval, the server SHOULD send a `DataBatchComplete` message with `tx_id = -1` as a heartbeat. Clients MUST treat `tx_id = -1` as a no-op and not process any data rows. This serves two purposes:
+During an active subscription, if no real data has been sent within the keepalive interval, the server SHOULD send a `Heartbeat` message. The client MUST silently ignore it (no response required). This serves two purposes:
 1. Confirms the subscription is still alive.
-2. Prevents intermediate network equipment from timing out the connection.
+2. Prevents intermediate network equipment (NAT gateways, firewalls, load balancers) from evicting their connection-tracking entries due to inactivity.
 
 ### Idle Connection Timeout
 
