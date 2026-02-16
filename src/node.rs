@@ -77,6 +77,7 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
+        crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
@@ -90,6 +91,7 @@ impl Node<FileLog> {
     pub async fn local_node(root_path: &Path) -> Self {
         std::fs::create_dir_all(root_path.join("db")).unwrap();
         let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
+        crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),

@@ -17,6 +17,7 @@ mod index;
 mod iterator;
 mod algo;
 mod query;
+mod bootstrap;
 
 pub mod node;
 
