@@ -1,6 +1,7 @@
 mod log;
 mod memory_log;
 mod datalog;
+mod parse;
 pub mod ops;
 mod clock;
 mod transaction;
