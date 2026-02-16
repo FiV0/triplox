@@ -63,6 +63,30 @@ pub enum DataType {
     Map(BTreeMap<String, DataType>), // Map (BTreeMap of string keys and DataType values)
 }
 
+
+impl DataType {
+    /// Compare two DataType values. Returns None if the types are incompatible
+    /// or if floats are NaN.
+    pub fn partial_compare(&self, other: &DataType) -> Option<std::cmp::Ordering> {
+        use DataType::*;
+        match (self, other) {
+            (Long(a), Long(b)) => Some(a.cmp(b)),
+            (BigInt(a), BigInt(b)) => Some(a.cmp(b)),
+            (Double(a), Double(b)) => a.partial_cmp(b),
+            (Float(a), Float(b)) => a.partial_cmp(b),
+            (String(a), String(b)) => Some(a.cmp(b)),
+            (Boolean(a), Boolean(b)) => Some(a.cmp(b)),
+            (Instant(a), Instant(b)) => Some(a.cmp(b)),
+            // Cross-numeric promotion
+            (Long(a), BigInt(b)) => Some((*a as i128).cmp(b)),
+            (BigInt(a), Long(b)) => Some(a.cmp(&(*b as i128))),
+            (Long(a), Double(b)) => (*a as f64).partial_cmp(b),
+            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64)),
+            _ => None,
+        }
+    }
+}
+
 macro_rules! impl_from_for_enum {
     ($enum_name:ident, $(($variant:ident, $type:ty)),*) => {
         $(
@@ -117,6 +141,47 @@ pub enum TxOp {
 mod tests {
     use super::*;
     use bincode;
+
+    #[test]
+    fn test_partial_compare_same_type() {
+        use std::cmp::Ordering;
+        assert_eq!(DataType::Long(1).partial_compare(&DataType::Long(2)), Some(Ordering::Less));
+        assert_eq!(DataType::Long(2).partial_compare(&DataType::Long(2)), Some(Ordering::Equal));
+        assert_eq!(DataType::Long(3).partial_compare(&DataType::Long(2)), Some(Ordering::Greater));
+
+        assert_eq!(
+            DataType::String("a".into()).partial_compare(&DataType::String("b".into())),
+            Some(Ordering::Less),
+        );
+        assert_eq!(
+            DataType::Boolean(false).partial_compare(&DataType::Boolean(true)),
+            Some(Ordering::Less),
+        );
+        assert_eq!(
+            DataType::Double(1.5).partial_compare(&DataType::Double(2.5)),
+            Some(Ordering::Less),
+        );
+    }
+
+    #[test]
+    fn test_partial_compare_cross_numeric() {
+        use std::cmp::Ordering;
+        assert_eq!(DataType::Long(10).partial_compare(&DataType::BigInt(20)), Some(Ordering::Less));
+        assert_eq!(DataType::BigInt(20).partial_compare(&DataType::Long(10)), Some(Ordering::Greater));
+        assert_eq!(DataType::Long(5).partial_compare(&DataType::Double(5.0)), Some(Ordering::Equal));
+        assert_eq!(DataType::Double(3.0).partial_compare(&DataType::Long(4)), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn test_partial_compare_incompatible() {
+        assert_eq!(DataType::Long(1).partial_compare(&DataType::String("a".into())), None);
+        assert_eq!(DataType::Boolean(true).partial_compare(&DataType::Long(1)), None);
+    }
+
+    #[test]
+    fn test_partial_compare_nan() {
+        assert_eq!(DataType::Double(f64::NAN).partial_compare(&DataType::Double(1.0)), None);
+    }
 
     #[test]
     fn test_op_put() {

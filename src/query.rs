@@ -11,10 +11,12 @@ use crate::datalog::{
     FindElement, FindSpec, OrBranch, PatternClause, PatternElement, Query, TriplePattern, Variable,
     WhereClause,
 };
+use crate::expr::{expr_variables, Expr};
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
 use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
+use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::DataType;
 
@@ -33,6 +35,8 @@ fn collect_variables_from_or_branch(branch: &OrBranch) -> Vec<Variable> {
 }
 
 /// Recursively extract variables from a single WhereClause.
+/// Only positive (Triple/Or) clauses contribute variables. NOT and Predicate clauses
+/// do not introduce new variables.
 fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::Triple(triple) => PatternClause::from(triple.clone()).variables(),
@@ -44,6 +48,7 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
                 .map(collect_variables_from_or_branch)
                 .unwrap_or_default()
         }
+        WhereClause::Not(_) | WhereClause::Predicate(_) => vec![],
         _ => vec![],
     }
 }
@@ -98,6 +103,81 @@ fn validate_not_clauses(where_clauses: &[WhereClause], join_order: &[Variable]) 
         }
     }
     Ok(())
+}
+
+/// Validate that all variables in Predicate clauses are bound by positive clauses,
+/// and that each predicate has at least one variable.
+fn validate_predicate_clauses(
+    where_clauses: &[WhereClause],
+    join_order: &[Variable],
+) -> Result<(), Error> {
+    let bound: HashSet<&Variable> = join_order.iter().collect();
+    for clause in where_clauses {
+        if let WhereClause::Predicate(expr) = clause {
+            let vars = expr_variables(expr);
+            if vars.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Predicate expression must reference at least one variable"
+                ));
+            }
+            for var in &vars {
+                if !bound.contains(var) {
+                    return Err(anyhow::anyhow!(
+                        "Predicate variable {} is not bound by positive clauses",
+                        var
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Compile a predicate expression into a GenericPredicatePrefixExtender.
+///
+/// Determines which variable has the highest join level (the extension variable)
+/// and which are already bound in the prefix.
+fn compile_predicate(
+    expr: &Expr,
+    join_order: &[Variable],
+) -> Result<Box<dyn PrefixExtender>, Error> {
+    let vars = expr_variables(expr);
+    if vars.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Predicate expression must reference at least one variable"
+        ));
+    }
+
+    // Find each variable's join level
+    let mut var_levels: Vec<(Variable, usize)> = vars
+        .iter()
+        .map(|v| {
+            let level = join_order
+                .iter()
+                .position(|jv| jv == v)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Predicate variable {} not found in join order", v)
+                })?;
+            Ok((v.clone(), level))
+        })
+        .collect::<Result<_, Error>>()?;
+
+    // The variable with the highest join level is the extension variable
+    let (ext_idx, _) = var_levels
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (_, level))| *level)
+        .unwrap();
+
+    let (extension_var, level) = var_levels.remove(ext_idx);
+    let prefix_vars = var_levels;
+
+    Ok(Box::new(GenericPredicatePrefixExtender::new(
+        expr.clone(),
+        prefix_vars,
+        extension_var,
+        level,
+    )))
 }
 
 /// Determine index types for each participating level.
@@ -297,6 +377,7 @@ pub fn validate_query(query: &Query) -> Result<(), Error> {
         }
     }
     validate_not_clauses(&query.where_clauses, &join_order)?;
+    validate_predicate_clauses(&query.where_clauses, &join_order)?;
     Ok(())
 }
 
@@ -352,6 +433,7 @@ fn compile_where_clause(
             let not_level = join_order.len() - 1;
             Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
         }
+        WhereClause::Predicate(expr) => compile_predicate(expr, join_order),
         _ => Err(anyhow::anyhow!(
             "Unsupported where clause type: {:?}",
             clause
@@ -517,6 +599,73 @@ mod tests {
 
         let order = query_variable_order(&where_clauses);
         assert_eq!(order, vec!["?e", "?age"]);
+    }
+
+    #[test]
+    fn test_query_variable_order_ignores_predicates() {
+        // Predicate clauses should NOT contribute variables to join order
+        let where_clauses = vec![
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                value: PatternElement::Variable("?age".to_string()),
+            }),
+            WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
+                op: crate::expr::BinaryOp::Lt,
+                right: Box::new(crate::expr::Expr::Literal(DataType::Long(30))),
+            })),
+        ];
+
+        let order = query_variable_order(&where_clauses);
+        assert_eq!(order, vec!["?e", "?age"]);
+    }
+
+    #[test]
+    fn test_validate_predicate_unbound_variable() {
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
+                }),
+                WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                    left: Box::new(crate::expr::Expr::Variable("?unbound".to_string())),
+                    op: crate::expr::BinaryOp::Lt,
+                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(30))),
+                })),
+            ],
+        };
+        let result = validate_query(&query);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("?unbound"));
+    }
+
+    #[test]
+    fn test_validate_predicate_no_variables() {
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
+                }),
+                WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                    left: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                    op: crate::expr::BinaryOp::Lt,
+                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(2))),
+                })),
+            ],
+        };
+        let result = validate_query(&query);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one variable"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use anyhow::Error;
 use bytes::Bytes;
 
 use crate::codec::index_type_to_prefix;
+use crate::expr::Expr;
 use crate::util::concat_bytes;
 use crate::index::IndexType;
 use crate::ops::DataType;
@@ -66,6 +67,7 @@ pub enum WhereClause {
     Triple(TriplePattern),
     Not(Vec<WhereClause>),
     Or(Vec<OrBranch>),
+    Predicate(Expr),
     NotJoin(Vec<Variable>, Vec<WhereClause>),
     OrJoin(Vec<Variable>, Vec<OrBranch>),
 }
