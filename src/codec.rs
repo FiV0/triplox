@@ -24,6 +24,7 @@ pub const AV: u8 = 4;
 // TODO move this to normal entities
 // {:db/id ... :db/ident ...}
 pub const ATTRIBUTE_TO_ID: u8 = 5;
+pub const TX_TO_SEQ: u8 = 6;
 
 pub const STATS_INDEX: u8 = 128;
 pub const META_INDEX: u8 = 129;

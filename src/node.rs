@@ -117,6 +117,12 @@ impl Node<FileLog> {
 }
 
 impl<L: TxLog> Node<L> {
+    /// Look up the Basis for a given TxKey from the persisted index.
+    /// Returns None if the tx_id has not been indexed yet.
+    pub async fn basis_for_tx(&self, tx_key: TxKey) -> Option<Basis> {
+        crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_key.tx_id).await
+    }
+
     pub async fn close(self) {
         self.subscription.cancel();
         self.slatedb.close().await.unwrap();

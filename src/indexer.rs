@@ -12,12 +12,14 @@ use bytes::Bytes;
 use tokio::sync::broadcast;
 use log::warn;
 
+use serde::{Deserialize, Serialize};
+
 use crate::log::{Record, Subscriber};
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
-use crate::transaction::TxKey;
+use crate::transaction::{Basis, TxKey};
 use crate::ops::DataType;
-use crate::slate::DEFAULT_WRITE_OPTIONS;
+use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::slate::{get_and_create_attribute_id, in_memory_slate, read_attribute_map};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
@@ -42,6 +44,30 @@ fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
         return Err(anyhow::anyhow!("Attribute '{}' cannot start with db/", attribute));
     }
     Ok(())
+}
+
+/// Interim mapping stored in SlateDB to look up seq_num (and system_time) by tx_id.
+/// Will be replaced when SlateDB exposes WriteHandle.seqnum() (PR #1247).
+#[derive(Serialize, Deserialize)]
+struct TxMeta {
+    seq_num: u64,
+    system_time: Instant,
+}
+
+fn tx_to_seq_key(tx_id: i64) -> Vec<u8> {
+    concat_bytes(&[&[codec::TX_TO_SEQ], &bincode::serialize(&tx_id).unwrap()])
+}
+
+/// Look up the Basis for a given tx_id from SlateDB.
+/// Returns None if no mapping exists for that tx_id.
+pub async fn get_basis_for_tx(slatedb: Arc<Db>, tx_id: i64) -> Option<Basis> {
+    let key = tx_to_seq_key(tx_id);
+    let bytes = slatedb.get_with_options(&key, &DEFAULT_READ_OPTIONS).await.ok()??;
+    let meta: TxMeta = bincode::deserialize(&bytes).ok()?;
+    Some(Basis {
+        tx_key: TxKey { tx_id, system_time: meta.system_time },
+        seq_num: meta.seq_num,
+    })
 }
 
 impl Indexer {
@@ -173,6 +199,10 @@ impl Indexer {
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
         let seq_num = self.slatedb.last_committed_seq();
+
+        // Persist tx_id -> seq_num mapping (interim, see SlateDB PR #1247)
+        let meta = TxMeta { seq_num, system_time: tx_key.system_time };
+        self.slatedb.put(&tx_to_seq_key(tx_key.tx_id), &bincode::serialize(&meta)?).await;
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some((tx_key, seq_num));
@@ -497,6 +527,58 @@ mod tests {
         }
         assert_eq!(ae_count, 2, "Expected 2 AE entries (one per non-db/id attribute)");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_to_seq_mapping_written() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+        let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
+
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        let tx_ops = vec![TxOp::Put(Document(map))];
+        indexer.transact_tx(tx_key, tx_ops).await?;
+
+        let basis = get_basis_for_tx(slate.clone(), 42).await;
+        assert!(basis.is_some(), "Should find basis for tx_id 42");
+        let basis = basis.unwrap();
+        assert_eq!(basis.tx_key.tx_id, 42);
+        assert_eq!(basis.tx_key.system_time, st_from_unix_epoch(1000));
+        assert!(basis.seq_num > 0, "seq_num should be positive after a write");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_to_seq_mapping_not_found() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let basis = get_basis_for_tx(slate.clone(), 999).await;
+        assert!(basis.is_none(), "Should return None for non-existent tx_id");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_to_seq_multiple_txs() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = Indexer::new(slate.clone());
+
+        for i in 0..3 {
+            let tx_key = TxKey { tx_id: i, system_time: st_from_unix_epoch(i as u64 * 100) };
+            let mut map = BTreeMap::new();
+            map.insert("db/id".to_string(), DataType::Long(i + 1));
+            map.insert("name".to_string(), DataType::String(format!("user{}", i)));
+            let tx_ops = vec![TxOp::Put(Document(map))];
+            indexer.transact_tx(tx_key, tx_ops).await?;
+        }
+
+        let basis0 = get_basis_for_tx(slate.clone(), 0).await.unwrap();
+        let basis1 = get_basis_for_tx(slate.clone(), 1).await.unwrap();
+        let basis2 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
+
+        assert!(basis0.seq_num < basis1.seq_num);
+        assert!(basis1.seq_num < basis2.seq_num);
         Ok(())
     }
 
