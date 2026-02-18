@@ -79,15 +79,15 @@ fn collect_vars(expr: &Expr, seen: &mut HashSet<Variable>, vars: &mut Vec<Variab
 
 /// Row-at-a-time evaluation context. Holds variable bindings as references.
 pub struct EvalContext<'a> {
-    bindings: HashMap<&'a str, &'a DataType>,
+    bindings: HashMap<Variable, &'a DataType>,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(bindings: HashMap<&'a str, &'a DataType>) -> Self {
+    pub fn new(bindings: HashMap<Variable, &'a DataType>) -> Self {
         Self { bindings }
     }
 
-    pub fn resolve(&self, var: &str) -> Option<&DataType> {
+    pub fn resolve(&self, var: &Variable) -> Option<&DataType> {
         self.bindings.get(var).copied()
     }
 }
@@ -195,7 +195,7 @@ mod tests {
     fn test_evaluate_variable() {
         let expr = var("?x");
         let x = DataType::Long(10);
-        let ctx = EvalContext::new(HashMap::from([("?x", &x)]));
+        let ctx = EvalContext::new(HashMap::from([("?x".to_string(), &x)]));
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
 
@@ -210,9 +210,9 @@ mod tests {
     fn test_evaluate_lt() {
         let expr = binary(var("?age"), BinaryOp::Lt, lit_long(30));
         let young = DataType::Long(25);
-        let ctx_young = EvalContext::new(HashMap::from([("?age", &young)]));
+        let ctx_young = EvalContext::new(HashMap::from([("?age".to_string(), &young)]));
         let old = DataType::Long(35);
-        let ctx_old = EvalContext::new(HashMap::from([("?age", &old)]));
+        let ctx_old = EvalContext::new(HashMap::from([("?age".to_string(), &old)]));
         assert_eq!(
             eval(&expr, &ctx_young),
             Some(DataType::Boolean(true))
@@ -229,9 +229,9 @@ mod tests {
         let val_eq = DataType::Long(10);
         let val_less = DataType::Long(5);
         let val_greater = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x", &val_eq)]));
-        let ctx_less = EvalContext::new(HashMap::from([("?x", &val_less)]));
-        let ctx_greater = EvalContext::new(HashMap::from([("?x", &val_greater)]));
+        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_string(), &val_eq)]));
+        let ctx_less = EvalContext::new(HashMap::from([("?x".to_string(), &val_less)]));
+        let ctx_greater = EvalContext::new(HashMap::from([("?x".to_string(), &val_greater)]));
         assert_eq!(
             eval(&expr, &ctx_eq),
             Some(DataType::Boolean(true))
@@ -253,8 +253,8 @@ mod tests {
 
         let five = DataType::Long(5);
         let ten = DataType::Long(10);
-        let ctx_same = EvalContext::new(HashMap::from([("?a", &five), ("?b", &five)]));
-        let ctx_diff = EvalContext::new(HashMap::from([("?a", &five), ("?b", &ten)]));
+        let ctx_same = EvalContext::new(HashMap::from([("?a".to_string(), &five), ("?b".to_string(), &five)]));
+        let ctx_diff = EvalContext::new(HashMap::from([("?a".to_string(), &five), ("?b".to_string(), &ten)]));
         assert_eq!(
             eval(&expr_eq, &ctx_same),
             Some(DataType::Boolean(true))
@@ -280,8 +280,8 @@ mod tests {
 
         let val_eq = DataType::Long(10);
         let val_gt = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x", &val_eq)]));
-        let ctx_gt = EvalContext::new(HashMap::from([("?x", &val_gt)]));
+        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_string(), &val_eq)]));
+        let ctx_gt = EvalContext::new(HashMap::from([("?x".to_string(), &val_gt)]));
         assert_eq!(
             eval(&gt, &ctx_eq),
             Some(DataType::Boolean(false))
@@ -343,8 +343,8 @@ mod tests {
         );
         let low = DataType::Long(5);
         let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x", &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x", &high)]));
+        let ctx_low = EvalContext::new(HashMap::from([("?x".to_string(), &low)]));
+        let ctx_high = EvalContext::new(HashMap::from([("?x".to_string(), &high)]));
         assert_eq!(
             eval(&expr, &ctx_low),
             Some(DataType::Boolean(false))
@@ -371,8 +371,8 @@ mod tests {
         let expr = binary(var("?x"), BinaryOp::Lt, lit_long(10));
         let low = DataType::Long(5);
         let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x", &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x", &high)]));
+        let ctx_low = EvalContext::new(HashMap::from([("?x".to_string(), &low)]));
+        let ctx_high = EvalContext::new(HashMap::from([("?x".to_string(), &high)]));
         assert!(evaluate_as_bool(&expr, &ctx_low));
         assert!(!evaluate_as_bool(&expr, &ctx_high));
     }
