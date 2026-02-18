@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::{Error, Result};
 use edn::symbols::Keyword;
 
-use crate::ops::{DataType, Document, TxOp};
+use crate::ops::{DataType, Document, Triple, TxOp};
 
 // --- Reserved entity IDs ---
 
@@ -143,7 +143,11 @@ impl SchemaCache {
     /// Err if the definition is malformed.
     pub fn extract_schema_attribute(doc: &BTreeMap<String, DataType>) -> Result<Option<SchemaAttribute>> {
         let ident = match doc.get("db/ident") {
-            Some(DataType::Keyword(kw)) => kw.to_string(),
+            Some(DataType::Keyword(kw)) => {
+                let s = kw.to_string();
+                // Strip EDN colon prefix (:ns/name -> ns/name) to match document key format
+                s.strip_prefix(':').unwrap_or(&s).to_string()
+            },
             Some(_) => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
             None => return Ok(None),
         };
@@ -187,6 +191,45 @@ impl SchemaCache {
 
     pub fn len(&self) -> usize {
         self.by_ident.len()
+    }
+
+    /// Validate a transaction's ops against the schema.
+    /// Every attribute must exist in the schema and values must match declared valueType.
+    pub fn validate_tx(&self, tx_ops: &[TxOp]) -> Result<()> {
+        for op in tx_ops {
+            match op {
+                TxOp::Put(Document(doc)) => {
+                    for (attr_name, value) in doc.iter() {
+                        if attr_name == "db/id" {
+                            continue;
+                        }
+                        self.validate_attribute_value(attr_name, value)?;
+                    }
+                },
+                TxOp::Add(Triple { attribute, value, .. }) => {
+                    self.validate_attribute_value(&attribute.0, value.data_type())?;
+                },
+                TxOp::Retract(Triple { attribute, value, .. }) => {
+                    self.validate_attribute_value(&attribute.0, value.data_type())?;
+                },
+                TxOp::Delete(_) | TxOp::Erase(_) => {},
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_attribute_value(&self, attr_name: &str, value: &DataType) -> Result<()> {
+        let schema_attr = self.by_ident.get(attr_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr_name))?;
+
+        if !schema_attr.value_type.matches(value) {
+            return Err(anyhow::anyhow!(
+                "Type mismatch for attribute {}: expected {:?}, got {:?}",
+                attr_name, schema_attr.value_type, value
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -243,6 +286,30 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     ]
 }
 
+/// Build a Put operation for a plain (non-namespaced) schema attribute.
+/// Used by tests that define attributes like "name", "age", etc.
+#[cfg(test)]
+fn plain_schema_attribute(id: i64, name: &str, value_type: i64, cardinality: i64) -> TxOp {
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(id));
+    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
+    doc.insert("db/valueType".to_string(), DataType::Long(value_type));
+    doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
+    TxOp::Put(Document(doc))
+}
+
+/// Build a transaction that defines common test attributes.
+/// Use entity IDs 50-59 (between bootstrap schema 1-31 and test data 100+).
+#[cfg(test)]
+pub(crate) fn test_schema_tx() -> Vec<TxOp> {
+    vec![
+        plain_schema_attribute(50, "name", DB_TYPE_STRING, DB_CARDINALITY_ONE),
+        plain_schema_attribute(51, "age", DB_TYPE_LONG, DB_CARDINALITY_ONE),
+        plain_schema_attribute(52, "email", DB_TYPE_STRING, DB_CARDINALITY_ONE),
+        plain_schema_attribute(53, "follows", DB_TYPE_LONG, DB_CARDINALITY_ONE),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,17 +355,17 @@ mod tests {
         // so they are NOT schema attributes.
         assert_eq!(cache.len(), 3);
 
-        let db_ident = cache.get(":db/ident").unwrap();
+        let db_ident = cache.get("db/ident").unwrap();
         assert_eq!(db_ident.entity_id, DB_IDENT);
         assert_eq!(db_ident.value_type, ValueType::Keyword);
         assert_eq!(db_ident.cardinality, Cardinality::One);
 
-        let db_value_type = cache.get(":db/valueType").unwrap();
+        let db_value_type = cache.get("db/valueType").unwrap();
         assert_eq!(db_value_type.entity_id, DB_VALUE_TYPE);
         assert_eq!(db_value_type.value_type, ValueType::Ref);
         assert_eq!(db_value_type.cardinality, Cardinality::One);
 
-        let db_cardinality = cache.get(":db/cardinality").unwrap();
+        let db_cardinality = cache.get("db/cardinality").unwrap();
         assert_eq!(db_cardinality.entity_id, DB_CARDINALITY);
         assert_eq!(db_cardinality.value_type, ValueType::Ref);
         assert_eq!(db_cardinality.cardinality, Cardinality::One);
@@ -321,7 +388,7 @@ mod tests {
         cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
         assert_eq!(cache.len(), 4);
 
-        let person_name = cache.get(":person/name").unwrap();
+        let person_name = cache.get("person/name").unwrap();
         assert_eq!(person_name.entity_id, 100);
         assert_eq!(person_name.value_type, ValueType::String);
         assert_eq!(person_name.cardinality, Cardinality::One);
@@ -349,5 +416,116 @@ mod tests {
 
         cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
         assert_eq!(cache.len(), 0);
+    }
+
+    fn bootstrapped_cache_with_person_name() -> SchemaCache {
+        let mut cache = SchemaCache::new();
+        cache.process_tx(&bootstrap_schema_tx()).unwrap();
+
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("person", "name")));
+        doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
+        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
+
+        cache
+    }
+
+    #[test]
+    fn test_validate_tx_valid_put() {
+        let cache = bootstrapped_cache_with_person_name();
+
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(200));
+        doc.insert("person/name".to_string(), DataType::String("Alice".to_string()));
+        let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_unknown_attribute() {
+        let cache = bootstrapped_cache_with_person_name();
+
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(200));
+        doc.insert("person/age".to_string(), DataType::Long(30));
+        let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown attribute: person/age"));
+    }
+
+    #[test]
+    fn test_validate_tx_type_mismatch() {
+        let cache = bootstrapped_cache_with_person_name();
+
+        // person/name is String, but we're passing a Long
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(200));
+        doc.insert("person/name".to_string(), DataType::Long(42));
+        let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Type mismatch"));
+    }
+
+    #[test]
+    fn test_validate_tx_schema_defining_tx() {
+        let mut cache = SchemaCache::new();
+        cache.process_tx(&bootstrap_schema_tx()).unwrap();
+
+        // Defining a new attribute should validate against the bootstrap schema
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("person", "name")));
+        doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
+        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_add_triple() {
+        use crate::ops::{Attribute, EntityId, Value};
+
+        let cache = bootstrapped_cache_with_person_name();
+
+        // Valid add
+        let op = TxOp::Add(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("person/name".to_string()),
+            value: Value::new(DataType::String("Bob".to_string())),
+        });
+        assert!(cache.validate_tx(&[op]).is_ok());
+
+        // Type mismatch in add
+        let op = TxOp::Add(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("person/name".to_string()),
+            value: Value::new(DataType::Long(42)),
+        });
+        assert!(cache.validate_tx(&[op]).is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_retract_triple() {
+        use crate::ops::{Attribute, EntityId, Value};
+
+        let cache = bootstrapped_cache_with_person_name();
+
+        // Valid retract
+        let op = TxOp::Retract(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("person/name".to_string()),
+            value: Value::new(DataType::String("Bob".to_string())),
+        });
+        assert!(cache.validate_tx(&[op]).is_ok());
+
+        // Unknown attribute in retract
+        let op = TxOp::Retract(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("person/age".to_string()),
+            value: Value::new(DataType::Long(30)),
+        });
+        assert!(cache.validate_tx(&[op]).is_err());
     }
 }

@@ -208,13 +208,21 @@ mod tests {
     use crate::datalog::{FindElement, FindSpec, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
     use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
+    use crate::schema::test_schema_tx;
     use crate::slate::{get_and_create_attribute_id, read_attribute_map};
     use crate::transaction::TransactionResult;
     use super::*;
 
+    /// Define common test attributes (name, age, email, follows) through the standard tx path.
+    async fn define_test_schema(node: &impl SubmitNode) {
+        let result = node.execute_tx(test_schema_tx()).await;
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+    }
+
     #[tokio::test]
     async fn test_execute_tx_updates_indices() {
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         // Use entity ID 100 to avoid reserved bootstrap range (1-31)
         let mut map = BTreeMap::new();
@@ -307,6 +315,7 @@ mod tests {
     #[tokio::test]
     async fn test_submit_tx_returns_tx_key_and_indices_updated_async() {
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
@@ -315,9 +324,9 @@ mod tests {
         let tx_ops = vec![TxOp::Put(doc)];
 
         // submit_tx returns immediately with a TxKey
-        // tx_id=0 is the bootstrap schema, so first user tx is tx_id=1
+        // tx_id=0 is bootstrap schema, tx_id=1 is test schema, so first data tx is tx_id=2
         let tx_key = node.submit_tx(tx_ops).await;
-        assert_eq!(tx_key.tx_id, 1);
+        assert_eq!(tx_key.tx_id, 2);
 
         // Wait for indexer to process the transaction
         let wait_future = node.indexer.read().await.await_tx(tx_key);
@@ -347,6 +356,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tx_with_add_triple() {
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         // Use entity ID 100 to avoid reserved bootstrap range (1-31)
         let triple = Triple {
@@ -385,6 +395,7 @@ mod tests {
     async fn test_query_single_pattern_var_const_var() {
         // Insert data: entity 1 has name "alice", entity 2 has name "bob"
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -422,6 +433,7 @@ mod tests {
     async fn test_query_single_pattern_var_const_const() {
         // Insert data
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -455,6 +467,7 @@ mod tests {
     async fn test_query_two_patterns_join() {
         // Insert data: entity 1 has name "alice" and age 30
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -503,6 +516,7 @@ mod tests {
         // ?friend appears in value position of :follows and entity position of :name.
         // Works because entity IDs are encoded as DataType::Long in both positions.
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -546,6 +560,7 @@ mod tests {
         // Entity 1: name "alice", Entity 2: name "bob", Entity 3: name "charlie"
         // OR query for alice or bob should return entities 1 and 2
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -596,6 +611,7 @@ mod tests {
         // Entity 3: name "charlie", age 35
         // OR for name + join on age: only alice and bob should appear
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -667,6 +683,7 @@ mod tests {
         //       (and [?e "name" "charlie"] [?e "age" 35])) -> entity 3
         // Should return entities 1 and 3 but not 2
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
@@ -745,6 +762,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_db_with_basis_time_travel() {
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         // Tx1: entity 1 with name "alice"
         let mut doc1 = BTreeMap::new();
@@ -812,6 +830,7 @@ mod tests {
 
         // First node: insert data
         let node = Node::local_node(&root_path).await;
+        define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(1));
