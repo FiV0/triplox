@@ -21,5 +21,6 @@ mod transaction;
 mod util;
 
 pub mod node;
+pub mod protocol;
 
 pub use node::{Basis, Database, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};
