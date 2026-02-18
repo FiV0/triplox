@@ -204,8 +204,8 @@ impl fmt::Display for NamespaceableName {
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde_support", serde(rename = "NamespaceableName"))]
 struct SerializedNamespaceableName<'a> {
-    namespace: Option<&'a str>,
-    name: &'a str,
+    namespace: Option<std::borrow::Cow<'a, str>>,
+    name: std::borrow::Cow<'a, str>,
 }
 
 #[cfg(feature = "serde_support")]
@@ -231,8 +231,8 @@ impl<'de> Deserialize<'de> for NamespaceableName {
 impl Serialize for NamespaceableName {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
         let ser = SerializedNamespaceableName {
-            namespace: self.namespace(),
-            name: self.name(),
+            namespace: self.namespace().map(std::borrow::Cow::Borrowed),
+            name: std::borrow::Cow::Borrowed(self.name()),
         };
         ser.serialize(serializer)
     }
