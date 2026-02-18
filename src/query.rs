@@ -8,12 +8,13 @@ use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
 use crate::datalog::{
-    FindElement, FindSpec, OrBranch, PatternClause, PatternElement, Query, TriplePattern, Variable,
-    WhereClause,
+    FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query, TriplePattern,
+    Variable, WhereClause,
 };
 use crate::expr::{expr_variables, Expr};
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
+use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
 use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
 use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
@@ -35,8 +36,8 @@ fn collect_variables_from_or_branch(branch: &OrBranch) -> Vec<Variable> {
 }
 
 /// Recursively extract variables from a single WhereClause.
-/// Only positive (Triple/Or) clauses contribute variables. NOT and Predicate clauses
-/// do not introduce new variables.
+/// Only positive (Triple/Or/FnExpr) clauses contribute variables. NOT and Predicate
+/// clauses do not introduce new variables.
 fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::Triple(triple) => PatternClause::from(triple.clone()).variables(),
@@ -48,19 +49,32 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
                 .map(collect_variables_from_or_branch)
                 .unwrap_or_default()
         }
+        WhereClause::FnExpr(fn_expr) => vec![fn_expr.output.clone()],
         WhereClause::Not(_) | WhereClause::Predicate(_) => vec![],
         _ => vec![],
     }
 }
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
-/// Only positive (Triple) clauses contribute to the variable order. NOT clauses do not
-/// introduce new variables — they must only reference variables already bound by positive clauses.
+/// Only positive (Triple/Or/FnExpr) clauses contribute to the variable order. NOT and Predicate
+/// clauses do not introduce new variables.
+///
+/// FnExpr clauses are moved to the back so their output variables appear after all
+/// Triple/Or variables in the join order.
+/// TODO: refine to only require the clauses that bind a FnExpr's input variables
+/// to appear before that FnExpr (topological sort).
 pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
 
-    for clause in where_clauses {
+    // Non-FnExpr clauses first, then FnExpr clauses, preserving relative order within each group.
+    let reordered: Vec<&WhereClause> = where_clauses
+        .iter()
+        .filter(|c| !matches!(c, WhereClause::FnExpr(_)))
+        .chain(where_clauses.iter().filter(|c| matches!(c, WhereClause::FnExpr(_))))
+        .collect();
+
+    for clause in reordered {
         for var in collect_variables_from_clause(clause) {
             if seen.insert(var.clone()) {
                 order.push(var);
@@ -133,6 +147,39 @@ fn validate_predicate_clauses(
     Ok(())
 }
 
+/// Validate that all FnExpr input variables precede the output variable in the join order.
+fn validate_fn_clauses(
+    where_clauses: &[WhereClause],
+    join_order: &[Variable],
+) -> Result<(), Error> {
+    for clause in where_clauses {
+        if let WhereClause::FnExpr(fn_expr) = clause {
+            let output_pos = join_order
+                .iter()
+                .position(|v| v == &fn_expr.output)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Function output variable {} not in join order",
+                        fn_expr.output
+                    )
+                })?;
+            for var in fn_expr.input_variables() {
+                let input_pos = join_order.iter().position(|v| v == &var).ok_or_else(|| {
+                    anyhow::anyhow!("Function input variable {} not in join order", var)
+                })?;
+                if input_pos >= output_pos {
+                    return Err(anyhow::anyhow!(
+                        "Function input variable {} must precede output variable {} in join order",
+                        var,
+                        fn_expr.output
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Compile a predicate expression into a GenericPredicatePrefixExtender.
 ///
 /// Determines which variable has the highest join level (the extension variable)
@@ -177,6 +224,41 @@ fn compile_predicate(
         prefix_vars,
         extension_var,
         level,
+    )))
+}
+
+/// Compile a FnExpr into a GenericFnPrefixExtender.
+fn compile_fn_expr(
+    fn_expr: &FnExpr,
+    join_order: &[Variable],
+) -> Result<Box<dyn PrefixExtender>, Error> {
+    let input_vars = fn_expr.input_variables();
+
+    let prefix_vars: Vec<(Variable, usize)> = input_vars
+        .iter()
+        .map(|v| {
+            let level = join_order
+                .iter()
+                .position(|jv| jv == v)
+                .ok_or_else(|| anyhow::anyhow!("FnExpr input variable {} not in join order", v))?;
+            Ok((v.clone(), level))
+        })
+        .collect::<Result<_, Error>>()?;
+
+    let output_level = join_order
+        .iter()
+        .position(|jv| jv == &fn_expr.output)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "FnExpr output variable {} not in join order",
+                fn_expr.output
+            )
+        })?;
+
+    Ok(Box::new(GenericFnPrefixExtender::new(
+        fn_expr.expr.clone(),
+        prefix_vars,
+        output_level,
     )))
 }
 
@@ -378,6 +460,7 @@ pub fn validate_query(query: &Query) -> Result<(), Error> {
     }
     validate_not_clauses(&query.where_clauses, &join_order)?;
     validate_predicate_clauses(&query.where_clauses, &join_order)?;
+    validate_fn_clauses(&query.where_clauses, &join_order)?;
     Ok(())
 }
 
@@ -434,6 +517,7 @@ fn compile_where_clause(
             Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
         }
         WhereClause::Predicate(expr) => compile_predicate(expr, join_order),
+        WhereClause::FnExpr(fn_expr) => compile_fn_expr(fn_expr, join_order),
         _ => Err(anyhow::anyhow!(
             "Unsupported where clause type: {:?}",
             clause
@@ -666,6 +750,133 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("at least one variable"));
+    }
+
+    #[test]
+    fn test_query_variable_order_with_fn_expr() {
+        // FnExpr should contribute the output variable to the join order
+        let where_clauses = vec![
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                value: PatternElement::Variable("?age".to_string()),
+            }),
+            WhereClause::FnExpr(FnExpr {
+                expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                    left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
+                    op: crate::expr::BinaryOp::Add,
+                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                }),
+                output: "?next_age".to_string(),
+            }),
+        ];
+
+        let order = query_variable_order(&where_clauses);
+        // ?e, ?age from Triple; ?next_age from FnExpr (input ?age already seen)
+        assert_eq!(order, vec!["?e", "?age", "?next_age"]);
+    }
+
+    #[test]
+    fn test_validate_fn_unbound_input() {
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
+                }),
+                WhereClause::FnExpr(FnExpr {
+                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                        left: Box::new(crate::expr::Expr::Variable("?unbound".to_string())),
+                        op: crate::expr::BinaryOp::Add,
+                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                    }),
+                    output: "?result".to_string(),
+                }),
+            ],
+        };
+        let result = validate_query(&query);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("?unbound"));
+    }
+
+    #[test]
+    fn test_validate_fn_input_must_precede_output() {
+        // Output ?e is at level 0 (from Triple), input ?age is at level 1 — input doesn't precede output
+        let query = Query {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                    value: PatternElement::Variable("?age".to_string()),
+                }),
+                WhereClause::FnExpr(FnExpr {
+                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                        left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
+                        op: crate::expr::BinaryOp::Add,
+                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                    }),
+                    output: "?e".to_string(),
+                }),
+            ],
+        };
+        let result = validate_query(&query);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must precede"));
+    }
+
+    #[test]
+    fn test_fn_expr_before_input_triple_is_valid() {
+        // FnExpr appears before the Triple that binds its input — should be valid
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?next_age".to_string()),
+            ]),
+            where_clauses: vec![
+                WhereClause::FnExpr(FnExpr {
+                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                        left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
+                        op: crate::expr::BinaryOp::Add,
+                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                    }),
+                    output: "?next_age".to_string(),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                    value: PatternElement::Variable("?age".to_string()),
+                }),
+            ],
+        };
+        let result = validate_query(&query);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_query_variable_order_fn_expr_before_triple() {
+        // FnExpr appears first, but its output should still come after Triple vars
+        let where_clauses = vec![
+            WhereClause::FnExpr(FnExpr {
+                expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
+                    left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
+                    op: crate::expr::BinaryOp::Add,
+                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
+                }),
+                output: "?next_age".to_string(),
+            }),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                value: PatternElement::Variable("?age".to_string()),
+            }),
+        ];
+
+        let order = query_variable_order(&where_clauses);
+        // Triple vars first, then FnExpr output
+        assert_eq!(order, vec!["?e", "?age", "?next_age"]);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use anyhow::Error;
 use bytes::Bytes;
 
 use crate::codec::index_type_to_prefix;
-use crate::expr::Expr;
+use crate::expr::{expr_variables, Expr};
 use crate::util::concat_bytes;
 use crate::index::IndexType;
 use crate::ops::DataType;
@@ -54,6 +54,21 @@ pub struct TriplePattern {
     pub value: PatternElement,
 }
 
+/// A function expression that computes a value and binds it to an output variable.
+/// Example: `[(+ ?age 1) ?next_age]`
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnExpr {
+    pub expr: Expr,
+    pub output: Variable,
+}
+
+impl FnExpr {
+    /// Variables referenced in the expression (inputs).
+    pub fn input_variables(&self) -> Vec<Variable> {
+        expr_variables(&self.expr)
+    }
+}
+
 /// A branch inside an Or/OrJoin clause.
 /// And only makes sense inside Or (top-level patterns are implicitly AND'd by the join).
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +83,7 @@ pub enum WhereClause {
     Not(Vec<WhereClause>),
     Or(Vec<OrBranch>),
     Predicate(Expr),
+    FnExpr(FnExpr),
     NotJoin(Vec<Variable>, Vec<WhereClause>),
     OrJoin(Vec<Variable>, Vec<OrBranch>),
 }

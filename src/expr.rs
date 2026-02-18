@@ -8,12 +8,21 @@ use crate::ops::DataType;
 /// Operators for binary expressions (inspired by DataFusion's Operator enum).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp {
+    // Comparison
     Lt,
     LtEq,
     Gt,
     GtEq,
     Eq,
     NotEq,
+    // Arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    // String
+    Concat,
 }
 
 /// Operators for unary expressions.
@@ -21,6 +30,13 @@ pub enum BinaryOp {
 pub enum UnaryOp {
     Not,
     IsNil,
+    // Math
+    Abs,
+    // String
+    Upper,
+    Lower,
+    Strlen,
+    Str,
 }
 
 /// A binary expression node (inspired by DataFusion's BinaryExpr).
@@ -135,6 +151,60 @@ fn eval_binary_op(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<Da
         }
         BinaryOp::Eq => Some(DataType::Boolean(left == right)),
         BinaryOp::NotEq => Some(DataType::Boolean(left != right)),
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            eval_arithmetic(left, op, right)
+        }
+        BinaryOp::Concat => match (left, right) {
+            (DataType::String(a), DataType::String(b)) => {
+                Some(DataType::String(format!("{}{}", a, b)))
+            }
+            _ => None,
+        },
+    }
+}
+
+fn eval_arithmetic(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<DataType> {
+    match (left, right) {
+        (DataType::Long(a), DataType::Long(b)) => {
+            let result = match op {
+                BinaryOp::Add => a.checked_add(*b)?,
+                BinaryOp::Sub => a.checked_sub(*b)?,
+                BinaryOp::Mul => a.checked_mul(*b)?,
+                BinaryOp::Div => a.checked_div(*b)?,
+                BinaryOp::Mod => a.checked_rem(*b)?,
+                _ => unreachable!(),
+            };
+            Some(DataType::Long(result))
+        }
+        (DataType::Double(a), DataType::Double(b)) => {
+            let result = match op {
+                BinaryOp::Add => a + b,
+                BinaryOp::Sub => a - b,
+                BinaryOp::Mul => a * b,
+                BinaryOp::Div => {
+                    if *b == 0.0 {
+                        return None;
+                    }
+                    a / b
+                }
+                BinaryOp::Mod => {
+                    if *b == 0.0 {
+                        return None;
+                    }
+                    a % b
+                }
+                _ => unreachable!(),
+            };
+            Some(DataType::Double(result))
+        }
+        // Cross-numeric: Long × Double → Double
+        (DataType::Long(a), DataType::Double(b)) => {
+            eval_arithmetic(&DataType::Double(*a as f64), op, &DataType::Double(*b))
+        }
+        (DataType::Double(a), DataType::Long(b)) => {
+            eval_arithmetic(&DataType::Double(*a), op, &DataType::Double(*b as f64))
+        }
+        _ => None,
     }
 }
 
@@ -145,6 +215,37 @@ fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
             _ => None,
         },
         UnaryOp::IsNil => Some(DataType::Boolean(matches!(val, DataType::Nil))),
+        UnaryOp::Abs => match val {
+            DataType::Long(n) => Some(DataType::Long(n.checked_abs()?)),
+            DataType::Double(n) => Some(DataType::Double(n.abs())),
+            _ => None,
+        },
+        UnaryOp::Upper => match val {
+            DataType::String(s) => Some(DataType::String(s.to_uppercase())),
+            _ => None,
+        },
+        UnaryOp::Lower => match val {
+            DataType::String(s) => Some(DataType::String(s.to_lowercase())),
+            _ => None,
+        },
+        UnaryOp::Strlen => match val {
+            DataType::String(s) => Some(DataType::Long(s.len() as i64)),
+            _ => None,
+        },
+        UnaryOp::Str => {
+            let s = match val {
+                DataType::Nil => "nil".to_string(),
+                DataType::Long(n) => n.to_string(),
+                DataType::BigInt(n) => n.to_string(),
+                DataType::Double(n) => n.to_string(),
+                DataType::Float(n) => n.to_string(),
+                DataType::Boolean(b) => b.to_string(),
+                DataType::String(s) => s.clone(),
+                DataType::Uuid(u) => u.to_string(),
+                other => format!("{:?}", other),
+            };
+            Some(DataType::String(s))
+        }
     }
 }
 
@@ -404,5 +505,241 @@ mod tests {
     fn test_expr_variables_no_vars() {
         let expr = binary(lit_long(1), BinaryOp::Lt, lit_long(2));
         assert_eq!(expr_variables(&expr), Vec::<Variable>::new());
+    }
+
+    // --- Arithmetic operator tests ---
+
+    fn lit_double(n: f64) -> Expr {
+        Expr::Literal(DataType::Double(n))
+    }
+
+    fn lit_string(s: &str) -> Expr {
+        Expr::Literal(DataType::String(s.to_string()))
+    }
+
+    #[test]
+    fn test_add_long() {
+        let expr = binary(lit_long(3), BinaryOp::Add, lit_long(4));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(7)));
+    }
+
+    #[test]
+    fn test_sub_long() {
+        let expr = binary(lit_long(10), BinaryOp::Sub, lit_long(3));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(7)));
+    }
+
+    #[test]
+    fn test_mul_long() {
+        let expr = binary(lit_long(5), BinaryOp::Mul, lit_long(6));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(30)));
+    }
+
+    #[test]
+    fn test_div_long() {
+        let expr = binary(lit_long(10), BinaryOp::Div, lit_long(3));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(3)));
+    }
+
+    #[test]
+    fn test_div_by_zero_long() {
+        let expr = binary(lit_long(10), BinaryOp::Div, lit_long(0));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_mod_long() {
+        let expr = binary(lit_long(10), BinaryOp::Mod, lit_long(3));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(1)));
+    }
+
+    #[test]
+    fn test_mod_by_zero() {
+        let expr = binary(lit_long(10), BinaryOp::Mod, lit_long(0));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_add_double() {
+        let expr = binary(lit_double(1.5), BinaryOp::Add, lit_double(2.5));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.0)));
+    }
+
+    #[test]
+    fn test_div_by_zero_double() {
+        let expr = binary(lit_double(1.0), BinaryOp::Div, lit_double(0.0));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_add_mixed_long_double() {
+        let expr = binary(lit_long(3), BinaryOp::Add, lit_double(1.5));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.5)));
+    }
+
+    #[test]
+    fn test_add_mixed_double_long() {
+        let expr = binary(lit_double(1.5), BinaryOp::Add, lit_long(3));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.5)));
+    }
+
+    #[test]
+    fn test_arithmetic_incompatible_types() {
+        let expr = binary(lit_string("hello"), BinaryOp::Add, lit_long(1));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_concat() {
+        let expr = binary(lit_string("hello"), BinaryOp::Concat, lit_string(" world"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("hello world".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_concat_non_strings() {
+        let expr = binary(lit_long(1), BinaryOp::Concat, lit_string("x"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    // --- Unary operator tests ---
+
+    #[test]
+    fn test_abs_positive_long() {
+        let expr = unary(UnaryOp::Abs, lit_long(42));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(42)));
+    }
+
+    #[test]
+    fn test_abs_negative_long() {
+        let expr = unary(UnaryOp::Abs, lit_long(-42));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(42)));
+    }
+
+    #[test]
+    fn test_abs_double() {
+        let expr = unary(UnaryOp::Abs, lit_double(-3.14));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(3.14)));
+    }
+
+    #[test]
+    fn test_abs_non_numeric() {
+        let expr = unary(UnaryOp::Abs, lit_string("hello"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_upper() {
+        let expr = unary(UnaryOp::Upper, lit_string("hello"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("HELLO".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_lower() {
+        let expr = unary(UnaryOp::Lower, lit_string("HELLO"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_strlen() {
+        let expr = unary(UnaryOp::Strlen, lit_string("hello"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(5)));
+    }
+
+    #[test]
+    fn test_strlen_non_string() {
+        let expr = unary(UnaryOp::Strlen, lit_long(42));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_str_from_long() {
+        let expr = unary(UnaryOp::Str, lit_long(42));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("42".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_str_from_double() {
+        let expr = unary(UnaryOp::Str, lit_double(3.14));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("3.14".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_str_from_bool() {
+        let expr = unary(UnaryOp::Str, lit_bool(true));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("true".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_str_from_nil() {
+        let expr = unary(UnaryOp::Str, Expr::Literal(DataType::Nil));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("nil".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_nested_arithmetic() {
+        // (+ (* ?x 2) 10)
+        let expr = binary(
+            binary(var("?x"), BinaryOp::Mul, lit_long(2)),
+            BinaryOp::Add,
+            lit_long(10),
+        );
+        let x = DataType::Long(5);
+        let ctx = EvalContext::new(HashMap::from([("?x".to_string(), &x)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(20)));
+    }
+
+    #[test]
+    fn test_arithmetic_with_variable() {
+        let expr = binary(var("?age"), BinaryOp::Add, lit_long(1));
+        let age = DataType::Long(25);
+        let ctx = EvalContext::new(HashMap::from([("?age".to_string(), &age)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(26)));
     }
 }
