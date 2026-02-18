@@ -39,12 +39,9 @@ struct TxIndexKeys {
     av: Vec<Vec<u8>>,
 }
 
-fn assert_valid_attribute(attribute: &str) -> Result<(), Error> {
-    if attribute.starts_with("db/") {
-        return Err(anyhow::anyhow!("Attribute '{}' cannot start with db/", attribute));
-    }
-    Ok(())
-}
+// db/ prefix restriction removed for schema bootstrap (triplox-6x7).
+// Schema-defining attributes (db/ident, db/valueType, db/cardinality) are now
+// allowed. Validation of user attributes is handled by the schema cache (triplox-jxz).
 
 /// Interim mapping stored in SlateDB to look up seq_num (and system_time) by tx_id.
 /// Will be replaced when SlateDB exposes WriteHandle.seqnum() (PR #1247).
@@ -98,7 +95,6 @@ impl Indexer {
                 let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
                 let mut attribute_and_values = Vec::new();
                 for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                    assert_valid_attribute(k)?;
                     let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &mut attribute_map).await;
                     attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
                 }

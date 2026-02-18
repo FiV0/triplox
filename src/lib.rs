@@ -15,6 +15,7 @@ mod memory_log;
 pub mod ops;
 mod parse;
 mod query;
+mod schema;
 mod slate;
 mod transaction;
 mod util;

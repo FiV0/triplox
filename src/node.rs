@@ -86,13 +86,17 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
-        Node { log, indexer, slatedb, subscription: subscription }
+        let node = Node { log, indexer, slatedb, subscription };
+        if is_fresh {
+            node.bootstrap().await;
+        }
+        node
     }
 }
 
@@ -100,7 +104,7 @@ impl Node<FileLog> {
     pub async fn local_node(root_path: &Path) -> Self {
         std::fs::create_dir_all(root_path.join("db")).unwrap();
         let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
-        crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),
@@ -121,7 +125,13 @@ impl Node<FileLog> {
             wait.await.unwrap();
         }
 
-        Node { log, indexer, slatedb, subscription: subscription }
+        let node = Node { log, indexer, slatedb, subscription };
+
+        if is_fresh {
+            node.bootstrap().await;
+        }
+
+        node
     }
 }
 
@@ -133,6 +143,18 @@ impl<L: TxLog> Node<L> {
         crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_key.tx_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_key.tx_id))
+    }
+
+    /// Transact the bootstrap schema as the first transaction on a fresh database.
+    async fn bootstrap(&self) {
+        let tx_ops = crate::schema::bootstrap_schema_tx();
+        let result = self.execute_tx(tx_ops).await;
+        match result {
+            TransactionResult::TxCommited(_) => {},
+            TransactionResult::TxAborted(_, err) => {
+                panic!("Failed to transact bootstrap schema: {}", err);
+            }
+        }
     }
 
     pub async fn close(self) {
@@ -200,8 +222,9 @@ mod tests {
     async fn test_execute_tx_updates_indices() {
         let node = Node::memory_node().await;
 
+        // Use entity ID 100 to avoid reserved bootstrap range (1-31)
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
@@ -213,49 +236,78 @@ mod tests {
         let mut attribute_map = read_attribute_map(slate.clone()).await;
         let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
 
-        // Check EAV index
+        // Check EAV index — find entry for entity 100
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
-        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(1));
-        assert_eq!(attribute, name_id);
-        assert_eq!(value, DataType::String("alice".to_string()));
-        assert_eq!(suffix, codec::ADD);
-        assert_eq!(kv.value, Bytes::from(""));
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(value, DataType::String("alice".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                assert_eq!(kv.value, Bytes::from(""));
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected EAV entry for entity 100");
 
-        // Check AVE index
+        // Check AVE index — find entry for name attribute
         let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("AVE index should have an entry");
-        let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(1));
-        assert_eq!(attribute, name_id);
-        assert_eq!(value, DataType::String("alice".to_string()));
-        assert_eq!(suffix, codec::ADD);
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(value, DataType::String("alice".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected AVE entry for entity 100");
 
         // Check AEV index
         let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("AEV index should have an entry");
-        let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(1));
-        assert_eq!(attribute, name_id);
-        assert_eq!(value, DataType::String("alice".to_string()));
-        assert_eq!(suffix, codec::ADD);
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(value, DataType::String("alice".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected AEV entry for entity 100");
 
         // Check AE index
         let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("AE index should have an entry");
-        let (attribute, entity_id, suffix) = ae_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(1));
-        assert_eq!(attribute, name_id);
-        assert_eq!(suffix, codec::ADD);
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (attribute, entity_id, suffix) = ae_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected AE entry for entity 100");
 
         // Check AV index
         let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("AV index should have an entry");
-        let (attribute, value, suffix) = av_key_to_parts(kv.key).unwrap();
-        assert_eq!(attribute, name_id);
-        assert_eq!(value, DataType::String("alice".to_string()));
-        assert_eq!(suffix, codec::ADD);
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (attribute, value, suffix) = av_key_to_parts(kv.key).unwrap();
+            if attribute == name_id && value == DataType::String("alice".to_string()) {
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected AV entry for name=alice");
     }
 
     #[tokio::test]
@@ -263,14 +315,15 @@ mod tests {
         let node = Node::memory_node().await;
 
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(2));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("bob".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
 
         // submit_tx returns immediately with a TxKey
+        // tx_id=0 is test schema, so first data tx is tx_id=1
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
-        assert_eq!(tx_key.tx_id, 0);
+        assert_eq!(tx_key.tx_id, 1);
 
         // Wait for indexer to process the transaction
         let wait_future = node.indexer.read().await.await_tx(tx_key);
@@ -282,21 +335,28 @@ mod tests {
         let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
 
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
-        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(2));
-        assert_eq!(attribute, name_id);
-        assert_eq!(value, DataType::String("bob".to_string()));
-        assert_eq!(suffix, codec::ADD);
-        assert_eq!(kv.value, Bytes::from(""));
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(value, DataType::String("bob".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                assert_eq!(kv.value, Bytes::from(""));
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected EAV entry for entity 100");
     }
 
     #[tokio::test]
     async fn test_execute_tx_with_add_triple() {
         let node = Node::memory_node().await;
 
+        // Use entity ID 100 to avoid reserved bootstrap range (1-31)
         let triple = Triple {
-            entity: EntityId::new(10),
+            entity: EntityId::new(100),
             attribute: Attribute("email".to_string()),
             value: Value::new(DataType::String("test@example.com".to_string())),
         };
@@ -309,14 +369,20 @@ mod tests {
         let mut attribute_map = read_attribute_map(slate.clone()).await;
         let email_id = get_and_create_attribute_id(slate.clone(), "email", &mut attribute_map).await;
 
-        // Check EAV index
+        // Check EAV index — find entry for entity 100
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await.unwrap().expect("EAV index should have an entry");
-        let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
-        assert_eq!(entity_id, DataType::Long(10));
-        assert_eq!(attribute, email_id);
-        assert_eq!(value, DataType::String("test@example.com".to_string()));
-        assert_eq!(suffix, codec::ADD);
+        let mut found = false;
+        while let Some(kv) = iter.next().await.unwrap() {
+            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, email_id);
+                assert_eq!(value, DataType::String("test@example.com".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected EAV entry for entity 100");
     }
 
     // End-to-end query tests
