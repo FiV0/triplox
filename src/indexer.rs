@@ -184,6 +184,11 @@ impl Indexer {
     // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
     // when a Put/Add overwrites an existing entity+attribute pair.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        // Bootstrap tx (tx_id=0) is exempt from validation — it IS the schema-for-schema.
+        if tx_key.tx_id > 0 {
+            self.schema_cache.validate_tx(&tx_ops)?;
+        }
+
         let futures = tx_ops.iter()
             .map(|op| self.op_to_index_keys(tx_key, op));
 
@@ -406,7 +411,19 @@ mod tests {
 
 
     use crate::clock::st_from_unix_epoch;
+    use crate::schema::{bootstrap_schema_tx, test_schema_tx};
     use super::*;
+
+    /// Create an indexer with bootstrap schema and test attributes already transacted.
+    /// Returns the indexer ready for test data at tx_id=2+.
+    async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
+        let mut indexer = Indexer::new(slate);
+        let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        indexer.transact_tx(tx_key_0, bootstrap_schema_tx()).await.unwrap();
+        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(1) };
+        indexer.transact_tx(tx_key_1, test_schema_tx()).await.unwrap();
+        indexer
+    }
 
     #[tokio::test]
     async fn test_indexer() -> Result<(), Error> {
@@ -539,11 +556,11 @@ mod tests {
     #[tokio::test]
     async fn test_tx_to_seq_mapping_written() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
 
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
         indexer.transact_tx(tx_key, tx_ops).await?;
@@ -568,20 +585,22 @@ mod tests {
     #[tokio::test]
     async fn test_tx_to_seq_multiple_txs() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
+        // tx_id 0 and 1 are taken by bootstrap + test schema
         for i in 0..3 {
-            let tx_key = TxKey { tx_id: i, system_time: st_from_unix_epoch(i as u64 * 100) };
+            let tx_id = i + 2;
+            let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
             let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(i + 1));
+            map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        let basis0 = get_basis_for_tx(slate.clone(), 0).await.unwrap();
-        let basis1 = get_basis_for_tx(slate.clone(), 1).await.unwrap();
-        let basis2 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
+        let basis0 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
+        let basis1 = get_basis_for_tx(slate.clone(), 3).await.unwrap();
+        let basis2 = get_basis_for_tx(slate.clone(), 4).await.unwrap();
 
         assert!(basis0.seq_num < basis1.seq_num);
         assert!(basis1.seq_num < basis2.seq_num);
@@ -616,14 +635,14 @@ mod tests {
         use tokio::sync::RwLock;
 
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Arc::new(RwLock::new(Indexer::new(slate.clone())));
+        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
 
-        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
 
         // Spawn task that calls await_tx - lock is dropped before awaiting
         let indexer_clone = indexer.clone();
         let wait_handle = tokio::spawn(async move {
-            let future = indexer_clone.read().await.await_tx(tx_key_1);
+            let future = indexer_clone.read().await.await_tx(tx_key_2);
             // Lock is dropped here, before we await
             future.await
         });
@@ -635,10 +654,10 @@ mod tests {
         {
             let mut guard = indexer.write().await;
             let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(1));
+            map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("bob".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            guard.transact_tx(tx_key_1, tx_ops).await?;
+            guard.transact_tx(tx_key_2, tx_ops).await?;
         }
 
         // Wait task should complete successfully
@@ -672,25 +691,26 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_ordering() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // Index tx 0 and tx 1
+        // Index tx 2 and tx 3 (0=bootstrap, 1=test schema)
         for i in 0..2 {
-            let tx_key = TxKey { tx_id: i, system_time: st_from_unix_epoch(i as u64 * 100) };
+            let tx_id = i + 2;
+            let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
             let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(i + 1));
+            map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        // Waiting for tx 0 should return immediately
-        let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
-        indexer.await_tx(tx_key_0).await?;
+        // Waiting for tx 2 should return immediately
+        let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        indexer.await_tx(tx_key_2).await?;
 
-        // Waiting for tx 1 should also return immediately
-        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        indexer.await_tx(tx_key_1).await?;
+        // Waiting for tx 3 should also return immediately
+        let tx_key_3 = TxKey { tx_id: 3, system_time: st_from_unix_epoch(300) };
+        indexer.await_tx(tx_key_3).await?;
 
         Ok(())
     }
@@ -700,7 +720,7 @@ mod tests {
         use tokio::sync::RwLock;
 
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Arc::new(RwLock::new(Indexer::new(slate.clone())));
+        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
 
         let tx_key = TxKey { tx_id: 5, system_time: st_from_unix_epoch(500) };
 
@@ -721,7 +741,7 @@ mod tests {
         {
             let mut guard = indexer.write().await;
             let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(1));
+            map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("shared".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
             guard.transact_tx(tx_key, tx_ops).await?;

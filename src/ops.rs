@@ -27,6 +27,10 @@ impl Value {
     pub fn new(data: DataType) -> Self {
         Value(data)
     }
+
+    pub fn data_type(&self) -> &DataType {
+        &self.0
+    }
 }
 
 // TODO: Ref commented out for now — entity refs are stored as DataType::Long.
