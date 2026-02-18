@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::log::{Record, Subscriber};
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
+use crate::schema::SchemaCache;
 use crate::transaction::{Basis, TxKey};
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS};
@@ -27,6 +28,7 @@ use crate::clock::Instant;
 pub struct Indexer {
     slatedb: Arc<Db>,
     attribute_to_id: HashMap<String, u64>,
+    schema_cache: SchemaCache,
     latest_indexed_tx: Option<(TxKey, u64)>,
     tx_completion_sender: broadcast::Sender<(TxKey, u64)>,
 }
@@ -74,9 +76,14 @@ impl Indexer {
         Indexer {
             slatedb,
             attribute_to_id,
+            schema_cache: SchemaCache::new(),
             latest_indexed_tx: None,
             tx_completion_sender,
         }
+    }
+
+    pub fn schema_cache(&self) -> &SchemaCache {
+        &self.schema_cache
     }
 
     async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
@@ -193,6 +200,9 @@ impl Indexer {
         }
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
+
+        // Update schema cache with any new schema attribute definitions
+        self.schema_cache.process_tx(&tx_ops)?;
 
         let seq_num = self.slatedb.last_committed_seq();
 
