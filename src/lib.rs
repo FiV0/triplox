@@ -22,4 +22,4 @@ mod bootstrap;
 
 pub mod node;
 
-pub use node::{Node, SubmitNode, QueryNode, DB, Basis, TransactionResult, TxKey};
+pub use node::{Node, SubmitNode, QueryNode, Database, DB, Basis, TransactionResult, TxKey};

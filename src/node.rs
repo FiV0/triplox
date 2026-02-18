@@ -24,9 +24,15 @@ pub trait SubmitNode {
 }
 
 #[allow(async_fn_in_trait)]
+pub trait Database {
+    async fn query(&self, query: &Query) -> Result<QueryResult, Error>;
+}
+
+#[allow(async_fn_in_trait)]
 pub trait QueryNode {
-    async fn db(&self) -> DB;
-    async fn db_with_basis(&self, basis: Basis) -> DB;
+    type DB: Database;
+    async fn db(&self) -> Self::DB;
+    async fn db_with_basis(&self, basis: Basis) -> Self::DB;
 }
 
 pub struct DB {
@@ -47,10 +53,12 @@ impl DB {
     pub fn entity(&self, _eid: Eid) {
         todo!()
     }
+}
 
+impl Database for DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    pub async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
+    async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
         validate_query(query)?;
 
         let snapshot = self.snapshot.clone();
@@ -152,6 +160,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 }
 
 impl<L: TxLog> QueryNode for Node<L> {
+    type DB = DB;
     async fn db(&self) -> DB {
         let snapshot = self.slatedb.snapshot().await.expect("Failed to create snapshot");
         let attribute_map = read_attribute_map(self.slatedb.clone()).await;
