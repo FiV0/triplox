@@ -213,7 +213,9 @@ impl Indexer {
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
-        // Update schema cache with any new schema attribute definitions
+        // TODO: If process_tx fails here, SlateDB has the data but the cache is stale.
+        // Placing it before the write has the inverse problem (phantom cache entry on write failure).
+        // Either ordering is inconsistent if one side fails. Revisit with proper error recovery.
         self.schema_cache.process_tx(&tx_ops)?;
 
         let seq_num = self.slatedb.last_committed_seq();
