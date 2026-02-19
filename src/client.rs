@@ -570,4 +570,3 @@ fn datatype_to_edn(dt: &DataType, s: &mut String) -> Result<()> {
     }
     Ok(())
 }
-

@@ -535,6 +535,7 @@ async fn handle_basis_for_tx<L: TxLog + 'static>(
     })
 }
 
+
 async fn handle_execute<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     ops: Vec<crate::ops::TxOp>,
@@ -581,6 +582,7 @@ async fn ready_for_query_flush<W: tokio::io::AsyncWrite + Unpin>(
     writer.flush().await?;
     Ok(())
 }
+
 
 async fn cleanup_connection(conn_state: &ConnectionState, db_cache: &DbCache) {
     for tx_id in conn_state.all_tx_ids() {
