@@ -170,7 +170,7 @@ fn compile_predicate(
         .unwrap();
 
     let (extension_var, level) = var_levels.remove(ext_idx);
-    let prefix_vars: HashMap<Variable, usize> = var_levels.into_iter().collect();
+    let prefix_vars = var_levels;
 
     Ok(Box::new(GenericPredicatePrefixExtender::new(
         expr.clone(),

@@ -16,8 +16,8 @@ use crate::ops::DataType;
 pub struct GenericPredicatePrefixExtender {
     /// The expression tree to evaluate (must produce Boolean).
     expr: Expr,
-    /// Variables already bound in the prefix: variable_name → prefix_index.
-    prefix_vars: HashMap<Variable, usize>,
+    /// Variables already bound in the prefix: (variable_name, prefix_index).
+    prefix_vars: Vec<(Variable, usize)>,
     /// The variable resolved from the extension being tested.
     extension_var: Variable,
     /// The join level this extender participates at (highest variable level).
@@ -27,7 +27,7 @@ pub struct GenericPredicatePrefixExtender {
 impl GenericPredicatePrefixExtender {
     pub fn new(
         expr: Expr,
-        prefix_vars: HashMap<Variable, usize>,
+        prefix_vars: Vec<(Variable, usize)>,
         extension_var: Variable,
         level: usize,
     ) -> Self {
@@ -51,7 +51,7 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         // Pre-deserialize prefix variables once (same for all extensions).
-        let prefix_values: HashMap<Variable, DataType> = self
+        let prefix_values: Vec<(Variable, DataType)> = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
@@ -101,7 +101,7 @@ mod tests {
     fn test_count_returns_max() {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
-            HashMap::new(),
+            vec![],
             "?x".to_string(),
             0,
         );
@@ -113,7 +113,7 @@ mod tests {
     fn test_propose_panics() {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
-            HashMap::new(),
+            vec![],
             "?x".to_string(),
             0,
         );
@@ -124,7 +124,7 @@ mod tests {
     fn test_participates_in_level() {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
-            HashMap::new(),
+            vec![],
             "?x".to_string(),
             2,
         );
@@ -141,7 +141,7 @@ mod tests {
             op: UnaryOp::IsNil,
             operand: Box::new(Expr::Variable("?x".to_string())),
         });
-        let ext = GenericPredicatePrefixExtender::new(expr, HashMap::new(), "?x".to_string(), 0);
+        let ext = GenericPredicatePrefixExtender::new(expr, vec![], "?x".to_string(), 0);
 
         let extensions = vec![
             serialize(&DataType::Nil),
@@ -164,7 +164,7 @@ mod tests {
             op: BinaryOp::Lt,
             right: Box::new(Expr::Literal(DataType::Long(30))),
         });
-        let ext = GenericPredicatePrefixExtender::new(expr, HashMap::new(), "?age".to_string(), 0);
+        let ext = GenericPredicatePrefixExtender::new(expr, vec![], "?age".to_string(), 0);
 
         let extensions = vec![
             serialize(&DataType::Long(25)),
@@ -195,7 +195,7 @@ mod tests {
         });
         let ext = GenericPredicatePrefixExtender::new(
             expr,
-            HashMap::from([("?a".to_string(), 0)]),
+            vec![("?a".to_string(), 0)],
             "?b".to_string(),
             1,
         );
@@ -232,7 +232,7 @@ mod tests {
         });
         let ext = GenericPredicatePrefixExtender::new(
             expr,
-            HashMap::from([("?a".to_string(), 0)]),
+            vec![("?a".to_string(), 0)],
             "?b".to_string(),
             1,
         );
@@ -272,7 +272,7 @@ mod tests {
         });
         let pred = GenericPredicatePrefixExtender::new(
             pred_expr,
-            HashMap::new(),
+            vec![],
             "?x".to_string(),
             0,
         );
@@ -316,7 +316,7 @@ mod tests {
         });
         let pred = GenericPredicatePrefixExtender::new(
             pred_expr,
-            HashMap::new(),
+            vec![],
             "?age".to_string(),
             0,
         );
