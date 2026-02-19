@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::datalog::Query;
 use crate::file_log::FileLog;
-use crate::indexer::Indexer;
+use crate::indexer::{Indexer, TxOptions};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
@@ -83,20 +83,35 @@ pub struct Node<L: TxLog> {
     subscription: CancellationToken,
 }
 
+/// Bootstrap the schema-for-schema directly on the indexer.
+/// This is a known constant, not stored in the log.
+async fn bootstrap_indexer(indexer: &Arc<tokio::sync::RwLock<Indexer>>) {
+    let tx_ops = crate::schema::bootstrap_schema_tx();
+    // TODO(triplox-46x): tx_id=-1 is a placeholder — bootstrap shouldn't need a real TxKey
+    // since it's not a log transaction. Revisit how bootstrap interacts with the indexer.
+    indexer.write().await
+        .transact_tx(
+            TxKey { tx_id: -1, system_time: clock::st_from_unix_epoch(0) },
+            tx_ops,
+            TxOptions { skip_schema_validation: true },
+        )
+        .await
+        .expect("Failed to bootstrap schema");
+}
+
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, _is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
+        // Bootstrap schema directly on indexer (not in log — it's a known constant)
+        bootstrap_indexer(&indexer).await;
+
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
-        let node = Node { log, indexer, slatedb, subscription };
-        if is_fresh {
-            node.bootstrap().await;
-        }
-        node
+        Node { log, indexer, slatedb, subscription }
     }
 }
 
@@ -104,11 +119,14 @@ impl Node<FileLog> {
     pub async fn local_node(root_path: &Path) -> Self {
         std::fs::create_dir_all(root_path.join("db")).unwrap();
         let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
-        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, _is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),
         ));
+
+        // Bootstrap schema directly on indexer (not in log — it's a known constant)
+        bootstrap_indexer(&indexer).await;
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
@@ -125,13 +143,7 @@ impl Node<FileLog> {
             wait.await.unwrap();
         }
 
-        let node = Node { log, indexer, slatedb, subscription };
-
-        if is_fresh {
-            node.bootstrap().await;
-        }
-
-        node
+        Node { log, indexer, slatedb, subscription }
     }
 }
 
@@ -143,18 +155,6 @@ impl<L: TxLog> Node<L> {
         crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_key.tx_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_key.tx_id))
-    }
-
-    /// Transact the bootstrap schema as the first transaction on a fresh database.
-    async fn bootstrap(&self) {
-        let tx_ops = crate::schema::bootstrap_schema_tx();
-        let result = self.execute_tx(tx_ops).await;
-        match result {
-            TransactionResult::TxCommited(_) => {},
-            TransactionResult::TxAborted(_, err) => {
-                panic!("Failed to transact bootstrap schema: {}", err);
-            }
-        }
     }
 
     pub async fn close(self) {

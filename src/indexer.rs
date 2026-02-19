@@ -25,6 +25,14 @@ use crate::slate::{get_and_create_attribute_id, in_memory_slate, read_attribute_
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
+/// Options for controlling transaction processing behavior.
+#[derive(Default)]
+pub struct TxOptions {
+    /// When true, skip schema validation for this transaction.
+    /// Used for the bootstrap transaction that defines the schema-for-schema.
+    pub skip_schema_validation: bool,
+}
+
 pub struct Indexer {
     slatedb: Arc<Db>,
     attribute_to_id: HashMap<String, u64>,
@@ -183,9 +191,8 @@ impl Indexer {
 
     // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
     // when a Put/Add overwrites an existing entity+attribute pair.
-    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        // Bootstrap tx (tx_id=0) is exempt from validation — it IS the schema-for-schema.
-        if tx_key.tx_id > 0 {
+    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>, opts: TxOptions) -> Result<TxKey, Error> {
+        if !opts.skip_schema_validation {
             self.schema_cache.validate_tx(&tx_ops)?;
         }
 
@@ -294,7 +301,7 @@ impl Subscriber for Indexer {
     async fn accept(&mut self, record: Record) {
         let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
             .expect("Failed to deserialize TxOps from log record");
-        self.transact_tx(record.tx_key, tx_ops).await
+        self.transact_tx(record.tx_key, tx_ops, TxOptions::default()).await
             .expect("Indexer failed to process transaction");
     }
 }
@@ -415,13 +422,16 @@ mod tests {
     use super::*;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
-    /// Returns the indexer ready for test data at tx_id=2+.
+    /// Create an indexer with bootstrap schema and test attributes already transacted.
+    /// Bootstrap uses tx_id=-1 (not in log), test schema uses tx_id=0.
+    /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
         let mut indexer = Indexer::new(slate);
-        let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
-        indexer.transact_tx(tx_key_0, bootstrap_schema_tx()).await.unwrap();
-        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(1) };
-        indexer.transact_tx(tx_key_1, test_schema_tx()).await.unwrap();
+        let bootstrap_key = TxKey { tx_id: -1, system_time: st_from_unix_epoch(0) };
+        let opts = TxOptions { skip_schema_validation: true };
+        indexer.transact_tx(bootstrap_key, bootstrap_schema_tx(), opts).await.unwrap();
+        let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
+        indexer.transact_tx(tx_key_0, test_schema_tx(), TxOptions::default()).await.unwrap();
         indexer
     }
 
@@ -435,7 +445,7 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
 
         let mut attribute_map = read_attribute_map(slate.clone()).await;
         let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
@@ -508,7 +518,7 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
 
         // Verify EAV entry actually exists (not silently skipped like test_indexer's if-let)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -530,7 +540,7 @@ mod tests {
         map.insert("age".to_string(), DataType::Long(30));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
 
         // Verify all attributes are indexed in EAV
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -563,7 +573,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
-        indexer.transact_tx(tx_key, tx_ops).await?;
+        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
 
         let basis = get_basis_for_tx(slate.clone(), 42).await;
         assert!(basis.is_some(), "Should find basis for tx_id 42");
@@ -587,20 +597,20 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // tx_id 0 and 1 are taken by bootstrap + test schema
+        // tx_id -1=bootstrap, 0=test schema, so data starts at 1
         for i in 0..3 {
-            let tx_id = i + 2;
+            let tx_id = i + 1;
             let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            indexer.transact_tx(tx_key, tx_ops).await?;
+            indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
         }
 
-        let basis0 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
-        let basis1 = get_basis_for_tx(slate.clone(), 3).await.unwrap();
-        let basis2 = get_basis_for_tx(slate.clone(), 4).await.unwrap();
+        let basis0 = get_basis_for_tx(slate.clone(), 1).await.unwrap();
+        let basis1 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
+        let basis2 = get_basis_for_tx(slate.clone(), 3).await.unwrap();
 
         assert!(basis0.seq_num < basis1.seq_num);
         assert!(basis1.seq_num < basis2.seq_num);
@@ -618,7 +628,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(1));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
-        indexer.transact_tx(tx_key, tx_ops).await?;
+        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await?;
 
         // await_tx should return immediately
         let start = std::time::Instant::now();
@@ -637,12 +647,12 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
 
-        let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(200) };
 
         // Spawn task that calls await_tx - lock is dropped before awaiting
         let indexer_clone = indexer.clone();
         let wait_handle = tokio::spawn(async move {
-            let future = indexer_clone.read().await.await_tx(tx_key_2);
+            let future = indexer_clone.read().await.await_tx(tx_key_1);
             // Lock is dropped here, before we await
             future.await
         });
@@ -657,7 +667,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("bob".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            guard.transact_tx(tx_key_2, tx_ops).await?;
+            guard.transact_tx(tx_key_1, tx_ops, TxOptions::default()).await?;
         }
 
         // Wait task should complete successfully
@@ -693,24 +703,24 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // Index tx 2 and tx 3 (0=bootstrap, 1=test schema)
+        // Index tx 1 and tx 2 (-1=bootstrap, 0=test schema)
         for i in 0..2 {
-            let tx_id = i + 2;
+            let tx_id = i + 1;
             let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            indexer.transact_tx(tx_key, tx_ops).await?;
+            indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
         }
 
-        // Waiting for tx 2 should return immediately
+        // Waiting for tx 1 should return immediately
+        let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        indexer.await_tx(tx_key_1).await?;
+
+        // Waiting for tx 2 should also return immediately
         let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         indexer.await_tx(tx_key_2).await?;
-
-        // Waiting for tx 3 should also return immediately
-        let tx_key_3 = TxKey { tx_id: 3, system_time: st_from_unix_epoch(300) };
-        indexer.await_tx(tx_key_3).await?;
 
         Ok(())
     }
@@ -744,7 +754,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("shared".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            guard.transact_tx(tx_key, tx_ops).await?;
+            guard.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
         }
 
         // All waiters should complete
