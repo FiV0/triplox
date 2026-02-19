@@ -126,6 +126,12 @@ pub struct SchemaCache {
     by_ident: HashMap<String, SchemaAttribute>,
 }
 
+impl Default for SchemaCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SchemaCache {
     pub fn new() -> Self {
         SchemaCache {
@@ -189,6 +195,7 @@ impl SchemaCache {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.by_ident.len()
     }

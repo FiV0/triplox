@@ -393,16 +393,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_single_pattern_var_const_var() {
-        // Insert data: entity 1 has name "alice", entity 2 has name "bob"
+        // Insert data: entity 100 has name "alice", entity 101 has name "bob"
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
@@ -425,8 +425,8 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
-        assert!(result.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+        assert!(result.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
+        assert!(result.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -436,11 +436,11 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
@@ -460,22 +460,22 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![DataType::Long(1)]);
+        assert_eq!(result[0], vec![DataType::Long(100)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_two_patterns_join() {
-        // Insert data: entity 1 has name "alice" and age 30
+        // Insert data: entity 100 has name "alice" and age 30
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         // bob has no age
 
@@ -511,20 +511,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
-        // Entity 1 (alice) follows entity 2 (bob)
-        // Entity 2 (bob) has name "bob"
+        // Entity 100 (alice) follows entity 101 (bob)
+        // Entity 101 (bob) has name "bob"
         // ?friend appears in value position of :follows and entity position of :name.
         // Works because entity IDs are encoded as DataType::Long in both positions.
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("follows".to_string(), DataType::Long(2));
+        doc1.insert("follows".to_string(), DataType::Long(101));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
@@ -557,21 +557,21 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_or_clause_basic() {
-        // Entity 1: name "alice", Entity 2: name "bob", Entity 3: name "charlie"
-        // OR query for alice or bob should return entities 1 and 2
+        // Entity 100: name "alice", Entity 101: name "bob", Entity 102: name "charlie"
+        // OR query for alice or bob should return entities 100 and 101
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
 
         node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
@@ -599,32 +599,32 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(1)]));
-        assert!(result.contains(&vec![DataType::Long(2)]));
-        assert!(!result.contains(&vec![DataType::Long(3)]));
+        assert!(result.contains(&vec![DataType::Long(100)]));
+        assert!(result.contains(&vec![DataType::Long(101)]));
+        assert!(!result.contains(&vec![DataType::Long(102)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_or_clause_with_additional_join() {
-        // Entity 1: name "alice", age 30
-        // Entity 2: name "bob", age 25
-        // Entity 3: name "charlie", age 35
+        // Entity 100: name "alice", age 30
+        // Entity 101: name "bob", age 25
+        // Entity 102: name "charlie", age 35
         // OR for name + join on age: only alice and bob should appear
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         doc2.insert("age".to_string(), DataType::Long(25));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
@@ -669,34 +669,34 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(1), DataType::Long(30)]));
-        assert!(result.contains(&vec![DataType::Long(2), DataType::Long(25)]));
+        assert!(result.contains(&vec![DataType::Long(100), DataType::Long(30)]));
+        assert!(result.contains(&vec![DataType::Long(101), DataType::Long(25)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_and_inside_or() {
-        // Entity 1: name "alice", age 30
-        // Entity 2: name "bob", age 25
-        // Entity 3: name "charlie", age 35
+        // Entity 100: name "alice", age 30
+        // Entity 101: name "bob", age 25
+        // Entity 102: name "charlie", age 35
         // Query: OR of two AND branches:
-        //   (or (and [?e "name" "alice"] [?e "age" 30])    -> entity 1
-        //       (and [?e "name" "charlie"] [?e "age" 35])) -> entity 3
-        // Should return entities 1 and 3 but not 2
+        //   (or (and [?e "name" "alice"] [?e "age" 30])    -> entity 100
+        //       (and [?e "name" "charlie"] [?e "age" 35])) -> entity 102
+        // Should return entities 100 and 102 but not 101
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         doc2.insert("age".to_string(), DataType::Long(25));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(3));
+        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
@@ -752,9 +752,9 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(1)]));
-        assert!(result.contains(&vec![DataType::Long(3)]));
-        assert!(!result.contains(&vec![DataType::Long(2)]));
+        assert!(result.contains(&vec![DataType::Long(100)]));
+        assert!(result.contains(&vec![DataType::Long(102)]));
+        assert!(!result.contains(&vec![DataType::Long(101)]));
     }
 
     // TODO(triplox-5ox): Once cardinality/one override is implemented, update this test to use
@@ -764,9 +764,9 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Tx1: entity 1 with name "alice"
+        // Tx1: entity 100 with name "alice"
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let basis1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await {
@@ -774,9 +774,9 @@ mod tests {
             _ => panic!("Tx1 should commit"),
         };
 
-        // Tx2: entity 2 with name "bob"
+        // Tx2: entity 101 with name "bob"
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let basis2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await {
@@ -797,18 +797,18 @@ mod tests {
             })],
         };
 
-        // db_with_basis(basis1): should only see entity 1
+        // db_with_basis(basis1): should only see entity 100
         let db1 = node.db_with_basis(basis1).await;
         let result1 = db1.query(&query).await.unwrap();
         assert_eq!(result1.len(), 1);
-        assert_eq!(result1[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+        assert_eq!(result1[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
         // db_with_basis(basis2): should see both entities
         let db2 = node.db_with_basis(basis2).await;
         let result2 = db2.query(&query).await.unwrap();
         assert_eq!(result2.len(), 2);
-        assert!(result2.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
-        assert!(result2.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+        assert!(result2.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
+        assert!(result2.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -833,7 +833,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let result = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
@@ -842,7 +842,7 @@ mod tests {
         let db = node.db().await;
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
         node.close().await;
 
@@ -852,10 +852,10 @@ mod tests {
         let db = node.db().await;
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let result = node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
@@ -864,8 +864,8 @@ mod tests {
         let db = node.db().await;
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 2);
-        assert!(results.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
-        assert!(results.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+        assert!(results.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
+        assert!(results.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
 
         node.close().await;
     }
