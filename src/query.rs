@@ -395,8 +395,11 @@ pub fn compile_find(find: &FindSpec, var_index: &HashMap<&Variable, usize>) -> R
 /// Extract attribute name from a DataType constant.
 fn extract_attribute_name(data: &DataType) -> Result<String, Error> {
     match data {
-        DataType::String(s) => Ok(s.clone()),
-        _ => Err(anyhow::anyhow!("Attribute must be a string")),
+        DataType::Keyword(kw) => match kw.namespace() {
+            Some(ns) => Ok(format!("{}/{}", ns, kw.name())),
+            None => Ok(kw.name().to_string()),
+        },
+        _ => Err(anyhow::anyhow!("Attribute must be a keyword, got {:?}", data)),
     }
 }
 
@@ -585,12 +588,17 @@ pub fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use edn::Keyword;
+
+    fn kw(name: &str) -> DataType {
+        DataType::Keyword(Keyword::plain(name))
+    }
 
     #[test]
     fn test_query_variable_order_single_pattern() {
         let where_clauses = vec![WhereClause::Triple(TriplePattern {
             entity: PatternElement::Variable("?e".to_string()),
-            attribute: PatternElement::Constant(DataType::String("name".to_string())),
+            attribute: PatternElement::Constant(kw("name")),
             value: PatternElement::Variable("?name".to_string()),
         })];
 
@@ -603,12 +611,12 @@ mod tests {
         let where_clauses = vec![
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                attribute: PatternElement::Constant(kw("name")),
                 value: PatternElement::Variable("?name".to_string()),
             }),
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                attribute: PatternElement::Constant(kw("age")),
                 value: PatternElement::Variable("?age".to_string()),
             }),
         ];
@@ -622,7 +630,7 @@ mod tests {
     fn test_query_variable_order_with_constants() {
         let where_clauses = vec![WhereClause::Triple(TriplePattern {
             entity: PatternElement::Variable("?e".to_string()),
-            attribute: PatternElement::Constant(DataType::String("name".to_string())),
+            attribute: PatternElement::Constant(kw("name")),
             value: PatternElement::Constant(DataType::String("Alice".to_string())),
         })];
 
@@ -659,12 +667,12 @@ mod tests {
         let where_clauses = vec![WhereClause::Or(vec![
             OrBranch::Clause(WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                attribute: PatternElement::Constant(kw("name")),
                 value: PatternElement::Constant(DataType::String("alice".to_string())),
             })),
             OrBranch::Clause(WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                attribute: PatternElement::Constant(kw("name")),
                 value: PatternElement::Constant(DataType::String("bob".to_string())),
             })),
         ])];
@@ -679,18 +687,18 @@ mod tests {
             WhereClause::Or(vec![
                 OrBranch::Clause(WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    attribute: PatternElement::Constant(kw("name")),
                     value: PatternElement::Constant(DataType::String("alice".to_string())),
                 })),
                 OrBranch::Clause(WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    attribute: PatternElement::Constant(kw("name")),
                     value: PatternElement::Constant(DataType::String("bob".to_string())),
                 })),
             ]),
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                attribute: PatternElement::Constant(kw("age")),
                 value: PatternElement::Variable("?age".to_string()),
             }),
         ];
@@ -705,7 +713,7 @@ mod tests {
         let where_clauses = vec![
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                attribute: PatternElement::Constant(kw("age")),
                 value: PatternElement::Variable("?age".to_string()),
             }),
             WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
@@ -726,7 +734,7 @@ mod tests {
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    attribute: PatternElement::Constant(kw("name")),
                     value: PatternElement::Constant(DataType::String("Alice".to_string())),
                 }),
                 WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
@@ -748,7 +756,7 @@ mod tests {
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                    attribute: PatternElement::Constant(kw("name")),
                     value: PatternElement::Constant(DataType::String("Alice".to_string())),
                 }),
                 WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
@@ -899,12 +907,12 @@ mod tests {
         let where_clauses = vec![WhereClause::Or(vec![OrBranch::And(vec![
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("name".to_string())),
+                attribute: PatternElement::Constant(kw("name")),
                 value: PatternElement::Variable("?name".to_string()),
             }),
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
+                attribute: PatternElement::Constant(kw("age")),
                 value: PatternElement::Variable("?age".to_string()),
             }),
         ])])];
