@@ -84,6 +84,11 @@ pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     order
 }
 
+/// Build a variable → position index from the join order for O(1) lookups.
+fn build_var_index(join_order: &[Variable]) -> HashMap<&Variable, usize> {
+    join_order.iter().enumerate().map(|(i, v)| (v, i)).collect()
+}
+
 /// Collect all variables referenced by inner clauses of a NOT.
 fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut vars = Vec::new();
@@ -102,12 +107,14 @@ fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
 }
 
 /// Validate that all variables in NOT clauses are bound by positive clauses.
-fn validate_not_clauses(where_clauses: &[WhereClause], join_order: &[Variable]) -> Result<(), Error> {
-    let bound: HashSet<&Variable> = join_order.iter().collect();
+fn validate_not_clauses(
+    where_clauses: &[WhereClause],
+    var_index: &HashMap<&Variable, usize>,
+) -> Result<(), Error> {
     for clause in where_clauses {
         if let WhereClause::Not(inner) = clause {
             for var in not_clause_variables(inner) {
-                if !bound.contains(&var) {
+                if !var_index.contains_key(&var) {
                     return Err(anyhow::anyhow!(
                         "Variable {} in NOT clause is not bound by positive clauses",
                         var
@@ -123,9 +130,8 @@ fn validate_not_clauses(where_clauses: &[WhereClause], join_order: &[Variable]) 
 /// and that each predicate has at least one variable.
 fn validate_predicate_clauses(
     where_clauses: &[WhereClause],
-    join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
-    let bound: HashSet<&Variable> = join_order.iter().collect();
     for clause in where_clauses {
         if let WhereClause::Predicate(expr) = clause {
             let vars = expr_variables(expr);
@@ -135,7 +141,7 @@ fn validate_predicate_clauses(
                 ));
             }
             for var in &vars {
-                if !bound.contains(var) {
+                if !var_index.contains_key(var) {
                     return Err(anyhow::anyhow!(
                         "Predicate variable {} is not bound by positive clauses",
                         var
@@ -150,21 +156,18 @@ fn validate_predicate_clauses(
 /// Validate that all FnExpr input variables precede the output variable in the join order.
 fn validate_fn_clauses(
     where_clauses: &[WhereClause],
-    join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
     for clause in where_clauses {
         if let WhereClause::FnExpr(fn_expr) = clause {
-            let output_pos = join_order
-                .iter()
-                .position(|v| v == &fn_expr.output)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Function output variable {} not in join order",
-                        fn_expr.output
-                    )
-                })?;
+            let output_pos = var_index.get(&fn_expr.output).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Function output variable {} not in join order",
+                    fn_expr.output
+                )
+            })?;
             for var in fn_expr.input_variables() {
-                let input_pos = join_order.iter().position(|v| v == &var).ok_or_else(|| {
+                let input_pos = var_index.get(&var).ok_or_else(|| {
                     anyhow::anyhow!("Function input variable {} not in join order", var)
                 })?;
                 if input_pos >= output_pos {
@@ -186,7 +189,7 @@ fn validate_fn_clauses(
 /// and which are already bound in the prefix.
 fn compile_predicate(
     expr: &Expr,
-    join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     let vars = expr_variables(expr);
     if vars.is_empty() {
@@ -199,12 +202,9 @@ fn compile_predicate(
     let mut var_levels: Vec<(Variable, usize)> = vars
         .iter()
         .map(|v| {
-            let level = join_order
-                .iter()
-                .position(|jv| jv == v)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Predicate variable {} not found in join order", v)
-                })?;
+            let level = var_index.get(v).copied().ok_or_else(|| {
+                anyhow::anyhow!("Predicate variable {} not found in join order", v)
+            })?;
             Ok((v.clone(), level))
         })
         .collect::<Result<_, Error>>()?;
@@ -230,30 +230,26 @@ fn compile_predicate(
 /// Compile a FnExpr into a GenericFnPrefixExtender.
 fn compile_fn_expr(
     fn_expr: &FnExpr,
-    join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     let input_vars = fn_expr.input_variables();
 
     let prefix_vars: Vec<(Variable, usize)> = input_vars
         .iter()
         .map(|v| {
-            let level = join_order
-                .iter()
-                .position(|jv| jv == v)
-                .ok_or_else(|| anyhow::anyhow!("FnExpr input variable {} not in join order", v))?;
+            let level = var_index.get(v).copied().ok_or_else(|| {
+                anyhow::anyhow!("FnExpr input variable {} not in join order", v)
+            })?;
             Ok((v.clone(), level))
         })
         .collect::<Result<_, Error>>()?;
 
-    let output_level = join_order
-        .iter()
-        .position(|jv| jv == &fn_expr.output)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "FnExpr output variable {} not in join order",
-                fn_expr.output
-            )
-        })?;
+    let output_level = var_index.get(&fn_expr.output).copied().ok_or_else(|| {
+        anyhow::anyhow!(
+            "FnExpr output variable {} not in join order",
+            fn_expr.output
+        )
+    })?;
 
     Ok(Box::new(GenericFnPrefixExtender::new(
         fn_expr.expr.clone(),
@@ -271,6 +267,7 @@ fn compile_fn_expr(
 fn determine_index_types(
     pattern: &PatternClause,
     join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
     participating_levels: &[usize],
 ) -> Result<Vec<IndexType>, Error> {
     let pattern_vars = pattern.variables();
@@ -282,8 +279,8 @@ fn determine_index_types(
     } else if pattern_vars.len() == 2 {
         // Two variable pattern - need different indices for each level
         // Determine which variable comes first in join order
-        let first_var_pos = join_order.iter().position(|v| v == &pattern_vars[0]);
-        let second_var_pos = join_order.iter().position(|v| v == &pattern_vars[1]);
+        let first_var_pos = var_index.get(&pattern_vars[0]).copied();
+        let second_var_pos = var_index.get(&pattern_vars[1]).copied();
 
         match (first_var_pos, second_var_pos) {
             (Some(e_pos), Some(v_pos)) => {
@@ -342,6 +339,7 @@ fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Re
 pub fn compile_pattern(
     pattern: &TriplePattern,
     join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
     attribute_id: u64,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
@@ -352,11 +350,12 @@ pub fn compile_pattern(
     // Determine participating levels
     let participating_levels: Vec<usize> = pattern_vars
         .iter()
-        .filter_map(|v| join_order.iter().position(|jv| jv == v))
+        .filter_map(|v| var_index.get(v).copied())
         .collect();
 
     // Determine index types for each level
-    let index_types = determine_index_types(&pattern_clause, join_order, &participating_levels)?;
+    let index_types =
+        determine_index_types(&pattern_clause, join_order, var_index, &participating_levels)?;
 
     // Compute constant prefix (for patterns with constant entity or value)
     let constant_prefix = if !index_types.is_empty() {
@@ -376,14 +375,14 @@ pub fn compile_pattern(
 }
 
 /// Create indices for projecting find variables from join results.
-pub fn compile_find(find: &FindSpec, join_order: &[Variable]) -> Result<Vec<usize>, Error> {
+pub fn compile_find(find: &FindSpec, var_index: &HashMap<&Variable, usize>) -> Result<Vec<usize>, Error> {
     match find {
         FindSpec::FindRel(elements) => elements
             .iter()
             .map(|elem| match elem {
-                FindElement::Variable(var) => join_order
-                    .iter()
-                    .position(|v| v == var)
+                FindElement::Variable(var) => var_index
+                    .get(var)
+                    .copied()
                     .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var)),
                 _ => Err(anyhow::anyhow!(
                     "Only Variable find elements supported in MVP"
@@ -453,14 +452,15 @@ pub fn validate_query(query: &Query) -> Result<(), Error> {
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no variables"));
     }
+    let var_index = build_var_index(&join_order);
     for clause in &query.where_clauses {
         if let WhereClause::Or(branches) = clause {
             validate_or_branches(branches)?;
         }
     }
-    validate_not_clauses(&query.where_clauses, &join_order)?;
-    validate_predicate_clauses(&query.where_clauses, &join_order)?;
-    validate_fn_clauses(&query.where_clauses, &join_order)?;
+    validate_not_clauses(&query.where_clauses, &var_index)?;
+    validate_predicate_clauses(&query.where_clauses, &var_index)?;
+    validate_fn_clauses(&query.where_clauses, &var_index)?;
     Ok(())
 }
 
@@ -468,18 +468,19 @@ pub fn validate_query(query: &Query) -> Result<(), Error> {
 fn compile_or_branch(
     branch: &OrBranch,
     join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, u64>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrBranch::Clause(clause) => {
-            compile_where_clause(clause, join_order, slate, handle, attribute_map)
+            compile_where_clause(clause, join_order, var_index, slate, handle, attribute_map)
         }
         OrBranch::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
                 .iter()
-                .map(|c| compile_where_clause(c, join_order, slate, handle, attribute_map))
+                .map(|c| compile_where_clause(c, join_order, var_index, slate, handle, attribute_map))
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericAndPrefixExtender::new(extenders)))
         }
@@ -490,6 +491,7 @@ fn compile_or_branch(
 fn compile_where_clause(
     clause: &WhereClause,
     join_order: &[Variable],
+    var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, u64>,
@@ -497,27 +499,35 @@ fn compile_where_clause(
     match clause {
         WhereClause::Triple(pattern) => {
             let attr_id = resolve_attribute(&pattern.attribute, attribute_map)?;
-            let extender =
-                compile_pattern(pattern, join_order, attr_id, slate.clone(), handle.clone())?;
+            let extender = compile_pattern(
+                pattern,
+                join_order,
+                var_index,
+                attr_id,
+                slate.clone(),
+                handle.clone(),
+            )?;
             Ok(Box::new(extender))
         }
         WhereClause::Or(branches) => {
             let children: Vec<Box<dyn PrefixExtender>> = branches
                 .iter()
-                .map(|b| compile_or_branch(b, join_order, slate, handle, attribute_map))
+                .map(|b| compile_or_branch(b, join_order, var_index, slate, handle, attribute_map))
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericOrPrefixExtender::new(children)))
         }
         WhereClause::Not(inner_clauses) => {
             let children: Vec<Box<dyn PrefixExtender>> = inner_clauses
                 .iter()
-                .map(|c| compile_where_clause(c, join_order, slate, handle, attribute_map))
+                .map(|c| {
+                    compile_where_clause(c, join_order, var_index, slate, handle, attribute_map)
+                })
                 .collect::<Result<_, _>>()?;
-            let not_level = join_order.len() - 1;
+            let not_level = var_index.len() - 1;
             Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
         }
-        WhereClause::Predicate(expr) => compile_predicate(expr, join_order),
-        WhereClause::FnExpr(fn_expr) => compile_fn_expr(fn_expr, join_order),
+        WhereClause::Predicate(expr) => compile_predicate(expr, var_index),
+        WhereClause::FnExpr(fn_expr) => compile_fn_expr(fn_expr, var_index),
         _ => Err(anyhow::anyhow!(
             "Unsupported where clause type: {:?}",
             clause
@@ -535,6 +545,7 @@ pub fn execute_query(
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);
     let num_levels = join_order.len();
+    let var_index = build_var_index(&join_order);
 
     // 2. Compile patterns into extenders
     let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
@@ -543,6 +554,7 @@ pub fn execute_query(
         extenders.push(compile_where_clause(
             clause,
             &join_order,
+            &var_index,
             &slate,
             &handle,
             attribute_map,
@@ -555,7 +567,7 @@ pub fn execute_query(
     let results = join.join();
 
     // 4. Project results based on find clause
-    let projection_indices = compile_find(&query.find, &join_order)?;
+    let projection_indices = compile_find(&query.find, &var_index)?;
 
     let rows: QueryResult = results
         .into_iter()
@@ -625,8 +637,9 @@ mod tests {
             FindElement::Variable("?e".to_string()),
         ]);
         let join_order = vec!["?e".to_string(), "?name".to_string()];
+        let var_index = build_var_index(&join_order);
 
-        let indices = compile_find(&find, &join_order).unwrap();
+        let indices = compile_find(&find, &var_index).unwrap();
         // ?name is at index 1, ?e is at index 0
         assert_eq!(indices, vec![1, 0]);
     }
@@ -635,8 +648,9 @@ mod tests {
     fn test_compile_find_missing_variable() {
         let find = FindSpec::FindRel(vec![FindElement::Variable("?missing".to_string())]);
         let join_order = vec!["?e".to_string(), "?name".to_string()];
+        let var_index = build_var_index(&join_order);
 
-        let result = compile_find(&find, &join_order);
+        let result = compile_find(&find, &var_index);
         assert!(result.is_err());
     }
 
