@@ -1,7 +1,9 @@
 #![allow(unused)]
 
 use std::future::Future;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 
 use anyhow::Result;
 use log::{error, info, trace, warn};
@@ -24,12 +26,12 @@ pub(crate) trait Subscriber: Send + Sync {
 
 pub type TxId = i64;
 
-pub(crate) fn subscribe<S: Subscriber + 'static>(
+pub(crate) async fn subscribe<S: Subscriber + 'static>(
     log: Arc<RwLock<dyn TxLogReader>>,
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
 ) -> CancellationToken {
-    let (_next_tx_id, mut tx_receiver) = log.read().unwrap().subscribe_txs();
+    let (_next_tx_id, mut tx_receiver) = log.read().await.subscribe_txs();
 
     let token = CancellationToken::new();
     let task_token = token.clone();
@@ -41,10 +43,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(
         // Catch-up phase: read historical transactions after last_tx_id
         loop {
             if task_token.is_cancelled() { break; }
-            let txs = {
-                let log = log.read().unwrap();
-                log.read_txs_after(last_tx_id, 100)
-            };
+            let txs = log.read().await.read_txs_after(last_tx_id, 100);
             match txs {
                 Ok(txs) if txs.is_empty() => break,
                 Ok(txs) => {
@@ -77,10 +76,7 @@ pub(crate) fn subscribe<S: Subscriber + 'static>(
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
-                            let txs = {
-                                let log = log.read().unwrap();
-                                log.read_txs_after(last_tx_id, missed.try_into().unwrap())
-                            };
+                            let txs = log.read().await.read_txs_after(last_tx_id, missed.try_into().unwrap());
                             match txs {
                                 Ok(txs) => {
                                     if !txs.is_empty() {
@@ -120,9 +116,8 @@ pub trait TxLogReader: Send + Sync + 'static {
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
 }
 
-#[allow(async_fn_in_trait)]
 pub trait TxLogWriter: Send + Sync + 'static {
-    async fn append_tx(&mut self, record: Vec<u8>) -> TxKey;
+    fn append_tx(&mut self, record: Vec<u8>) -> impl std::future::Future<Output = TxKey> + Send;
 }
 
 pub trait TxLog: TxLogReader + TxLogWriter {}

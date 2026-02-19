@@ -129,17 +129,17 @@ mod tests {
 
         ]);
 
-        let log = Arc::new(std::sync::RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
-        let token = subscribe(log.clone(), None, subscriber.clone());
+        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![1, 2, 3]).await;
             writer.append_tx(vec![4, 5, 6]).await;
             writer.append_tx(vec![7, 8, 9]).await;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         token.cancel();
 
@@ -155,15 +155,15 @@ mod tests {
 
         // Restart log and subscribe after second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()); // Subscribe after second transaction
+        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![10, 11, 12]).await;
             writer.append_tx(vec![13, 14, 15]).await;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         token2.cancel();
 
@@ -186,20 +186,20 @@ mod tests {
             st_from_unix_epoch(100),
         ]);
 
-        let log = Arc::new(std::sync::RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
 
         // Write one transaction
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![1, 2, 3]).await;
         }
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone());
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         // Give it some time to process
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
         token.cancel();
 

@@ -67,7 +67,6 @@ impl TxLog for MemoryLog {}
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::thread;
     use std::time::Duration;
     use crate::log::{subscribe, MockSubscriber};
     use crate::clock::{st_from_unix_epoch, MockClock};
@@ -79,17 +78,17 @@ mod tests {
         init();
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100), st_from_unix_epoch(200), st_from_unix_epoch(300), st_from_unix_epoch(400)]);
-        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
-        let token = subscribe(log.clone(), None, subscriber.clone());
+        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![1, 2, 3]).await;
             writer.append_tx(vec![4, 5, 6]).await;
             writer.append_tx(vec![7, 8, 9]).await;
         }
 
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         token.cancel();
 
@@ -104,15 +103,15 @@ mod tests {
         drop(subscriber);
 
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()); // Subscribe after second transaction
+        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![10, 11, 12]).await;
             writer.append_tx(vec![13, 14, 15]).await;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         token2.cancel();
 
@@ -131,20 +130,20 @@ mod tests {
             st_from_unix_epoch(0),
             st_from_unix_epoch(100),
         ]);
-        let log = Arc::new(std::sync::RwLock::new(MemoryLog::new(Box::new(clock))));
+        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
 
         // Write one transaction
         {
-            let mut writer = log.write().unwrap();
+            let mut writer = log.write().await;
             writer.append_tx(vec![1, 2, 3]).await;
         }
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone());
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         // Give it some time to process
-        thread::sleep(Duration::from_millis(150));
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         token.cancel();
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use anyhow::Error;
 use tokio::runtime::Handle;
@@ -10,6 +10,7 @@ use crate::datalog::Query;
 use crate::file_log::FileLog;
 use crate::indexer::Indexer;
 use crate::log::{subscribe, TxLog, TxLogReader};
+use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
 use crate::query::{execute_query, validate_query, QueryResult};
@@ -89,7 +90,7 @@ impl Node<MemoryLog> {
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
-        let subscription = subscribe(log.clone(), None, indexer.clone());
+        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
         Node { log, indexer, slatedb, subscription: subscription }
     }
@@ -107,12 +108,12 @@ impl Node<FileLog> {
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
-            let log_reader = log.read().unwrap();
+            let log_reader = log.read().await;
             let records = log_reader.read_txs_after(None, u16::MAX).unwrap();
             records.last().map(|r| r.tx_key)
         };
 
-        let subscription = subscribe(log.clone(), None, indexer.clone());
+        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
         // Wait for catch-up to complete if there are existing transactions
         if let Some(tx_key) = last_tx_key {
@@ -142,14 +143,14 @@ impl<L: TxLog> SubmitNode for Node<L> {
         let serialized = bincode::serialize(&ops)
             .expect("Failed to serialize TxOps");
 
-        self.log.write().unwrap().append_tx(serialized).await
+        self.log.write().await.append_tx(serialized).await
     }
 
     async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult {
         let serialized = bincode::serialize(&ops)
             .expect("Failed to serialize TxOps");
 
-        let tx_key = self.log.write().unwrap().append_tx(serialized).await;
+        let tx_key = self.log.write().await.append_tx(serialized).await;
 
         let wait_future = self.indexer.read().await.await_tx(tx_key);
         match wait_future.await {
