@@ -145,6 +145,7 @@ impl SchemaCache {
         let ident = match doc.get("db/ident") {
             Some(DataType::Keyword(kw)) => {
                 let s = kw.to_string();
+                // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
                 // Strip EDN colon prefix (:ns/name -> ns/name) to match document key format
                 s.strip_prefix(':').unwrap_or(&s).to_string()
             },
@@ -306,6 +307,7 @@ pub(crate) fn test_schema_tx() -> Vec<TxOp> {
         plain_schema_attribute(50, "name", DB_TYPE_STRING, DB_CARDINALITY_ONE),
         plain_schema_attribute(51, "age", DB_TYPE_LONG, DB_CARDINALITY_ONE),
         plain_schema_attribute(52, "email", DB_TYPE_STRING, DB_CARDINALITY_ONE),
+        // TODO: update this to Ref once we support refs properly
         plain_schema_attribute(53, "follows", DB_TYPE_LONG, DB_CARDINALITY_ONE),
     ]
 }
