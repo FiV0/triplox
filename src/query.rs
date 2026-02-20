@@ -340,7 +340,7 @@ pub fn compile_pattern(
     pattern: &TriplePattern,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
-    attribute_id: u64,
+    attribute_id: i64,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
 ) -> Result<GenericPrefixExtender, Error> {
@@ -406,8 +406,8 @@ fn extract_attribute_name(data: &DataType) -> Result<String, Error> {
 /// Resolve attribute PatternElement to attribute ID.
 fn resolve_attribute(
     elem: &PatternElement,
-    attribute_map: &HashMap<String, u64>,
-) -> Result<u64, Error> {
+    attribute_map: &HashMap<String, i64>,
+) -> Result<i64, Error> {
     match elem {
         PatternElement::Constant(data) => {
             let name = extract_attribute_name(data)?;
@@ -474,7 +474,7 @@ fn compile_or_branch(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
-    attribute_map: &HashMap<String, u64>,
+    attribute_map: &HashMap<String, i64>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrBranch::Clause(clause) => {
@@ -497,7 +497,7 @@ fn compile_where_clause(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
-    attribute_map: &HashMap<String, u64>,
+    attribute_map: &HashMap<String, i64>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
         WhereClause::Triple(pattern) => {
@@ -543,7 +543,7 @@ pub fn execute_query(
     query: &Query,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
-    attribute_map: &HashMap<String, u64>,
+    attribute_map: &HashMap<String, i64>,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);

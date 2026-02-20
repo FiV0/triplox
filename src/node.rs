@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
 use crate::query::{execute_query, validate_query, QueryResult};
-use crate::slate::{in_memory_slate, local_slate, read_attribute_map};
+use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{Basis, TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
 
@@ -38,7 +38,7 @@ pub trait QueryNode {
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
-    attribute_map: HashMap<String, u64>,
+    attribute_map: HashMap<String, i64>,
     handle: Handle,
 }
 
@@ -47,7 +47,7 @@ pub struct Eid {}
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, u64>, handle: Handle) -> Self {
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Self {
         Self { snapshot, attribute_map, handle }
     }
 
@@ -192,13 +192,13 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
+        let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
         Ok(DB::new(snapshot, attribute_map, handle))
     }
     async fn db_with_basis(&self, basis: Basis) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await?;
-        let attribute_map = read_attribute_map(self.slatedb.clone()).await;
+        let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
         Ok(DB::new(snapshot, attribute_map, handle))
     }
@@ -216,7 +216,7 @@ mod tests {
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
     use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
     use crate::schema::test_schema_tx;
-    use crate::slate::{get_and_create_attribute_id, read_attribute_map};
+    // "name" has entity_id 50, "age" 51, "email" 52, "follows" 53 from test_schema_tx
     use crate::transaction::TransactionResult;
     use edn::Keyword;
     use super::*;
@@ -227,7 +227,7 @@ mod tests {
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
     async fn define_test_schema(node: &impl SubmitNode) {
-        let result = node.execute_tx(test_schema_tx()).await;
+        let result = node.execute_tx(test_schema_tx()).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
     }
 
@@ -247,8 +247,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
-        let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
+        let name_id: i64 = 50; // from test_schema_tx
 
         // Check EAV index — find entry for entity 100
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -336,9 +335,10 @@ mod tests {
         let tx_ops = vec![TxOp::Put(doc)];
 
         // submit_tx returns immediately with a TxKey
-        // tx_id=0 is bootstrap schema, tx_id=1 is test schema, so first data tx is tx_id=2
+        // bootstrap goes directly through transact_tx (not log), so:
+        // tx_id=0 is test schema, tx_id=1 is first data tx
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
-        assert_eq!(tx_key.tx_id, 2);
+        assert_eq!(tx_key.tx_id, 1);
 
         // Wait for indexer to process the transaction
         let wait_future = node.indexer.read().await.await_tx(tx_key);
@@ -346,8 +346,7 @@ mod tests {
 
         // Verify indices are updated
         let slate = node.slatedb.clone();
-        let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
+        let name_id: i64 = 50;
 
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
@@ -382,8 +381,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
-        let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let email_id = get_and_create_attribute_id(slate.clone(), "email", &mut attribute_map).await;
+        let email_id: i64 = 52; // from test_schema_tx
 
         // Check EAV index — find entry for entity 100
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();

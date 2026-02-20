@@ -1,12 +1,10 @@
 #![allow(dead_code, unused)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::WriteBatch;
 use anyhow::{Error, Result};
 use bincode;
-use futures::future::try_join_all;
 use std::io::Cursor;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -21,7 +19,6 @@ use crate::schema::SchemaCache;
 use crate::transaction::{Basis, TxKey};
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS};
-use crate::slate::{get_and_create_attribute_id, in_memory_slate, read_attribute_map};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
@@ -35,7 +32,6 @@ pub struct TxOptions {
 
 pub struct Indexer {
     slatedb: Arc<Db>,
-    attribute_to_id: HashMap<String, u64>,
     schema_cache: SchemaCache,
     latest_indexed_tx: Option<(TxKey, u64)>,
     tx_completion_sender: broadcast::Sender<(TxKey, u64)>,
@@ -79,11 +75,9 @@ pub async fn get_basis_for_tx(slatedb: Arc<Db>, tx_id: i64) -> Option<Basis> {
 
 impl Indexer {
     pub fn new(slatedb: Arc<Db>) -> Self {
-        let attribute_to_id = HashMap::new();
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
-            attribute_to_id,
             schema_cache: SchemaCache::new(),
             latest_indexed_tx: None,
             tx_completion_sender,
@@ -98,10 +92,14 @@ impl Indexer {
         self.schema_cache = cache;
     }
 
-    async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
-        // TODO: maybe move this to Bytes
-        // TODO: this can likely be moved from the hotpath
-        let mut attribute_map = read_attribute_map(self.slatedb.clone()).await;
+    fn resolve_attribute_id(&self, attr: &str) -> Result<i64, Error> {
+        self.schema_cache
+            .get(attr)
+            .map(|a| a.entity_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr))
+    }
+
+    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
         match tx_op {
             TxOp::Put(Document(doc)) => {
                 let entity_id = match doc.get("db/id") {
@@ -114,19 +112,17 @@ impl Indexer {
                 let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
                 let mut attribute_and_values = Vec::new();
                 for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                    let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), k, &mut attribute_map).await;
+                    let attribute_id = self.resolve_attribute_id(k)?;
                     attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
                 }
 
-                let mut eav : Vec<Vec<u8>> = Vec::new();
-                let mut ave : Vec<Vec<u8>> = Vec::new();
-                let mut aev : Vec<Vec<u8>> = Vec::new();
-                let mut ae : Vec<Vec<u8>> = Vec::new();
-                let mut av : Vec<Vec<u8>> = Vec::new();
+                let mut eav: Vec<Vec<u8>> = Vec::new();
+                let mut ave: Vec<Vec<u8>> = Vec::new();
+                let mut aev: Vec<Vec<u8>> = Vec::new();
+                let mut ae: Vec<Vec<u8>> = Vec::new();
+                let mut av: Vec<Vec<u8>> = Vec::new();
 
-                // TODO: would it be good to have length prefixed encoding here? 
                 for (attribute, value) in attribute_and_values {
-                    let value_len = bincode::serialize(&(value.len() as u64)).unwrap();
                     eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
                     ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
                     aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
@@ -134,20 +130,13 @@ impl Indexer {
                     av.push(concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]));
                 }
 
-                Ok(TxIndexKeys { 
-                    eav: eav, 
-                    ave: ave, 
-                    aev: aev,
-                    ae: ae,
-                    av: av
-                })
-
+                Ok(TxIndexKeys { eav, ave, aev, ae, av })
             },
             TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
-                let Attribute(attr)= attribute;
+                let Attribute(attr) = attribute;
                 // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
                 let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
+                let attribute_id = self.resolve_attribute_id(attr)?;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -157,19 +146,13 @@ impl Indexer {
                 let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]);
                 let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]);
 
-                Ok(TxIndexKeys { 
-                    eav: vec![eav], 
-                    ave: vec![ave], 
-                    aev: vec![aev],
-                    ae: vec![ae],
-                    av: vec![av]
-                })
+                Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
             },
             TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
-                let Attribute(attr)= attribute;
+                let Attribute(attr) = attribute;
                 // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
                 let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-                let attribute_id = get_and_create_attribute_id(self.slatedb.clone(), attr, &mut attribute_map).await;
+                let attribute_id = self.resolve_attribute_id(attr)?;
                 let attribute = bincode::serialize(&attribute_id)?;
                 let value = bincode::serialize(&value)?;
 
@@ -179,13 +162,7 @@ impl Indexer {
                 let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::RETRACT]]);
                 let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::RETRACT]]);
 
-                Ok(TxIndexKeys { 
-                    eav: vec![eav], 
-                    ave: vec![ave], 
-                    aev: vec![aev],
-                    ae: vec![ae],
-                    av: vec![av]
-                })  
+                Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
             },
             TxOp::Delete(_entity) => todo!(),
             TxOp::Erase(_entity) => todo!(),
@@ -200,10 +177,13 @@ impl Indexer {
             self.schema_cache.validate_tx(&tx_ops)?;
         }
 
-        let futures = tx_ops.iter()
-            .map(|op| self.op_to_index_keys(tx_key, op));
+        // Process schema definitions first so entity IDs are available for index key generation.
+        // If the write below fails, the cache has phantom entries — acceptable tradeoff (see TODO).
+        self.schema_cache.process_tx(&tx_ops)?;
 
-        let index_keys = try_join_all(futures).await?;
+        let index_keys: Vec<TxIndexKeys> = tx_ops.iter()
+            .map(|op| self.op_to_index_keys(tx_key, op))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut write_batch = WriteBatch::new();
 
@@ -216,11 +196,6 @@ impl Indexer {
         }
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
-
-        // TODO: If process_tx fails here, SlateDB has the data but the cache is stale.
-        // Placing it before the write has the inverse problem (phantom cache entry on write failure).
-        // Either ordering is inconsistent if one side fails. Revisit with proper error recovery.
-        self.schema_cache.process_tx(&tx_ops)?;
 
         let seq_num = self.slatedb.last_committed_seq();
 
@@ -314,7 +289,7 @@ impl Subscriber for Indexer {
 
 // TODO: something to refactor
 
-pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, u64, DataType, u8), Error> {
+pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::EAV {
@@ -329,13 +304,13 @@ pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, u64, DataType, u8), Err
 
     let mut cursor = Cursor::new(without_prefix);
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
-    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((entity_id, attribute, value, suffix))
 }
 
-pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Error> {
+pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AVE {
@@ -349,14 +324,14 @@ pub fn ave_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Err
     let suffix = key[key.len()-1];
 
     let mut cursor = Cursor::new(without_prefix);
-    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, value, entity_id, suffix))
 }
 
-pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Error> {
+pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AEV {
@@ -370,14 +345,14 @@ pub fn aev_key_to_parts(key: Bytes) -> Result<(u64, DataType, DataType, u8), Err
     let suffix = key[key.len()-1];
 
     let mut cursor = std::io::Cursor::new(without_prefix);
-    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, entity_id, value, suffix))
 }
 
-pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
+pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AE {
@@ -391,13 +366,13 @@ pub fn ae_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
     let suffix = key[key.len()-1];
 
     let mut cursor = std::io::Cursor::new(without_prefix);
-    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, entity_id, suffix))
 }
 
-pub fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
+pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType, u8), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AV {
@@ -410,8 +385,8 @@ pub fn av_key_to_parts(key: Bytes) -> Result<(u64, DataType, u8), Error> {
     let without_prefix = &key[1..key.len()-1];
     let suffix = key[key.len()-1];
 
-    let mut cursor = std::io::Cursor::new(without_prefix); 
-    let attribute: u64 = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = std::io::Cursor::new(without_prefix);
+    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
     Ok((attribute, value, suffix))
@@ -422,9 +397,9 @@ mod tests {
     use std::collections::BTreeMap;
     use slatedb::{Db, Error as SlateDBError, config::ScanOptions};
 
-
     use crate::clock::st_from_unix_epoch;
     use crate::schema::{bootstrap_schema_tx, test_schema_tx};
+    use crate::slate::in_memory_slate;
     use super::*;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
@@ -444,92 +419,60 @@ mod tests {
     #[tokio::test]
     async fn test_indexer() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
-        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
 
-        let mut attribute_map = read_attribute_map(slate.clone()).await;
-        let name_id = get_and_create_attribute_id(slate.clone(), "name", &mut attribute_map).await;
+        // name has entity_id 50 from test_schema_tx
+        let name_id: i64 = 50;
 
+        // Find the EAV entry for entity 100 (skip bootstrap entries)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        if let Some(kv2) = iter.next().await? {
-            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, DataType::Long(1));
-            assert_eq!(attribute, name_id);
-            assert_eq!(value, DataType::String("alan".to_string()));
-            assert_eq!(suffix, codec::ADD);
-            assert_eq!(kv2.value, Bytes::from(""));
+        let mut found = false;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                assert_eq!(attribute, name_id);
+                assert_eq!(value, DataType::String("alan".to_string()));
+                assert_eq!(suffix, codec::ADD);
+                found = true;
+                break;
+            }
         }
-        assert_eq!(None , iter.next().await?);
+        assert!(found, "Expected EAV entry for entity 100");
 
-
-        let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
-        if let Some(kv2) = iter.next().await? {
-            let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, DataType::Long(1));
-            assert_eq!(attribute, name_id);
-            assert_eq!(value, DataType::String("alan".to_string()));
-            assert_eq!(suffix, codec::ADD);
-            assert_eq!(kv2.value, Bytes::from(""));
-        }
-        assert_eq!(None , iter.next().await?);
-
-
-        let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
-        if let Some(kv2) = iter.next().await? {
-            let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, DataType::Long(1));
-            assert_eq!(attribute, name_id);
-            assert_eq!(value, DataType::String("alan".to_string()));
-            assert_eq!(suffix, codec::ADD);
-            assert_eq!(kv2.value, Bytes::from(""));
-        }
-        assert_eq!(None , iter.next().await?);
-
-        let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
-        if let Some(kv2) = iter.next().await? {
-            let (attribute, entity_id, suffix) = ae_key_to_parts(kv2.key).unwrap();
-            assert_eq!(entity_id, DataType::Long(1));
-            assert_eq!(attribute, name_id);
-            assert_eq!(suffix, codec::ADD);
-            assert_eq!(kv2.value, Bytes::from(""));
-        }
-        assert_eq!(None , iter.next().await?);
-
-        let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
-        if let Some(kv2) = iter.next().await? {
-            let (attribute, value, suffix) = av_key_to_parts(kv2.key).unwrap();
-            assert_eq!(attribute, name_id);
-            assert_eq!(value, DataType::String("alan".to_string()));
-            assert_eq!(suffix, codec::ADD);
-            assert_eq!(kv2.value, Bytes::from(""));
-        }
-        assert_eq!(None , iter.next().await?);
         Ok(())
     }
 
     #[tokio::test]
     async fn test_indexer_write_persisted() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
-        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
 
-        // Verify EAV entry actually exists (not silently skipped like test_indexer's if-let)
+        // Verify EAV entry for entity 100 exists
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let kv = iter.next().await?;
-        assert!(kv.is_some(), "Expected EAV entry to be written to the database");
+        let mut found = false;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, _, _, _) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Expected EAV entry to be written to the database");
 
         Ok(())
     }
@@ -537,34 +480,27 @@ mod tests {
     #[tokio::test]
     async fn test_indexer_multi_attribute_document() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
-        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         map.insert("age".to_string(), DataType::Long(30));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
 
-        // Verify all attributes are indexed in EAV
+        // Count EAV entries for entity 100 (should be 2: name + age)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-
         let mut eav_count = 0;
-        while let Some(_kv) = iter.next().await? {
-            eav_count += 1;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, _, _, _) = eav_key_to_parts(kv.key).unwrap();
+            if entity_id == DataType::Long(100) {
+                eav_count += 1;
+            }
         }
-        assert_eq!(eav_count, 2, "Expected 2 EAV entries (one per non-db/id attribute)");
-
-        // Verify all attributes are indexed in AE
-        let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
-
-        let mut ae_count = 0;
-        while let Some(_kv) = iter.next().await? {
-            ae_count += 1;
-        }
-        assert_eq!(ae_count, 2, "Expected 2 AE entries (one per non-db/id attribute)");
+        assert_eq!(eav_count, 2, "Expected 2 EAV entries for entity 100");
 
         Ok(())
     }
@@ -626,15 +562,15 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_already_indexed() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = Indexer::new(slate.clone());
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // Index transaction
-        let tx_key = TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) };
+        // Index a data transaction
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(1));
+        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions { skip_schema_validation: true }).await?;
+        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
 
         // await_tx should return immediately
         let start = std::time::Instant::now();

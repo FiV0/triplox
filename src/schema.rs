@@ -8,7 +8,6 @@ use tokio::runtime::Handle;
 use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
 use crate::ops::{DataType, Document, Triple, TxOp};
 use crate::query::{execute_query, validate_query};
-use crate::slate::read_attribute_map;
 
 // --- Reserved entity IDs ---
 
@@ -158,6 +157,14 @@ impl SchemaCache {
 
     pub fn get(&self, ident: &str) -> Option<&SchemaAttribute> {
         self.by_ident.get(ident)
+    }
+
+    /// Build an attribute name → entity_id map for the query engine.
+    pub fn attribute_map(&self) -> HashMap<String, i64> {
+        self.by_ident
+            .iter()
+            .map(|(ident, attr)| (ident.clone(), attr.entity_id))
+            .collect()
     }
 
     /// Try to extract a schema attribute definition from a Put document.
@@ -336,8 +343,14 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 
 /// Load the SchemaCache from indices by querying with the Datalog engine.
 /// Finds all entities with db/ident + db/valueType + db/cardinality (inner join).
+/// Uses bootstrap attribute constants (DB_IDENT, DB_VALUE_TYPE, DB_CARDINALITY) to
+/// bootstrap the query — these are the only attributes needed to query schema entities.
 pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache {
-    let attribute_map = read_attribute_map(slatedb.clone()).await;
+    // Build attribute map from bootstrap constants — sufficient to query schema entities
+    let mut attribute_map = HashMap::new();
+    attribute_map.insert("db/ident".to_string(), DB_IDENT);
+    attribute_map.insert("db/valueType".to_string(), DB_VALUE_TYPE);
+    attribute_map.insert("db/cardinality".to_string(), DB_CARDINALITY);
     let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
     let handle = Handle::current();
 
