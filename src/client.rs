@@ -157,12 +157,8 @@ impl ClientNode {
         Ok(basis)
     }
 
-    /// Gracefully close the connection.
-    pub async fn close(&self) -> Result<()> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(&mut conn.writer, &FrontendMessage::Terminate).await?;
-        conn.writer.flush().await?;
-        Ok(())
+    async fn db_with_basis(&self, basis: Basis) -> Result<ClientDB, Error> {
+        self.open_db(Some(basis.tx_key.tx_id)).await
     }
 }
 
