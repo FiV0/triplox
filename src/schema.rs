@@ -39,7 +39,8 @@ pub enum ValueType {
     Keyword,
     String,
     Long,
-    Ref,
+    // TODO: Ref commented out — entity refs stored as Long for now. Revisit with DataType::Ref.
+    // Ref,
     Boolean,
     Double,
     Float,
@@ -52,6 +53,26 @@ pub enum ValueType {
     Map,
 }
 
+impl std::fmt::Display for ValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueType::Keyword => write!(f, "keyword"),
+            ValueType::String => write!(f, "string"),
+            ValueType::Long => write!(f, "long"),
+            ValueType::Boolean => write!(f, "boolean"),
+            ValueType::Double => write!(f, "double"),
+            ValueType::Float => write!(f, "float"),
+            ValueType::Instant => write!(f, "instant"),
+            ValueType::Uuid => write!(f, "uuid"),
+            ValueType::Bytes => write!(f, "bytes"),
+            ValueType::BigInt => write!(f, "bigint"),
+            ValueType::Tuple => write!(f, "tuple"),
+            ValueType::Vector => write!(f, "vector"),
+            ValueType::Map => write!(f, "map"),
+        }
+    }
+}
+
 impl ValueType {
     /// Map a value type enum entity ID to a ValueType.
     pub fn from_entity_id(id: i64) -> Result<Self> {
@@ -59,7 +80,7 @@ impl ValueType {
             DB_TYPE_KEYWORD => Ok(ValueType::Keyword),
             DB_TYPE_STRING => Ok(ValueType::String),
             DB_TYPE_LONG => Ok(ValueType::Long),
-            DB_TYPE_REF => Ok(ValueType::Ref),
+            DB_TYPE_REF => Ok(ValueType::Long), // refs stored as Long for now
             DB_TYPE_BOOLEAN => Ok(ValueType::Boolean),
             DB_TYPE_DOUBLE => Ok(ValueType::Double),
             DB_TYPE_FLOAT => Ok(ValueType::Float),
@@ -76,23 +97,7 @@ impl ValueType {
 
     /// Check if a DataType matches this ValueType.
     pub fn matches(&self, data: &DataType) -> bool {
-        match (self, data) {
-            (ValueType::Keyword, DataType::Keyword(_)) => true,
-            (ValueType::String, DataType::String(_)) => true,
-            (ValueType::Long, DataType::Long(_)) => true,
-            (ValueType::Ref, DataType::Long(_)) => true, // refs stored as Long for now
-            (ValueType::Boolean, DataType::Boolean(_)) => true,
-            (ValueType::Double, DataType::Double(_)) => true,
-            (ValueType::Float, DataType::Float(_)) => true,
-            (ValueType::Instant, DataType::Instant(_)) => true,
-            (ValueType::Uuid, DataType::Uuid(_)) => true,
-            (ValueType::Bytes, DataType::Bytes(_)) => true,
-            (ValueType::BigInt, DataType::BigInt(_)) => true,
-            (ValueType::Tuple, DataType::Tuple(_)) => true,
-            (ValueType::Vector, DataType::Vector(_)) => true,
-            (ValueType::Map, DataType::Map(_)) => true,
-            _ => false,
-        }
+        *self == data.value_type()
     }
 }
 
@@ -100,6 +105,15 @@ impl ValueType {
 pub enum Cardinality {
     One,
     Many,
+}
+
+impl std::fmt::Display for Cardinality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cardinality::One => write!(f, "one"),
+            Cardinality::Many => write!(f, "many"),
+        }
+    }
 }
 
 impl Cardinality {
@@ -121,16 +135,14 @@ pub struct SchemaAttribute {
     pub entity_id: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SchemaCache {
     by_ident: HashMap<String, SchemaAttribute>,
 }
 
 impl SchemaCache {
     pub fn new() -> Self {
-        SchemaCache {
-            by_ident: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn get(&self, ident: &str) -> Option<&SchemaAttribute> {
@@ -141,14 +153,16 @@ impl SchemaCache {
     /// A document defines a schema attribute if it has db/ident AND db/valueType.
     /// Returns Ok(Some(attr)) if it's a schema definition, Ok(None) if not,
     /// Err if the definition is malformed.
-    pub fn extract_schema_attribute(doc: &BTreeMap<String, DataType>) -> Result<Option<SchemaAttribute>> {
+    pub fn extract_schema_attribute(
+        doc: &BTreeMap<String, DataType>,
+    ) -> Result<Option<SchemaAttribute>> {
         let ident = match doc.get("db/ident") {
             Some(DataType::Keyword(kw)) => {
                 let s = kw.to_string();
                 // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
                 // Strip EDN colon prefix (:ns/name -> ns/name) to match document key format
                 s.strip_prefix(':').unwrap_or(&s).to_string()
-            },
+            }
             Some(_) => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
             None => return Ok(None),
         };
@@ -161,7 +175,11 @@ impl SchemaCache {
 
         let cardinality = match doc.get("db/cardinality") {
             Some(DataType::Long(id)) => Cardinality::from_entity_id(*id)?,
-            Some(_) => return Err(anyhow::anyhow!("db/cardinality must be a Long (entity ref)")),
+            Some(_) => {
+                return Err(anyhow::anyhow!(
+                    "db/cardinality must be a Long (entity ref)"
+                ))
+            }
             None => Cardinality::One, // default to cardinality one
         };
 
@@ -194,6 +212,10 @@ impl SchemaCache {
         self.by_ident.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.by_ident.is_empty()
+    }
+
     /// Validate a transaction's ops against the schema.
     /// Every attribute must exist in the schema and values must match declared valueType.
     pub fn validate_tx(&self, tx_ops: &[TxOp]) -> Result<()> {
@@ -206,27 +228,35 @@ impl SchemaCache {
                         }
                         self.validate_attribute_value(attr_name, value)?;
                     }
-                },
-                TxOp::Add(Triple { attribute, value, .. }) => {
+                }
+                TxOp::Add(Triple {
+                    attribute, value, ..
+                }) => {
                     self.validate_attribute_value(&attribute.0, value.data_type())?;
-                },
-                TxOp::Retract(Triple { attribute, value, .. }) => {
+                }
+                TxOp::Retract(Triple {
+                    attribute, value, ..
+                }) => {
                     self.validate_attribute_value(&attribute.0, value.data_type())?;
-                },
-                TxOp::Delete(_) | TxOp::Erase(_) => {},
+                }
+                TxOp::Delete(_) | TxOp::Erase(_) => {}
             }
         }
         Ok(())
     }
 
     fn validate_attribute_value(&self, attr_name: &str, value: &DataType) -> Result<()> {
-        let schema_attr = self.by_ident.get(attr_name)
+        let schema_attr = self
+            .by_ident
+            .get(attr_name)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr_name))?;
 
         if !schema_attr.value_type.matches(value) {
             return Err(anyhow::anyhow!(
-                "Type mismatch for attribute {}: expected {:?}, got {:?}",
-                attr_name, schema_attr.value_type, value
+                "Type mismatch for attribute {}: expected {}, got {:?}",
+                attr_name,
+                schema_attr.value_type,
+                value
             ));
         }
 
@@ -241,7 +271,10 @@ impl SchemaCache {
 fn schema_attribute(id: i64, ns: &str, name: &str, value_type: i64, cardinality: i64) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced(ns, name)));
+    doc.insert(
+        "db/ident".to_string(),
+        DataType::Keyword(Keyword::namespaced(ns, name)),
+    );
     doc.insert("db/valueType".to_string(), DataType::Long(value_type));
     doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
     TxOp::Put(Document(doc))
@@ -252,7 +285,10 @@ fn schema_attribute(id: i64, ns: &str, name: &str, value_type: i64, cardinality:
 fn enum_entity(id: i64, ns: &str, name: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced(ns, name)));
+    doc.insert(
+        "db/ident".to_string(),
+        DataType::Keyword(Keyword::namespaced(ns, name)),
+    );
     TxOp::Put(Document(doc))
 }
 
@@ -262,9 +298,20 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     vec![
         // Schema attribute entities (IDs 1-3)
         schema_attribute(DB_IDENT, "db", "ident", DB_TYPE_KEYWORD, DB_CARDINALITY_ONE),
-        schema_attribute(DB_VALUE_TYPE, "db", "valueType", DB_TYPE_REF, DB_CARDINALITY_ONE),
-        schema_attribute(DB_CARDINALITY, "db", "cardinality", DB_TYPE_REF, DB_CARDINALITY_ONE),
-
+        schema_attribute(
+            DB_VALUE_TYPE,
+            "db",
+            "valueType",
+            DB_TYPE_REF,
+            DB_CARDINALITY_ONE,
+        ),
+        schema_attribute(
+            DB_CARDINALITY,
+            "db",
+            "cardinality",
+            DB_TYPE_REF,
+            DB_CARDINALITY_ONE,
+        ),
         // Value type enum entities (IDs 10-23)
         enum_entity(DB_TYPE_KEYWORD, "db.type", "keyword"),
         enum_entity(DB_TYPE_STRING, "db.type", "string"),
@@ -280,7 +327,6 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         enum_entity(DB_TYPE_TUPLE, "db.type", "tuple"),
         enum_entity(DB_TYPE_VECTOR, "db.type", "vector"),
         enum_entity(DB_TYPE_MAP, "db.type", "map"),
-
         // Cardinality enum entities (IDs 30-31)
         enum_entity(DB_CARDINALITY_ONE, "db.cardinality", "one"),
         enum_entity(DB_CARDINALITY_MANY, "db.cardinality", "many"),
@@ -293,7 +339,10 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 fn plain_schema_attribute(id: i64, name: &str, value_type: i64, cardinality: i64) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
+    doc.insert(
+        "db/ident".to_string(),
+        DataType::Keyword(Keyword::plain(name)),
+    );
     doc.insert("db/valueType".to_string(), DataType::Long(value_type));
     doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
     TxOp::Put(Document(doc))
@@ -334,16 +383,23 @@ mod tests {
     #[test]
     fn test_bootstrap_entity_ids_unique() {
         let tx = bootstrap_schema_tx();
-        let mut ids: Vec<i64> = tx.iter().map(|op| match op {
-            TxOp::Put(Document(doc)) => match doc.get("db/id") {
-                Some(DataType::Long(id)) => *id,
-                _ => panic!("Expected db/id Long"),
-            },
-            _ => panic!("Expected Put"),
-        }).collect();
+        let mut ids: Vec<i64> = tx
+            .iter()
+            .map(|op| match op {
+                TxOp::Put(Document(doc)) => match doc.get("db/id") {
+                    Some(DataType::Long(id)) => *id,
+                    _ => panic!("Expected db/id Long"),
+                },
+                _ => panic!("Expected Put"),
+            })
+            .collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), tx.len(), "All bootstrap entity IDs must be unique");
+        assert_eq!(
+            ids.len(),
+            tx.len(),
+            "All bootstrap entity IDs must be unique"
+        );
     }
 
     #[test]
@@ -364,12 +420,12 @@ mod tests {
 
         let db_value_type = cache.get("db/valueType").unwrap();
         assert_eq!(db_value_type.entity_id, DB_VALUE_TYPE);
-        assert_eq!(db_value_type.value_type, ValueType::Ref);
+        assert_eq!(db_value_type.value_type, ValueType::Long); // Ref maps to Long for now
         assert_eq!(db_value_type.cardinality, Cardinality::One);
 
         let db_cardinality = cache.get("db/cardinality").unwrap();
         assert_eq!(db_cardinality.entity_id, DB_CARDINALITY);
-        assert_eq!(db_cardinality.value_type, ValueType::Ref);
+        assert_eq!(db_cardinality.value_type, ValueType::Long); // Ref maps to Long for now
         assert_eq!(db_cardinality.cardinality, Cardinality::One);
     }
 
@@ -383,9 +439,15 @@ mod tests {
         // User defines a new attribute: person/name of type string, cardinality one
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("person", "name")));
+        doc.insert(
+            "db/ident".to_string(),
+            DataType::Keyword(Keyword::namespaced("person", "name")),
+        );
         doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
-        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        doc.insert(
+            "db/cardinality".to_string(),
+            DataType::Long(DB_CARDINALITY_ONE),
+        );
 
         cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
         assert_eq!(cache.len(), 4);
@@ -400,7 +462,7 @@ mod tests {
     fn test_value_type_matches() {
         assert!(ValueType::String.matches(&DataType::String("hello".to_string())));
         assert!(ValueType::Long.matches(&DataType::Long(42)));
-        assert!(ValueType::Ref.matches(&DataType::Long(1))); // refs are Long for now
+        // ValueType::Ref commented out — refs are Long for now
         assert!(ValueType::Boolean.matches(&DataType::Boolean(true)));
 
         assert!(!ValueType::String.matches(&DataType::Long(42)));
@@ -414,7 +476,10 @@ mod tests {
         // An enum entity only has db/ident (no db/valueType), should NOT be a schema attribute
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(50));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("my.enum", "value")));
+        doc.insert(
+            "db/ident".to_string(),
+            DataType::Keyword(Keyword::namespaced("my.enum", "value")),
+        );
 
         cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
         assert_eq!(cache.len(), 0);
@@ -426,9 +491,15 @@ mod tests {
 
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("person", "name")));
+        doc.insert(
+            "db/ident".to_string(),
+            DataType::Keyword(Keyword::namespaced("person", "name")),
+        );
         doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
-        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        doc.insert(
+            "db/cardinality".to_string(),
+            DataType::Long(DB_CARDINALITY_ONE),
+        );
         cache.process_tx(&[TxOp::Put(Document(doc))]).unwrap();
 
         cache
@@ -440,7 +511,10 @@ mod tests {
 
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("person/name".to_string(), DataType::String("Alice".to_string()));
+        doc.insert(
+            "person/name".to_string(),
+            DataType::String("Alice".to_string()),
+        );
         let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
         assert!(result.is_ok());
     }
@@ -454,7 +528,10 @@ mod tests {
         doc.insert("person/age".to_string(), DataType::Long(30));
         let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown attribute: person/age"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute: person/age"));
     }
 
     #[test]
@@ -478,9 +555,15 @@ mod tests {
         // Defining a new attribute should validate against the bootstrap schema
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::namespaced("person", "name")));
+        doc.insert(
+            "db/ident".to_string(),
+            DataType::Keyword(Keyword::namespaced("person", "name")),
+        );
         doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
-        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        doc.insert(
+            "db/cardinality".to_string(),
+            DataType::Long(DB_CARDINALITY_ONE),
+        );
         let result = cache.validate_tx(&[TxOp::Put(Document(doc))]);
         assert!(result.is_ok());
     }

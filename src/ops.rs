@@ -68,6 +68,27 @@ pub enum DataType {
 
 
 impl DataType {
+    /// Return the ValueType corresponding to this DataType's variant.
+    pub fn value_type(&self) -> crate::schema::ValueType {
+        use crate::schema::ValueType;
+        match self {
+            DataType::Nil => ValueType::Long, // TODO: Nil has no ValueType — revisit
+            DataType::BigInt(_) => ValueType::BigInt,
+            DataType::Boolean(_) => ValueType::Boolean,
+            DataType::Bytes(_) => ValueType::Bytes,
+            DataType::Double(_) => ValueType::Double,
+            DataType::Float(_) => ValueType::Float,
+            DataType::Instant(_) => ValueType::Instant,
+            DataType::Keyword(_) => ValueType::Keyword,
+            DataType::Long(_) => ValueType::Long,
+            DataType::String(_) => ValueType::String,
+            DataType::Tuple(_) => ValueType::Tuple,
+            DataType::Uuid(_) => ValueType::Uuid,
+            DataType::Vector(_) => ValueType::Vector,
+            DataType::Map(_) => ValueType::Map,
+        }
+    }
+
     /// Compare two DataType values. Returns None if the types are incompatible
     /// or if floats are NaN.
     pub fn partial_compare(&self, other: &DataType) -> Option<std::cmp::Ordering> {
