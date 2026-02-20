@@ -12,7 +12,7 @@ use crate::error::TriploxError;
 use anyhow::Result;
 use crate::logging::init;
 
-pub(crate) struct MemoryLog {
+pub struct MemoryLog {
     txs: Vec<Record>,
     tx_sender: broadcast::Sender<Record>,
     clock: Box<dyn SystemTimeSource>

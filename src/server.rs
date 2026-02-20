@@ -12,6 +12,7 @@ use anyhow::{bail, Result};
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::log::TxLog;
@@ -32,13 +33,13 @@ struct DbCacheEntry {
     refcount: usize,
 }
 
-pub struct DbCache {
+struct DbCache {
     entries: RwLock<HashMap<i64, DbCacheEntry>>,
     max_open: usize,
 }
 
 impl DbCache {
-    pub fn new(max_open: usize) -> Self {
+    fn new(max_open: usize) -> Self {
         DbCache {
             entries: RwLock::new(HashMap::new()),
             max_open,
@@ -141,31 +142,38 @@ impl<L: TxLog + 'static> Server<L> {
         }
     }
 
-    /// Start listening on the given address. Runs until the listener is dropped.
-    pub async fn listen(&self, addr: &str) -> Result<()> {
+    /// Start listening on the given address.
+    ///
+    /// Runs until the `token` is cancelled, then stops accepting new connections.
+    /// Each connection handler receives a child token so it can also observe
+    /// the shutdown and clean up promptly.
+    pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!("Triplox server listening on {}", addr);
 
         loop {
-            let (stream, peer_addr) = listener.accept().await?;
-            info!("New connection from {}", peer_addr);
-
-            let node = self.node.clone();
-            let db_cache = self.db_cache.clone();
-
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, node, db_cache).await {
-                    warn!("Connection from {} closed with error: {}", peer_addr, e);
-                } else {
-                    info!("Connection from {} closed cleanly", peer_addr);
+            tokio::select! {
+                _ = token.cancelled() => {
+                    info!("Shutdown signal received, stopping listener");
+                    return Ok(());
                 }
-            });
-        }
-    }
+                result = listener.accept() => {
+                    let (stream, peer_addr) = result?;
+                    info!("New connection from {}", peer_addr);
 
-    /// Accept a single already-connected stream (useful for testing).
-    pub async fn handle_stream(&self, stream: TcpStream) -> Result<()> {
-        handle_connection(stream, self.node.clone(), self.db_cache.clone()).await
+                    let node = self.node.clone();
+                    let db_cache = self.db_cache.clone();
+
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_connection(stream, node, db_cache).await {
+                            warn!("Connection from {} closed with error: {}", peer_addr, e);
+                        } else {
+                            info!("Connection from {} closed cleanly", peer_addr);
+                        }
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -609,162 +617,4 @@ async fn write_error_and_ready_no_rfq<W: tokio::io::AsyncWrite + Unpin>(
     )
     .await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    use crate::client::ClientNode;
-    use crate::memory_log::MemoryLog;
-    use crate::ops::{DataType, Document, TxOp};
-    use crate::transaction::TransactionResult;
-
-    /// Start an in-memory server on a random port and return the address.
-    async fn start_test_server() -> (String, Arc<Node<MemoryLog>>) {
-        let node = Arc::new(Node::memory_node().await);
-        let server = Server::new(node.clone(), 1024);
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let node = server.node.clone();
-                let db_cache = server.db_cache.clone();
-                tokio::spawn(async move {
-                    let _ = handle_connection(stream, node, db_cache).await;
-                });
-            }
-        });
-
-        (addr, node)
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_client_connect_and_close() {
-        let (addr, _node) = start_test_server().await;
-        let client = ClientNode::connect(&addr).await.unwrap();
-        client.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_execute_tx_and_query() {
-        let (addr, _node) = start_test_server().await;
-        let client = ClientNode::connect(&addr).await.unwrap();
-
-        // Insert a document
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(1));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result = client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-
-        // Open a DB and query
-        let db = client.db().await.unwrap();
-        let result = db
-            .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
-            .await
-            .unwrap();
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
-
-        db.close().await.unwrap();
-        client.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_submit_tx() {
-        let (addr, _node) = start_test_server().await;
-        let client = ClientNode::connect(&addr).await.unwrap();
-
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(1));
-        doc.insert("name".to_string(), DataType::String("bob".to_string()));
-        let tx_key = client.submit_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-        assert_eq!(tx_key.tx_id, 0);
-
-        client.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_multiple_transactions_and_query() {
-        let (addr, _node) = start_test_server().await;
-        let client = ClientNode::connect(&addr).await.unwrap();
-
-        // Insert two documents in separate transactions
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        client.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-        client.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
-
-        let db = client.db().await.unwrap();
-        let result = db
-            .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
-            .await
-            .unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
-        assert!(result.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
-
-        db.close().await.unwrap();
-        client.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_open_close_multiple_dbs() {
-        let (addr, _node) = start_test_server().await;
-        let client = ClientNode::connect(&addr).await.unwrap();
-
-        // Insert data
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(1));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-
-        // Open two DB handles
-        let db1 = client.db().await.unwrap();
-        let db2 = client.db().await.unwrap();
-
-        // Both should return same data
-        let r1 = db1.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
-        let r2 = db2.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
-        assert_eq!(r1.len(), 1);
-        assert_eq!(r2.len(), 1);
-
-        db1.close().await.unwrap();
-        db2.close().await.unwrap();
-        client.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_two_connections() {
-        let (addr, _node) = start_test_server().await;
-
-        // Connection 1 inserts data
-        let client1 = ClientNode::connect(&addr).await.unwrap();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(1));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        client1.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-
-        // Connection 2 can see the data
-        let client2 = ClientNode::connect(&addr).await.unwrap();
-        let db = client2.db().await.unwrap();
-        let result = db.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
-        assert_eq!(result.len(), 1);
-
-        db.close().await.unwrap();
-        client1.close().await.unwrap();
-        client2.close().await.unwrap();
-    }
 }
