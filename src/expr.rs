@@ -29,7 +29,6 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     Not,
-    IsNil,
     // Math
     Abs,
     // String
@@ -214,7 +213,6 @@ fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
             DataType::Boolean(b) => Some(DataType::Boolean(!b)),
             _ => None,
         },
-        UnaryOp::IsNil => Some(DataType::Boolean(matches!(val, DataType::Nil))),
         UnaryOp::Abs => match val {
             DataType::Long(n) => Some(DataType::Long(n.checked_abs()?)),
             DataType::Double(n) => Some(DataType::Double(n.abs())),
@@ -234,7 +232,6 @@ fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
         },
         UnaryOp::Str => {
             let s = match val {
-                DataType::Nil => "nil".to_string(),
                 DataType::Long(n) => n.to_string(),
                 DataType::BigInt(n) => n.to_string(),
                 DataType::Double(n) => n.to_string(),
@@ -418,21 +415,6 @@ mod tests {
         let expr = unary(UnaryOp::Not, lit_long(42));
         let ctx = EvalContext::new(HashMap::new());
         assert_eq!(eval(&expr, &ctx), None);
-    }
-
-    #[test]
-    fn test_evaluate_is_nil() {
-        let nil = unary(UnaryOp::IsNil, Expr::Literal(DataType::Nil));
-        let not_nil = unary(UnaryOp::IsNil, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
-        assert_eq!(
-            eval(&nil, &ctx),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&not_nil, &ctx),
-            Some(DataType::Boolean(false))
-        );
     }
 
     #[test]
@@ -709,16 +691,6 @@ mod tests {
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("true".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_str_from_nil() {
-        let expr = unary(UnaryOp::Str, Expr::Literal(DataType::Nil));
-        let ctx = EvalContext::new(HashMap::new());
-        assert_eq!(
-            eval(&expr, &ctx),
-            Some(DataType::String("nil".to_string()))
         );
     }
 

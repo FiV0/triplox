@@ -37,7 +37,6 @@ pub enum Constant {
     Boolean(bool),
     Keyword(String),
     Symbol(String),
-    Nil,
 }
 
 #[derive(Debug, PartialEq, Clone)]

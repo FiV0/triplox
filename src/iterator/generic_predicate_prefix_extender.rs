@@ -91,7 +91,7 @@ mod tests {
     use bytes::Bytes;
 
     use crate::algo::generic_join::{GenericJoin, SingleLevelExtender};
-    use crate::expr::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
+    use crate::expr::{BinaryExpr, BinaryOp};
 
     fn serialize(dt: &DataType) -> Bytes {
         Bytes::from(bincode::serialize(dt).unwrap())
@@ -132,28 +132,6 @@ mod tests {
         assert!(!ext.participates_in_level(1));
         assert!(ext.participates_in_level(2));
         assert!(!ext.participates_in_level(3));
-    }
-
-    #[test]
-    fn test_unary_is_nil_filter() {
-        // (is-nil? ?x) — keep only Nil extensions
-        let expr = Expr::UnaryExpr(UnaryExpr {
-            op: UnaryOp::IsNil,
-            operand: Box::new(Expr::Variable("?x".to_string())),
-        });
-        let ext = GenericPredicatePrefixExtender::new(expr, vec![], "?x".to_string(), 0);
-
-        let extensions = vec![
-            serialize(&DataType::Nil),
-            serialize(&DataType::Long(42)),
-            serialize(&DataType::Nil),
-            serialize(&DataType::String("hello".into())),
-        ];
-
-        let result = ext.intersect(&vec![], &extensions);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], serialize(&DataType::Nil));
-        assert_eq!(result[1], serialize(&DataType::Nil));
     }
 
     #[test]

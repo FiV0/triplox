@@ -36,7 +36,6 @@ impl Value {
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {
-    Nil,
     //BigDecimal(BigDecimal),          // Arbitrary precision decimal numbers
     BigInt(i128),  // Arbitrary large integers
     Boolean(bool), // Booleans (true or false)

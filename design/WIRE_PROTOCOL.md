@@ -528,7 +528,6 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 
 | Tag | Name    |
 |-----|---------|
-| 0   | Nil     |
 | 1   | BigInt  |
 | 2   | Boolean |
 | 3   | Bytes   |
@@ -625,7 +624,6 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 9](#9-data-typ
 
 | Tag | Name    | Payload                                          |
 |-----|---------|--------------------------------------------------|
-| 0   | Nil     | *(empty — no payload)*                           |
 | 1   | BigInt  | `i128` (16 bytes)                                |
 | 2   | Boolean | `bool` (1 byte)                                  |
 | 3   | Bytes   | `Bytes` (u32 length + raw bytes)                 |
