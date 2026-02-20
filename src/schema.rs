@@ -1,9 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use anyhow::{Error, Result};
 use edn::symbols::Keyword;
+use tokio::runtime::Handle;
 
+use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
 use crate::ops::{DataType, Document, Triple, TxOp};
+use crate::query::{execute_query, validate_query};
+use crate::slate::read_attribute_map;
 
 // --- Reserved entity IDs ---
 
@@ -327,6 +332,94 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         enum_entity(DB_CARDINALITY_ONE, "db.cardinality", "one"),
         enum_entity(DB_CARDINALITY_MANY, "db.cardinality", "many"),
     ]
+}
+
+/// Load the SchemaCache from indices by querying with the Datalog engine.
+/// Finds all entities with db/ident + db/valueType + db/cardinality (inner join).
+pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache {
+    let attribute_map = read_attribute_map(slatedb.clone()).await;
+    let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
+    let handle = Handle::current();
+
+    let query = Query {
+        find: FindSpec::FindRel(vec![
+            FindElement::Variable("?e".to_string()),
+            FindElement::Variable("?ident".to_string()),
+            FindElement::Variable("?vt".to_string()),
+            FindElement::Variable("?card".to_string()),
+        ]),
+        where_clauses: vec![
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::Keyword(
+                    Keyword::namespaced("db", "ident"),
+                )),
+                value: PatternElement::Variable("?ident".to_string()),
+            }),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::Keyword(
+                    Keyword::namespaced("db", "valueType"),
+                )),
+                value: PatternElement::Variable("?vt".to_string()),
+            }),
+            WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(DataType::Keyword(
+                    Keyword::namespaced("db", "cardinality"),
+                )),
+                value: PatternElement::Variable("?card".to_string()),
+            }),
+        ],
+    };
+
+    validate_query(&query).expect("Schema query validation failed");
+
+    let results = tokio::task::spawn_blocking(move || {
+        execute_query(&query, snapshot, handle, &attribute_map)
+    })
+    .await
+    .expect("Schema query task failed")
+    .expect("Schema query execution failed");
+
+    let mut cache = SchemaCache::new();
+
+    for row in results {
+        let entity_id = match &row[0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long for entity_id, got {:?}", other),
+        };
+        let ident = match &row[1] {
+            DataType::Keyword(kw) => {
+                let s = kw.to_string();
+                s.strip_prefix(':').unwrap_or(&s).to_string()
+            }
+            other => panic!("Expected Keyword for ident, got {:?}", other),
+        };
+        let value_type = match &row[2] {
+            DataType::Keyword(kw) => {
+                ValueType::from_keyword(kw).unwrap_or_else(|e| panic!("Invalid value type: {}", e))
+            }
+            other => panic!("Expected Keyword for valueType, got {:?}", other),
+        };
+        let cardinality = match &row[3] {
+            DataType::Long(id) => Cardinality::from_entity_id(*id)
+                .unwrap_or_else(|e| panic!("Invalid cardinality: {}", e)),
+            other => panic!("Expected Long for cardinality, got {:?}", other),
+        };
+
+        cache.by_ident.insert(
+            ident.clone(),
+            SchemaAttribute {
+                ident,
+                value_type,
+                cardinality,
+                entity_id,
+            },
+        );
+    }
+
+    cache
 }
 
 /// Build a Put operation for a plain (non-namespaced) schema attribute.

@@ -85,7 +85,7 @@ pub struct Node<L: TxLog> {
 
 /// Bootstrap the schema-for-schema directly on the indexer.
 /// This is a known constant, not stored in the log.
-async fn bootstrap_indexer(indexer: &Arc<tokio::sync::RwLock<Indexer>>) {
+async fn bootstrap_tx(indexer: &Arc<tokio::sync::RwLock<Indexer>>) {
     let tx_ops = crate::schema::bootstrap_schema_tx();
     // TODO(triplox-46x): tx_id=-1 is a placeholder — bootstrap shouldn't need a real TxKey
     // since it's not a log transaction. Revisit how bootstrap interacts with the indexer.
@@ -102,12 +102,15 @@ async fn bootstrap_indexer(indexer: &Arc<tokio::sync::RwLock<Indexer>>) {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        let (_version, _is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
-        // Bootstrap schema directly on indexer (not in log — it's a known constant)
-        bootstrap_indexer(&indexer).await;
+        if is_fresh {
+            bootstrap_tx(&indexer).await;
+        }
+        let cache = crate::schema::load_schema_from_indices(slatedb.clone()).await;
+        indexer.write().await.set_schema_cache(cache);
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
@@ -119,14 +122,17 @@ impl Node<FileLog> {
     pub async fn local_node(root_path: &Path) -> Self {
         std::fs::create_dir_all(root_path.join("db")).unwrap();
         let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
-        let (_version, _is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let (_version, is_fresh) = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone())));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),
         ));
 
-        // Bootstrap schema directly on indexer (not in log — it's a known constant)
-        bootstrap_indexer(&indexer).await;
+        if is_fresh {
+            bootstrap_tx(&indexer).await;
+        }
+        let cache = crate::schema::load_schema_from_indices(slatedb.clone()).await;
+        indexer.write().await.set_schema_cache(cache);
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {

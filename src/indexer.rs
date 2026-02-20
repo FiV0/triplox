@@ -94,6 +94,10 @@ impl Indexer {
         &self.schema_cache
     }
 
+    pub fn set_schema_cache(&mut self, cache: SchemaCache) {
+        self.schema_cache = cache;
+    }
+
     async fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
         // TODO: maybe move this to Bytes
         // TODO: this can likely be moved from the hotpath
