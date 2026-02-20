@@ -72,7 +72,8 @@ impl DataType {
     pub fn value_type(&self) -> crate::schema::ValueType {
         use crate::schema::ValueType;
         match self {
-            DataType::Nil => ValueType::Long, // TODO: Nil has no ValueType — revisit
+            // TODO: TO BE REMOVED — DataType::Nil should not exist as a value in transactions.
+            DataType::Nil => panic!("DataType::Nil has no ValueType"),
             DataType::BigInt(_) => ValueType::BigInt,
             DataType::Boolean(_) => ValueType::Boolean,
             DataType::Bytes(_) => ValueType::Bytes,
