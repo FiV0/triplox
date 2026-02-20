@@ -1,6 +1,6 @@
 //! Rust client library for connecting to a Triplox server.
 //!
-//! `ClientNode` mirrors the `Node` API and `ClientDB` mirrors the `DB` API,
+//! `ClientNode` mirrors the `Node` API and `ClientDb` mirrors the `DB` API,
 //! both operating over TCP via the wire protocol.
 
 use std::collections::BTreeMap;
@@ -76,7 +76,7 @@ impl ClientNode {
         })
     }
 
-    async fn open_db(&self, basis_tx_id: Option<i64>) -> Result<ClientDB> {
+    async fn open_db(&self, basis_tx_id: Option<i64>) -> Result<ClientDb> {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,
@@ -105,7 +105,7 @@ impl ClientNode {
             other => bail!("Expected ReadyForQuery, got {:?}", other),
         }
 
-        Ok(ClientDB {
+        Ok(ClientDb {
             db_id,
             tx_id,
             conn: self.conn.clone(),
@@ -205,29 +205,29 @@ impl SubmitNode for ClientNode {
 }
 
 impl QueryNode for ClientNode {
-    type DB = ClientDB;
+    type DB = ClientDb;
 
-    async fn db(&self) -> Result<ClientDB, Error> {
+    async fn db(&self) -> Result<ClientDb, Error> {
         self.open_db(None).await
     }
 
-    async fn db_with_basis(&self, basis: Basis) -> Result<ClientDB, Error> {
+    async fn db_with_basis(&self, basis: Basis) -> Result<ClientDb, Error> {
         self.open_db(Some(basis.tx_key.tx_id)).await
     }
 }
 
 // ---------------------------------------------------------------------------
-// ClientDB
+// ClientDb
 // ---------------------------------------------------------------------------
 
 /// A remote DB snapshot handle. Mirrors the `DB` API.
-pub struct ClientDB {
+pub struct ClientDb {
     db_id: u32,
     tx_id: i64,
     conn: Arc<Mutex<ConnectionInner>>,
 }
 
-impl ClientDB {
+impl ClientDb {
     /// The tx_id this snapshot is pinned to.
     pub fn tx_id(&self) -> i64 {
         self.tx_id
@@ -329,7 +329,7 @@ impl ClientDB {
     }
 }
 
-impl Database for ClientDB {
+impl Database for ClientDb {
     async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
         let edn = query_to_edn(query)?;
         self.query_edn(&edn).await
