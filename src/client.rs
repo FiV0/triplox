@@ -483,7 +483,6 @@ fn pattern_element_to_edn(elem: &PatternElement, s: &mut String) -> Result<()> {
 
 fn datatype_to_edn(dt: &DataType, s: &mut String) -> Result<()> {
     match dt {
-        DataType::Nil => s.push_str("nil"),
         DataType::Long(v) => write!(s, "{}", v)?,
         DataType::BigInt(v) => write!(s, "{}", v)?,
         DataType::Boolean(b) => write!(s, "{}", b)?,

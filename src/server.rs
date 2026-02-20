@@ -495,16 +495,10 @@ async fn handle_open_db<L: TxLog + 'static>(
                 tx_id: tid,
                 system_time: chrono::Utc::now(), // placeholder, basis_for_tx only uses tx_id
             };
-            match node.basis_for_tx(tx_key).await {
-                Some(basis) => {
-                    let tx_id = basis.tx_key.tx_id;
-                    let db = node.db_with_basis(basis).await?;
-                    (db, tx_id)
-                }
-                None => {
-                    bail!("No indexed transaction found for tx_id {}", tid);
-                }
-            }
+            let basis = node.basis_for_tx(tx_key).await?;
+            let tx_id = basis.tx_key.tx_id;
+            let db = node.db_with_basis(basis).await?;
+            (db, tx_id)
         }
     };
 

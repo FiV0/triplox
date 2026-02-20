@@ -346,7 +346,6 @@ fn encode_string_map(buf: &mut Vec<u8>, map: &BTreeMap<String, String>) {
 /// Returns the DataTypeTag byte for a DataType value.
 pub fn data_type_tag(dt: &DataType) -> u8 {
     match dt {
-        DataType::Nil => TAG_NIL,
         DataType::BigInt(_) => TAG_BIG_INT,
         DataType::Boolean(_) => TAG_BOOLEAN,
         DataType::Bytes(_) => TAG_BYTES,
@@ -366,7 +365,6 @@ pub fn data_type_tag(dt: &DataType) -> u8 {
 fn encode_data_type(buf: &mut Vec<u8>, dt: &DataType) {
     encode_u8(buf, data_type_tag(dt));
     match dt {
-        DataType::Nil => {}
         DataType::BigInt(v) => encode_i128(buf, *v),
         DataType::Boolean(v) => encode_bool(buf, *v),
         DataType::Bytes(v) => encode_bytes(buf, v),
@@ -581,7 +579,7 @@ fn parse_keyword_string(s: &str) -> Result<Keyword> {
 fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
     let tag = cursor.read_u8()?;
     match tag {
-        TAG_NIL => Ok(DataType::Nil),
+        TAG_NIL => bail!("TAG_NIL is no longer a valid DataType"),
         TAG_BIG_INT => Ok(DataType::BigInt(cursor.read_i128()?)),
         TAG_BOOLEAN => Ok(DataType::Boolean(cursor.read_bool()?)),
         TAG_BYTES => Ok(DataType::Bytes(cursor.read_byte_array()?)),
@@ -1064,11 +1062,6 @@ mod tests {
     }
 
     #[test]
-    fn test_data_type_nil() {
-        assert_eq!(roundtrip_data_type(&DataType::Nil), DataType::Nil);
-    }
-
-    #[test]
     fn test_data_type_bigint() {
         let dt = DataType::BigInt(123456789012345678901234567890);
         assert_eq!(roundtrip_data_type(&dt), dt);
@@ -1158,7 +1151,7 @@ mod tests {
 
     #[test]
     fn test_data_type_tuple() {
-        let dt = DataType::Tuple(vec![DataType::Long(42), DataType::Nil]);
+        let dt = DataType::Tuple(vec![DataType::Long(42), DataType::Boolean(true)]);
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
 
@@ -1177,7 +1170,7 @@ mod tests {
         inner_map.insert("x".to_string(), DataType::Long(1));
         let dt = DataType::Vector(vec![
             DataType::Map(inner_map),
-            DataType::Tuple(vec![DataType::Nil, DataType::Boolean(false)]),
+            DataType::Tuple(vec![DataType::String("hello".to_string()), DataType::Boolean(false)]),
         ]);
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
