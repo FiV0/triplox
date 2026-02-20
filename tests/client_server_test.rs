@@ -5,10 +5,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use triplox::client::ClientNode;
-use triplox::node::Node;
+use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, Document, TxOp};
 use triplox::server::Server;
-use triplox::TransactionResult;
+use triplox::{Basis, TransactionResult};
 
 /// Find an available TCP port on localhost.
 fn find_available_port() -> u16 {
@@ -167,5 +167,26 @@ async fn test_two_connections() {
     db.close().await.unwrap();
     client1.close().await.unwrap();
     client2.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_execute_tx_returns_basis_with_seq_num() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("name".to_string(), DataType::String("alice".to_string()));
+    let result = client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+
+    match result {
+        TransactionResult::TxCommited(basis) => {
+            assert!(basis.seq_num > 0, "seq_num should be positive after indexing");
+        }
+        _ => panic!("Expected TxCommited"),
+    }
+
+    client.close().await.unwrap();
     token.cancel();
 }

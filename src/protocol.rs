@@ -14,6 +14,23 @@ use uuid::Uuid;
 use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert microseconds since Unix epoch to a `DateTime<Utc>`.
+///
+/// Uses `div_euclid`/`rem_euclid` so that pre-epoch (negative) timestamps
+/// are decoded correctly — Rust's `/` truncates toward zero which gives
+/// wrong results for negative values.
+pub fn micros_to_datetime(micros: i64) -> Result<DateTime<Utc>> {
+    let secs = micros.div_euclid(1_000_000);
+    let nanos = (micros.rem_euclid(1_000_000) as u32) * 1000;
+    Utc.timestamp_opt(secs, nanos)
+        .single()
+        .ok_or_else(|| anyhow!("Invalid timestamp: {} micros", micros))
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -42,6 +59,7 @@ pub const MSG_DATA_ROW: u8 = b'D';
 pub const MSG_COMMAND_COMPLETE: u8 = b'C';
 pub const MSG_DATA_BATCH_COMPLETE: u8 = b'B';
 pub const MSG_READY_FOR_QUERY: u8 = b'Z';
+pub const MSG_TX_KEY: u8 = b'Y';
 pub const MSG_TX_RESULT: u8 = b'G';
 pub const MSG_UNSUBSCRIBE_COMPLETE: u8 = b'N';
 pub const MSG_HEARTBEAT: u8 = b'K';
@@ -206,11 +224,6 @@ pub enum BackendMessage {
     DataRow {
         values: Vec<DataType>,
     },
-    /// DataRow in subscription mode, with a tpx_diff prefix.
-    SubscriptionDataRow {
-        tpx_diff: i8,
-        values: Vec<DataType>,
-    },
     CommandComplete {
         tag: String,
         row_count: u64,
@@ -221,10 +234,15 @@ pub enum BackendMessage {
     ReadyForQuery {
         status: u8,
     },
+    TxKey {
+        tx_id: i64,
+        system_time: i64,
+    },
     TxResult {
         status: u8,
         tx_id: i64,
         system_time: i64,
+        seq_num: u64,
         error_message: Option<String>,
     },
     UnsubscribeComplete,
@@ -284,12 +302,12 @@ fn encode_f64(buf: &mut Vec<u8>, v: f64) {
 
 fn encode_string(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    encode_u32(buf, bytes.len() as u32);
+    encode_u32(buf, u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"));
     buf.extend_from_slice(bytes);
 }
 
 fn encode_bytes(buf: &mut Vec<u8>, b: &[u8]) {
-    encode_u32(buf, b.len() as u32);
+    encode_u32(buf, u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"));
     buf.extend_from_slice(b);
 }
 
@@ -454,6 +472,11 @@ impl<'a> Cursor<'a> {
         Ok(slice)
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let b = self.read_bytes(N)?;
+        Ok(b.try_into().expect("read_bytes guarantees exact length"))
+    }
+
     fn read_u8(&mut self) -> Result<u8> {
         let b = self.read_bytes(1)?;
         Ok(b[0])
@@ -473,38 +496,31 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_u16(&mut self) -> Result<u16> {
-        let b = self.read_bytes(2)?;
-        Ok(u16::from_be_bytes([b[0], b[1]]))
+        Ok(u16::from_be_bytes(self.read_array()?))
     }
 
     fn read_u32(&mut self) -> Result<u32> {
-        let b = self.read_bytes(4)?;
-        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(u32::from_be_bytes(self.read_array()?))
     }
 
     fn read_i64(&mut self) -> Result<i64> {
-        let b = self.read_bytes(8)?;
-        Ok(i64::from_be_bytes(b.try_into().unwrap()))
+        Ok(i64::from_be_bytes(self.read_array()?))
     }
 
     fn read_u64(&mut self) -> Result<u64> {
-        let b = self.read_bytes(8)?;
-        Ok(u64::from_be_bytes(b.try_into().unwrap()))
+        Ok(u64::from_be_bytes(self.read_array()?))
     }
 
     fn read_i128(&mut self) -> Result<i128> {
-        let b = self.read_bytes(16)?;
-        Ok(i128::from_be_bytes(b.try_into().unwrap()))
+        Ok(i128::from_be_bytes(self.read_array()?))
     }
 
     fn read_f32(&mut self) -> Result<f32> {
-        let b = self.read_bytes(4)?;
-        Ok(f32::from_be_bytes(b.try_into().unwrap()))
+        Ok(f32::from_be_bytes(self.read_array()?))
     }
 
     fn read_f64(&mut self) -> Result<f64> {
-        let b = self.read_bytes(8)?;
-        Ok(f64::from_be_bytes(b.try_into().unwrap()))
+        Ok(f64::from_be_bytes(self.read_array()?))
     }
 
     fn read_string(&mut self) -> Result<String> {
@@ -573,25 +589,15 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
         TAG_FLOAT => Ok(DataType::Float(cursor.read_f32()?)),
         TAG_INSTANT => {
             let micros = cursor.read_i64()?;
-            let secs = micros / 1_000_000;
-            let remainder_micros = (micros % 1_000_000).unsigned_abs() as u32;
-            let nanos = remainder_micros * 1000;
-            let dt = Utc
-                .timestamp_opt(secs, nanos)
-                .single()
-                .ok_or_else(|| anyhow!("Invalid timestamp: {} micros", micros))?;
-            Ok(DataType::Instant(dt))
+            Ok(DataType::Instant(micros_to_datetime(micros)?))
         }
         TAG_LONG => Ok(DataType::Long(cursor.read_i64()?)),
-        TAG_REF => {
-            // Ref is stored as Long for now (see ops.rs TODO)
-            Ok(DataType::Long(cursor.read_i64()?))
-        }
+        // TODO: support TAG_REF once DataType::Ref is added
+        TAG_REF => bail!("TAG_REF is not currently supported"),
         TAG_STRING => Ok(DataType::String(cursor.read_string()?)),
         TAG_TUPLE => Ok(DataType::Tuple(decode_data_type_vec(cursor)?)),
         TAG_UUID => {
-            let b = cursor.read_bytes(16)?;
-            Ok(DataType::Uuid(Uuid::from_bytes(b.try_into().unwrap())))
+            Ok(DataType::Uuid(Uuid::from_bytes(cursor.read_array()?)))
         }
         TAG_VECTOR => Ok(DataType::Vector(decode_data_type_vec(cursor)?)),
         TAG_MAP => Ok(DataType::Map(decode_data_type_map(cursor)?)),
@@ -731,10 +737,6 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
         BackendMessage::DataRow { values } => {
             encode_data_type_vec(buf, values);
         }
-        BackendMessage::SubscriptionDataRow { tpx_diff, values } => {
-            encode_i8(buf, *tpx_diff);
-            encode_data_type_vec(buf, values);
-        }
         BackendMessage::CommandComplete { tag, row_count } => {
             encode_string(buf, tag);
             encode_u64(buf, *row_count);
@@ -745,15 +747,21 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
         BackendMessage::ReadyForQuery { status } => {
             encode_u8(buf, *status);
         }
+        BackendMessage::TxKey { tx_id, system_time } => {
+            encode_i64(buf, *tx_id);
+            encode_i64(buf, *system_time);
+        }
         BackendMessage::TxResult {
             status,
             tx_id,
             system_time,
+            seq_num,
             error_message,
         } => {
             encode_u8(buf, *status);
             encode_i64(buf, *tx_id);
             encode_i64(buf, *system_time);
+            encode_u64(buf, *seq_num);
             encode_option_string(buf, error_message);
         }
         BackendMessage::UnsubscribeComplete => {}
@@ -811,7 +819,6 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
 fn decode_backend_payload(
     msg_type: u8,
     cursor: &mut Cursor,
-    subscription_mode: bool,
 ) -> Result<BackendMessage> {
     match msg_type {
         MSG_AUTHENTICATION_OK => Ok(BackendMessage::AuthenticationOk {
@@ -836,14 +843,8 @@ fn decode_backend_payload(
             Ok(BackendMessage::RowDescription { columns })
         }
         MSG_DATA_ROW => {
-            if subscription_mode {
-                let tpx_diff = cursor.read_i8()?;
-                let values = decode_data_type_vec(cursor)?;
-                Ok(BackendMessage::SubscriptionDataRow { tpx_diff, values })
-            } else {
-                let values = decode_data_type_vec(cursor)?;
-                Ok(BackendMessage::DataRow { values })
-            }
+            let values = decode_data_type_vec(cursor)?;
+            Ok(BackendMessage::DataRow { values })
         }
         MSG_COMMAND_COMPLETE => Ok(BackendMessage::CommandComplete {
             tag: cursor.read_string()?,
@@ -855,10 +856,15 @@ fn decode_backend_payload(
         MSG_READY_FOR_QUERY => Ok(BackendMessage::ReadyForQuery {
             status: cursor.read_u8()?,
         }),
+        MSG_TX_KEY => Ok(BackendMessage::TxKey {
+            tx_id: cursor.read_i64()?,
+            system_time: cursor.read_i64()?,
+        }),
         MSG_TX_RESULT => Ok(BackendMessage::TxResult {
             status: cursor.read_u8()?,
             tx_id: cursor.read_i64()?,
             system_time: cursor.read_i64()?,
+            seq_num: cursor.read_u64()?,
             error_message: cursor.read_option_string()?,
         }),
         MSG_UNSUBSCRIBE_COMPLETE => Ok(BackendMessage::UnsubscribeComplete),
@@ -963,10 +969,8 @@ pub async fn write_frontend_message<W: AsyncWrite + Unpin>(
 }
 
 /// Read a backend message from the stream.
-/// `subscription_mode` controls how DataRow messages are decoded (with or without tpx_diff).
 pub async fn read_backend_message<R: AsyncRead + Unpin>(
     reader: &mut R,
-    subscription_mode: bool,
     max_message_size: u32,
 ) -> Result<BackendMessage> {
     let msg_type = reader.read_u8().await?;
@@ -984,7 +988,7 @@ pub async fn read_backend_message<R: AsyncRead + Unpin>(
     }
 
     let mut cursor = Cursor::new(&payload);
-    decode_backend_payload(msg_type, &mut cursor, subscription_mode)
+    decode_backend_payload(msg_type, &mut cursor)
 }
 
 /// Write a backend message to the stream.
@@ -1001,10 +1005,10 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
         BackendMessage::DbClosed { .. } => MSG_DB_CLOSED,
         BackendMessage::RowDescription { .. } => MSG_ROW_DESCRIPTION,
         BackendMessage::DataRow { .. } => MSG_DATA_ROW,
-        BackendMessage::SubscriptionDataRow { .. } => MSG_DATA_ROW,
         BackendMessage::CommandComplete { .. } => MSG_COMMAND_COMPLETE,
         BackendMessage::DataBatchComplete { .. } => MSG_DATA_BATCH_COMPLETE,
         BackendMessage::ReadyForQuery { .. } => MSG_READY_FOR_QUERY,
+        BackendMessage::TxKey { .. } => MSG_TX_KEY,
         BackendMessage::TxResult { .. } => MSG_TX_RESULT,
         BackendMessage::UnsubscribeComplete => MSG_UNSUBSCRIBE_COMPLETE,
         BackendMessage::Heartbeat => MSG_HEARTBEAT,
@@ -1040,12 +1044,12 @@ mod tests {
     }
 
     // Helper: encode a backend message to bytes and decode it back.
-    async fn roundtrip_backend(msg: &BackendMessage, subscription_mode: bool) -> BackendMessage {
+    async fn roundtrip_backend(msg: &BackendMessage) -> BackendMessage {
         let mut buf = Vec::new();
         write_backend_message(&mut buf, msg).await.unwrap();
 
         let mut cursor = &buf[..];
-        read_backend_message(&mut cursor, subscription_mode, DEFAULT_MAX_MESSAGE_SIZE)
+        read_backend_message(&mut cursor, DEFAULT_MAX_MESSAGE_SIZE)
             .await
             .unwrap()
     }
@@ -1317,7 +1321,7 @@ mod tests {
         let msg = BackendMessage::AuthenticationOk {
             server_version: "triplox 0.1.0".to_string(),
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1326,13 +1330,13 @@ mod tests {
             db_id: 5,
             tx_id: 42,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_db_closed_roundtrip() {
         let msg = BackendMessage::DbClosed { db_id: 5 };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1349,7 +1353,7 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1360,19 +1364,7 @@ mod tests {
                 DataType::String("alice".to_string()),
             ],
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
-    }
-
-    #[tokio::test]
-    async fn test_data_row_subscription_mode_roundtrip() {
-        let msg = BackendMessage::SubscriptionDataRow {
-            tpx_diff: 1,
-            values: vec![
-                DataType::Long(1),
-                DataType::String("alice".to_string()),
-            ],
-        };
-        assert_eq!(roundtrip_backend(&msg, true).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1381,13 +1373,13 @@ mod tests {
             tag: "SELECT".to_string(),
             row_count: 42,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_data_batch_complete_roundtrip() {
         let msg = BackendMessage::DataBatchComplete { tx_id: 100 };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1395,12 +1387,21 @@ mod tests {
         let msg = BackendMessage::ReadyForQuery {
             status: STATUS_IDLE,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
 
         let msg = BackendMessage::ReadyForQuery {
             status: STATUS_SUBSCRIBED,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
+    }
+
+    #[tokio::test]
+    async fn test_tx_key_roundtrip() {
+        let msg = BackendMessage::TxKey {
+            tx_id: 42,
+            system_time: 1700000000000000,
+        };
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1409,9 +1410,10 @@ mod tests {
             status: 0,
             tx_id: 42,
             system_time: 1700000000000000,
+            seq_num: 7,
             error_message: None,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1420,15 +1422,16 @@ mod tests {
             status: 1,
             tx_id: 42,
             system_time: 1700000000000000,
+            seq_num: 0,
             error_message: Some("transaction aborted: constraint violation".to_string()),
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_unsubscribe_complete_roundtrip() {
         assert_eq!(
-            roundtrip_backend(&BackendMessage::UnsubscribeComplete, false).await,
+            roundtrip_backend(&BackendMessage::UnsubscribeComplete).await,
             BackendMessage::UnsubscribeComplete
         );
     }
@@ -1436,7 +1439,7 @@ mod tests {
     #[tokio::test]
     async fn test_heartbeat_roundtrip() {
         assert_eq!(
-            roundtrip_backend(&BackendMessage::Heartbeat, false).await,
+            roundtrip_backend(&BackendMessage::Heartbeat).await,
             BackendMessage::Heartbeat
         );
     }
@@ -1450,7 +1453,7 @@ mod tests {
             detail: Some("unexpected token at position 42".to_string()),
             hint: Some("check your EDN syntax".to_string()),
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
@@ -1462,7 +1465,7 @@ mod tests {
             detail: None,
             hint: None,
         };
-        assert_eq!(roundtrip_backend(&msg, false).await, msg);
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     // -- Error code tests --

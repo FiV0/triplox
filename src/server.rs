@@ -159,6 +159,7 @@ impl<L: TxLog + 'static> Server<L> {
                 }
                 result = listener.accept() => {
                     let (stream, peer_addr) = result?;
+                    stream.set_nodelay(true)?;
                     info!("New connection from {}", peer_addr);
 
                     let node = self.node.clone();
@@ -280,7 +281,14 @@ async fn handle_connection<L: TxLog + 'static>(
                         .await?;
                     }
                     Err(e) => {
-                        write_error_and_ready(&mut writer, SEVERITY_ERROR, e).await?;
+                        write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
+                        write_backend_message(
+                            &mut writer,
+                            &BackendMessage::ReadyForQuery {
+                                status: STATUS_IDLE,
+                            },
+                        )
+                        .await?;
                     }
                 }
                 writer.flush().await?;
@@ -358,7 +366,7 @@ async fn handle_connection<L: TxLog + 'static>(
                         .await?;
                     }
                     Err(e) => {
-                        write_error_and_ready_no_rfq(&mut writer, SEVERITY_ERROR, e).await?;
+                        write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
                     }
                 }
                 write_backend_message(
@@ -380,7 +388,7 @@ async fn handle_connection<L: TxLog + 'static>(
                         write_backend_message(&mut writer, &tx_result_msg).await?;
                     }
                     Err(e) => {
-                        write_error_and_ready_no_rfq(&mut writer, SEVERITY_ERROR, e).await?;
+                        write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
                     }
                 }
                 write_backend_message(
@@ -472,12 +480,12 @@ async fn handle_open_db<L: TxLog + 'static>(
     let (db, tx_id) = match basis_tx_id {
         None => {
             // Latest snapshot
-            let db = node.db().await;
+            let db = node.db().await?;
             // We need the tx_id for cache keying. Get it from the latest basis.
             // For now, use a sentinel approach: we don't cache "latest" snapshots
             // because two calls might yield different points in time.
             // Instead, each OpenDb(None) creates a fresh snapshot.
-            // TODO: determine tx_id from the DB snapshot for proper cache sharing
+            // TODO(triplox-bct): determine tx_id from the DB snapshot for proper cache sharing
             let tx_id = -(conn_state.next_db_id as i64); // unique negative sentinel
             (db, tx_id)
         }
@@ -490,7 +498,7 @@ async fn handle_open_db<L: TxLog + 'static>(
             match node.basis_for_tx(tx_key).await {
                 Some(basis) => {
                     let tx_id = basis.tx_key.tx_id;
-                    let db = node.db_with_basis(basis).await;
+                    let db = node.db_with_basis(basis).await?;
                     (db, tx_id)
                 }
                 None => {
@@ -523,7 +531,7 @@ async fn handle_query(
             .map(|e| match e {
                 crate::datalog::FindElement::Variable(v) => v.clone(),
                 crate::datalog::FindElement::PullExpr(_) => "?_pull".to_string(),
-                crate::datalog::FindElement::Aggregate(f, v) => format!("({}  {})", f, v),
+                crate::datalog::FindElement::Aggregate(f, v) => format!("({} {})", f, v),
             })
             .collect(),
     };
@@ -538,28 +546,28 @@ async fn handle_execute<L: TxLog + 'static>(
     await_indexing: bool,
 ) -> Result<BackendMessage> {
     if await_indexing {
-        let result = node.execute_tx(ops).await;
+        let result = node.execute_tx(ops).await?;
         match result {
             TransactionResult::TxCommited(basis) => Ok(BackendMessage::TxResult {
                 status: 0,
                 tx_id: basis.tx_key.tx_id,
                 system_time: basis.tx_key.system_time.timestamp_micros(),
+                seq_num: basis.seq_num,
                 error_message: None,
             }),
             TransactionResult::TxAborted(tx_key, err) => Ok(BackendMessage::TxResult {
                 status: 1,
                 tx_id: tx_key.tx_id,
                 system_time: tx_key.system_time.timestamp_micros(),
+                seq_num: 0,
                 error_message: Some(err.to_string()),
             }),
         }
     } else {
-        let tx_key = node.submit_tx(ops).await;
-        Ok(BackendMessage::TxResult {
-            status: 0,
+        let tx_key = node.submit_tx(ops).await?;
+        Ok(BackendMessage::TxKey {
             tx_id: tx_key.tx_id,
             system_time: tx_key.system_time.timestamp_micros(),
-            error_message: None,
         })
     }
 }
@@ -570,35 +578,8 @@ async fn cleanup_connection(conn_state: &ConnectionState, db_cache: &DbCache) {
     }
 }
 
-async fn write_error_and_ready<W: tokio::io::AsyncWrite + Unpin>(
-    writer: &mut W,
-    severity: u8,
-    err: anyhow::Error,
-) -> Result<()> {
-    let code = ErrorCode::InternalError.as_u16();
-    let message = err.to_string();
-    write_backend_message(
-        writer,
-        &BackendMessage::ErrorResponse {
-            severity,
-            code,
-            message,
-            detail: None,
-            hint: None,
-        },
-    )
-    .await?;
-    write_backend_message(
-        writer,
-        &BackendMessage::ReadyForQuery {
-            status: STATUS_IDLE,
-        },
-    )
-    .await?;
-    Ok(())
-}
-
-async fn write_error_and_ready_no_rfq<W: tokio::io::AsyncWrite + Unpin>(
+// TODO(triplox-c36): thread ErrorCode through instead of always using InternalError
+async fn write_error_response<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     severity: u8,
     err: anyhow::Error,
