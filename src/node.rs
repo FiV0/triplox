@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
-    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey;
-    async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult;
+    async fn submit_tx(&self, ops: Vec<TxOp>) -> Result<TxKey, Error>;
+    async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -32,8 +32,8 @@ pub trait Database {
 #[allow(async_fn_in_trait)]
 pub trait QueryNode {
     type DB: Database;
-    async fn db(&self) -> Self::DB;
-    async fn db_with_basis(&self, basis: Basis) -> Self::DB;
+    async fn db(&self) -> Result<Self::DB, Error>;
+    async fn db_with_basis(&self, basis: Basis) -> Result<Self::DB, Error>;
 }
 
 pub struct DB {
@@ -140,40 +140,37 @@ impl<L: TxLog> Node<L> {
 }
 
 impl<L: TxLog> SubmitNode for Node<L> {
-    async fn submit_tx(&self, ops: Vec<TxOp>) -> TxKey {
-        let serialized = bincode::serialize(&ops)
-            .expect("Failed to serialize TxOps");
-
-        self.log.write().await.append_tx(serialized).await
+    async fn submit_tx(&self, ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        let serialized = bincode::serialize(&ops)?;
+        Ok(self.log.write().await.append_tx(serialized).await)
     }
 
-    async fn execute_tx(&self, ops: Vec<TxOp>) -> TransactionResult {
-        let serialized = bincode::serialize(&ops)
-            .expect("Failed to serialize TxOps");
+    async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error> {
+        let serialized = bincode::serialize(&ops)?;
 
         let tx_key = self.log.write().await.append_tx(serialized).await;
 
         let wait_future = self.indexer.read().await.await_tx(tx_key);
         match wait_future.await {
-            Ok(seq_num) => TransactionResult::TxCommited(Basis { tx_key, seq_num }),
-            Err(e) => TransactionResult::TxAborted(tx_key, e.into()),
+            Ok(seq_num) => Ok(TransactionResult::TxCommited(Basis { tx_key, seq_num })),
+            Err(e) => Ok(TransactionResult::TxAborted(tx_key, e.into())),
         }
     }
 }
 
 impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
-    async fn db(&self) -> DB {
-        let snapshot = self.slatedb.snapshot().await.expect("Failed to create snapshot");
+    async fn db(&self) -> Result<DB, Error> {
+        let snapshot = self.slatedb.snapshot().await?;
         let attribute_map = read_attribute_map(self.slatedb.clone()).await;
         let handle = Handle::current();
-        DB::new(snapshot, attribute_map, handle)
+        Ok(DB::new(snapshot, attribute_map, handle))
     }
-    async fn db_with_basis(&self, basis: Basis) -> DB {
-        let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await.expect("Failed to create snapshot at basis");
+    async fn db_with_basis(&self, basis: Basis) -> Result<DB, Error> {
+        let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await?;
         let attribute_map = read_attribute_map(self.slatedb.clone()).await;
         let handle = Handle::current();
-        DB::new(snapshot, attribute_map, handle)
+        Ok(DB::new(snapshot, attribute_map, handle))
     }
 }
 
@@ -207,7 +204,7 @@ mod tests {
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
 
-        let result = node.execute_tx(tx_ops).await;
+        let result = node.execute_tx(tx_ops).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
@@ -270,7 +267,7 @@ mod tests {
         let tx_ops = vec![TxOp::Put(doc)];
 
         // submit_tx returns immediately with a TxKey
-        let tx_key = node.submit_tx(tx_ops).await;
+        let tx_key = node.submit_tx(tx_ops).await.unwrap();
         assert_eq!(tx_key.tx_id, 0);
 
         // Wait for indexer to process the transaction
@@ -303,7 +300,7 @@ mod tests {
         };
         let tx_ops = vec![TxOp::Add(triple)];
 
-        let result = node.execute_tx(tx_ops).await;
+        let result = node.execute_tx(tx_ops).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
@@ -335,8 +332,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(2));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
         // Query: {:find [?e ?name] :where [[?e "name" ?name]]}
         let query = Query {
@@ -351,7 +348,7 @@ mod tests {
             })],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
@@ -372,8 +369,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(2));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
         // Query: {:find [?e] :where [[?e "name" "alice"]]}
         let query = Query {
@@ -385,7 +382,7 @@ mod tests {
             })],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
@@ -407,8 +404,8 @@ mod tests {
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         // bob has no age
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
         // Query: {:find [?name ?age] :where [[?e "name" ?name] [?e "age" ?age]]}
         let query = Query {
@@ -430,7 +427,7 @@ mod tests {
             ],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
@@ -454,8 +451,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(2));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
         // Query: {:find [?name] :where [[?e :follows ?friend] [?friend :name ?name]]}
         // ?friend is in value position of :follows and entity position of :name
@@ -475,7 +472,7 @@ mod tests {
             ],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
@@ -500,9 +497,9 @@ mod tests {
         doc3.insert("db/id".to_string(), DataType::Long(3));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
 
         // Query: {:find [?e] :where [(or [?e "name" "alice"] [?e "name" "bob"])]}
         let query = Query {
@@ -521,7 +518,7 @@ mod tests {
             ])],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
@@ -553,9 +550,9 @@ mod tests {
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
 
         // Query: {:find [?e ?age] :where [(or [?e "name" "alice"] [?e "name" "bob"]) [?e "age" ?age]]}
         let query = Query {
@@ -586,7 +583,7 @@ mod tests {
             ],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
@@ -620,9 +617,9 @@ mod tests {
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await;
+        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
 
         // Query: {:find [?e] :where [(or (and [?e "name" "alice"] [?e "age" 30])
         //                                (and [?e "name" "charlie"] [?e "age" 35]))]}
@@ -660,7 +657,7 @@ mod tests {
             ])],
         };
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
@@ -680,7 +677,7 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(1));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let basis1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await {
+        let basis1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
             TransactionResult::TxCommited(basis) => basis,
             _ => panic!("Tx1 should commit"),
         };
@@ -690,7 +687,7 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(2));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        let basis2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await {
+        let basis2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
             TransactionResult::TxCommited(basis) => basis,
             _ => panic!("Tx2 should commit"),
         };
@@ -709,13 +706,13 @@ mod tests {
         };
 
         // db_with_basis(basis1): should only see entity 1
-        let db1 = node.db_with_basis(basis1).await;
+        let db1 = node.db_with_basis(basis1).await.unwrap();
         let result1 = db1.query(&query).await.unwrap();
         assert_eq!(result1.len(), 1);
         assert_eq!(result1[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
 
         // db_with_basis(basis2): should see both entities
-        let db2 = node.db_with_basis(basis2).await;
+        let db2 = node.db_with_basis(basis2).await.unwrap();
         let result2 = db2.query(&query).await.unwrap();
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
@@ -746,10 +743,10 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(1));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let result = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await;
+        let result = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
@@ -759,7 +756,7 @@ mod tests {
         // Second node: reopen at same path, verify data persisted, add more
         let node = Node::local_node(&root_path).await;
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
@@ -768,10 +765,10 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(2));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        let result = node.execute_tx(vec![TxOp::Put(Document(doc2))]).await;
+        let result = node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
-        let db = node.db().await;
+        let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
