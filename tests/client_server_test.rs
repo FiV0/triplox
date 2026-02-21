@@ -181,7 +181,6 @@ async fn test_execute_tx_returns_basis_with_seq_num() {
     token.cancel();
 }
 
-#[ignore] // await_tx returns latest seq_num, not the one for the requested tx
 #[tokio::test(flavor = "multi_thread")]
 async fn test_db_with_basis() {
     let (addr, token) = start_test_server().await;
