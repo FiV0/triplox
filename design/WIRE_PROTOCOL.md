@@ -683,7 +683,7 @@ status : u8
 **Query** (`Q`):
 ```
 query_string : String
-basis_tx_id  : Option<i64>
+db_id        : u32
 ```
 
 **RowDescription** (`T`):
@@ -730,7 +730,7 @@ error_message : Option<String>
 **Subscribe** (`S`):
 ```
 query_string : String
-after_tx_id  : Option<i64>
+db_id        : u32
 ```
 
 **DataBatchComplete** (`B`):
