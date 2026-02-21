@@ -13,7 +13,6 @@ mod indexer;
 mod codec;
 mod slate;
 mod util;
-mod scratch;
 mod index;
 mod iterator;
 mod algo;
