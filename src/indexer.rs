@@ -403,7 +403,6 @@ mod tests {
     use super::*;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
-    /// Create an indexer with bootstrap schema and test attributes already transacted.
     /// Bootstrap uses tx_id=-1 (not in log), test schema uses tx_id=0.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
