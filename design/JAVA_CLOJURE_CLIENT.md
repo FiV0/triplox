@@ -54,7 +54,7 @@ Type mappings (wire → Java):
 | 5 Float | `Float` |
 | 6 Instant (i64 micros) | `java.time.Instant` |
 | 7 Long | `Long` |
-| 8 Ref | `Long` (wrapped in a marker, or just Long) |
+| 8 Ref | *Reserved — not yet supported by server; codec throws on encounter* |
 | 9 String | `String` |
 | 10 Tuple | `List<Object>` |
 | 11 Uuid | `java.util.UUID` |
@@ -87,12 +87,12 @@ Uses `ByteBuffer` with `BIG_ENDIAN`. Strings: u32 length prefix + UTF-8.
 
 ### Phase 6: Java Connection
 
-**`TriploxConnection.java`** — Manages `Socket` with `TCP_NODELAY=true`, `BufferedInputStream`/`BufferedOutputStream`.
+**`TriploxNode.java`** — Manages `Socket` with `TCP_NODELAY=true`, `BufferedInputStream`/`BufferedOutputStream`.
 
 ```java
-public class TriploxConnection implements AutoCloseable {
-    static TriploxConnection connect(String host, int port);
-    static TriploxConnection connect(String host, int port, Map<String,String> params);
+public class TriploxNode implements AutoCloseable {
+    static TriploxNode connect(String host, int port);
+    static TriploxNode connect(String host, int port, Map<String,String> params);
 
     DbHandle openDb();                          // → DbOpened
     DbHandle openDb(long basisTxId);
@@ -102,8 +102,8 @@ public class TriploxConnection implements AutoCloseable {
     TxKeyResult submitTx(List<TxOp> ops);       // Execute(await=false) → TxKey
     TxResultValue executeTx(List<TxOp> ops);    // Execute(await=true) → TxResult
 
-    void subscribe(DbHandle db, String edn, SubscriptionHandler handler);
-    void unsubscribe();
+    void subscribe(DbHandle db, String edn);  // stub — throws UnsupportedOperationException
+    void unsubscribe();                        // stub — throws UnsupportedOperationException
 
     void close(); // Terminate
 }
@@ -112,6 +112,10 @@ public class TriploxConnection implements AutoCloseable {
 Connection flow: `connect()` sends `Startup`, reads `AuthenticationOk` + `ReadyForQuery('I')`.
 
 `QueryResult` is a record containing `List<ColumnDesc> columns` and `List<List<Object>> rows`.
+
+**Thread safety:** `TriploxNode` is **not** thread-safe. The wire protocol is serial (one operation at a time), so callers needing concurrency should use separate connections.
+
+**Subscription:** `subscribe`/`unsubscribe` are stubs. The server does not yet support incremental queries; calling these methods throws `UnsupportedOperationException`.
 
 ### Phase 7: Clojure Layer
 
@@ -126,7 +130,7 @@ Connection flow: `connect()` sends `Startup`, reads `AuthenticationOk` + `ReadyF
 
 **`triplox.client`** — Public API:
 ```clojure
-(connect host port)           ;; → conn (map wrapping TriploxConnection + lock)
+(connect host port)           ;; → conn (map wrapping TriploxNode + lock)
 (close conn)
 
 (open-db conn)                ;; → db {:conn _ :db-id _ :tx-id _}
@@ -138,10 +142,10 @@ Connection flow: `connect()` sends `Startup`, reads `AuthenticationOk` + `ReadyF
 (transact conn [{:db/id 1 :name "alice"}])     ;; → {:tx-id _ :system-time _ :committed? _ :seq-num _}
 (submit-tx conn [{:db/id 1 :name "alice"}])    ;; → {:tx-id _ :system-time _}
 
-(subscribe conn db query callback-fn)
+(subscribe conn db query)              ;; stub — throws, not yet supported by server
 ```
 
-Lock (`ReentrantLock`) ensures serial access per protocol requirement.
+`TriploxNode` is not thread-safe; the Clojure layer does not add synchronization. Callers needing concurrency should use separate connections.
 
 ### Phase 8: Dev/REPL
 
@@ -159,7 +163,7 @@ Lock (`ReentrantLock`) ensures serial access per protocol requirement.
 - `triplox.tx-test` — Datomic tx-data → TxOp conversion
 
 **Integration tests** (tagged, excluded from default run):
-- `TriploxConnectionTest.java` — requires running Rust server
+- `TriploxNodeTest.java` — requires running Rust server
 - `triplox.client-test` — full Clojure API flow
 
 ## Key Files Referenced
