@@ -129,8 +129,10 @@ impl<L: TxLog> Node<L> {
     /// Look up the Basis for a given TxKey from the persisted index.
     /// Returns None if the tx_id has not been indexed yet.
     pub async fn basis_for_tx(&self, tx_key: TxKey) -> Result<Basis, Error> {
-        let seq_num = self.indexer.read().await.await_tx(tx_key).await?;
-        Ok(Basis { tx_key, seq_num })
+        self.indexer.read().await.await_tx(tx_key).await?;
+        crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_key.tx_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_key.tx_id))
     }
 
     pub async fn close(self) {
@@ -717,6 +719,55 @@ mod tests {
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_basis_for_tx_returns_correct_seq_num_per_tx() {
+        // basis_for_tx should return the seq_num corresponding to the specific tx,
+        // not the latest indexed tx's seq_num.
+        let node = Node::memory_node().await;
+
+        // Tx1: entity 1 with name "alice"
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let basis1_from_execute = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            _ => panic!("Tx1 should commit"),
+        };
+
+        // Tx2: entity 2 with name "bob"
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+
+        let basis2_from_execute = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            _ => panic!("Tx2 should commit"),
+        };
+
+        // Both txs are now indexed. Call basis_for_tx for each.
+        // BUG: basis_for_tx hits the fast path and returns the latest indexed seq_num
+        // for both, instead of the seq_num specific to each tx.
+        let basis1 = node.basis_for_tx(basis1_from_execute.tx_key).await.unwrap();
+        let basis2 = node.basis_for_tx(basis2_from_execute.tx_key).await.unwrap();
+
+        // The two bases must have different seq_nums since they are different transactions
+        assert_ne!(
+            basis1.seq_num, basis2.seq_num,
+            "basis_for_tx(tx1) and basis_for_tx(tx2) should have different seq_nums, \
+             but both returned {}",
+            basis1.seq_num
+        );
+
+        // basis1.seq_num should be less than basis2.seq_num
+        assert!(
+            basis1.seq_num < basis2.seq_num,
+            "basis1.seq_num ({}) should be less than basis2.seq_num ({})",
+            basis1.seq_num,
+            basis2.seq_num
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
