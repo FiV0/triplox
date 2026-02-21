@@ -85,6 +85,7 @@ impl ValueType {
     /// Map a value type keyword (e.g. :db.type/string) to a ValueType.
     pub fn from_keyword(kw: &Keyword) -> Result<Self> {
         let s = kw.to_string();
+        // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
         let s = s.strip_prefix(':').unwrap_or(&s);
         match s {
             "db.type/keyword" => Ok(ValueType::Keyword),
@@ -405,6 +406,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
         let ident = match &row[1] {
             DataType::Keyword(kw) => {
                 let s = kw.to_string();
+                // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
                 s.strip_prefix(':').unwrap_or(&s).to_string()
             }
             other => panic!("Expected Keyword for ident, got {:?}", other),
