@@ -47,8 +47,12 @@ impl DbCache {
     }
 
     /// Get or create a DB snapshot for the given tx_id.
-    /// Returns the Arc<DB> and the tx_id it's pinned to.
-    async fn acquire(&self, tx_id: i64, db: DB) -> Result<Arc<DB>> {
+    /// The `create` future is only evaluated on cache miss.
+    async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<DB>>,
+    {
         let mut entries = self.entries.write().await;
         if let Some(entry) = entries.get_mut(&tx_id) {
             entry.refcount += 1;
@@ -57,6 +61,7 @@ impl DbCache {
         if entries.len() >= self.max_open {
             bail!("Too many open DB snapshots (max {})", self.max_open);
         }
+        let db = create().await?;
         let arc_db = Arc::new(db);
         entries.insert(
             tx_id,
@@ -508,32 +513,30 @@ async fn handle_open_db<L: TxLog + 'static>(
     conn_state: &mut ConnectionState,
     basis_tx_id: Option<i64>,
 ) -> Result<(u32, i64)> {
-    let (db, tx_id) = match basis_tx_id {
+    let (arc_db, tx_id) = match basis_tx_id {
         None => {
-            // Latest snapshot
-            let db = node.db().await?;
-            // We need the tx_id for cache keying. Get it from the latest basis.
-            // For now, use a sentinel approach: we don't cache "latest" snapshots
-            // because two calls might yield different points in time.
-            // Instead, each OpenDb(None) creates a fresh snapshot.
+            // Latest snapshot — not cacheable because each call may see a different point.
             // TODO(triplox-bct): determine tx_id from the DB snapshot for proper cache sharing
             let tx_id = -(conn_state.next_db_id as i64); // unique negative sentinel
-            (db, tx_id)
+            let node = node.clone();
+            let arc_db = db_cache.acquire(tx_id, || async move { node.db().await }).await?;
+            (arc_db, tx_id)
         }
         Some(tid) => {
-            // Look up basis for this tx_id, then get snapshot at that basis
             let tx_key = crate::transaction::TxKey {
                 tx_id: tid,
                 system_time: chrono::Utc::now(), // placeholder, basis_for_tx only uses tx_id
             };
             let basis = node.basis_for_tx(tx_key).await?;
             let tx_id = basis.tx_key.tx_id;
-            let db = node.db_with_basis(basis).await?;
-            (db, tx_id)
+            let node = node.clone();
+            let arc_db = db_cache.acquire(tx_id, || async move {
+                node.db_with_basis(basis).await
+            }).await?;
+            (arc_db, tx_id)
         }
     };
 
-    let arc_db = db_cache.acquire(tx_id, db).await?;
     let db_id = conn_state.allocate_handle(tx_id, arc_db);
     Ok((db_id, tx_id))
 }

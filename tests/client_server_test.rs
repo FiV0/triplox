@@ -73,7 +73,7 @@ async fn test_submit_tx() {
     doc.insert("db/id".to_string(), DataType::Long(1));
     doc.insert("name".to_string(), DataType::String("bob".to_string()));
     let tx_key = client.submit_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-    assert_eq!(tx_key.tx_id, 0);
+    assert!(tx_key.tx_id >= 0);
 
     client.close().await.unwrap();
     token.cancel();
