@@ -221,6 +221,9 @@ impl QueryNode for ClientNode {
 // ---------------------------------------------------------------------------
 
 /// A remote DB snapshot handle. Mirrors the `DB` API.
+///
+/// Callers must call [`.close()`](ClientDb::close) when done. Dropping without
+/// closing leaks the server-side handle until the connection is closed.
 pub struct ClientDb {
     db_id: u32,
     tx_id: i64,

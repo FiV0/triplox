@@ -851,4 +851,49 @@ mod tests {
 
         node.close().await;
     }
+
+    #[tokio::test]
+    async fn test_db_with_basis_pins_snapshot() {
+        let node = Node::memory_node().await;
+
+        // First transaction: insert alice
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        let result1 = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        let basis1 = match result1 {
+            TransactionResult::TxCommited(b) => b,
+            _ => panic!("Expected TxCommited"),
+        };
+
+        // Second transaction: insert bob
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+
+        // db_with_basis pinned to first tx should only see alice
+        let db = node.db_with_basis(basis1).await.unwrap();
+        let query = Query {
+            find: FindSpec::FindRel(vec![
+                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?name".to_string()),
+            ]),
+            where_clauses: vec![WhereClause::Triple(TriplePattern {
+                entity: PatternElement::Variable("?e".to_string()),
+                attribute: PatternElement::Constant(kw("name")),
+                value: PatternElement::Variable("?name".to_string()),
+            })],
+        };
+        let results = db.query(&query).await.unwrap();
+        assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
+        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+        // latest db should see both
+        let db_latest = node.db().await.unwrap();
+        let results_latest = db_latest.query(&query).await.unwrap();
+        assert_eq!(results_latest.len(), 2);
+
+        node.close().await;
+    }
 }

@@ -149,7 +149,19 @@ impl<L: TxLog + 'static> Server<L> {
     /// the shutdown and clean up promptly.
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        info!("Triplox server listening on {}", addr);
+        self.listen_on(listener, token).await
+    }
+
+    /// Start serving on a pre-bound listener.
+    pub async fn listen_on(
+        &self,
+        listener: TcpListener,
+        token: CancellationToken,
+    ) -> Result<()> {
+        info!(
+            "Triplox server listening on {}",
+            listener.local_addr()?
+        );
 
         loop {
             tokio::select! {
@@ -447,6 +459,25 @@ async fn handle_connection<L: TxLog + 'static>(
                 writer.flush().await?;
             }
 
+            FrontendMessage::BasisForTx { tx_id } => {
+                match handle_basis_for_tx(&node, tx_id).await {
+                    Ok(basis_msg) => {
+                        write_backend_message(&mut writer, &basis_msg).await?;
+                    }
+                    Err(e) => {
+                        write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
+                    }
+                }
+                write_backend_message(
+                    &mut writer,
+                    &BackendMessage::ReadyForQuery {
+                        status: STATUS_IDLE,
+                    },
+                )
+                .await?;
+                writer.flush().await?;
+            }
+
             FrontendMessage::Startup { .. } => {
                 write_backend_message(
                     &mut writer,
@@ -532,6 +563,22 @@ async fn handle_query(
 
     let result = db.query(&parsed).await?;
     Ok((result, find_vars))
+}
+
+async fn handle_basis_for_tx<L: TxLog + 'static>(
+    node: &Arc<Node<L>>,
+    tx_id: i64,
+) -> Result<BackendMessage> {
+    let tx_key = crate::transaction::TxKey {
+        tx_id,
+        system_time: chrono::Utc::now(), // placeholder, basis_for_tx only uses tx_id
+    };
+    let basis = node.basis_for_tx(tx_key).await?;
+    Ok(BackendMessage::BasisResult {
+        tx_id: basis.tx_key.tx_id,
+        system_time: basis.tx_key.system_time.timestamp_micros(),
+        seq_num: basis.seq_num,
+    })
 }
 
 async fn handle_execute<L: TxLog + 'static>(

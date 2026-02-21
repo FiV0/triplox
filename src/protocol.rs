@@ -48,6 +48,7 @@ pub const MSG_QUERY: u8 = b'Q';
 pub const MSG_EXECUTE: u8 = b'E';
 pub const MSG_SUBSCRIBE: u8 = b'S';
 pub const MSG_UNSUBSCRIBE: u8 = b'U';
+pub const MSG_BASIS_FOR_TX: u8 = b'F';
 pub const MSG_TERMINATE: u8 = b'X';
 
 // Backend message type bytes
@@ -63,6 +64,7 @@ pub const MSG_TX_KEY: u8 = b'Y';
 pub const MSG_TX_RESULT: u8 = b'G';
 pub const MSG_UNSUBSCRIBE_COMPLETE: u8 = b'N';
 pub const MSG_HEARTBEAT: u8 = b'K';
+pub const MSG_BASIS_RESULT: u8 = b'A';
 pub const MSG_ERROR_RESPONSE: u8 = b'W';
 
 // ReadyForQuery status bytes
@@ -199,6 +201,9 @@ pub enum FrontendMessage {
         db_id: u32,
     },
     Unsubscribe,
+    BasisForTx {
+        tx_id: i64,
+    },
     Terminate,
 }
 
@@ -244,6 +249,11 @@ pub enum BackendMessage {
         system_time: i64,
         seq_num: u64,
         error_message: Option<String>,
+    },
+    BasisResult {
+        tx_id: i64,
+        system_time: i64,
+        seq_num: u64,
     },
     UnsubscribeComplete,
     Heartbeat,
@@ -709,6 +719,9 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
             encode_u32(buf, *db_id);
         }
         FrontendMessage::Unsubscribe => {}
+        FrontendMessage::BasisForTx { tx_id } => {
+            encode_i64(buf, *tx_id);
+        }
         FrontendMessage::Terminate => {}
     }
 }
@@ -762,6 +775,11 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
             encode_u64(buf, *seq_num);
             encode_option_string(buf, error_message);
         }
+        BackendMessage::BasisResult { tx_id, system_time, seq_num } => {
+            encode_i64(buf, *tx_id);
+            encode_i64(buf, *system_time);
+            encode_u64(buf, *seq_num);
+        }
         BackendMessage::UnsubscribeComplete => {}
         BackendMessage::Heartbeat => {}
         BackendMessage::ErrorResponse {
@@ -809,6 +827,9 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
             db_id: cursor.read_u32()?,
         }),
         MSG_UNSUBSCRIBE => Ok(FrontendMessage::Unsubscribe),
+        MSG_BASIS_FOR_TX => Ok(FrontendMessage::BasisForTx {
+            tx_id: cursor.read_i64()?,
+        }),
         MSG_TERMINATE => Ok(FrontendMessage::Terminate),
         _ => bail!("Unknown frontend message type: 0x{:02x}", msg_type),
     }
@@ -864,6 +885,11 @@ fn decode_backend_payload(
             system_time: cursor.read_i64()?,
             seq_num: cursor.read_u64()?,
             error_message: cursor.read_option_string()?,
+        }),
+        MSG_BASIS_RESULT => Ok(BackendMessage::BasisResult {
+            tx_id: cursor.read_i64()?,
+            system_time: cursor.read_i64()?,
+            seq_num: cursor.read_u64()?,
         }),
         MSG_UNSUBSCRIBE_COMPLETE => Ok(BackendMessage::UnsubscribeComplete),
         MSG_HEARTBEAT => Ok(BackendMessage::Heartbeat),
@@ -954,6 +980,7 @@ pub async fn write_frontend_message<W: AsyncWrite + Unpin>(
                 FrontendMessage::Execute { .. } => MSG_EXECUTE,
                 FrontendMessage::Subscribe { .. } => MSG_SUBSCRIBE,
                 FrontendMessage::Unsubscribe => MSG_UNSUBSCRIBE,
+                FrontendMessage::BasisForTx { .. } => MSG_BASIS_FOR_TX,
                 FrontendMessage::Terminate => MSG_TERMINATE,
                 FrontendMessage::Startup { .. } => unreachable!(),
             };
@@ -1008,6 +1035,7 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
         BackendMessage::ReadyForQuery { .. } => MSG_READY_FOR_QUERY,
         BackendMessage::TxKey { .. } => MSG_TX_KEY,
         BackendMessage::TxResult { .. } => MSG_TX_RESULT,
+        BackendMessage::BasisResult { .. } => MSG_BASIS_RESULT,
         BackendMessage::UnsubscribeComplete => MSG_UNSUBSCRIBE_COMPLETE,
         BackendMessage::Heartbeat => MSG_HEARTBEAT,
         BackendMessage::ErrorResponse { .. } => MSG_ERROR_RESPONSE,
@@ -1250,6 +1278,19 @@ mod tests {
             basis_tx_id: None,
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
+    }
+
+    #[tokio::test]
+    async fn test_basis_for_tx_roundtrip() {
+        let msg = FrontendMessage::BasisForTx { tx_id: 42 };
+        assert_eq!(roundtrip_frontend(&msg).await, msg);
+
+        let msg = BackendMessage::BasisResult {
+            tx_id: 42,
+            system_time: 1_000_000,
+            seq_num: 7,
+        };
+        assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]

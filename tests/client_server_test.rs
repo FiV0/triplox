@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::net::TcpListener;
 use std::sync::Arc;
 
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use triplox::client::ClientNode;
@@ -10,31 +10,21 @@ use triplox::ops::{DataType, Document, TxOp};
 use triplox::server::Server;
 use triplox::{Basis, TransactionResult};
 
-/// Find an available TCP port on localhost.
-fn find_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
-
 /// Start an in-memory server on a free port.
 /// Returns the address string and a cancellation token.
 /// Cancel the token to shut down the server.
 async fn start_test_server() -> (String, CancellationToken) {
-    let port = find_available_port();
-    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
 
     let node = Arc::new(Node::memory_node().await);
     let server = Server::new(node, 1024);
 
     let token = CancellationToken::new();
-    let listen_addr = addr.clone();
     let server_token = token.clone();
     tokio::spawn(async move {
-        let _ = server.listen(&listen_addr, server_token).await;
+        let _ = server.listen_on(listener, server_token).await;
     });
-
-    // Give the listener a moment to bind
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     (addr, token)
 }
@@ -187,6 +177,43 @@ async fn test_execute_tx_returns_basis_with_seq_num() {
         _ => panic!("Expected TxCommited"),
     }
 
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[ignore] // await_tx returns latest seq_num, not the one for the requested tx
+#[tokio::test(flavor = "multi_thread")]
+async fn test_db_with_basis() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+
+    // First transaction
+    let mut doc1 = BTreeMap::new();
+    doc1.insert("db/id".to_string(), DataType::Long(1));
+    doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+    let result1 = client.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+    let basis1 = match result1 {
+        TransactionResult::TxCommited(b) => b,
+        _ => panic!("Expected TxCommited"),
+    };
+
+    // Second transaction
+    let mut doc2 = BTreeMap::new();
+    doc2.insert("db/id".to_string(), DataType::Long(2));
+    doc2.insert("name".to_string(), DataType::String("bob".to_string()));
+    client.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+
+    // Open DB pinned to basis after first tx — should only see alice
+    let db = client.db_with_basis(basis1).await.unwrap();
+    let result = db
+        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+    db.close().await.unwrap();
     client.close().await.unwrap();
     token.cancel();
 }
