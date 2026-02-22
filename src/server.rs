@@ -5,7 +5,6 @@
 //! to the underlying Node.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -108,12 +107,13 @@ impl ConnectionState {
         }
     }
 
-    fn allocate_handle(&mut self, tx_id: i64, db: Arc<DB>) -> u32 {
+    fn allocate_handle(&mut self, tx_id: i64, db: Arc<DB>) -> Result<u32> {
         let db_id = self.next_db_id;
-        self.next_db_id += 1;
+        self.next_db_id = self.next_db_id.checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("DB handle ID space exhausted"))?;
         self.handles.insert(db_id, tx_id);
         self.dbs.insert(db_id, db);
-        db_id
+        Ok(db_id)
     }
 
     fn get_db(&self, db_id: u32) -> Option<&Arc<DB>> {
@@ -248,14 +248,7 @@ async fn handle_connection<L: TxLog + 'static>(
                 },
             )
             .await?;
-            write_backend_message(
-                &mut writer,
-                &BackendMessage::ReadyForQuery {
-                    status: STATUS_IDLE,
-                },
-            )
-            .await?;
-            writer.flush().await?;
+            ready_for_query_flush(&mut writer).await?;
         }
         _ => {
             bail!("Expected Startup message, got {:?}", startup);
@@ -289,26 +282,12 @@ async fn handle_connection<L: TxLog + 'static>(
                             &BackendMessage::DbOpened { db_id, tx_id },
                         )
                         .await?;
-                        write_backend_message(
-                            &mut writer,
-                            &BackendMessage::ReadyForQuery {
-                                status: STATUS_IDLE,
-                            },
-                        )
-                        .await?;
                     }
                     Err(e) => {
                         write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
-                        write_backend_message(
-                            &mut writer,
-                            &BackendMessage::ReadyForQuery {
-                                status: STATUS_IDLE,
-                            },
-                        )
-                        .await?;
                     }
                 }
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::CloseDb { db_id } => {
@@ -332,14 +311,7 @@ async fn handle_connection<L: TxLog + 'static>(
                     )
                     .await?;
                 }
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::Query {
@@ -386,14 +358,7 @@ async fn handle_connection<L: TxLog + 'static>(
                         write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
                     }
                 }
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::Execute {
@@ -408,14 +373,7 @@ async fn handle_connection<L: TxLog + 'static>(
                         write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
                     }
                 }
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::Subscribe { .. } => {
@@ -431,14 +389,7 @@ async fn handle_connection<L: TxLog + 'static>(
                     },
                 )
                 .await?;
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::Unsubscribe => {
@@ -454,14 +405,7 @@ async fn handle_connection<L: TxLog + 'static>(
                     },
                 )
                 .await?;
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::BasisForTx { tx_id } => {
@@ -473,14 +417,7 @@ async fn handle_connection<L: TxLog + 'static>(
                         write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
                     }
                 }
-                write_backend_message(
-                    &mut writer,
-                    &BackendMessage::ReadyForQuery {
-                        status: STATUS_IDLE,
-                    },
-                )
-                .await?;
-                writer.flush().await?;
+                ready_for_query_flush(&mut writer).await?;
             }
 
             FrontendMessage::Startup { .. } => {
@@ -541,7 +478,7 @@ async fn handle_open_db<L: TxLog + 'static>(
         _ => bail!("OpenDb requires all three basis fields or none"),
     };
 
-    let db_id = conn_state.allocate_handle(tx_id, arc_db);
+    let db_id = conn_state.allocate_handle(tx_id, arc_db)?;
     Ok((db_id, tx_id))
 }
 
@@ -618,6 +555,21 @@ async fn handle_execute<L: TxLog + 'static>(
             system_time: tx_key.system_time.timestamp_micros(),
         })
     }
+}
+
+/// Send ReadyForQuery(Idle) and flush the writer.
+async fn ready_for_query_flush<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+) -> Result<()> {
+    write_backend_message(
+        writer,
+        &BackendMessage::ReadyForQuery {
+            status: STATUS_IDLE,
+        },
+    )
+    .await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn cleanup_connection(conn_state: &ConnectionState, db_cache: &DbCache) {

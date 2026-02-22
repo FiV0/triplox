@@ -280,10 +280,6 @@ fn encode_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
 }
 
-fn encode_i8(buf: &mut Vec<u8>, v: i8) {
-    buf.push(v as u8);
-}
-
 fn encode_u16(buf: &mut Vec<u8>, v: u16) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
@@ -312,12 +308,14 @@ fn encode_f64(buf: &mut Vec<u8>, v: f64) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
 
+/// Panics if `s` exceeds `u32::MAX` bytes — impossible under the 64 MB message-size limit.
 fn encode_string(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
     encode_u32(buf, u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"));
     buf.extend_from_slice(bytes);
 }
 
+/// Panics if `b` exceeds `u32::MAX` bytes — impossible under the 64 MB message-size limit.
 fn encode_bytes(buf: &mut Vec<u8>, b: &[u8]) {
     encode_u32(buf, u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"));
     buf.extend_from_slice(b);
@@ -500,10 +498,6 @@ impl<'a> Cursor<'a> {
     fn read_u8(&mut self) -> Result<u8> {
         let b = self.read_bytes(1)?;
         Ok(b[0])
-    }
-
-    fn read_i8(&mut self) -> Result<i8> {
-        Ok(self.read_u8()? as i8)
     }
 
     fn read_bool(&mut self) -> Result<bool> {
