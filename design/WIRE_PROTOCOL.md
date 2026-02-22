@@ -237,9 +237,10 @@ Returned for awaited transactions (Execute with `await_indexing = true`). Maps d
 
 Look up the `Basis` (tx_key + seq_num) for a previously committed transaction. The server waits until the transaction has been indexed before responding.
 
-| Field | Type | Description                    |
-|-------|------|--------------------------------|
-| tx_id | i64  | Transaction ID to look up      |
+| Field       | Type | Description                                             |
+|-------------|------|---------------------------------------------------------|
+| tx_id       | i64  | Transaction ID to look up                               |
+| system_time | i64  | Timestamp of the transaction (microseconds since epoch) |
 
 Server responds with `BasisResult` followed by `ReadyForQuery`, or `ErrorResponse` + `ReadyForQuery` if the transaction is unknown.
 
@@ -758,7 +759,8 @@ error_message : Option<String>
 
 **BasisForTx** (`F`):
 ```
-tx_id : i64
+tx_id       : i64
+system_time : i64        (microseconds since Unix epoch)
 ```
 
 **BasisResult** (`A`):

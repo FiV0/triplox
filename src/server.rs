@@ -424,8 +424,8 @@ async fn handle_connection<L: TxLog + 'static>(
                 ready_for_query_flush(&mut writer).await?;
             }
 
-            FrontendMessage::BasisForTx { tx_id } => {
-                match handle_basis_for_tx(&node, tx_id).await {
+            FrontendMessage::BasisForTx { tx_id, system_time } => {
+                match handle_basis_for_tx(&node, tx_id, system_time).await {
                     Ok(basis_msg) => {
                         write_backend_message(&mut writer, &basis_msg).await?;
                     }
@@ -530,8 +530,13 @@ async fn handle_query(
 async fn handle_basis_for_tx<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     tx_id: i64,
+    system_time: i64,
 ) -> Result<BackendMessage> {
-    let basis = node.basis_for_tx_id(tx_id).await?;
+    let tx_key = crate::transaction::TxKey {
+        tx_id,
+        system_time: crate::protocol::micros_to_datetime(system_time)?,
+    };
+    let basis = node.basis_for_tx(tx_key).await?;
     Ok(BackendMessage::BasisResult {
         tx_id: basis.tx_key.tx_id,
         system_time: basis.tx_key.system_time.timestamp_micros(),

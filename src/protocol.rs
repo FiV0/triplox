@@ -205,6 +205,7 @@ pub enum FrontendMessage {
     Unsubscribe,
     BasisForTx {
         tx_id: i64,
+        system_time: i64,
     },
     Terminate,
 }
@@ -736,8 +737,9 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
             encode_u32(buf, *db_id);
         }
         FrontendMessage::Unsubscribe => {}
-        FrontendMessage::BasisForTx { tx_id } => {
+        FrontendMessage::BasisForTx { tx_id, system_time } => {
             encode_i64(buf, *tx_id);
+            encode_i64(buf, *system_time);
         }
         FrontendMessage::Terminate => {}
     }
@@ -848,6 +850,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
         MSG_UNSUBSCRIBE => Ok(FrontendMessage::Unsubscribe),
         MSG_BASIS_FOR_TX => Ok(FrontendMessage::BasisForTx {
             tx_id: cursor.read_i64()?,
+            system_time: cursor.read_i64()?,
         }),
         MSG_TERMINATE => Ok(FrontendMessage::Terminate),
         _ => bail!("Unknown frontend message type: 0x{:02x}", msg_type),
@@ -1305,7 +1308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_basis_for_tx_roundtrip() {
-        let msg = FrontendMessage::BasisForTx { tx_id: 42 };
+        let msg = FrontendMessage::BasisForTx { tx_id: 42, system_time: 1700000000000000 };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
 
         let msg = BackendMessage::BasisResult {
