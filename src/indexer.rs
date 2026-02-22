@@ -49,6 +49,104 @@ struct TxIndexKeys {
 // Schema-defining attributes (db/ident, db/valueType, db/cardinality) are now
 // allowed. Validation of user attributes is handled by the schema cache (triplox-jxz).
 
+fn resolve_attribute_id(schema_cache: &SchemaCache, attr: &str) -> Result<i64, Error> {
+    schema_cache
+        .get(attr)
+        .map(|a| a.entity_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr))
+}
+
+fn op_to_index_keys(tx_op: &TxOp, schema_cache: &SchemaCache) -> Result<TxIndexKeys, Error> {
+    match tx_op {
+        TxOp::Put(Document(doc)) => {
+            let entity_id = match doc.get("db/id") {
+                Some(DataType::Long(id)) => id,
+                Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
+                None => return Err(anyhow::anyhow!("Document must have a db/id")),
+            };
+            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+            // Revisit with schema/custom encoding.
+            let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
+            let mut attribute_and_values = Vec::new();
+            for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
+                let attribute_id = resolve_attribute_id(schema_cache, k)?;
+                attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
+            }
+
+            let mut eav: Vec<Vec<u8>> = Vec::new();
+            let mut ave: Vec<Vec<u8>> = Vec::new();
+            let mut aev: Vec<Vec<u8>> = Vec::new();
+            let mut ae: Vec<Vec<u8>> = Vec::new();
+            let mut av: Vec<Vec<u8>> = Vec::new();
+
+            for (attribute, value) in attribute_and_values {
+                eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
+                ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
+                aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
+                ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]));
+                av.push(concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]));
+            }
+
+            Ok(TxIndexKeys { eav, ave, aev, ae, av })
+        },
+        TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
+            let Attribute(attr) = attribute;
+            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+            let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
+            let attribute_id = resolve_attribute_id(schema_cache, attr)?;
+            let attribute = bincode::serialize(&attribute_id)?;
+            let value = bincode::serialize(&value)?;
+
+            let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
+            let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
+            let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
+            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]);
+            let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]);
+
+            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
+        },
+        TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
+            let Attribute(attr) = attribute;
+            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+            let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
+            let attribute_id = resolve_attribute_id(schema_cache, attr)?;
+            let attribute = bincode::serialize(&attribute_id)?;
+            let value = bincode::serialize(&value)?;
+
+            let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
+            let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
+            let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
+            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::RETRACT]]);
+            let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::RETRACT]]);
+
+            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
+        },
+        TxOp::Delete(_entity) => todo!(),
+        TxOp::Erase(_entity) => todo!(),
+    }
+}
+
+pub(crate) fn build_index_write_batch(
+    tx_ops: &[TxOp],
+    schema_cache: &SchemaCache,
+) -> Result<WriteBatch, Error> {
+    let index_keys: Vec<TxIndexKeys> = tx_ops.iter()
+        .map(|op| op_to_index_keys(op, schema_cache))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut write_batch = WriteBatch::new();
+
+    for index_keys in index_keys.iter() {
+        for key in &index_keys.eav { write_batch.put(key.as_slice(), &[]); }
+        for key in &index_keys.ave { write_batch.put(key.as_slice(), &[]); }
+        for key in &index_keys.aev { write_batch.put(key.as_slice(), &[]); }
+        for key in &index_keys.ae { write_batch.put(key.as_slice(), &[]); }
+        for key in &index_keys.av { write_batch.put(key.as_slice(), &[]); }
+    }
+
+    Ok(write_batch)
+}
+
 /// Interim mapping stored in SlateDB to look up seq_num (and system_time) by tx_id.
 /// Will be replaced when SlateDB exposes WriteHandle.seqnum() (PR #1247).
 #[derive(Serialize, Deserialize)]
@@ -74,11 +172,11 @@ pub async fn get_basis_for_tx(slatedb: Arc<Db>, tx_id: i64) -> Option<Basis> {
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>) -> Self {
+    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
-            schema_cache: SchemaCache::new(),
+            schema_cache,
             latest_indexed_tx: None,
             tx_completion_sender,
         }
@@ -87,88 +185,6 @@ impl Indexer {
     pub fn schema_cache(&self) -> &SchemaCache {
         &self.schema_cache
     }
-
-    pub fn set_schema_cache(&mut self, cache: SchemaCache) {
-        self.schema_cache = cache;
-    }
-
-    fn resolve_attribute_id(&self, attr: &str) -> Result<i64, Error> {
-        self.schema_cache
-            .get(attr)
-            .map(|a| a.entity_id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr))
-    }
-
-    fn op_to_index_keys(&self, _tx_key: TxKey, tx_op: &TxOp) -> Result<TxIndexKeys, Error> {
-        match tx_op {
-            TxOp::Put(Document(doc)) => {
-                let entity_id = match doc.get("db/id") {
-                    Some(DataType::Long(id)) => id,
-                    Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
-                    None => return Err(anyhow::anyhow!("Document must have a db/id")),
-                };
-                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-                // Revisit with schema/custom encoding.
-                let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
-                let mut attribute_and_values = Vec::new();
-                for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                    let attribute_id = self.resolve_attribute_id(k)?;
-                    attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
-                }
-
-                let mut eav: Vec<Vec<u8>> = Vec::new();
-                let mut ave: Vec<Vec<u8>> = Vec::new();
-                let mut aev: Vec<Vec<u8>> = Vec::new();
-                let mut ae: Vec<Vec<u8>> = Vec::new();
-                let mut av: Vec<Vec<u8>> = Vec::new();
-
-                for (attribute, value) in attribute_and_values {
-                    eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]));
-                    ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]));
-                    aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]));
-                    ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]));
-                    av.push(concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]));
-                }
-
-                Ok(TxIndexKeys { eav, ave, aev, ae, av })
-            },
-            TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
-                let Attribute(attr) = attribute;
-                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-                let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-                let attribute_id = self.resolve_attribute_id(attr)?;
-                let attribute = bincode::serialize(&attribute_id)?;
-                let value = bincode::serialize(&value)?;
-
-                let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::ADD]]);
-                let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::ADD]]);
-                let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::ADD]]);
-                let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::ADD]]);
-                let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::ADD]]);
-
-                Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
-            },
-            TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
-                let Attribute(attr) = attribute;
-                // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-                let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-                let attribute_id = self.resolve_attribute_id(attr)?;
-                let attribute = bincode::serialize(&attribute_id)?;
-                let value = bincode::serialize(&value)?;
-
-                let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &[codec::RETRACT]]);
-                let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &[codec::RETRACT]]);
-                let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &[codec::RETRACT]]);
-                let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, &[codec::RETRACT]]);
-                let av = concat_bytes(&[&[codec::AV], &attribute, &value, &[codec::RETRACT]]);
-
-                Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
-            },
-            TxOp::Delete(_entity) => todo!(),
-            TxOp::Erase(_entity) => todo!(),
-        }
-    }
-
 
     // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
     // when a Put/Add overwrites an existing entity+attribute pair.
@@ -181,19 +197,7 @@ impl Indexer {
         // If the write below fails, the cache has phantom entries — acceptable tradeoff (see TODO).
         self.schema_cache.process_tx(&tx_ops)?;
 
-        let index_keys: Vec<TxIndexKeys> = tx_ops.iter()
-            .map(|op| self.op_to_index_keys(tx_key, op))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut write_batch = WriteBatch::new();
-
-        for index_keys in index_keys.iter() {
-            for key in &index_keys.eav { write_batch.put(key.as_slice(), &[]); }
-            for key in &index_keys.ave { write_batch.put(key.as_slice(), &[]); }
-            for key in &index_keys.aev { write_batch.put(key.as_slice(), &[]); }
-            for key in &index_keys.ae { write_batch.put(key.as_slice(), &[]); }
-            for key in &index_keys.av { write_batch.put(key.as_slice(), &[]); }
-        }
+        let write_batch = build_index_write_batch(&tx_ops, &self.schema_cache)?;
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
@@ -395,21 +399,19 @@ pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType, u8), Error> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use slatedb::{Db, Error as SlateDBError, config::ScanOptions};
+    use slatedb::{Db, config::ScanOptions};
 
     use crate::clock::st_from_unix_epoch;
-    use crate::schema::{bootstrap_schema_tx, test_schema_tx};
+    use crate::schema::test_schema_tx;
     use crate::slate::in_memory_slate;
     use super::*;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
-    /// Bootstrap uses tx_id=-1 (not in log), test schema uses tx_id=0.
+    /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
-        let mut indexer = Indexer::new(slate);
-        let bootstrap_key = TxKey { tx_id: -1, system_time: st_from_unix_epoch(0) };
-        let opts = TxOptions { skip_schema_validation: true };
-        indexer.transact_tx(bootstrap_key, bootstrap_schema_tx(), opts).await.unwrap();
+        let cache = crate::bootstrap::init_db(slate.clone()).await;
+        let mut indexer = Indexer::new(slate, cache);
         let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
         indexer.transact_tx(tx_key_0, test_schema_tx(), TxOptions::default()).await.unwrap();
         indexer
@@ -625,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_timeout() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Indexer::new(slate.clone());
+        let indexer = Indexer::new(slate.clone(), SchemaCache::new());
 
         let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(999) };
 
