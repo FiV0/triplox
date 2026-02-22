@@ -1,17 +1,12 @@
 #![allow(dead_code, unused)]
 
-use slatedb::{Db, KeyValue};
-use slatedb::object_store::{ObjectStore, memory::InMemory, path::Path};
+use slatedb::Db;
+use slatedb::object_store::{ObjectStore, memory::InMemory};
 use slatedb::object_store::local::LocalFileSystem;
 use slatedb::config::{DurabilityLevel, ReadOptions, ScanOptions, WriteOptions};
-use bincode;
 use std::sync::Arc;
-use std::collections::HashMap;
-use std::ops::{Bound, RangeBounds};
-use bytes::Bytes;
 
-use crate::util::{random_string, concat_bytes};
-use crate::codec;
+use crate::util::random_string;
 
 
 pub async fn in_memory_slate() -> Db {
@@ -49,37 +44,3 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     max_fetch_tasks: 1,
 };
 
-pub async fn read_attribute_map(slatedb: Arc<Db>) -> HashMap<String, u64> {
-    let mut attribute_to_id = HashMap::new();
-
-    let mut iter = slatedb.scan_prefix_with_options(&[codec::ATTRIBUTE_TO_ID], &DEFAULT_SCAN_OPTIONS).await.unwrap();
-
-    while let Some(KeyValue { key, ..}) = iter.next().await.unwrap() {
-        // Key format: [ATTRIBUTE_TO_ID (1 byte)] + [attribute (bincode)] + [id (8 bytes bincode)]
-        let attribute_range = codec::CODEC_LENGTH as usize..key.len() - 8;
-        let id_range = key.len() - 8..key.len();
-
-        let attribute = bincode::deserialize::<String>(&key.slice(attribute_range)).unwrap();
-        let id = bincode::deserialize::<u64>(&key.slice(id_range)).unwrap();
-        attribute_to_id.insert(attribute, id);
-    }
-
-    attribute_to_id
-}
-
-pub async fn get_and_create_attribute_id(slatedb: Arc<Db>, attribute: &str, attribute_map: &mut HashMap<String, u64>) -> u64 {
-    let size = attribute_map.len() as u64;
-    let attribute_id = match attribute_map.get(attribute) {
-        Some(id) => id,
-        None => {
-            attribute_map.insert(attribute.to_string(), size);
-            let attribute = bincode::serialize(attribute).unwrap();
-            let id = bincode::serialize(&size).unwrap();
-            slatedb.put(&concat_bytes(&[&[codec::ATTRIBUTE_TO_ID], &attribute, &id]), &[]).await;
-            return size
-        }
-    };
-    *attribute_id
-}
-
-// TODO write a test for this

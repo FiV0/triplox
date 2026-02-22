@@ -27,7 +27,7 @@ impl GenericPrefixExtender {
         slate: Arc<slatedb::DbSnapshot>,
         handle: Handle,
         index_types: Vec<IndexType>,
-        attribute_id: u64,
+        attribute_id: i64,
         constant_prefix: Vec<u8>,
         participating_levels: Vec<usize>,
     ) -> Self {
@@ -186,7 +186,7 @@ mod tests {
 
     async fn insert_ave(
         slate: &slatedb::Db,
-        attribute: u64,
+        attribute: i64,
         value: Bytes,
         entity: i64,
     ) -> anyhow::Result<()> {
@@ -200,7 +200,7 @@ mod tests {
         Ok(())
     }
 
-    async fn insert_av(slate: &slatedb::Db, attribute: u64, value: Bytes) -> anyhow::Result<()> {
+    async fn insert_av(slate: &slatedb::Db, attribute: i64, value: Bytes) -> anyhow::Result<()> {
         let mut key = vec![crate::codec::AV];
         key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
@@ -234,7 +234,7 @@ mod tests {
     fn test_count_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
@@ -262,7 +262,7 @@ mod tests {
     fn test_propose_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
@@ -289,7 +289,7 @@ mod tests {
     fn test_multiple_index_types() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         // Insert into both AV and AVE indexes
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -322,7 +322,7 @@ mod tests {
     fn test_intersect() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
@@ -362,7 +362,7 @@ mod tests {
         // which extracts the value (position 1) instead.
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         let value_bytes = Bytes::from(bincode::serialize(&DataType::String("alice".to_string()))?);
         runtime.block_on(insert_ave(&slate, attr_name, value_bytes.clone(), 1))?;
@@ -394,7 +394,7 @@ mod tests {
     fn test_empty_results() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let slate = runtime.block_on(in_memory_slate());
-        let attr_name = 42u64;
+        let attr_name = 42i64;
 
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
 
