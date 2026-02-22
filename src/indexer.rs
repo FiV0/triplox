@@ -183,13 +183,15 @@ impl Indexer {
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         self.schema_cache.validate_tx(&tx_ops)?;
 
-        // Process schema definitions first so entity IDs are available for index key generation.
-        // If the write below fails, the cache has phantom entries — acceptable tradeoff (see TODO).
-        self.schema_cache.process_tx(&tx_ops)?;
-
         let write_batch = build_index_write_batch(&tx_ops, &self.schema_cache)?;
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
+
+        // Process schema definitions after the write so that new attributes are not
+        // visible within the transaction that defines them.
+        // If the write above succeeded but process_tx fails, the cache is stale — acceptable
+        // tradeoff (see TODO).
+        self.schema_cache.process_tx(&tx_ops)?;
 
         let seq_num = self.slatedb.last_committed_seq();
 
