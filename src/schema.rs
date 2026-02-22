@@ -243,6 +243,9 @@ impl SchemaCache {
                 TxOp::Put(Document(doc)) => {
                     for (attr_name, value) in doc.iter() {
                         if attr_name == "db/id" {
+                            if !matches!(value, DataType::Long(_)) {
+                                return Err(anyhow::anyhow!("db/id must be a Long"));
+                            }
                             continue;
                         }
                         self.validate_attribute_value(attr_name, value)?;
