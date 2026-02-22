@@ -22,14 +22,6 @@ use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
-/// Options for controlling transaction processing behavior.
-#[derive(Default)]
-pub struct TxOptions {
-    /// When true, skip schema validation for this transaction.
-    /// Used for the bootstrap transaction that defines the schema-for-schema.
-    pub skip_schema_validation: bool,
-}
-
 pub struct Indexer {
     slatedb: Arc<Db>,
     schema_cache: SchemaCache,
@@ -188,10 +180,8 @@ impl Indexer {
 
     // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
     // when a Put/Add overwrites an existing entity+attribute pair.
-    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>, opts: TxOptions) -> Result<TxKey, Error> {
-        if !opts.skip_schema_validation {
-            self.schema_cache.validate_tx(&tx_ops)?;
-        }
+    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        self.schema_cache.validate_tx(&tx_ops)?;
 
         // Process schema definitions first so entity IDs are available for index key generation.
         // If the write below fails, the cache has phantom entries — acceptable tradeoff (see TODO).
@@ -286,7 +276,7 @@ impl Subscriber for Indexer {
     async fn accept(&mut self, record: Record) {
         let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
             .expect("Failed to deserialize TxOps from log record");
-        self.transact_tx(record.tx_key, tx_ops, TxOptions::default()).await
+        self.transact_tx(record.tx_key, tx_ops).await
             .expect("Indexer failed to process transaction");
     }
 }
@@ -413,7 +403,7 @@ mod tests {
         let cache = crate::bootstrap::init_db(slate.clone()).await;
         let mut indexer = Indexer::new(slate, cache);
         let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
-        indexer.transact_tx(tx_key_0, test_schema_tx(), TxOptions::default()).await.unwrap();
+        indexer.transact_tx(tx_key_0, test_schema_tx()).await.unwrap();
         indexer
     }
 
@@ -427,7 +417,7 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // name has entity_id 50 from test_schema_tx
         let name_id: i64 = 50;
@@ -461,7 +451,7 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify EAV entry for entity 100 exists
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -490,7 +480,7 @@ mod tests {
         map.insert("age".to_string(), DataType::Long(30));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await.unwrap();
+        indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Count EAV entries for entity 100 (should be 2: name + age)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -516,7 +506,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
+        indexer.transact_tx(tx_key, tx_ops).await?;
 
         let basis = get_basis_for_tx(slate.clone(), 42).await;
         assert!(basis.is_some(), "Should find basis for tx_id 42");
@@ -548,7 +538,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
+            indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
         let basis0 = get_basis_for_tx(slate.clone(), 1).await.unwrap();
@@ -571,7 +561,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(Document(map))];
-        indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
+        indexer.transact_tx(tx_key, tx_ops).await?;
 
         // await_tx should return immediately
         let start = std::time::Instant::now();
@@ -610,7 +600,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("bob".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            guard.transact_tx(tx_key_1, tx_ops, TxOptions::default()).await?;
+            guard.transact_tx(tx_key_1, tx_ops).await?;
         }
 
         // Wait task should complete successfully
@@ -654,7 +644,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            indexer.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
+            indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
         // Waiting for tx 1 should return immediately
@@ -697,7 +687,7 @@ mod tests {
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("shared".to_string()));
             let tx_ops = vec![TxOp::Put(Document(map))];
-            guard.transact_tx(tx_key, tx_ops, TxOptions::default()).await?;
+            guard.transact_tx(tx_key, tx_ops).await?;
         }
 
         // All waiters should complete
