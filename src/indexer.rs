@@ -271,44 +271,6 @@ impl Indexer {
             }
         }
     }
-
-    /// Like [`await_tx`](Self::await_tx) but takes only a `tx_id`.
-    ///
-    /// This avoids constructing a fake `TxKey` when the caller only has a
-    /// transaction ID (e.g. the `BasisForTx` server handler).
-    pub fn await_tx_id(&self, tx_id: i64) -> impl std::future::Future<Output = Result<u64, Error>> + 'static {
-        let latest_tx = self.latest_indexed_tx;
-        let mut rx = self.tx_completion_sender.subscribe();
-
-        async move {
-            // Fast path: Check if already indexed
-            if let Some((latest_key, seq_num)) = latest_tx {
-                if tx_id <= latest_key.tx_id {
-                    return Ok(seq_num);
-                }
-            }
-
-            // Wait for matching or later transaction
-            loop {
-                match rx.recv().await {
-                    Ok((completed_tx_key, seq_num)) => {
-                        if completed_tx_key.tx_id >= tx_id {
-                            return Ok(seq_num);
-                        }
-                    },
-                    Err(broadcast::error::RecvError::Lagged(_count)) => {
-                        continue;
-                    },
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(anyhow::anyhow!(
-                            "Indexer shutdown while waiting for tx {}",
-                            tx_id
-                        ));
-                    }
-                }
-            }
-        }
-    }
 }
 
 

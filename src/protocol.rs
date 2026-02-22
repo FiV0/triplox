@@ -579,6 +579,9 @@ impl<'a> Cursor<'a> {
 
     fn read_string_map(&mut self) -> Result<BTreeMap<String, String>> {
         let count = self.read_u32()? as usize;
+        if count > self.remaining() {
+            bail!("String map count {} exceeds remaining bytes {}", count, self.remaining());
+        }
         let mut map = BTreeMap::new();
         for _ in 0..count {
             let k = self.read_string()?;
