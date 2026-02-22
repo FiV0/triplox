@@ -281,8 +281,8 @@ async fn handle_connection<L: TxLog + 'static>(
                 return Ok(());
             }
 
-            FrontendMessage::OpenDb { basis_tx_id } => {
-                match handle_open_db(&node, &db_cache, &mut conn_state, basis_tx_id).await {
+            FrontendMessage::OpenDb { basis_tx_id, basis_system_time, basis_seq_num } => {
+                match handle_open_db(&node, &db_cache, &mut conn_state, basis_tx_id, basis_system_time, basis_seq_num).await {
                     Ok((db_id, tx_id)) => {
                         write_backend_message(
                             &mut writer,
@@ -512,9 +512,11 @@ async fn handle_open_db<L: TxLog + 'static>(
     db_cache: &DbCache,
     conn_state: &mut ConnectionState,
     basis_tx_id: Option<i64>,
+    basis_system_time: Option<i64>,
+    basis_seq_num: Option<u64>,
 ) -> Result<(u32, i64)> {
-    let (arc_db, tx_id) = match basis_tx_id {
-        None => {
+    let (arc_db, tx_id) = match (basis_tx_id, basis_system_time, basis_seq_num) {
+        (None, None, None) => {
             // Latest snapshot — not cacheable because each call may see a different point.
             // TODO(triplox-bct): determine tx_id from the DB snapshot for proper cache sharing
             let tx_id = -(conn_state.next_db_id as i64); // unique negative sentinel
@@ -522,12 +524,13 @@ async fn handle_open_db<L: TxLog + 'static>(
             let arc_db = db_cache.acquire(tx_id, || async move { node.db().await }).await?;
             (arc_db, tx_id)
         }
-        Some(tid) => {
+        (Some(tid), Some(st), Some(seq)) => {
+            let system_time = crate::protocol::micros_to_datetime(st)?;
             let tx_key = crate::transaction::TxKey {
                 tx_id: tid,
-                system_time: chrono::Utc::now(), // placeholder, basis_for_tx only uses tx_id
+                system_time,
             };
-            let basis = node.basis_for_tx(tx_key).await?;
+            let basis = Basis { tx_key, seq_num: seq };
             let tx_id = basis.tx_key.tx_id;
             let node = node.clone();
             let arc_db = db_cache.acquire(tx_id, || async move {
@@ -535,6 +538,7 @@ async fn handle_open_db<L: TxLog + 'static>(
             }).await?;
             (arc_db, tx_id)
         }
+        _ => bail!("OpenDb requires all three basis fields or none"),
     };
 
     let db_id = conn_state.allocate_handle(tx_id, arc_db);

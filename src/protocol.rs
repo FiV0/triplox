@@ -184,6 +184,8 @@ pub enum FrontendMessage {
     },
     OpenDb {
         basis_tx_id: Option<i64>,
+        basis_system_time: Option<i64>,
+        basis_seq_num: Option<u64>,
     },
     CloseDb {
         db_id: u32,
@@ -327,6 +329,16 @@ fn encode_option_i64(buf: &mut Vec<u8>, opt: &Option<i64>) {
         Some(v) => {
             buf.push(0x01);
             encode_i64(buf, *v);
+        }
+    }
+}
+
+fn encode_option_u64(buf: &mut Vec<u8>, opt: &Option<u64>) {
+    match opt {
+        None => buf.push(0x00),
+        Some(v) => {
+            buf.push(0x01);
+            encode_u64(buf, *v);
         }
     }
 }
@@ -552,6 +564,15 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    fn read_option_u64(&mut self) -> Result<Option<u64>> {
+        let tag = self.read_u8()?;
+        match tag {
+            0x00 => Ok(None),
+            0x01 => Ok(Some(self.read_u64()?)),
+            _ => bail!("Invalid option tag: 0x{:02x}", tag),
+        }
+    }
+
     fn read_option_string(&mut self) -> Result<Option<String>> {
         let tag = self.read_u8()?;
         match tag {
@@ -691,8 +712,10 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
             encode_u16(buf, *version_minor);
             encode_string_map(buf, params);
         }
-        FrontendMessage::OpenDb { basis_tx_id } => {
+        FrontendMessage::OpenDb { basis_tx_id, basis_system_time, basis_seq_num } => {
             encode_option_i64(buf, basis_tx_id);
+            encode_option_i64(buf, basis_system_time);
+            encode_option_u64(buf, basis_seq_num);
         }
         FrontendMessage::CloseDb { db_id } => {
             encode_u32(buf, *db_id);
@@ -806,6 +829,8 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
     match msg_type {
         MSG_OPEN_DB => Ok(FrontendMessage::OpenDb {
             basis_tx_id: cursor.read_option_i64()?,
+            basis_system_time: cursor.read_option_i64()?,
+            basis_seq_num: cursor.read_option_u64()?,
         }),
         MSG_CLOSE_DB => Ok(FrontendMessage::CloseDb {
             db_id: cursor.read_u32()?,
@@ -1271,11 +1296,15 @@ mod tests {
     async fn test_open_db_roundtrip() {
         let msg = FrontendMessage::OpenDb {
             basis_tx_id: Some(42),
+            basis_system_time: Some(1700000000000000),
+            basis_seq_num: Some(7),
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
 
         let msg = FrontendMessage::OpenDb {
             basis_tx_id: None,
+            basis_system_time: None,
+            basis_seq_num: None,
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }

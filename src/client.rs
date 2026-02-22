@@ -8,7 +8,6 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use anyhow::{bail, Error, Result};
-use chrono::TimeZone;
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -76,11 +75,19 @@ impl ClientNode {
         })
     }
 
-    async fn open_db(&self, basis_tx_id: Option<i64>) -> Result<ClientDb> {
+    async fn open_db(&self, basis: Option<Basis>) -> Result<ClientDb> {
         let mut conn = self.conn.lock().await;
+        let (basis_tx_id, basis_system_time, basis_seq_num) = match &basis {
+            None => (None, None, None),
+            Some(b) => (
+                Some(b.tx_key.tx_id),
+                Some(b.tx_key.system_time.timestamp_micros()),
+                Some(b.seq_num),
+            ),
+        };
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::OpenDb { basis_tx_id },
+            &FrontendMessage::OpenDb { basis_tx_id, basis_system_time, basis_seq_num },
         )
         .await?;
         conn.writer.flush().await?;
@@ -212,7 +219,7 @@ impl QueryNode for ClientNode {
     }
 
     async fn db_with_basis(&self, basis: Basis) -> Result<ClientDb, Error> {
-        self.open_db(Some(basis.tx_key.tx_id)).await
+        self.open_db(Some(basis)).await
     }
 }
 
