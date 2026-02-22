@@ -634,7 +634,7 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
 
 fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
     let count = cursor.read_u32()? as usize;
-    let mut vec = Vec::with_capacity(count);
+    let mut vec = Vec::with_capacity(count.min(cursor.remaining()));
     for _ in 0..count {
         vec.push(decode_data_type(cursor)?);
     }
@@ -684,7 +684,7 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
 
 fn decode_tx_ops(cursor: &mut Cursor) -> Result<Vec<TxOp>> {
     let count = cursor.read_u32()? as usize;
-    let mut ops = Vec::with_capacity(count);
+    let mut ops = Vec::with_capacity(count.min(cursor.remaining()));
     for _ in 0..count {
         ops.push(decode_tx_op(cursor)?);
     }
@@ -871,7 +871,7 @@ fn decode_backend_payload(
         }),
         MSG_ROW_DESCRIPTION => {
             let count = cursor.read_u32()? as usize;
-            let mut columns = Vec::with_capacity(count);
+            let mut columns = Vec::with_capacity(count.min(cursor.remaining()));
             for _ in 0..count {
                 columns.push(ColumnDescription {
                     name: cursor.read_string()?,

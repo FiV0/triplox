@@ -135,6 +135,15 @@ impl<L: TxLog> Node<L> {
             .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_key.tx_id))
     }
 
+    /// Like [`basis_for_tx`](Self::basis_for_tx) but takes only a `tx_id`,
+    /// avoiding the need to construct a `TxKey` with a placeholder system_time.
+    pub async fn basis_for_tx_id(&self, tx_id: i64) -> Result<Basis, Error> {
+        self.indexer.read().await.await_tx_id(tx_id).await?;
+        crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_id))
+    }
+
     pub async fn close(self) {
         self.subscription.cancel();
         self.slatedb.close().await.unwrap();

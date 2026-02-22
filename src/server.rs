@@ -52,6 +52,24 @@ impl DbCache {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<DB>>,
     {
+        // Fast path: cache hit under read lock
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(&tx_id) {
+                entry.refcount += 1;
+                return Ok(entry.db.clone());
+            }
+            if entries.len() >= self.max_open {
+                bail!("Too many open DB snapshots (max {})", self.max_open);
+            }
+            // Drop the lock before the potentially expensive create()
+        }
+
+        let db = create().await?;
+        let arc_db = Arc::new(db);
+
+        // Re-acquire the lock to insert. Another caller may have raced us
+        // for the same tx_id — if so, use their entry and drop ours.
         let mut entries = self.entries.write().await;
         if let Some(entry) = entries.get_mut(&tx_id) {
             entry.refcount += 1;
@@ -60,8 +78,6 @@ impl DbCache {
         if entries.len() >= self.max_open {
             bail!("Too many open DB snapshots (max {})", self.max_open);
         }
-        let db = create().await?;
-        let arc_db = Arc::new(db);
         entries.insert(
             tx_id,
             DbCacheEntry {
@@ -454,11 +470,13 @@ async fn handle_open_db<L: TxLog + 'static>(
 ) -> Result<(u32, i64)> {
     let (arc_db, tx_id) = match (basis_tx_id, basis_system_time, basis_seq_num) {
         (None, None, None) => {
-            // Latest snapshot — not cacheable because each call may see a different point.
-            // TODO(triplox-bct): determine tx_id from the DB snapshot for proper cache sharing
+            // Latest snapshot — not cacheable because each call may see a different
+            // point-in-time. We bypass the cache entirely and use a unique negative
+            // sentinel as the tx_id for ConnectionState bookkeeping. release() is a
+            // no-op for tx_ids not present in the cache.
             let tx_id = -(conn_state.next_db_id as i64); // unique negative sentinel
-            let node = node.clone();
-            let arc_db = db_cache.acquire(tx_id, || async move { node.db().await }).await?;
+            let db = node.db().await?;
+            let arc_db = Arc::new(db);
             (arc_db, tx_id)
         }
         (Some(tid), Some(st), Some(seq)) => {
@@ -513,11 +531,7 @@ async fn handle_basis_for_tx<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     tx_id: i64,
 ) -> Result<BackendMessage> {
-    let tx_key = crate::transaction::TxKey {
-        tx_id,
-        system_time: chrono::Utc::now(), // placeholder, basis_for_tx only uses tx_id
-    };
-    let basis = node.basis_for_tx(tx_key).await?;
+    let basis = node.basis_for_tx_id(tx_id).await?;
     Ok(BackendMessage::BasisResult {
         tx_id: basis.tx_key.tx_id,
         system_time: basis.tx_key.system_time.timestamp_micros(),
