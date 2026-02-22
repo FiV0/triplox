@@ -47,6 +47,8 @@ impl DbCache {
 
     /// Get or create a DB snapshot for the given tx_id.
     /// The `create` future is only evaluated on cache miss.
+    // TODO(triplox-d2q): the write lock is held across create().await (disk I/O),
+    // blocking all other acquire/release calls across every connection.
     async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
     where
         F: FnOnce() -> Fut,
