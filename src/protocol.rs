@@ -635,7 +635,10 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
 
 fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
     let count = cursor.read_u32()? as usize;
-    let mut vec = Vec::with_capacity(count.min(cursor.remaining()));
+    if count > cursor.remaining() {
+        bail!("Vec<DataType> count {} exceeds remaining bytes {}", count, cursor.remaining());
+    }
+    let mut vec = Vec::with_capacity(count);
     for _ in 0..count {
         vec.push(decode_data_type(cursor)?);
     }
@@ -644,6 +647,9 @@ fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
 
 fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType>> {
     let count = cursor.read_u32()? as usize;
+    if count > cursor.remaining() {
+        bail!("Map count {} exceeds remaining bytes {}", count, cursor.remaining());
+    }
     let mut map = BTreeMap::new();
     for _ in 0..count {
         let k = cursor.read_string()?;
@@ -685,7 +691,10 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
 
 fn decode_tx_ops(cursor: &mut Cursor) -> Result<Vec<TxOp>> {
     let count = cursor.read_u32()? as usize;
-    let mut ops = Vec::with_capacity(count.min(cursor.remaining()));
+    if count > cursor.remaining() {
+        bail!("Vec<TxOp> count {} exceeds remaining bytes {}", count, cursor.remaining());
+    }
+    let mut ops = Vec::with_capacity(count);
     for _ in 0..count {
         ops.push(decode_tx_op(cursor)?);
     }
@@ -874,7 +883,10 @@ fn decode_backend_payload(
         }),
         MSG_ROW_DESCRIPTION => {
             let count = cursor.read_u32()? as usize;
-            let mut columns = Vec::with_capacity(count.min(cursor.remaining()));
+            if count > cursor.remaining() {
+                bail!("RowDescription column count {} exceeds remaining bytes {}", count, cursor.remaining());
+            }
+            let mut columns = Vec::with_capacity(count);
             for _ in 0..count {
                 columns.push(ColumnDescription {
                     name: cursor.read_string()?,
