@@ -748,6 +748,7 @@ mod tests {
         // basis_for_tx should return the seq_num corresponding to the specific tx,
         // not the latest indexed tx's seq_num.
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         // Tx1: entity 1 with name "alice"
         let mut doc1 = BTreeMap::new();
