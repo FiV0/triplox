@@ -55,7 +55,7 @@ impl DB {
     /// Construct a DB from a snapshot by scanning TX_TO_SEQ keys to find the latest basis.
     pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
         let basis = crate::indexer::latest_basis_from_snapshot(&snapshot)
-            .await
+            .await?
             .ok_or_else(|| anyhow::anyhow!("No indexed transactions in snapshot"))?;
         Ok(Self { snapshot, attribute_map, handle, basis })
     }

@@ -474,9 +474,11 @@ async fn handle_open_db<L: TxLog + 'static>(
 ) -> Result<(u32, i64)> {
     let (arc_db, tx_id) = match (basis_tx_id, basis_system_time, basis_seq_num) {
         (None, None, None) => {
+            // TODO: on cache hit, `db` is created and immediately dropped.
+            // Consider a DbCache::get_or_insert API to avoid the waste.
             let db = node.db().await?;
             let tx_id = db.basis().tx_key.tx_id;
-            let arc_db = Arc::new(db);
+            let arc_db = db_cache.acquire(tx_id, || async move { Ok(db) }).await?;
             (arc_db, tx_id)
         }
         (Some(tid), Some(st), Some(seq)) => {
