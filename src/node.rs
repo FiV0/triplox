@@ -40,6 +40,7 @@ pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
     attribute_map: HashMap<String, i64>,
     handle: Handle,
+    basis: Basis,
 }
 
 #[allow(unused)]
@@ -47,8 +48,20 @@ pub struct Eid {}
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Self {
-        Self { snapshot, attribute_map, handle }
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, basis: Basis) -> Self {
+        Self { snapshot, attribute_map, handle, basis }
+    }
+
+    /// Construct a DB from a snapshot by scanning TX_TO_SEQ keys to find the latest basis.
+    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
+        let basis = crate::indexer::latest_basis_from_snapshot(&snapshot)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No indexed transactions in snapshot"))?;
+        Ok(Self { snapshot, attribute_map, handle, basis })
+    }
+
+    pub fn basis(&self) -> &Basis {
+        &self.basis
     }
 
     pub fn entity(&self, _eid: Eid) {
@@ -166,13 +179,13 @@ impl<L: TxLog> QueryNode for Node<L> {
         let snapshot = self.slatedb.snapshot().await?;
         let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
-        Ok(DB::new(snapshot, attribute_map, handle))
+        DB::from_latest_snapshot(snapshot, attribute_map, handle).await
     }
     async fn db_with_basis(&self, basis: Basis) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await?;
         let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
-        Ok(DB::new(snapshot, attribute_map, handle))
+        Ok(DB::new(snapshot, attribute_map, handle, basis))
     }
 }
 

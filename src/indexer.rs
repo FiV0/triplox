@@ -18,7 +18,7 @@ use crate::codec;
 use crate::schema::SchemaCache;
 use crate::transaction::{Basis, TxKey};
 use crate::ops::DataType;
-use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
@@ -149,6 +149,29 @@ struct TxMeta {
 
 fn tx_to_seq_key(tx_id: i64) -> Vec<u8> {
     concat_bytes(&[&[codec::TX_TO_SEQ], &bincode::serialize(&tx_id).unwrap()])
+}
+
+/// Scan all TX_TO_SEQ keys in a snapshot and return the Basis for the highest tx_id.
+/// Returns None if the snapshot contains no TX_TO_SEQ entries.
+///
+/// TODO(triplox-1vr): Switch tx_to_seq_key() to big-endian encoding (tx_id.to_be_bytes())
+/// so byte order matches numeric order, enabling a reverse iterator for O(1) lookup
+/// instead of this full scan. Breaking change — requires migration or flag day.
+pub async fn latest_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Option<Basis> {
+    let mut iter = snapshot.scan_prefix_with_options(&[codec::TX_TO_SEQ], &DEFAULT_SCAN_OPTIONS).await.ok()?;
+    let mut latest: Option<(i64, TxMeta)> = None;
+    while let Some(kv) = iter.next().await.ok()? {
+        let tx_id: i64 = bincode::deserialize(&kv.key[1..]).ok()?;
+        let meta: TxMeta = bincode::deserialize(&kv.value).ok()?;
+        if latest.as_ref().map_or(true, |(best_id, _)| tx_id > *best_id) {
+            latest = Some((tx_id, meta));
+        }
+    }
+    let (tx_id, meta) = latest?;
+    Some(Basis {
+        tx_key: TxKey { tx_id, system_time: meta.system_time },
+        seq_num: meta.seq_num,
+    })
 }
 
 /// Look up the Basis for a given tx_id from SlateDB.

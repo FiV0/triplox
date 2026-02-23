@@ -474,11 +474,8 @@ async fn handle_open_db<L: TxLog + 'static>(
 ) -> Result<(u32, i64)> {
     let (arc_db, tx_id) = match (basis_tx_id, basis_system_time, basis_seq_num) {
         (None, None, None) => {
-            // Latest snapshot — bypass the cache since each call may see a different
-            // point-in-time and the negative sentinel tx_id is never shared.
-            // TODO(triplox-ytr): once DB carries its Basis, use the real tx_id as cache key
-            let tx_id = -(conn_state.next_db_id as i64); // unique negative sentinel
             let db = node.db().await?;
+            let tx_id = db.basis().tx_key.tx_id;
             let arc_db = Arc::new(db);
             (arc_db, tx_id)
         }
