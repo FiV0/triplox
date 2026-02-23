@@ -309,14 +309,18 @@ fn encode_f64(buf: &mut Vec<u8>, v: f64) {
     buf.extend_from_slice(&v.to_be_bytes());
 }
 
-/// Panics if `s` exceeds `u32::MAX` bytes — impossible under the 64 MB message-size limit.
+/// # Panics
+/// Panics if `s` exceeds `u32::MAX` bytes. This is unreachable in practice
+/// because `write_frontend_message`/`write_backend_message` enforce a 64 MB
+/// message-size limit before encoding, which is well below `u32::MAX` (~4 GB).
 fn encode_string(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
     encode_u32(buf, u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"));
     buf.extend_from_slice(bytes);
 }
 
-/// Panics if `b` exceeds `u32::MAX` bytes — impossible under the 64 MB message-size limit.
+/// # Panics
+/// Panics if `b` exceeds `u32::MAX` bytes. Unreachable — see [`encode_string`].
 fn encode_bytes(buf: &mut Vec<u8>, b: &[u8]) {
     encode_u32(buf, u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"));
     buf.extend_from_slice(b);

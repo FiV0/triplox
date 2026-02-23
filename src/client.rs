@@ -97,9 +97,7 @@ impl ClientNode {
         let (db_id, tx_id) = match msg {
             BackendMessage::DbOpened { db_id, tx_id } => (db_id, tx_id),
             BackendMessage::ErrorResponse { message, .. } => {
-                // Consume the ReadyForQuery that follows
-                let _ =
-                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                 bail!("Failed to open DB: {}", message);
             }
             other => bail!("Expected DbOpened, got {:?}", other),
@@ -149,8 +147,7 @@ impl SubmitNode for ClientNode {
             }
             BackendMessage::ErrorResponse { message, .. } => {
                 // TODO: fatal errors may not be followed by ReadyForQuery
-                let _ =
-                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                 bail!("Transaction error: {}", message);
             }
             other => bail!("Expected TxKey, got {:?}", other),
@@ -199,8 +196,7 @@ impl SubmitNode for ClientNode {
             }
             BackendMessage::ErrorResponse { message, .. } => {
                 // TODO: fatal errors may not be followed by ReadyForQuery
-                let _ =
-                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                 bail!("Transaction error: {}", message);
             }
             other => bail!("Expected TxResult, got {:?}", other),
@@ -298,12 +294,7 @@ impl ClientDb {
                 Ok(rows)
             }
             BackendMessage::ErrorResponse { message, .. } => {
-                // Expect ReadyForQuery after error
-                let _ = read_backend_message(
-                    &mut conn.reader,
-                    DEFAULT_MAX_MESSAGE_SIZE,
-                )
-                .await;
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                 bail!("Query error: {}", message);
             }
             other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
@@ -327,8 +318,7 @@ impl ClientDb {
         match msg {
             BackendMessage::DbClosed { .. } => {}
             BackendMessage::ErrorResponse { message, .. } => {
-                let _ =
-                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                 bail!("Failed to close DB: {}", message);
             }
             other => bail!("Expected DbClosed, got {:?}", other),
