@@ -148,6 +148,9 @@ impl SubmitNode for ClientNode {
                 TxKey { tx_id, system_time: dt }
             }
             BackendMessage::ErrorResponse { message, .. } => {
+                // TODO: fatal errors may not be followed by ReadyForQuery
+                let _ =
+                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
                 bail!("Transaction error: {}", message);
             }
             other => bail!("Expected TxKey, got {:?}", other),
@@ -195,6 +198,9 @@ impl SubmitNode for ClientNode {
                 }
             }
             BackendMessage::ErrorResponse { message, .. } => {
+                // TODO: fatal errors may not be followed by ReadyForQuery
+                let _ =
+                    read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await;
                 bail!("Transaction error: {}", message);
             }
             other => bail!("Expected TxResult, got {:?}", other),
