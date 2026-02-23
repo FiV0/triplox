@@ -12,7 +12,7 @@ use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::log::TxLog;
 use crate::node::{Basis, Database, Node, QueryNode, SubmitNode, TransactionResult, DB};
@@ -64,6 +64,8 @@ impl DbCache {
             if entries.len() >= self.max_open {
                 bail!("Too many open DB snapshots (max {})", self.max_open);
             }
+            // TODO(triplox-dbt): reserve a slot here so concurrent callers don't
+            // all pass the max_open check, create DBs, then throw most away.
             // Drop the lock before the potentially expensive create()
         }
 

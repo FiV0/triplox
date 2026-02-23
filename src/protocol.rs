@@ -1002,10 +1002,16 @@ pub async fn write_frontend_message<W: AsyncWrite + Unpin>(
     let mut payload = Vec::new();
     encode_frontend_payload(&mut payload, msg);
 
+    let payload_len = payload.len() + 4;
+    let length = u32::try_from(payload_len)
+        .map_err(|_| anyhow!("message payload too large: {} bytes", payload.len()))?;
+    if length > DEFAULT_MAX_MESSAGE_SIZE + 4 {
+        bail!("message payload exceeds max size: {} bytes", payload.len());
+    }
+
     match msg {
         FrontendMessage::Startup { .. } => {
             // Startup: no type byte, just [length][payload]
-            let length = (payload.len() + 4) as u32;
             writer.write_u32(length).await?;
             writer.write_all(&payload).await?;
         }
@@ -1021,7 +1027,6 @@ pub async fn write_frontend_message<W: AsyncWrite + Unpin>(
                 FrontendMessage::Terminate => MSG_TERMINATE,
                 FrontendMessage::Startup { .. } => unreachable!(),
             };
-            let length = (payload.len() + 4) as u32;
             writer.write_u8(type_byte).await?;
             writer.write_u32(length).await?;
             writer.write_all(&payload).await?;
@@ -1061,6 +1066,13 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
     let mut payload = Vec::new();
     encode_backend_payload(&mut payload, msg);
 
+    let payload_len = payload.len() + 4;
+    let length = u32::try_from(payload_len)
+        .map_err(|_| anyhow!("message payload too large: {} bytes", payload.len()))?;
+    if length > DEFAULT_MAX_MESSAGE_SIZE + 4 {
+        bail!("message payload exceeds max size: {} bytes", payload.len());
+    }
+
     let type_byte = match msg {
         BackendMessage::AuthenticationOk { .. } => MSG_AUTHENTICATION_OK,
         BackendMessage::DbOpened { .. } => MSG_DB_OPENED,
@@ -1078,7 +1090,6 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
         BackendMessage::ErrorResponse { .. } => MSG_ERROR_RESPONSE,
     };
 
-    let length = (payload.len() + 4) as u32;
     writer.write_u8(type_byte).await?;
     writer.write_u32(length).await?;
     writer.write_all(&payload).await?;
