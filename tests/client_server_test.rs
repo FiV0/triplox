@@ -216,3 +216,34 @@ async fn test_db_with_basis() {
     client.close().await.unwrap();
     token.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_basis_for_tx_after_submit() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+
+    // Fire-and-forget submit
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("name".to_string(), DataType::String("alice".to_string()));
+    let tx_key = client.submit_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+
+    // Look up the full basis (server waits for indexing)
+    let basis = client.basis_for_tx(tx_key.clone()).await.unwrap();
+    assert_eq!(basis.tx_key.tx_id, tx_key.tx_id);
+    assert_eq!(basis.tx_key.system_time, tx_key.system_time);
+    assert!(basis.seq_num > 0, "seq_num should be positive after indexing");
+
+    // The basis should be usable to pin a DB snapshot
+    let db = client.db_with_basis(basis).await.unwrap();
+    let result = db
+        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}

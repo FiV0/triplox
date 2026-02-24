@@ -117,6 +117,46 @@ impl ClientNode {
         })
     }
 
+    /// Look up the full Basis for a previously submitted transaction.
+    /// The server waits until the transaction has been indexed before responding.
+    pub async fn basis_for_tx(&self, tx_key: TxKey) -> Result<Basis> {
+        let mut conn = self.conn.lock().await;
+        write_frontend_message(
+            &mut conn.writer,
+            &FrontendMessage::BasisForTx {
+                tx_id: tx_key.tx_id,
+                system_time: tx_key.system_time.timestamp_micros(),
+            },
+        )
+        .await?;
+        conn.writer.flush().await?;
+
+        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+        let basis = match msg {
+            BackendMessage::BasisResult { tx_id, system_time, seq_num } => {
+                let dt = crate::protocol::micros_to_datetime(system_time)?;
+                Basis {
+                    tx_key: TxKey { tx_id, system_time: dt },
+                    seq_num,
+                }
+            }
+            BackendMessage::ErrorResponse { message, .. } => {
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+                bail!("BasisForTx error: {}", message);
+            }
+            other => bail!("Expected BasisResult, got {:?}", other),
+        };
+
+        // Expect ReadyForQuery
+        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+        match msg {
+            BackendMessage::ReadyForQuery { .. } => {}
+            other => bail!("Expected ReadyForQuery, got {:?}", other),
+        }
+
+        Ok(basis)
+    }
+
     /// Gracefully close the connection.
     pub async fn close(&self) -> Result<()> {
         let mut conn = self.conn.lock().await;
