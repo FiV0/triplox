@@ -57,7 +57,6 @@ pub const MSG_DB_OPENED: u8 = b'H';
 pub const MSG_DB_CLOSED: u8 = b'J';
 pub const MSG_ROW_DESCRIPTION: u8 = b'T';
 pub const MSG_DATA_ROW: u8 = b'D';
-pub const MSG_COMMAND_COMPLETE: u8 = b'C';
 pub const MSG_DATA_BATCH_COMPLETE: u8 = b'B';
 pub const MSG_READY_FOR_QUERY: u8 = b'Z';
 pub const MSG_TX_KEY: u8 = b'Y';
@@ -231,10 +230,6 @@ pub enum BackendMessage {
     },
     DataRow {
         values: Vec<DataType>,
-    },
-    CommandComplete {
-        tag: String,
-        row_count: u64,
     },
     DataBatchComplete {
         tx_id: i64,
@@ -783,10 +778,6 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
         BackendMessage::DataRow { values } => {
             encode_data_type_vec(buf, values);
         }
-        BackendMessage::CommandComplete { tag, row_count } => {
-            encode_string(buf, tag);
-            encode_u64(buf, *row_count);
-        }
         BackendMessage::DataBatchComplete { tx_id } => {
             encode_i64(buf, *tx_id);
         }
@@ -906,10 +897,6 @@ fn decode_backend_payload(
             let values = decode_data_type_vec(cursor)?;
             Ok(BackendMessage::DataRow { values })
         }
-        MSG_COMMAND_COMPLETE => Ok(BackendMessage::CommandComplete {
-            tag: cursor.read_string()?,
-            row_count: cursor.read_u64()?,
-        }),
         MSG_DATA_BATCH_COMPLETE => Ok(BackendMessage::DataBatchComplete {
             tx_id: cursor.read_i64()?,
         }),
@@ -1083,7 +1070,6 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
         BackendMessage::DbClosed { .. } => MSG_DB_CLOSED,
         BackendMessage::RowDescription { .. } => MSG_ROW_DESCRIPTION,
         BackendMessage::DataRow { .. } => MSG_DATA_ROW,
-        BackendMessage::CommandComplete { .. } => MSG_COMMAND_COMPLETE,
         BackendMessage::DataBatchComplete { .. } => MSG_DATA_BATCH_COMPLETE,
         BackendMessage::ReadyForQuery { .. } => MSG_READY_FOR_QUERY,
         BackendMessage::TxKey { .. } => MSG_TX_KEY,
@@ -1453,15 +1439,6 @@ mod tests {
                 DataType::Long(1),
                 DataType::String("alice".to_string()),
             ],
-        };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
-    }
-
-    #[tokio::test]
-    async fn test_command_complete_roundtrip() {
-        let msg = BackendMessage::CommandComplete {
-            tag: "SELECT".to_string(),
-            row_count: 42,
         };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }

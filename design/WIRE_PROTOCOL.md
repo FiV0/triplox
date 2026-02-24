@@ -66,7 +66,6 @@ The server checks the version:
 | `J` (0x4A) | DbClosed            | DB snapshot released                     |
 | `T` (0x54) | RowDescription      | Result schema (column names and types)   |
 | `D` (0x44) | DataRow             | One row of result data                   |
-| `C` (0x43) | CommandComplete     | Query finished                           |
 | `B` (0x42) | DataBatchComplete   | Subscription batch boundary              |
 | `Z` (0x5A) | ReadyForQuery       | Server is ready for the next request     |
 | `Y` (0x59) | TxKey               | Transaction submitted (fire-and-forget)  |
@@ -145,7 +144,7 @@ Sent when the server is ready for the next client request. Acts as a sync/flush 
 |--------|------|------------------------------------------------|
 | status | u8   | `I` (0x49) = idle, `S` (0x53) = subscribed    |
 
-Sent after: AuthenticationOk, DbOpened, DbClosed, CommandComplete, TxResult, UnsubscribeComplete, non-fatal ErrorResponse.
+Sent after: AuthenticationOk, DbOpened, DbClosed, DataRow (end of query results), TxKey, TxResult, BasisResult, UnsubscribeComplete, non-fatal ErrorResponse.
 
 ### 4.8 Query (Frontend, `Q`)
 
@@ -190,16 +189,7 @@ One row of result data.
 
 The wire format is the same for queries and subscriptions. In subscription mode, rows have an additional `tpx_diff` column (described in RowDescription) with value `+1` for added rows and `-1` for retracted rows. Updates to existing data are represented as a retraction (`-1`) of the old row followed by an addition (`+1`) of the new row, both within the same transaction batch.
 
-### 4.11 CommandComplete (Backend, `C`)
-
-Signals that a query has finished producing results.
-
-| Field     | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| tag       | String | Command tag, e.g. "SELECT"             |
-| row_count | u64    | Number of DataRow messages sent        |
-
-### 4.12 Execute (Frontend, `E`)
+### 4.11 Execute (Frontend, `E`)
 
 Submit a transaction.
 
@@ -210,7 +200,7 @@ Submit a transaction.
 
 Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 10.7](#107-txop-encoding) for wire encoding.
 
-### 4.13 TxKey (Backend, `Y`)
+### 4.12 TxKey (Backend, `Y`)
 
 Returned for fire-and-forget transactions (Execute with `await_indexing = false`). Maps directly to the `TxKey` type.
 
@@ -219,7 +209,7 @@ Returned for fire-and-forget transactions (Execute with `await_indexing = false`
 | tx_id       | i64     | Transaction ID assigned by the server                   |
 | system_time | Instant | Timestamp of the transaction (microseconds since epoch) |
 
-### 4.14 TxResult (Backend, `G`)
+### 4.13 TxResult (Backend, `G`)
 
 Returned for awaited transactions (Execute with `await_indexing = true`). Maps directly to the `TransactionResult` type.
 
@@ -233,7 +223,7 @@ Returned for awaited transactions (Execute with `await_indexing = true`). Maps d
 
 > **TODO**: TxKey and TxResult will likely be collapsed into a single message once we have a good and unique format for a Basis.
 
-### 4.15 BasisForTx (Frontend, `F`)
+### 4.14 BasisForTx (Frontend, `F`)
 
 Look up the `Basis` (tx_key + seq_num) for a previously committed transaction. The server waits until the transaction has been indexed before responding.
 
@@ -244,7 +234,7 @@ Look up the `Basis` (tx_key + seq_num) for a previously committed transaction. T
 
 Server responds with `BasisResult` followed by `ReadyForQuery`, or `ErrorResponse` + `ReadyForQuery` if the transaction is unknown.
 
-### 4.16 BasisResult (Backend, `A`)
+### 4.15 BasisResult (Backend, `A`)
 
 Returns the full basis for a transaction.
 
@@ -254,7 +244,7 @@ Returns the full basis for a transaction.
 | system_time | i64  | Timestamp of the transaction (microseconds since epoch) |
 | seq_num     | u64  | Database sequence number                                |
 
-### 4.17 Subscribe (Frontend, `S`)
+### 4.16 Subscribe (Frontend, `S`)
 
 Start a live push subscription. Blocks the connection until cancelled.
 
@@ -273,7 +263,7 @@ On receiving Subscribe, the server:
 
 While subscribed, the only valid client messages are Unsubscribe and Terminate. The server concurrently reads client messages and writes subscription data using asynchronous I/O.
 
-### 4.18 DataBatchComplete (Backend, `B`)
+### 4.17 DataBatchComplete (Backend, `B`)
 
 Marks the end of a batch of DataRow messages produced by a single transaction within a subscription stream.
 
@@ -283,13 +273,13 @@ Marks the end of a batch of DataRow messages produced by a single transaction wi
 
 The server flushes its write buffer after sending DataBatchComplete. Clients use this to group rows by originating transaction.
 
-### 4.19 Unsubscribe (Frontend, `U`)
+### 4.18 Unsubscribe (Frontend, `U`)
 
 Cancel the active subscription.
 
 Payload: empty (length = 4).
 
-### 4.20 UnsubscribeComplete (Backend, `N`)
+### 4.19 UnsubscribeComplete (Backend, `N`)
 
 Confirms the subscription has been torn down.
 
@@ -297,7 +287,7 @@ Payload: empty (length = 4).
 
 Followed by ReadyForQuery with status `I`.
 
-### 4.21 ErrorResponse (Backend, `W`)
+### 4.20 ErrorResponse (Backend, `W`)
 
 | Field    | Type            | Description                                         |
 |----------|-----------------|-----------------------------------------------------|
@@ -311,7 +301,7 @@ Followed by ReadyForQuery with status `I`.
 
 **Non-fatal** errors (e.g. bad query syntax): the server sends ErrorResponse followed by ReadyForQuery, allowing the client to continue. The `severity` byte is `E` (0x45).
 
-### 4.22 Terminate (Frontend, `X`)
+### 4.21 Terminate (Frontend, `X`)
 
 Graceful connection close.
 
@@ -319,7 +309,7 @@ Payload: empty (length = 4).
 
 The server closes the TCP connection after receiving this. No response is sent.
 
-### 4.23 Heartbeat (Backend, `K`)
+### 4.22 Heartbeat (Backend, `K`)
 
 Sent by the server during an active subscription when no data has been sent within the keepalive interval (see [Section 11](#11-connection-keepalive-and-timeouts)). The client MUST silently ignore this message (no response required).
 
@@ -364,7 +354,6 @@ Client                                Server
   |<------------ DataRow -------------|  \
   |<------------ DataRow -------------|   } 0..N rows
   |<------------ DataRow -------------|  /
-  |<------------ CommandComplete -----|
   |<------------ ReadyForQuery('I') --|
   |                                     |
 ```
@@ -452,7 +441,7 @@ Client                                Server
 
 ### Query Results
 
-There is no protocol-level batching for query results. Each DataRow is an individual protocol message. Implementations should use buffered writes (e.g. BufWriter) and flush at sync points: after CommandComplete and ReadyForQuery. This follows the pgwire approach.
+There is no protocol-level batching for query results. Each DataRow is an individual protocol message. Implementations should use buffered writes (e.g. BufWriter) and flush at sync points (after ReadyForQuery).
 
 ### Subscription Results
 
@@ -511,7 +500,7 @@ Subscription uses **in-band** Unsubscribe. The server concurrently reads client 
 |-----------------|----------------------------------------------------|-------------------------------------------------------------|
 | Startup         | Startup                                            | AuthenticationOk + ReadyForQuery, or ErrorResponse + close  |
 | Idle            | OpenDb, CloseDb, Query, Execute, Subscribe, Terminate | --                                                       |
-| QueryInProgress | *(client waits)*                                   | RowDescription, DataRow, CommandComplete, ReadyForQuery     |
+| QueryInProgress | *(client waits)*                                   | RowDescription, DataRow, ReadyForQuery                      |
 | Executing       | *(client waits)*                                   | TxResult, ReadyForQuery                                     |
 | Subscribed      | Unsubscribe, Terminate                             | RowDescription, DataRow, DataBatchComplete, Heartbeat, ErrorResponse |
 | Closed          | *(none)*                                           | *(none)*                                                    |
@@ -728,12 +717,6 @@ data_type : u8          (DataTypeTag from Section 9)
 **DataRow** (`D`):
 ```
 values : Vec<DataType>
-```
-
-**CommandComplete** (`C`):
-```
-tag       : String
-row_count : u64
 ```
 
 **Execute** (`E`):

@@ -298,12 +298,12 @@ impl ClientDb {
         .await?;
         conn.writer.flush().await?;
 
-        // Read response: could be RowDescription + DataRow* + CommandComplete, or ErrorResponse
+        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
         let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
 
         match msg {
             BackendMessage::RowDescription { .. } => {
-                // Collect DataRows until CommandComplete
+                // Collect DataRows until ReadyForQuery
                 let mut rows = Vec::new();
                 loop {
                     let msg = read_backend_message(
@@ -315,20 +315,9 @@ impl ClientDb {
                         BackendMessage::DataRow { values } => {
                             rows.push(values);
                         }
-                        BackendMessage::CommandComplete { .. } => break,
+                        BackendMessage::ReadyForQuery { .. } => break,
                         other => bail!("Unexpected message during query: {:?}", other),
                     }
-                }
-
-                // Expect ReadyForQuery
-                let msg = read_backend_message(
-                    &mut conn.reader,
-                    DEFAULT_MAX_MESSAGE_SIZE,
-                )
-                .await?;
-                match msg {
-                    BackendMessage::ReadyForQuery { .. } => {}
-                    other => bail!("Expected ReadyForQuery, got {:?}", other),
                 }
 
                 Ok(rows)

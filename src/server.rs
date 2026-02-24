@@ -355,7 +355,6 @@ async fn handle_connection<L: TxLog + 'static>(
                         .await?;
 
                         // Send DataRows
-                        let row_count = result.len() as u64;
                         for row in result {
                             write_backend_message(
                                 &mut writer,
@@ -363,16 +362,6 @@ async fn handle_connection<L: TxLog + 'static>(
                             )
                             .await?;
                         }
-
-                        // Send CommandComplete
-                        write_backend_message(
-                            &mut writer,
-                            &BackendMessage::CommandComplete {
-                                tag: "SELECT".to_string(),
-                                row_count,
-                            },
-                        )
-                        .await?;
                     }
                     Err(e) => {
                         write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
