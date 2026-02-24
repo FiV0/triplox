@@ -1,0 +1,7 @@
+[storage]
+type = "local"
+path = "./data"
+
+[server]
+host = "127.0.0.1"
+port = 5490

@@ -18,6 +18,7 @@ serde = { version = "1.0", features = ["derive"] }
 slatedb = { git = "https://github.com/FiV0/slatedb.git", branch = "range-apis" }
 thiserror = "2.0.1"
 time = { version = "0.3.36", features = ["serde"] }
+toml = "0.8"
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"

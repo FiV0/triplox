@@ -10,7 +10,7 @@ mod index;
 mod indexer;
 mod iterator;
 mod log;
-mod logging;
+pub mod logging;
 mod memory_log;
 pub mod ops;
 mod parse;
@@ -23,6 +23,7 @@ mod slate;
 mod transaction;
 mod util;
 
+pub mod config;
 pub mod node;
 pub mod protocol;
 pub mod server;

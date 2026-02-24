@@ -1,0 +1,2 @@
+[alias]
+dev = "watch -x 'run -- config/triplox.toml'"

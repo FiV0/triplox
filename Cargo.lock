@@ -2914,6 +2914,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "toml 0.8.19",
  "tracing",
  "tracing-subscriber",
  "triplox",
