@@ -1,0 +1,18 @@
+[package]
+name = "examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+readme = "README.md"
+
+[[bin]]
+name = "simple-example"
+path = "src/simple_example.rs"
+test = false
+bench = false
+
+[dependencies]
+triplox = { path = ".." }
+edn = { path = "../edn" }
+anyhow = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
