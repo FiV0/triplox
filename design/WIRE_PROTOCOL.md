@@ -54,6 +54,7 @@ The server checks the version:
 | `E` (0x45) | Execute     | Submit a transaction            |
 | `S` (0x53) | Subscribe   | Start a live query subscription |
 | `U` (0x55) | Unsubscribe | Cancel the active subscription  |
+| `F` (0x46) | BasisForTx  | Look up basis for a transaction |
 | `X` (0x58) | Terminate   | Close the connection            |
 
 ### Backend Messages (Server to Client)
@@ -65,10 +66,11 @@ The server checks the version:
 | `J` (0x4A) | DbClosed            | DB snapshot released                     |
 | `T` (0x54) | RowDescription      | Result schema (column names and types)   |
 | `D` (0x44) | DataRow             | One row of result data                   |
-| `C` (0x43) | CommandComplete     | Query finished                           |
 | `B` (0x42) | DataBatchComplete   | Subscription batch boundary              |
 | `Z` (0x5A) | ReadyForQuery       | Server is ready for the next request     |
-| `G` (0x47) | TxResult            | Transaction outcome                      |
+| `Y` (0x59) | TxKey               | Transaction submitted (fire-and-forget)  |
+| `G` (0x47) | TxResult            | Transaction outcome (awaited indexing)   |
+| `A` (0x41) | BasisResult         | Basis for a transaction                  |
 | `N` (0x4E) | UnsubscribeComplete | Subscription cancelled                   |
 | `K` (0x4B) | Heartbeat           | Subscription keepalive                   |
 | `W` (0x57) | ErrorResponse       | Error                                    |
@@ -97,11 +99,13 @@ Sent after successful version negotiation.
 
 ### 4.3 OpenDb (Frontend, `O`)
 
-Open a DB snapshot. The server pins a point-in-time database view and returns a handle the client uses for subsequent queries.
+Open a DB snapshot. The server pins a point-in-time database view and returns a handle the client uses for subsequent queries. Either all three basis fields are present (pinned snapshot) or all three are absent (latest indexed).
 
-| Field       | Type          | Description                                          |
-|-------------|---------------|------------------------------------------------------|
-| basis_tx_id | Option\<i64\> | If set, snapshot at this tx; otherwise latest indexed |
+| Field             | Type            | Description                                          |
+|-------------------|-----------------|------------------------------------------------------|
+| basis_tx_id       | Option\<i64\>   | If set, snapshot at this tx; otherwise latest indexed |
+| basis_system_time | Option\<i64\>   | Microseconds since epoch of the tx                   |
+| basis_seq_num     | Option\<u64\>   | Sequence number for the snapshot                     |
 
 ### 4.4 DbOpened (Backend, `H`)
 
@@ -140,7 +144,7 @@ Sent when the server is ready for the next client request. Acts as a sync/flush 
 |--------|------|------------------------------------------------|
 | status | u8   | `I` (0x49) = idle, `S` (0x53) = subscribed    |
 
-Sent after: AuthenticationOk, DbOpened, DbClosed, CommandComplete, TxResult, UnsubscribeComplete, non-fatal ErrorResponse.
+Sent after: AuthenticationOk, DbOpened, DbClosed, DataRow (end of query results), TxKey, TxResult, BasisResult, UnsubscribeComplete, non-fatal ErrorResponse.
 
 ### 4.8 Query (Frontend, `Q`)
 
@@ -173,37 +177,19 @@ Each ColumnDescription:
 | name      | String      | Variable name, e.g. "?name"          |
 | data_type | DataTypeTag | Type discriminant (see section 10)    |
 
-Sent before the first DataRow of a query result or subscription. Describes the data columns only (does not include the `tpx_diff` metadata field used in subscription mode).
+Sent before the first DataRow of a query result or subscription. In subscription mode, the RowDescription includes an extra `tpx_diff` column.
 
 ### 4.10 DataRow (Backend, `D`)
 
-One row of result data. The payload format depends on the connection state:
-
-**Query mode** (in response to a Query message):
+One row of result data.
 
 | Field  | Type             | Description                    |
 |--------|------------------|--------------------------------|
 | values | Vec\<DataType\>  | One value per column           |
 
-**Subscription mode** (while subscribed):
+The wire format is the same for queries and subscriptions. In subscription mode, rows have an additional `tpx_diff` column (described in RowDescription) with value `+1` for added rows and `-1` for retracted rows. Updates to existing data are represented as a retraction (`-1`) of the old row followed by an addition (`+1`) of the new row, both within the same transaction batch.
 
-| Field    | Type             | Description                        |
-|----------|------------------|------------------------------------|
-| tpx_diff | i8              | `+1` = row added, `-1` = row retracted |
-| values   | Vec\<DataType\>  | One value per column               |
-
-In subscription mode, updates to existing data are represented as a retraction (`tpx_diff = -1`) of the old row followed by an addition (`tpx_diff = +1`) of the new row, both within the same transaction batch.
-
-### 4.11 CommandComplete (Backend, `C`)
-
-Signals that a query has finished producing results.
-
-| Field     | Type   | Description                            |
-|-----------|--------|----------------------------------------|
-| tag       | String | Command tag, e.g. "SELECT"             |
-| row_count | u64    | Number of DataRow messages sent        |
-
-### 4.12 Execute (Frontend, `E`)
+### 4.11 Execute (Frontend, `E`)
 
 Submit a transaction.
 
@@ -214,18 +200,51 @@ Submit a transaction.
 
 Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 10.7](#107-txop-encoding) for wire encoding.
 
+### 4.12 TxKey (Backend, `Y`)
+
+Returned for fire-and-forget transactions (Execute with `await_indexing = false`). Maps directly to the `TxKey` type.
+
+| Field       | Type    | Description                                             |
+|-------------|---------|---------------------------------------------------------|
+| tx_id       | i64     | Transaction ID assigned by the server                   |
+| system_time | Instant | Timestamp of the transaction (microseconds since epoch) |
+
 ### 4.13 TxResult (Backend, `G`)
 
-Transaction outcome.
+Returned for awaited transactions (Execute with `await_indexing = true`). Maps directly to the `TransactionResult` type.
 
-| Field         | Type           | Description                              |
-|---------------|----------------|------------------------------------------|
-| status        | u8             | 0 = committed, 1 = aborted              |
-| tx_id         | i64            | Transaction ID assigned by the server    |
-| system_time   | Instant        | Timestamp of the transaction (microseconds since epoch) |
-| error_message | Option\<String\>| Present if status = aborted            |
+| Field         | Type            | Description                                          |
+|---------------|-----------------|------------------------------------------------------|
+| status        | u8              | 0 = committed, 1 = aborted                          |
+| tx_id         | i64             | Transaction ID assigned by the server                |
+| system_time   | Instant         | Timestamp of the transaction (microseconds since epoch) |
+| seq_num       | u64             | Database sequence number (meaningful when status = 0) |
+| error_message | Option\<String\>| Present if status = aborted                          |
 
-### 4.14 Subscribe (Frontend, `S`)
+> **TODO**: TxKey and TxResult will likely be collapsed into a single message once we have a good and unique format for a Basis.
+
+### 4.14 BasisForTx (Frontend, `F`)
+
+Look up the `Basis` (tx_key + seq_num) for a previously committed transaction. The server waits until the transaction has been indexed before responding.
+
+| Field       | Type | Description                                             |
+|-------------|------|---------------------------------------------------------|
+| tx_id       | i64  | Transaction ID to look up                               |
+| system_time | i64  | Timestamp of the transaction (microseconds since epoch) |
+
+Server responds with `BasisResult` followed by `ReadyForQuery`, or `ErrorResponse` + `ReadyForQuery` if the transaction is unknown.
+
+### 4.15 BasisResult (Backend, `A`)
+
+Returns the full basis for a transaction.
+
+| Field       | Type | Description                                             |
+|-------------|------|---------------------------------------------------------|
+| tx_id       | i64  | Transaction ID                                          |
+| system_time | i64  | Timestamp of the transaction (microseconds since epoch) |
+| seq_num     | u64  | Database sequence number                                |
+
+### 4.16 Subscribe (Frontend, `S`)
 
 Start a live push subscription. Blocks the connection until cancelled.
 
@@ -244,7 +263,7 @@ On receiving Subscribe, the server:
 
 While subscribed, the only valid client messages are Unsubscribe and Terminate. The server concurrently reads client messages and writes subscription data using asynchronous I/O.
 
-### 4.15 DataBatchComplete (Backend, `B`)
+### 4.17 DataBatchComplete (Backend, `B`)
 
 Marks the end of a batch of DataRow messages produced by a single transaction within a subscription stream.
 
@@ -254,13 +273,13 @@ Marks the end of a batch of DataRow messages produced by a single transaction wi
 
 The server flushes its write buffer after sending DataBatchComplete. Clients use this to group rows by originating transaction.
 
-### 4.16 Unsubscribe (Frontend, `U`)
+### 4.18 Unsubscribe (Frontend, `U`)
 
 Cancel the active subscription.
 
 Payload: empty (length = 4).
 
-### 4.17 UnsubscribeComplete (Backend, `N`)
+### 4.19 UnsubscribeComplete (Backend, `N`)
 
 Confirms the subscription has been torn down.
 
@@ -268,7 +287,7 @@ Payload: empty (length = 4).
 
 Followed by ReadyForQuery with status `I`.
 
-### 4.18 ErrorResponse (Backend, `W`)
+### 4.20 ErrorResponse (Backend, `W`)
 
 | Field    | Type            | Description                                         |
 |----------|-----------------|-----------------------------------------------------|
@@ -282,7 +301,7 @@ Followed by ReadyForQuery with status `I`.
 
 **Non-fatal** errors (e.g. bad query syntax): the server sends ErrorResponse followed by ReadyForQuery, allowing the client to continue. The `severity` byte is `E` (0x45).
 
-### 4.19 Terminate (Frontend, `X`)
+### 4.21 Terminate (Frontend, `X`)
 
 Graceful connection close.
 
@@ -290,7 +309,7 @@ Payload: empty (length = 4).
 
 The server closes the TCP connection after receiving this. No response is sent.
 
-### 4.20 Heartbeat (Backend, `K`)
+### 4.22 Heartbeat (Backend, `K`)
 
 Sent by the server during an active subscription when no data has been sent within the keepalive interval (see [Section 11](#11-connection-keepalive-and-timeouts)). The client MUST silently ignore this message (no response required).
 
@@ -335,7 +354,6 @@ Client                                Server
   |<------------ DataRow -------------|  \
   |<------------ DataRow -------------|   } 0..N rows
   |<------------ DataRow -------------|  /
-  |<------------ CommandComplete -----|
   |<------------ ReadyForQuery('I') --|
   |                                     |
 ```
@@ -423,7 +441,7 @@ Client                                Server
 
 ### Query Results
 
-There is no protocol-level batching for query results. Each DataRow is an individual protocol message. Implementations should use buffered writes (e.g. BufWriter) and flush at sync points: after CommandComplete and ReadyForQuery. This follows the pgwire approach.
+There is no protocol-level batching for query results. Each DataRow is an individual protocol message. Implementations should use buffered writes (e.g. BufWriter) and flush at sync points (after ReadyForQuery).
 
 ### Subscription Results
 
@@ -482,7 +500,7 @@ Subscription uses **in-band** Unsubscribe. The server concurrently reads client 
 |-----------------|----------------------------------------------------|-------------------------------------------------------------|
 | Startup         | Startup                                            | AuthenticationOk + ReadyForQuery, or ErrorResponse + close  |
 | Idle            | OpenDb, CloseDb, Query, Execute, Subscribe, Terminate | --                                                       |
-| QueryInProgress | *(client waits)*                                   | RowDescription, DataRow, CommandComplete, ReadyForQuery     |
+| QueryInProgress | *(client waits)*                                   | RowDescription, DataRow, ReadyForQuery                      |
 | Executing       | *(client waits)*                                   | TxResult, ReadyForQuery                                     |
 | Subscribed      | Unsubscribe, Terminate                             | RowDescription, DataRow, DataBatchComplete, Heartbeat, ErrorResponse |
 | Closed          | *(none)*                                           | *(none)*                                                    |
@@ -696,21 +714,9 @@ name      : String
 data_type : u8          (DataTypeTag from Section 9)
 ```
 
-**DataRow** (`D`) — query mode:
+**DataRow** (`D`):
 ```
 values : Vec<DataType>
-```
-
-**DataRow** (`D`) — subscription mode:
-```
-tpx_diff : i8           (+1 or -1)
-values   : Vec<DataType>
-```
-
-**CommandComplete** (`C`):
-```
-tag       : String
-row_count : u64
 ```
 
 **Execute** (`E`):
@@ -719,12 +725,32 @@ ops            : Vec<TxOp>
 await_indexing : bool
 ```
 
+**TxKey** (`Y`):
+```
+tx_id       : i64
+system_time : i64        (microseconds since Unix epoch)
+```
+
 **TxResult** (`G`):
 ```
 status        : u8         (0 = committed, 1 = aborted)
 tx_id         : i64
 system_time   : i64        (microseconds since Unix epoch)
+seq_num       : u64
 error_message : Option<String>
+```
+
+**BasisForTx** (`F`):
+```
+tx_id       : i64
+system_time : i64        (microseconds since Unix epoch)
+```
+
+**BasisResult** (`A`):
+```
+tx_id       : i64
+system_time : i64        (microseconds since Unix epoch)
+seq_num     : u64
 ```
 
 **Subscribe** (`S`):
@@ -771,7 +797,9 @@ hint     : Option<String>
 
 ## 11. Connection Keepalive and Timeouts
 
-Connection liveness is handled at two levels:
+### TCP_NODELAY
+
+Implementations MUST set `TCP_NODELAY` on both client and server sockets. The protocol uses buffered writes with explicit flushes at sync points, so Nagle's algorithm provides no benefit and only adds latency (up to 200ms per round-trip).
 
 ### TCP Keepalive
 

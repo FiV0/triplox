@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct EntityId(pub i64);
 
 impl EntityId {
@@ -17,11 +17,11 @@ impl EntityId {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Attribute(pub String);
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct Value(DataType);
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct Value(pub DataType);
 
 impl Value {
     pub fn new(data: DataType) -> Self {
@@ -140,18 +140,18 @@ impl_from_for_enum!(
     (Map, BTreeMap<String, DataType>)
 );
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Document(pub BTreeMap<String, DataType>);
 
 // either extend this with t and op as options or create another type for running through indices
 // make value optional ?
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Triple {
     pub entity: EntityId,
     pub attribute: Attribute,
     pub value: Value,
 }
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(Document),
     Add(Triple),
