@@ -7,8 +7,14 @@ use tokio_util::sync::CancellationToken;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, Document, TxOp};
+use triplox::schema::test_schema_tx;
 use triplox::server::Server;
 use triplox::{Basis, TransactionResult};
+
+async fn define_test_schema(client: &ClientNode) {
+    let result = client.execute_tx(test_schema_tx()).await.unwrap();
+    assert!(matches!(result, TransactionResult::TxCommited(_)));
+}
 
 /// Start an in-memory server on a free port.
 /// Returns the address string and a cancellation token.
@@ -41,6 +47,7 @@ async fn test_client_connect_and_close() {
 async fn test_execute_tx_and_query() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     // Insert a document
     let mut doc = BTreeMap::new();
@@ -68,6 +75,7 @@ async fn test_execute_tx_and_query() {
 async fn test_submit_tx() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(1));
@@ -83,6 +91,7 @@ async fn test_submit_tx() {
 async fn test_multiple_transactions_and_query() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     // Insert two documents in separate transactions
     let mut doc1 = BTreeMap::new();
@@ -114,6 +123,7 @@ async fn test_multiple_transactions_and_query() {
 async fn test_open_close_multiple_dbs() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     // Insert data
     let mut doc = BTreeMap::new();
@@ -143,6 +153,7 @@ async fn test_two_connections() {
 
     // Connection 1 inserts data
     let client1 = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client1).await;
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(1));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
@@ -164,6 +175,7 @@ async fn test_two_connections() {
 async fn test_execute_tx_returns_basis_with_seq_num() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(1));
@@ -185,6 +197,7 @@ async fn test_execute_tx_returns_basis_with_seq_num() {
 async fn test_db_with_basis() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     // First transaction
     let mut doc1 = BTreeMap::new();
@@ -221,6 +234,7 @@ async fn test_db_with_basis() {
 async fn test_basis_for_tx_after_submit() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
 
     // Fire-and-forget submit
     let mut doc = BTreeMap::new();

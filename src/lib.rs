@@ -15,6 +15,9 @@ mod memory_log;
 pub mod ops;
 mod parse;
 mod query;
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod schema;
+#[cfg(not(any(test, feature = "test-helpers")))]
 mod schema;
 mod slate;
 mod transaction;

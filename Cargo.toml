@@ -25,8 +25,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.11.0", features = ["serde"] }
 fallible-iterator = "0.3.0"
 
+[features]
+test-helpers = []
+
 [dev-dependencies]
 tempfile = "3.14.0"
+triplox = { path = ".", features = ["test-helpers"] }
 
 [lints.rust]
 unused = "allow"

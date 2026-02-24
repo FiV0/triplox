@@ -866,6 +866,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_with_basis_pins_snapshot() {
         let node = Node::memory_node().await;
+        define_test_schema(&node).await;
 
         // First transaction: insert alice
         let mut doc1 = BTreeMap::new();

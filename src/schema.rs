@@ -442,8 +442,8 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
 
 /// Build a Put operation for a plain (non-namespaced) schema attribute.
 /// Used by tests that define attributes like "name", "age", etc.
-#[cfg(test)]
-fn plain_schema_attribute(id: i64, name: &str, value_type: &str, cardinality: i64) -> TxOp {
+#[cfg(any(test, feature = "test-helpers"))]
+fn plain_schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert(
@@ -451,20 +451,19 @@ fn plain_schema_attribute(id: i64, name: &str, value_type: &str, cardinality: i6
         DataType::Keyword(Keyword::plain(name)),
     );
     doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", value_type)));
-    doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
     TxOp::Put(Document(doc))
 }
 
 /// Build a transaction that defines common test attributes.
 /// Use entity IDs 50-59 (between bootstrap schema 1-31 and test data 100+).
-#[cfg(test)]
-pub(crate) fn test_schema_tx() -> Vec<TxOp> {
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn test_schema_tx() -> Vec<TxOp> {
     vec![
-        plain_schema_attribute(50, "name", "string", DB_CARDINALITY_ONE),
-        plain_schema_attribute(51, "age", "long", DB_CARDINALITY_ONE),
-        plain_schema_attribute(52, "email", "string", DB_CARDINALITY_ONE),
+        plain_schema_attribute(50, "name", "string"),
+        plain_schema_attribute(51, "age", "long"),
+        plain_schema_attribute(52, "email", "string"),
         // TODO: update this to ref once we support DataType::Ref
-        plain_schema_attribute(53, "follows", "long", DB_CARDINALITY_ONE),
+        plain_schema_attribute(53, "follows", "long"),
     ]
 }
 
