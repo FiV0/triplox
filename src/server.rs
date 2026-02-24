@@ -54,7 +54,7 @@ impl DbCache {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<DB>>,
     {
-        // Fast path: cache hit under read lock
+        // Fast path: cache hit (uses write lock because we mutate refcount)
         {
             let mut entries = self.entries.write().await;
             if let Some(entry) = entries.get_mut(&tx_id) {
