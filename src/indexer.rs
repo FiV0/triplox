@@ -303,6 +303,9 @@ impl Indexer {
 
 
 impl Subscriber for Indexer {
+    // TODO(triplox-33k): Handle transaction failures gracefully instead of panicking.
+    // Failed transactions should be recorded in the transaction log as failed/aborted
+    // so the indexer can continue processing and callers get meaningful errors via await_tx.
     async fn accept(&mut self, record: Record) {
         let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
             .expect("Failed to deserialize TxOps from log record");
