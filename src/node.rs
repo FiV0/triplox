@@ -54,9 +54,14 @@ impl DB {
 
     /// Construct a DB from a snapshot by scanning TX_TO_SEQ keys to find the latest basis.
     pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
+        // TODO: return a real "empty database" basis once we have one.
+        // For now, use a sentinel so db() works on a fresh node.
         let basis = crate::indexer::latest_basis_from_snapshot(&snapshot)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("No indexed transactions in snapshot"))?;
+            .unwrap_or_else(|| Basis {
+                tx_key: TxKey { tx_id: 0, system_time: crate::clock::st_from_unix_epoch(0) },
+                seq_num: 0,
+            });
         Ok(Self { snapshot, attribute_map, handle, basis })
     }
 
@@ -906,6 +911,18 @@ mod tests {
         let db_latest = node.db().await.unwrap();
         let results_latest = db_latest.query(&query).await.unwrap();
         assert_eq!(results_latest.len(), 2);
+
+        node.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_db_on_fresh_node_returns_sentinel_basis() {
+        let node = Node::memory_node().await;
+
+        let db = node.db().await.unwrap();
+        let basis = db.basis();
+        assert_eq!(basis.tx_key.tx_id, 0);
+        assert_eq!(basis.seq_num, 0);
 
         node.close().await;
     }
