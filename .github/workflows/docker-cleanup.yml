@@ -1,0 +1,24 @@
+name: Docker Cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0" # Weekly, Sunday 3am UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Delete old SHA-tagged images
+        uses: snok/container-retention-policy@v3
+        with:
+          account: FiV0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: triplox
+          cut-off: 1 week ago UTC
+          tag-selection: "both"
+          filter-tags: "main,v*"
+          filter-include-untagged: true
