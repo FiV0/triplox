@@ -10,6 +10,23 @@ cargo run
 
 This uses the default `config/triplox.toml` config (in-memory storage, listening on `127.0.0.1:5490`).
 
+## Running against Docker
+
+Alternatively, start the server via Docker using the pre-built image:
+
+```bash
+docker run -p 5490:5490 ghcr.io/fiv0/triplox:main
+```
+
+Or build locally (from the project root):
+
+```bash
+./docker/scripts/build-image.sh
+docker run -p 5490:5490 triplox:latest
+```
+
+Then run the examples as shown below. The Docker image binds to `0.0.0.0:5490`, so examples connecting to `127.0.0.1:5490` work out of the box.
+
 ## Running
 
 In a separate terminal, from the `examples/` directory:
