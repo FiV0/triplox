@@ -1,0 +1,7 @@
+target/
+.git/
+.idea/
+.claude/
+.beads/
+*.md
+!docker/README.md

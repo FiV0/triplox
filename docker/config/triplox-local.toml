@@ -1,0 +1,7 @@
+[storage]
+type = "local"
+path = "/var/lib/triplox/data"
+
+[server]
+host = "0.0.0.0"
+port = 5490
