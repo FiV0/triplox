@@ -178,6 +178,9 @@ impl<L: TxLog + 'static> Server<L> {
     }
 
     /// Start serving on a pre-bound listener.
+    ///
+    /// Runs until the `token` is cancelled, then stops accepting new connections
+    /// and waits for existing connections to drain (up to 30 seconds).
     pub async fn listen_on(
         &self,
         listener: TcpListener,
@@ -188,11 +191,13 @@ impl<L: TxLog + 'static> Server<L> {
             listener.local_addr()?
         );
 
+        let mut connections = tokio::task::JoinSet::new();
+
         loop {
             tokio::select! {
                 _ = token.cancelled() => {
                     info!("Shutdown signal received, stopping listener");
-                    return Ok(());
+                    break;
                 }
                 result = listener.accept() => {
                     let (stream, peer_addr) = result?;
@@ -201,9 +206,10 @@ impl<L: TxLog + 'static> Server<L> {
 
                     let node = self.node.clone();
                     let db_cache = self.db_cache.clone();
+                    let conn_token = token.child_token();
 
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, node, db_cache).await {
+                    connections.spawn(async move {
+                        if let Err(e) = handle_connection(stream, node, db_cache, conn_token).await {
                             warn!("Connection from {} closed with error: {}", peer_addr, e);
                         } else {
                             info!("Connection from {} closed cleanly", peer_addr);
@@ -212,6 +218,33 @@ impl<L: TxLog + 'static> Server<L> {
                 }
             }
         }
+
+        // Drain: wait for in-flight connections to finish
+        let remaining = connections.len();
+        if remaining > 0 {
+            info!("Waiting for {} connection(s) to drain...", remaining);
+            match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                let mut panicked = 0usize;
+                while let Some(result) = connections.join_next().await {
+                    if result.is_err() {
+                        panicked += 1;
+                    }
+                }
+                panicked
+            }).await {
+                Ok(panicked) => {
+                    if panicked > 0 {
+                        warn!("{} connection task(s) panicked during drain", panicked);
+                    }
+                    info!("All connections drained");
+                }
+                Err(_) => {
+                    warn!("Drain timeout (30s) exceeded, dropping remaining connections");
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -223,12 +256,15 @@ async fn handle_connection<L: TxLog + 'static>(
     stream: TcpStream,
     node: Arc<Node<L>>,
     db_cache: Arc<DbCache>,
+    token: CancellationToken,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
     // Phase 1: Startup handshake
+    // TODO: wrap this read in tokio::select! against token.cancelled() so a stalled
+    // handshake doesn't block shutdown until the drain timeout expires.
     let startup = read_frontend_message(&mut reader, true, DEFAULT_MAX_MESSAGE_SIZE).await?;
     match startup {
         FrontendMessage::Startup {
@@ -279,12 +315,31 @@ async fn handle_connection<L: TxLog + 'static>(
     let mut conn_state = ConnectionState::new();
 
     loop {
-        let msg = match read_frontend_message(&mut reader, false, DEFAULT_MAX_MESSAGE_SIZE).await {
-            Ok(msg) => msg,
-            Err(e) => {
-                // Connection dropped or read error — clean up
+        let msg = tokio::select! {
+            _ = token.cancelled() => {
+                info!("Shutdown: closing connection");
+                let _ = write_backend_message(
+                    &mut writer,
+                    &BackendMessage::ErrorResponse {
+                        severity: SEVERITY_FATAL,
+                        code: ErrorCode::ServerShuttingDown.as_u16(),
+                        message: "Server is shutting down".to_string(),
+                        detail: None,
+                        hint: None,
+                    },
+                ).await;
+                let _ = writer.flush().await;
                 cleanup_connection(&conn_state, &db_cache).await;
-                return Err(e);
+                return Ok(());
+            }
+            result = read_frontend_message(&mut reader, false, DEFAULT_MAX_MESSAGE_SIZE) => {
+                match result {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        cleanup_connection(&conn_state, &db_cache).await;
+                        return Err(e);
+                    }
+                }
             }
         };
 
