@@ -42,8 +42,12 @@ public final class WireCodec {
         frame.flush();
     }
 
-    public static void writeOpenDb(OutputStream out, Long basisTxId) throws IOException {
-        writeFramed(out, MSG_OPEN_DB, dos -> DataTypeCodec.encodeOptionalLong(dos, basisTxId));
+    public static void writeOpenDb(OutputStream out, Long basisTxId, Long basisSystemTime, Long basisSeqNum) throws IOException {
+        writeFramed(out, MSG_OPEN_DB, dos -> {
+            DataTypeCodec.encodeOptionalLong(dos, basisTxId);
+            DataTypeCodec.encodeOptionalLong(dos, basisSystemTime);
+            DataTypeCodec.encodeOptionalLong(dos, basisSeqNum);
+        });
     }
 
     public static void writeCloseDb(OutputStream out, int dbId) throws IOException {
@@ -73,6 +77,13 @@ public final class WireCodec {
 
     public static void writeUnsubscribe(OutputStream out) throws IOException {
         writeEmpty(out, MSG_UNSUBSCRIBE);
+    }
+
+    public static void writeBasisForTx(OutputStream out, long txId, long systemTime) throws IOException {
+        writeFramed(out, MSG_BASIS_FOR_TX, dos -> {
+            dos.writeLong(txId);
+            dos.writeLong(systemTime);
+        });
     }
 
     public static void writeTerminate(OutputStream out) throws IOException {
@@ -161,9 +172,6 @@ public final class WireCodec {
                 yield new BackendMessage.DataRow(values);
             }
 
-            case MSG_COMMAND_COMPLETE -> new BackendMessage.CommandComplete(
-                    DataTypeCodec.decodeString(in), in.readLong());
-
             case MSG_DATA_BATCH_COMPLETE -> new BackendMessage.DataBatchComplete(in.readLong());
 
             case MSG_READY_FOR_QUERY -> new BackendMessage.ReadyForQuery(in.readByte());
@@ -174,12 +182,15 @@ public final class WireCodec {
                     in.readByte(), in.readLong(), in.readLong(), in.readLong(),
                     DataTypeCodec.decodeOptionalString(in));
 
+            case MSG_BASIS_RESULT -> new BackendMessage.BasisResult(
+                    in.readLong(), in.readLong(), in.readLong());
+
             case MSG_UNSUBSCRIBE_COMPLETE -> new BackendMessage.UnsubscribeComplete();
 
             case MSG_HEARTBEAT -> new BackendMessage.Heartbeat();
 
             case MSG_ERROR_RESPONSE -> new BackendMessage.ErrorResponse(
-                    in.readByte(), in.readShort(), DataTypeCodec.decodeString(in),
+                    in.readByte(), in.readUnsignedShort(), DataTypeCodec.decodeString(in),
                     DataTypeCodec.decodeOptionalString(in), DataTypeCodec.decodeOptionalString(in));
 
             default -> throw new IOException("Unknown backend message type: 0x" + Integer.toHexString(type & 0xFF));

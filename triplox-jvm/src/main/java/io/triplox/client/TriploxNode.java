@@ -50,14 +50,21 @@ public class TriploxNode implements AutoCloseable {
      * Open a DB snapshot at the latest indexed transaction.
      */
     public DbHandle openDb() throws IOException {
-        return openDb(null);
+        return openDb(null, null, null);
     }
 
     /**
      * Open a DB snapshot at a specific transaction ID.
      */
     public DbHandle openDb(Long basisTxId) throws IOException {
-        WireCodec.writeOpenDb(out, basisTxId);
+        return openDb(basisTxId, null, null);
+    }
+
+    /**
+     * Open a DB snapshot with full basis fields.
+     */
+    public DbHandle openDb(Long basisTxId, Long basisSystemTime, Long basisSeqNum) throws IOException {
+        WireCodec.writeOpenDb(out, basisTxId, basisSystemTime, basisSeqNum);
         out.flush();
 
         BackendMessage msg = readExpecting("DbOpened");
@@ -99,20 +106,19 @@ public class TriploxNode implements AutoCloseable {
             throw unexpectedMessage("RowDescription", msg);
         }
 
-        // Read DataRows until CommandComplete
+        // Read DataRows until ReadyForQuery
         var rows = new ArrayList<List<Object>>();
         while (true) {
-            msg = readExpecting("DataRow or CommandComplete");
+            msg = readExpecting("DataRow or ReadyForQuery");
             if (msg instanceof BackendMessage.DataRow dataRow) {
                 rows.add(dataRow.values());
-            } else if (msg instanceof BackendMessage.CommandComplete) {
+            } else if (msg instanceof BackendMessage.ReadyForQuery) {
                 break;
             } else {
-                throw unexpectedMessage("DataRow or CommandComplete", msg);
+                throw unexpectedMessage("DataRow or ReadyForQuery", msg);
             }
         }
 
-        expectReadyForQuery();
         return new QueryResult(rowDesc.columns(), rows);
     }
 
@@ -145,6 +151,22 @@ public class TriploxNode implements AutoCloseable {
                     txResult.systemTime(), txResult.seqNum(), txResult.errorMessage());
         }
         throw unexpectedMessage("TxResult", msg);
+    }
+
+    /**
+     * Look up the basis for a previously committed transaction.
+     * Blocks until the transaction has been indexed.
+     */
+    public BackendMessage.BasisResult basisForTx(long txId, long systemTime) throws IOException {
+        WireCodec.writeBasisForTx(out, txId, systemTime);
+        out.flush();
+
+        BackendMessage msg = readExpecting("BasisResult");
+        if (msg instanceof BackendMessage.BasisResult result) {
+            expectReadyForQuery();
+            return result;
+        }
+        throw unexpectedMessage("BasisResult", msg);
     }
 
     /**

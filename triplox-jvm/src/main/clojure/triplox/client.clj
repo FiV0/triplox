@@ -2,7 +2,7 @@
   "Clojure client API for Triplox."
   (:require [triplox.types :as types]
             [triplox.tx :as tx])
-  (:import [io.triplox.client TriploxNode DbHandle QueryResult TxKeyResult TxResultValue]))
+  (:import [io.triplox.client TriploxNode DbHandle QueryResult TxKeyResult TxResultValue BackendMessage$BasisResult]))
 
 (defn connect
   "Connect to a Triplox server. Returns a connection map."
@@ -63,6 +63,17 @@
         ^TxKeyResult result (.submitTx ^TriploxNode (:node conn) ops)]
     {:tx-id (.txId result)
      :system-time (.systemTime result)}))
+
+(defn basis-for-tx
+  "Look up the basis for a previously committed transaction.
+   Blocks until the transaction has been indexed."
+  [conn tx-id system-time]
+  (let [^BackendMessage$BasisResult result (.basisForTx ^TriploxNode (:node conn)
+                                                        (long tx-id)
+                                                        (long system-time))]
+    {:tx-id (.txId result)
+     :system-time (.systemTime result)
+     :seq-num (.seqNum result)}))
 
 (defn subscribe
   "Stub — not yet supported."

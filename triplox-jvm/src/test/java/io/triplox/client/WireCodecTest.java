@@ -140,20 +140,22 @@ class WireCodecTest {
     }
 
     @Test
-    void testCommandComplete() throws IOException {
+    void testBasisResult() throws IOException {
         var payload = new ByteArrayOutputStream();
         var dos = new DataOutputStream(payload);
-        DataTypeCodec.encodeString(dos, "SELECT");
         dos.writeLong(42);
+        dos.writeLong(1700000000000000L);
+        dos.writeLong(7);
         dos.flush();
 
         var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_COMMAND_COMPLETE, payload.toByteArray());
+        writeBackendMessage(frame, MSG_BASIS_RESULT, payload.toByteArray());
 
-        var msg = (BackendMessage.CommandComplete) WireCodec.readBackendMessage(
+        var msg = (BackendMessage.BasisResult) WireCodec.readBackendMessage(
                 new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals("SELECT", msg.tag());
-        assertEquals(42, msg.rowCount());
+        assertEquals(42, msg.txId());
+        assertEquals(1700000000000000L, msg.systemTime());
+        assertEquals(7, msg.seqNum());
     }
 
     @Test
@@ -337,20 +339,35 @@ class WireCodecTest {
 
     @Test
     void testOpenDbFraming() throws IOException {
+        // All None: 3 × 1-byte None tag = 3 bytes payload
         var baos = new ByteArrayOutputStream();
-        WireCodec.writeOpenDb(baos, null);
+        WireCodec.writeOpenDb(baos, null, null, null);
 
         var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertEquals(MSG_OPEN_DB, dis.readByte());
         int length = dis.readInt();
-        assertEquals(5, length); // 4 + 1 byte for None tag
+        assertEquals(7, length); // 4 + 3 × 1-byte None tags
 
+        // All Some: 3 × (1-byte tag + 8-byte i64) = 27 bytes payload
         baos = new ByteArrayOutputStream();
-        WireCodec.writeOpenDb(baos, 42L);
+        WireCodec.writeOpenDb(baos, 42L, 1700000000000000L, 7L);
 
         dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertEquals(MSG_OPEN_DB, dis.readByte());
         length = dis.readInt();
-        assertEquals(13, length); // 4 + 1 byte tag + 8 byte i64
+        assertEquals(31, length); // 4 + 3 × (1 + 8)
+    }
+
+    @Test
+    void testBasisForTxFraming() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        WireCodec.writeBasisForTx(baos, 42, 1700000000000000L);
+
+        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
+        assertEquals(MSG_BASIS_FOR_TX, dis.readByte());
+        int length = dis.readInt();
+        assertEquals(20, length); // 4 + 8 + 8
+        assertEquals(42, dis.readLong());
+        assertEquals(1700000000000000L, dis.readLong());
     }
 }

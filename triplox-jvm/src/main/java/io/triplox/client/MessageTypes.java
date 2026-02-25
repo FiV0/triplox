@@ -11,13 +11,14 @@ public final class MessageTypes {
     public static final short PROTOCOL_VERSION_MINOR = 1;
 
     // Frontend message type bytes (client → server)
-    public static final byte MSG_OPEN_DB      = (byte) 'O';
-    public static final byte MSG_CLOSE_DB     = (byte) 'L';
-    public static final byte MSG_QUERY        = (byte) 'Q';
-    public static final byte MSG_EXECUTE      = (byte) 'E';
-    public static final byte MSG_SUBSCRIBE    = (byte) 'S';
-    public static final byte MSG_UNSUBSCRIBE  = (byte) 'U';
-    public static final byte MSG_TERMINATE    = (byte) 'X';
+    public static final byte MSG_OPEN_DB       = (byte) 'O';
+    public static final byte MSG_CLOSE_DB      = (byte) 'L';
+    public static final byte MSG_QUERY         = (byte) 'Q';
+    public static final byte MSG_EXECUTE       = (byte) 'E';
+    public static final byte MSG_SUBSCRIBE     = (byte) 'S';
+    public static final byte MSG_UNSUBSCRIBE   = (byte) 'U';
+    public static final byte MSG_BASIS_FOR_TX  = (byte) 'F';
+    public static final byte MSG_TERMINATE     = (byte) 'X';
 
     // Backend message type bytes (server → client)
     public static final byte MSG_AUTHENTICATION_OK    = (byte) 'R';
@@ -25,11 +26,11 @@ public final class MessageTypes {
     public static final byte MSG_DB_CLOSED            = (byte) 'J';
     public static final byte MSG_ROW_DESCRIPTION      = (byte) 'T';
     public static final byte MSG_DATA_ROW             = (byte) 'D';
-    public static final byte MSG_COMMAND_COMPLETE      = (byte) 'C';
     public static final byte MSG_DATA_BATCH_COMPLETE   = (byte) 'B';
     public static final byte MSG_READY_FOR_QUERY       = (byte) 'Z';
     public static final byte MSG_TX_KEY                = (byte) 'Y';
     public static final byte MSG_TX_RESULT             = (byte) 'G';
+    public static final byte MSG_BASIS_RESULT          = (byte) 'A';
     public static final byte MSG_UNSUBSCRIBE_COMPLETE  = (byte) 'N';
     public static final byte MSG_HEARTBEAT             = (byte) 'K';
     public static final byte MSG_ERROR_RESPONSE        = (byte) 'W';

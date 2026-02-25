@@ -5,11 +5,11 @@ package io.triplox.client;
  */
 public class TriploxException extends RuntimeException {
     private final byte severity;
-    private final short code;
+    private final int code;
     private final String detail;
     private final String hint;
 
-    public TriploxException(byte severity, short code, String message, String detail, String hint) {
+    public TriploxException(byte severity, int code, String message, String detail, String hint) {
         super(message);
         this.severity = severity;
         this.code = code;
@@ -18,7 +18,7 @@ public class TriploxException extends RuntimeException {
     }
 
     public byte severity() { return severity; }
-    public short code() { return code; }
+    public int code() { return code; }
     public String detail() { return detail; }
     public String hint() { return hint; }
 
@@ -30,7 +30,7 @@ public class TriploxException extends RuntimeException {
     public String toString() {
         var sb = new StringBuilder();
         sb.append(isFatal() ? "FATAL" : "ERROR");
-        sb.append(" [").append(Short.toUnsignedInt(code)).append("]: ").append(getMessage());
+        sb.append(" [").append(code).append("]: ").append(getMessage());
         if (detail != null) sb.append("\nDetail: ").append(detail);
         if (hint != null) sb.append("\nHint: ").append(hint);
         return sb.toString();
