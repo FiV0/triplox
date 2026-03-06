@@ -12,6 +12,7 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StorageConfig {
+    Dev,
     Memory,
     Local { path: PathBuf },
     Remote {
