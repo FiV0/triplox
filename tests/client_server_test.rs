@@ -8,7 +8,7 @@ use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, Document, TxOp};
 use triplox::schema::test_schema_tx;
-use triplox::server::Server;
+use triplox::server::{DevServer, Server};
 use triplox::{Basis, TransactionResult};
 
 async fn define_test_schema(client: &ClientNode) {
@@ -259,5 +259,62 @@ async fn test_basis_for_tx_after_submit() {
 
     db.close().await.unwrap();
     client.close().await.unwrap();
+    token.cancel();
+}
+
+// ---------------------------------------------------------------------------
+// DevServer tests
+// ---------------------------------------------------------------------------
+
+async fn start_dev_server() -> (String, CancellationToken) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = DevServer::new(1024);
+
+    let token = CancellationToken::new();
+    let server_token = token.clone();
+    tokio::spawn(async move {
+        let _ = server.listen_on(listener, server_token).await;
+    });
+
+    (addr, token)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_dev_server_connections_are_isolated() {
+    let (addr, token) = start_dev_server().await;
+
+    // Connection 1: define schema and insert data
+    let client1 = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client1).await;
+
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("name".to_string(), DataType::String("alice".to_string()));
+    client1.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+
+    let db1 = client1.db().await.unwrap();
+    let result1 = db1
+        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+    assert_eq!(result1.len(), 1, "client1 should see its own data");
+
+    // Connection 2: gets a fresh node, should see nothing
+    let client2 = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client2).await;
+
+    let db2 = client2.db().await.unwrap();
+    let result2 = db2
+        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+    assert_eq!(result2.len(), 0, "client2 should not see client1's data");
+
+    db1.close().await.unwrap();
+    db2.close().await.unwrap();
+    client1.close().await.unwrap();
+    client2.close().await.unwrap();
     token.cancel();
 }
