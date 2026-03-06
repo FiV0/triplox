@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -7,7 +6,7 @@ use tracing::info;
 
 use triplox::config::{Config, StorageConfig};
 use triplox::node::Node;
-use triplox::server::Server;
+use triplox::server::{DevServer, Server};
 
 fn load_config() -> Result<Config> {
     let path = std::env::args()
@@ -51,6 +50,10 @@ async fn run_server(config: Config) -> Result<()> {
     });
 
     match config.storage {
+        StorageConfig::Dev => {
+            let server = DevServer::new(max_open_dbs);
+            server.listen(&bind_addr, token).await
+        }
         StorageConfig::Memory => {
             let node = Arc::new(Node::memory_node().await);
             let server = Server::new(node, max_open_dbs);

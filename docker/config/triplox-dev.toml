@@ -1,0 +1,6 @@
+[storage]
+type = "dev"
+
+[server]
+host = "0.0.0.0"
+port = 5490

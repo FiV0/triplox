@@ -10,6 +10,9 @@ fi
 TRIPLOX_STORAGE="${TRIPLOX_STORAGE:-memory}"
 
 case "$TRIPLOX_STORAGE" in
+    dev)
+        CONFIG_FILE="/etc/triplox/triplox-dev.toml"
+        ;;
     memory)
         CONFIG_FILE="/etc/triplox/triplox-memory.toml"
         ;;
@@ -18,7 +21,7 @@ case "$TRIPLOX_STORAGE" in
         ;;
     *)
         echo "Error: unknown TRIPLOX_STORAGE value: $TRIPLOX_STORAGE"
-        echo "Supported values: memory, local"
+        echo "Supported values: dev, memory, local"
         exit 1
         ;;
 esac

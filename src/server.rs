@@ -5,12 +5,14 @@
 //! to the underlying Node.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -186,65 +188,128 @@ impl<L: TxLog + 'static> Server<L> {
         listener: TcpListener,
         token: CancellationToken,
     ) -> Result<()> {
-        info!(
-            "Triplox server listening on {}",
-            listener.local_addr()?
-        );
-
-        let mut connections = tokio::task::JoinSet::new();
-
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    info!("Shutdown signal received, stopping listener");
-                    break;
+        let node = self.node.clone();
+        let db_cache = self.db_cache.clone();
+        accept_loop(listener, token, |stream, peer_addr, conn_token, connections| {
+            let node = node.clone();
+            let db_cache = db_cache.clone();
+            connections.spawn(async move {
+                if let Err(e) = handle_connection(stream, node, db_cache, conn_token).await {
+                    warn!("Connection from {} closed with error: {}", peer_addr, e);
+                } else {
+                    info!("Connection from {} closed cleanly", peer_addr);
                 }
-                result = listener.accept() => {
-                    let (stream, peer_addr) = result?;
-                    stream.set_nodelay(true)?;
-                    info!("New connection from {}", peer_addr);
+            });
+        }).await
+    }
+}
 
-                    let node = self.node.clone();
-                    let db_cache = self.db_cache.clone();
-                    let conn_token = token.child_token();
+// ---------------------------------------------------------------------------
+// Dev Server (per-connection in-memory nodes)
+// ---------------------------------------------------------------------------
 
-                    connections.spawn(async move {
-                        if let Err(e) = handle_connection(stream, node, db_cache, conn_token).await {
-                            warn!("Connection from {} closed with error: {}", peer_addr, e);
-                        } else {
-                            info!("Connection from {} closed cleanly", peer_addr);
-                        }
-                    });
+pub struct DevServer {
+    max_open_dbs: usize,
+}
+
+impl DevServer {
+    pub fn new(max_open_dbs: usize) -> Self {
+        DevServer { max_open_dbs }
+    }
+
+    pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+        self.listen_on(listener, token).await
+    }
+
+    pub async fn listen_on(
+        &self,
+        listener: TcpListener,
+        token: CancellationToken,
+    ) -> Result<()> {
+        let max_open_dbs = self.max_open_dbs;
+        accept_loop(listener, token, move |stream, peer_addr, conn_token, connections| {
+            connections.spawn(async move {
+                let node = Arc::new(Node::memory_node().await);
+                let db_cache = Arc::new(DbCache::new(max_open_dbs));
+                if let Err(e) = handle_connection(stream, node.clone(), db_cache, conn_token).await {
+                    warn!("Connection from {} closed with error: {}", peer_addr, e);
+                } else {
+                    info!("Connection from {} closed cleanly", peer_addr);
                 }
+                // This should never fail: handle_connection only borrows the Arc,
+                // so refcount is 1 after it returns.
+                let node = Arc::try_unwrap(node)
+                    .unwrap_or_else(|_| panic!("dev node Arc should have refcount 1 after connection close"));
+                node.close().await;
+            });
+        }).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accept loop (shared between Server and DevServer)
+// ---------------------------------------------------------------------------
+
+async fn accept_loop<F>(
+    listener: TcpListener,
+    token: CancellationToken,
+    mut spawn_handler: F,
+) -> Result<()>
+where
+    F: FnMut(TcpStream, SocketAddr, CancellationToken, &mut JoinSet<()>),
+{
+    info!(
+        "Triplox server listening on {}",
+        listener.local_addr()?
+    );
+
+    let mut connections = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                info!("Shutdown signal received, stopping listener");
+                break;
+            }
+            result = listener.accept() => {
+                let (stream, peer_addr) = result?;
+                stream.set_nodelay(true)?;
+                info!("New connection from {}", peer_addr);
+                spawn_handler(stream, peer_addr, token.child_token(), &mut connections);
             }
         }
+    }
 
-        // Drain: wait for in-flight connections to finish
-        let remaining = connections.len();
-        if remaining > 0 {
-            info!("Waiting for {} connection(s) to drain...", remaining);
-            match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                let mut panicked = 0usize;
-                while let Some(result) = connections.join_next().await {
-                    if result.is_err() {
-                        panicked += 1;
-                    }
-                }
-                panicked
-            }).await {
-                Ok(panicked) => {
-                    if panicked > 0 {
-                        warn!("{} connection task(s) panicked during drain", panicked);
-                    }
-                    info!("All connections drained");
-                }
-                Err(_) => {
-                    warn!("Drain timeout (30s) exceeded, dropping remaining connections");
+    drain_connections(&mut connections).await;
+    Ok(())
+}
+
+async fn drain_connections(connections: &mut JoinSet<()>) {
+    let remaining = connections.len();
+    if remaining > 0 {
+        info!("Waiting for {} connection(s) to drain...", remaining);
+        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut panicked = 0usize;
+            while let Some(result) = connections.join_next().await {
+                if result.is_err() {
+                    panicked += 1;
                 }
             }
+            panicked
+        })
+        .await
+        {
+            Ok(panicked) => {
+                if panicked > 0 {
+                    warn!("{} connection task(s) panicked during drain", panicked);
+                }
+                info!("All connections drained");
+            }
+            Err(_) => {
+                warn!("Drain timeout (30s) exceeded, dropping remaining connections");
+            }
         }
-
-        Ok(())
     }
 }
 
