@@ -237,9 +237,11 @@ impl DevServer {
                 } else {
                     info!("Connection from {} closed cleanly", peer_addr);
                 }
-                if let Ok(node) = Arc::try_unwrap(node) {
-                    node.close().await;
-                }
+                // This should never fail: handle_connection only borrows the Arc,
+                // so refcount is 1 after it returns.
+                let node = Arc::try_unwrap(node)
+                    .unwrap_or_else(|_| panic!("dev node Arc should have refcount 1 after connection close"));
+                node.close().await;
             });
         }).await
     }
