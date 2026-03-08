@@ -23,7 +23,7 @@ Every message on the wire uses the following envelope:
 
 - **type**: 1-byte message type identifier.
 - **length**: 4-byte big-endian unsigned integer. Includes itself (4 bytes) but does NOT include the type byte. Total bytes on the wire = 1 + length. Payload size = length - 4.
-- **payload**: Message-specific data, serialized per [Section 10 (Wire Encoding)](#10-wire-encoding).
+- **payload**: Message-specific data, serialized per [Section 11 (Wire Encoding)](#11-wire-encoding).
 
 **Exception**: The initial Startup message from the client has no type byte. It consists only of `[length][payload]`. The server identifies it by context -- the first message on any new connection is always a Startup.
 
@@ -177,6 +177,26 @@ Each ColumnDescription:
 | name      | String      | Variable name, e.g. "?name"          |
 | data_type | DataTypeTag | Type discriminant (see section 10)    |
 
+When `data_type == 127` (Union), two additional fields follow:
+
+| Field        | Type               | Description                                        |
+|--------------|--------------------|----------------------------------------------------|
+| member_count | u8                 | Number of member types (>= 2)                      |
+| member_tags  | [u8; member_count] | Sorted ascending, each a valid concrete tag (1–126) |
+
+**Constraints:**
+- `member_count` >= 2 (a single-type union should use the concrete tag directly)
+- Each member tag must be a concrete type tag (1–126; tags 0, 127, and 255 are not valid members)
+- Tags must be sorted ascending with no duplicates
+- Servers SHOULD prefer concrete tags when all values in a column share one type
+
+**Semantics:**
+- Every DataRow value in a Union column MUST have a tag matching one of the declared members
+- Clients MAY optimize deserialization using the member list (e.g. pre-allocating typed arrays)
+- A Union listing all defined concrete types is valid and distinct from Unknown (closed set vs. indeterminate)
+
+> **Note**: The `data_type` field in RowDescription is currently always set to `TAG_UNKNOWN` (255) because the query engine does not yet perform type analysis. The Union type is specified here for future use once the engine can infer output types.
+
 Sent before the first DataRow of a query result or subscription. In subscription mode, the RowDescription includes an extra `tpx_diff` column.
 
 ### 4.10 DataRow (Backend, `D`)
@@ -198,7 +218,7 @@ Submit a transaction.
 | ops            | Vec\<TxOp\>   | Transaction operations                             |
 | await_indexing | bool          | If true, server waits for indexer before responding |
 
-Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 10.7](#107-txop-encoding) for wire encoding.
+Uses the `TxOp` enum (Put, Add, Retract, Delete, Erase). See [Section 11.8](#118-txop-encoding) for wire encoding.
 
 ### 4.12 TxKey (Backend, `Y`)
 
@@ -311,7 +331,7 @@ The server closes the TCP connection after receiving this. No response is sent.
 
 ### 4.22 Heartbeat (Backend, `K`)
 
-Sent by the server during an active subscription when no data has been sent within the keepalive interval (see [Section 11](#11-connection-keepalive-and-timeouts)). The client MUST silently ignore this message (no response required).
+Sent by the server during an active subscription when no data has been sent within the keepalive interval (see [Section 12](#12-connection-keepalive-and-timeouts)). The client MUST silently ignore this message (no response required).
 
 Payload: empty (length = 4).
 
@@ -560,19 +580,22 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 | 12  | Vector  |
 | 13  | Map     |
 | 14  | Keyword |
+| 127 | Union   |
 | 255 | Unknown |
 
-`Unknown` (255) is used when the column type is not uniform or cannot be determined in advance.
+Tags 1–14 (and future concrete types up to 126) are used in two contexts: as the discriminant byte in DataRow value encoding, and as a column type in ColumnDescription.
+
+Tag 127 (Union) and tag 255 (Unknown) are **ColumnDescription-only** — they never appear as DataRow value discriminants. `Union` means the column contains values from a known, finite set of concrete types (members listed inline in the ColumnDescription). `Unknown` means the type is truly indeterminate.
 
 ---
 
-## 10. Wire Encoding
+## 11. Wire Encoding
 
 All message payloads are encoded using the binary format described in this section. The encoding is language-neutral and designed to be straightforward to implement in any language (Rust, Java, Clojure, etc.).
 
 All multi-byte integers use **big-endian** (network) byte order.
 
-### 10.1 Primitive Types
+### 11.1 Primitive Types
 
 | Type   | Encoding                                         |
 |--------|--------------------------------------------------|
@@ -587,7 +610,7 @@ All multi-byte integers use **big-endian** (network) byte order.
 | `f32`  | 4 bytes, IEEE 754 binary32, big-endian             |
 | `f64`  | 8 bytes, IEEE 754 binary64, big-endian             |
 
-### 10.2 Strings
+### 11.2 Strings
 
 ```
 +----------+------------------+
@@ -597,7 +620,7 @@ All multi-byte integers use **big-endian** (network) byte order.
 
 `len` is the byte count of the UTF-8 encoded string (not the character count).
 
-### 10.3 Byte Arrays
+### 11.3 Byte Arrays
 
 ```
 +----------+------------------+
@@ -605,7 +628,7 @@ All multi-byte integers use **big-endian** (network) byte order.
 +----------+------------------+
 ```
 
-### 10.4 Optional Values (`Option<T>`)
+### 11.4 Optional Values (`Option<T>`)
 
 ```
 +----------+-----------+
@@ -616,7 +639,7 @@ All multi-byte integers use **big-endian** (network) byte order.
 - `0x00` = None (no following bytes)
 - `0x01` = Some, followed by the encoded value of type T
 
-### 10.5 Sequences (`Vec<T>`)
+### 11.5 Sequences (`Vec<T>`)
 
 ```
 +-----------+-------------------+
@@ -626,7 +649,7 @@ All multi-byte integers use **big-endian** (network) byte order.
 
 `count` elements encoded sequentially.
 
-### 10.6 Maps (`Map<K, V>`)
+### 11.6 Maps (`Map<K, V>`)
 
 ```
 +-----------+----------------------------+
@@ -636,9 +659,9 @@ All multi-byte integers use **big-endian** (network) byte order.
 
 `count` key-value pairs encoded sequentially. Keys are sorted lexicographically (for `Map<String, V>`).
 
-### 10.7 DataType Encoding
+### 11.7 DataType Encoding
 
-A `DataType` value is encoded as a 1-byte type tag (from [Section 9](#9-data-type-tags)) followed by the variant payload:
+A `DataType` value is encoded as a 1-byte type tag (from [Section 10](#10-data-type-tags)) followed by the variant payload:
 
 | Tag | Name    | Payload                                          |
 |-----|---------|--------------------------------------------------|
@@ -657,7 +680,7 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 9](#9-data-typ
 | 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |
 | 14  | Keyword | `String` (u32 length + UTF-8 bytes)              |
 
-### 10.8 TxOp Encoding
+### 11.8 TxOp Encoding
 
 A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payload:
 
@@ -677,7 +700,7 @@ A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payloa
 +-------------------+---------------------+------------------+
 ```
 
-### 10.9 Message Payloads
+### 11.9 Message Payloads
 
 Each message payload is the concatenation of its fields in declaration order, encoded using the types above.
 
@@ -710,9 +733,17 @@ columns : Vec<ColumnDescription>
 ```
 where each ColumnDescription is:
 ```
-name      : String
-data_type : u8          (DataTypeTag from Section 9)
+name         : String
+data_type    : u8               (DataTypeTag from Section 10)
+// If data_type == 127 (Union):
+member_count : u8               (number of member types, >= 2)
+member_tags  : [u8; member_count]  (concrete tags, sorted ascending)
 ```
+
+**Wire examples:**
+
+- Union column `?val` with Long|String: `data_type=0x7F, member_count=0x02, member_tags=[0x07, 0x09]`
+- Concrete column `?e` as Long: `data_type=0x07` (no additional fields)
 
 **DataRow** (`D`):
 ```
@@ -795,7 +826,7 @@ hint     : Option<String>
 
 ---
 
-## 11. Connection Keepalive and Timeouts
+## 12. Connection Keepalive and Timeouts
 
 ### TCP_NODELAY
 
@@ -817,7 +848,7 @@ Servers MAY enforce an idle connection timeout for connections in the Idle state
 
 ---
 
-## 12. Future Extensions
+## 13. Future Extensions
 
 The following features are deliberately deferred to a later protocol version. They are documented here to inform client and server implementations of planned evolution:
 
