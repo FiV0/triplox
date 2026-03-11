@@ -50,13 +50,13 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-sanity-check
-  (tc/transact *conn* [{:db/id 1 :name "Ivan"}])
-  (is (= #{[1]} (q '{:find [?e]
-                      :where [[?e :name "Ivan"]]}))))
+  (tc/transact *conn* [{:db/id 100 :name "Ivan"}])
+  (is (= #{[100]} (q '{:find [?e]
+                        :where [[?e :name "Ivan"]]}))))
 
 (deftest test-basic-query
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 2 :name "Petr" :last-name "Petrov"}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 101 :name "Petr" :last-name "Petrov"}])
 
   (testing "Can query value by single field"
     (is (= #{["Ivan"]} (q '{:find [?name]
@@ -67,10 +67,10 @@
                                      [?e :name ?name]]}))))
 
   (testing "Can query entity by single field"
-    (is (= #{[1]} (q '{:find [?e]
-                        :where [[?e :name "Ivan"]]})))
-    (is (= #{[2]} (q '{:find [?e]
-                        :where [[?e :name "Petr"]]}))))
+    (is (= #{[100]} (q '{:find [?e]
+                          :where [[?e :name "Ivan"]]})))
+    (is (= #{[101]} (q '{:find [?e]
+                          :where [[?e :name "Petr"]]}))))
 
   (testing "Can query using multiple terms"
     (is (= #{["Ivan" "Ivanov"]} (q '{:find [?name ?last-name]
@@ -88,31 +88,31 @@
     (is (= #{["Ivan"] ["Petr"]}
            (q '{:find [?name] :where [[?e :name ?name]]}))))
 
-  (tc/transact *conn* [{:db/id 3 :name "Smith" :last-name "Smith"}])
+  (tc/transact *conn* [{:db/id 102 :name "Smith" :last-name "Smith"}])
 
   (testing "Can query across fields for same value"
-    (is (= #{[3]}
+    (is (= #{[102]}
            (q '{:find [?p1] :where [[?p1 :name ?name]
                                     [?p1 :last-name ?name]]}))))
 
   (testing "Can query across fields for same value when value is passed in"
-    (is (= #{[3]}
+    (is (= #{[102]}
            (q '{:find [?p1] :where [[?p1 :name ?name]
                                     [?p1 :last-name ?name]
                                     [?p1 :name "Smith"]]})))))
 
 (deftest test-multiple-results
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "1"}
-                        {:db/id 2 :name "Ivan" :last-name "2"}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "1"}
+                        {:db/id 101 :name "Ivan" :last-name "2"}])
 
   (is (= 2
          (count (q '{:find [?e] :where [[?e :name "Ivan"]]})))))
 
 (deftest test-query-using-keywords
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :sex :male}
-                        {:db/id 2 :name "Petr" :sex :male}
-                        {:db/id 3 :name "Doris" :sex :female}
-                        {:db/id 4 :name "Jane" :sex :female}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :sex :male}
+                        {:db/id 101 :name "Petr" :sex :male}
+                        {:db/id 102 :name "Doris" :sex :female}
+                        {:db/id 103 :name "Jane" :sex :female}])
 
   (testing "Can query by single field"
     (is (= #{["Ivan"] ["Petr"]} (q '{:find [?name]
@@ -123,11 +123,11 @@
                                                [?e :sex :female]]})))))
 
 (deftest test-query-across-entities-using-join
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :age 30 :salary 50000}
-                        {:db/id 2 :name "Petr" :age 25 :salary 45000}
-                        {:db/id 3 :name "Sergei" :age 35 :salary 55000}
-                        {:db/id 4 :name "Denis" :age 28 :salary 48000}
-                        {:db/id 5 :name "Denis" :age 32 :salary 52000}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :age 30 :salary 50000}
+                        {:db/id 101 :name "Petr" :age 25 :salary 45000}
+                        {:db/id 102 :name "Sergei" :age 35 :salary 55000}
+                        {:db/id 103 :name "Denis" :age 28 :salary 48000}
+                        {:db/id 104 :name "Denis" :age 32 :salary 52000}])
 
   (testing "Five people, without a join"
     (is (= 5 (count (q '{:find [?p1]
@@ -140,10 +140,10 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-or-query
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 2 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 3 :name "Ivan" :last-name "Ivannotov"}
-                        {:db/id 4 :name "Bob" :last-name "Controlguy"}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 101 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 102 :name "Ivan" :last-name "Ivannotov"}
+                        {:db/id 103 :name "Bob" :last-name "Controlguy"}])
 
   (testing "Or works as expected"
     (is (= 3 (count (q '{:find [?e]
@@ -183,9 +183,9 @@
                                   (or [?e :last-name "Ivanov"])]}))))))
 
 (deftest test-or-query-can-use-and
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :sex :male}
-                        {:db/id 2 :name "Bob" :sex :male}
-                        {:db/id 3 :name "Ivana" :sex :female}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :sex :male}
+                        {:db/id 101 :name "Bob" :sex :male}
+                        {:db/id 102 :name "Ivana" :sex :female}])
 
   (is (= #{["Ivan"]
             ["Ivana"]}
@@ -195,7 +195,7 @@
                           (and [?e :sex :male]
                                [?e :name "Ivan"]))]})))
 
-  (is (= #{[1]}
+  (is (= #{[100]}
          (q '{:find [?e]
               :where [(or [?e :name "Ivan"])]})))
 
@@ -217,9 +217,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-not-query
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 2 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 3 :name "Ivan" :last-name "Ivannotov"}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 101 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 102 :name "Ivan" :last-name "Ivannotov"}])
 
   (testing "literal v"
     (is (= 1 (count (q '{:find [?e]
@@ -276,17 +276,17 @@
 
     (is (= 2 (count (q '{:find [?e]
                           :where [[?e :name ?name]
-                                  [3 :last-name ?i-name]
+                                  [102 :last-name ?i-name]
                                   (not [?e :last-name ?i-name])]})))))
 
   (testing "literal entities"
     (is (= 0 (count (q '{:find [?e]
                           :where [[?e :name ?name]
-                                  (not [1 :name ?name])]}))))
+                                  (not [100 :name ?name])]}))))
 
     (is (= 1 (count (q '{:find [?e]
                           :where [[?e :last-name ?last-name]
-                                  (not [1 :last-name ?last-name])]})))))
+                                  (not [100 :last-name ?last-name])]})))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
@@ -299,9 +299,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-predicate-expression
-  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov" :age 30}
-                        {:db/id 2 :name "Bob" :last-name "Ivanov" :age 40}
-                        {:db/id 3 :name "Dominic" :last-name "Monroe" :age 50}])
+  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov" :age 30}
+                        {:db/id 101 :name "Bob" :last-name "Ivanov" :age 40}
+                        {:db/id 102 :name "Dominic" :last-name "Monroe" :age 50}])
 
   (testing "range expressions"
     (is (= #{["Ivan"] ["Bob"]}
@@ -328,7 +328,7 @@
                           [?e :age ?age1]
                           [?e2 :name ?name2]
                           [?e2 :age ?age2]
-                          [(<= ?age1 ?age2)]]})))))
+                          [(<= ?age1 ?age2)]]}))))))
 
   ;; re-find tests commented out — see triplox-bwi for tracking
   #_(testing "re-find predicate"
@@ -352,15 +352,15 @@
     (is (= #{["Ivan"]}
            (q '{:find [?name]
                 :where [[?e :name ?name]
-                        [(= 1 ?e)]]})))
+                        [(= 100 ?e)]]})))
 
     (testing "Filtered by value"
-      (is (= #{[2] [1]}
+      (is (= #{[101] [100]}
              (q '{:find [?e]
                   :where [[?e :last-name ?last-name]
                           [(= "Ivanov" ?last-name)]]})))
 
-      (is (= #{[1]}
+      (is (= #{[100]}
              (q '{:find [?e]
                   :where [[?e :last-name ?last-name]
                           [?e :age ?age]
@@ -377,7 +377,7 @@
                           [(re-find #"o" ?name)]
                           [(not= ?age ?name)]]})))
 
-      (is (= #{[2 "Ivanov"]}
+      (is (= #{[101 "Ivanov"]}
              (q '{:find [?e ?last-name]
                   :where [[?e :last-name ?last-name]
                           [?e :age ?age]
@@ -428,12 +428,12 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest datomic-style-addition
-  (tc/transact *conn* [{:db/id 1 :name "Alice"}])
+  (tc/transact *conn* [{:db/id 100 :name "Alice"}])
 
   (is (= #{["Alice"]} (q '{:find [?name]
                             :where [[?p :name ?name]]})))
 
-  (tc/transact *conn* [{:db/id 1 :city "NYC"}])
+  (tc/transact *conn* [{:db/id 100 :city "NYC"}])
 
   (is (= #{["Alice" "NYC"]} (q '{:find [?name ?city]
                                   :where [[?p :name ?name]
