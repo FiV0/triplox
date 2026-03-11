@@ -5,8 +5,10 @@ use edn::query as eq;
 use edn::Keyword;
 
 use crate::datalog::{
-    FindElement, FindSpec, OrBranch, PatternElement, Query, TriplePattern, Variable, WhereClause,
+    FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, Variable,
+    WhereClause,
 };
+use crate::expr::{BinaryExpr, BinaryOp, Expr};
 use crate::ops::DataType;
 
 pub fn parse_query(input: &str) -> Result<Query> {
@@ -114,8 +116,14 @@ fn convert_where_clause(clause: eq::WhereClause) -> Result<WhereClause> {
                 }
             }
         }
-        eq::WhereClause::Pred(_) => Err(anyhow!("predicate clauses are not yet supported")),
-        eq::WhereClause::WhereFn(_) => Err(anyhow!("where-fn clauses are not yet supported")),
+        eq::WhereClause::Pred(pred) => {
+            let expr = convert_predicate(&pred)?;
+            Ok(WhereClause::Predicate(expr))
+        }
+        eq::WhereClause::WhereFn(wf) => {
+            let fn_expr = convert_where_fn(&wf)?;
+            Ok(WhereClause::FnExpr(fn_expr))
+        }
         eq::WhereClause::RuleExpr => Err(anyhow!("rule expressions are not yet supported")),
         eq::WhereClause::TypeAnnotation(_) => {
             Err(anyhow!("type annotations are not yet supported"))
@@ -134,6 +142,86 @@ fn convert_or_where_clause(clause: eq::OrWhereClause) -> Result<OrBranch> {
             Ok(OrBranch::And(converted))
         }
     }
+}
+
+fn convert_fn_arg(arg: &eq::FnArg) -> Result<Expr> {
+    match arg {
+        eq::FnArg::Variable(v) => Ok(Expr::Variable(var_to_string(v))),
+        eq::FnArg::EntidOrInteger(i) => Ok(Expr::Literal(DataType::Long(*i))),
+        eq::FnArg::Constant(c) => match c {
+            eq::NonIntegerConstant::Text(t) => Ok(Expr::Literal(DataType::String((**t).clone()))),
+            eq::NonIntegerConstant::Float(f) => {
+                Ok(Expr::Literal(DataType::Double(f.into_inner())))
+            }
+            eq::NonIntegerConstant::Boolean(b) => Ok(Expr::Literal(DataType::Boolean(*b))),
+            other => Err(anyhow!("unsupported constant type in predicate/fn: {:?}", other)),
+        },
+        eq::FnArg::IdentOrKeyword(kw) => {
+            Ok(Expr::Literal(DataType::Keyword((*kw).clone())))
+        }
+        other => Err(anyhow!("unsupported fn arg type: {:?}", other)),
+    }
+}
+
+fn convert_binary_op(name: &str) -> Result<BinaryOp> {
+    match name {
+        "<" => Ok(BinaryOp::Lt),
+        "<=" => Ok(BinaryOp::LtEq),
+        ">" => Ok(BinaryOp::Gt),
+        ">=" => Ok(BinaryOp::GtEq),
+        "=" => Ok(BinaryOp::Eq),
+        "not=" | "!=" => Ok(BinaryOp::NotEq),
+        "+" => Ok(BinaryOp::Add),
+        "-" => Ok(BinaryOp::Sub),
+        "*" => Ok(BinaryOp::Mul),
+        "/" | "quot" => Ok(BinaryOp::Div),
+        "mod" => Ok(BinaryOp::Mod),
+        "concat" => Ok(BinaryOp::Concat),
+        _ => Err(anyhow!("unknown operator: {}", name)),
+    }
+}
+
+fn convert_predicate(pred: &eq::Predicate) -> Result<Expr> {
+    let op_name = &pred.operator.0;
+    let op = convert_binary_op(op_name)?;
+    if pred.args.len() != 2 {
+        return Err(anyhow!(
+            "predicate '{}' requires exactly 2 arguments, got {}",
+            op_name,
+            pred.args.len()
+        ));
+    }
+    let left = convert_fn_arg(&pred.args[0])?;
+    let right = convert_fn_arg(&pred.args[1])?;
+    Ok(Expr::BinaryExpr(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    }))
+}
+
+fn convert_where_fn(wf: &eq::WhereFn) -> Result<FnExpr> {
+    let op_name = &wf.operator.0;
+    let op = convert_binary_op(op_name)?;
+    if wf.args.len() != 2 {
+        return Err(anyhow!(
+            "function '{}' requires exactly 2 arguments, got {}",
+            op_name,
+            wf.args.len()
+        ));
+    }
+    let left = convert_fn_arg(&wf.args[0])?;
+    let right = convert_fn_arg(&wf.args[1])?;
+    let expr = Expr::BinaryExpr(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    });
+    let output = match &wf.binding {
+        eq::Binding::BindScalar(v) => var_to_string(v),
+        other => return Err(anyhow!("only scalar binding is supported for where-fn, got {:?}", other)),
+    };
+    Ok(FnExpr { expr, output })
 }
 
 fn convert_non_value_place(place: eq::PatternNonValuePlace) -> Result<PatternElement> {
@@ -369,13 +457,40 @@ mod tests {
     }
 
     #[test]
-    fn parse_predicate_unsupported() {
-        let (e1, e2) = assert_both_err(
+    fn parse_predicate() {
+        let q = parse_both(
             "[:find ?x :where [?x _ ?y] [(< ?y 10)]]",
             "{:find [?x] :where [[?x _ ?y] [(< ?y 10)]]}",
         );
-        assert!(e1.to_string().contains("predicate"));
-        assert!(e2.to_string().contains("predicate"));
+        assert_eq!(q.where_clauses.len(), 2);
+        assert_eq!(
+            q.where_clauses[1],
+            WhereClause::Predicate(Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(Expr::Variable("?y".into())),
+                op: BinaryOp::Lt,
+                right: Box::new(Expr::Literal(DataType::Long(10))),
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_fn() {
+        let q = parse_both(
+            "[:find ?x ?result :where [?x _ ?y] [(quot ?y 2) ?result]]",
+            "{:find [?x ?result] :where [[?x _ ?y] [(quot ?y 2) ?result]]}",
+        );
+        assert_eq!(q.where_clauses.len(), 2);
+        assert_eq!(
+            q.where_clauses[1],
+            WhereClause::FnExpr(FnExpr {
+                expr: Expr::BinaryExpr(BinaryExpr {
+                    left: Box::new(Expr::Variable("?y".into())),
+                    op: BinaryOp::Div,
+                    right: Box::new(Expr::Literal(DataType::Long(2))),
+                }),
+                output: "?result".into(),
+            })
+        );
     }
 
     #[test]
