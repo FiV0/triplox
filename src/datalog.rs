@@ -148,6 +148,12 @@ impl From<PatternClause> for TriplePattern {
 }
 
 impl PatternClause {
+    /// Returns the index type to use for scanning this pattern.
+    ///
+    /// NOTE: The GenericPrefixExtender variants always encode the attribute as
+    /// the first component after the codec byte, so every index type returned
+    /// here must be attribute-first (AEV, AVE, AE, AV). Using EAV would
+    /// produce a scan prefix that doesn't match the actual key layout.
     pub fn index_type(&self, join_order: Vec<Variable>) -> Result<IndexType, Error> {
         match self {
             PatternClause {
@@ -161,7 +167,7 @@ impl PatternClause {
                 (_, PatternElement::Variable(_), _) => Err(anyhow::anyhow!(
                     "Variable not supported in attribute position!"
                 )),
-                (PatternElement::Constant(_), PatternElement::Constant(_), _) => Ok(IndexType::EAV),
+                (PatternElement::Constant(_), PatternElement::Constant(_), _) => Ok(IndexType::AEV),
                 (PatternElement::Wildcard, PatternElement::Constant(_), _) => Ok(IndexType::AV),
                 (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Constant(_)) => Ok(IndexType::AVE),
                 (PatternElement::Variable(_), PatternElement::Constant(_), PatternElement::Wildcard) => Ok(IndexType::AE),
