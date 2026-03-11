@@ -412,7 +412,7 @@
                   :where [[?e :name ?name]
                           [?e :age ?real-age]
                           [(quot ?real-age 2) ?half-age]
-                          [(- ?real-age 15) ?half-age]]}))))
+                          [(+ ?real-age -15) ?half-age]]}))))
 
     (testing "Binding can use range predicates"
       (is (= #{["Dominic" 25]}
