@@ -99,20 +99,19 @@ public class TriploxNode implements AutoCloseable {
             throw unexpectedMessage("RowDescription", msg);
         }
 
-        // Read DataRows until CommandComplete
+        // Read DataRows until ReadyForQuery (server does not send CommandComplete for queries)
         var rows = new ArrayList<List<Object>>();
         while (true) {
-            msg = readExpecting("DataRow or CommandComplete");
+            msg = readExpecting("DataRow or ReadyForQuery");
             if (msg instanceof BackendMessage.DataRow dataRow) {
                 rows.add(dataRow.values());
-            } else if (msg instanceof BackendMessage.CommandComplete) {
+            } else if (msg instanceof BackendMessage.ReadyForQuery) {
                 break;
             } else {
-                throw unexpectedMessage("DataRow or CommandComplete", msg);
+                throw unexpectedMessage("DataRow or ReadyForQuery", msg);
             }
         }
 
-        expectReadyForQuery();
         return new QueryResult(rowDesc.columns(), rows);
     }
 
