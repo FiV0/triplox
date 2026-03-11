@@ -1,0 +1,440 @@
+(ns triplox.integration.query-test
+  "Integration tests for Triplox query engine.
+   Adapted from hooray2/src/test/clojure/hooray/query_test.clj.
+   Requires a running Triplox DevServer."
+  (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
+            [triplox.client :as tc])
+  (:import (io.triplox.client TriploxException)))
+
+;; ---------------------------------------------------------------------------
+;; Fixtures & helpers
+;; ---------------------------------------------------------------------------
+
+(def ^:dynamic *conn* nil)
+
+(def people-schema
+  [{:db/id 50 :db/ident :name :db/valueType :db.type/string}
+   {:db/id 51 :db/ident :last-name :db/valueType :db.type/string}
+   {:db/id 52 :db/ident :sex :db/valueType :db.type/keyword}
+   {:db/id 53 :db/ident :age :db/valueType :db.type/long}
+   {:db/id 54 :db/ident :salary :db/valueType :db.type/long}
+   {:db/id 55 :db/ident :city :db/valueType :db.type/string}])
+
+(defn connect []
+  (let [host (System/getProperty "triplox.host" "localhost")
+        port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
+    (tc/connect host port)))
+
+(defn with-conn [f]
+  (binding [*conn* (connect)]
+    (try (f) (finally (tc/close *conn*)))))
+
+(defn with-people-schema [f]
+  (tc/transact *conn* people-schema)
+  (f))
+
+(use-fixtures :each with-conn with-people-schema)
+
+(defn q
+  "Open a DB, run query, close DB, return results as a set."
+  ([query-edn] (q *conn* query-edn))
+  ([conn query-edn]
+   (let [db (tc/open-db conn)]
+     (try
+       (set (tc/q db query-edn))
+       (finally
+         (tc/close-db conn db))))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — triple patterns
+;; ---------------------------------------------------------------------------
+
+(deftest test-sanity-check
+  (tc/transact *conn* [{:db/id 1 :name "Ivan"}])
+  (is (= #{[1]} (q '{:find [e]
+                      :where [[e :name "Ivan"]]}))))
+
+(deftest test-basic-query
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 2 :name "Petr" :last-name "Petrov"}])
+
+  (testing "Can query value by single field"
+    (is (= #{["Ivan"]} (q '{:find [name]
+                             :where [[e :name "Ivan"]
+                                     [e :name name]]})))
+    (is (= #{["Petr"]} (q '{:find [name]
+                             :where [[e :name "Petr"]
+                                     [e :name name]]}))))
+
+  (testing "Can query entity by single field"
+    (is (= #{[1]} (q '{:find [e]
+                        :where [[e :name "Ivan"]]})))
+    (is (= #{[2]} (q '{:find [e]
+                        :where [[e :name "Petr"]]}))))
+
+  (testing "Can query using multiple terms"
+    (is (= #{["Ivan" "Ivanov"]} (q '{:find [name last-name]
+                                      :where [[e :name name]
+                                              [e :last-name last-name]
+                                              [e :name "Ivan"]
+                                              [e :last-name "Ivanov"]]}))))
+
+  (testing "Negate query based on subsequent non-matching clause"
+    (is (= #{} (q '{:find [e]
+                     :where [[e :name "Ivan"]
+                             [e :last-name "Ivanov-does-not-match"]]}))))
+
+  (testing "Can query for multiple results"
+    (is (= #{["Ivan"] ["Petr"]}
+           (q '{:find [name] :where [[e :name name]]}))))
+
+  (tc/transact *conn* [{:db/id 3 :name "Smith" :last-name "Smith"}])
+
+  (testing "Can query across fields for same value"
+    (is (= #{[3]}
+           (q '{:find [p1] :where [[p1 :name name]
+                                   [p1 :last-name name]]}))))
+
+  (testing "Can query across fields for same value when value is passed in"
+    (is (= #{[3]}
+           (q '{:find [p1] :where [[p1 :name name]
+                                   [p1 :last-name name]
+                                   [p1 :name "Smith"]]})))))
+
+(deftest test-multiple-results
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "1"}
+                        {:db/id 2 :name "Ivan" :last-name "2"}])
+
+  (is (= 2
+         (count (q '{:find [e] :where [[e :name "Ivan"]]})))))
+
+(deftest test-query-using-keywords
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :sex :male}
+                        {:db/id 2 :name "Petr" :sex :male}
+                        {:db/id 3 :name "Doris" :sex :female}
+                        {:db/id 4 :name "Jane" :sex :female}])
+
+  (testing "Can query by single field"
+    (is (= #{["Ivan"] ["Petr"]} (q '{:find [name]
+                                      :where [[e :name name]
+                                              [e :sex :male]]})))
+    (is (= #{["Doris"] ["Jane"]} (q '{:find [name]
+                                       :where [[e :name name]
+                                               [e :sex :female]]})))))
+
+(deftest test-query-across-entities-using-join
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :age 30 :salary 50000}
+                        {:db/id 2 :name "Petr" :age 25 :salary 45000}
+                        {:db/id 3 :name "Sergei" :age 35 :salary 55000}
+                        {:db/id 4 :name "Denis" :age 28 :salary 48000}
+                        {:db/id 5 :name "Denis" :age 32 :salary 52000}])
+
+  (testing "Five people, without a join"
+    (is (= 5 (count (q '{:find [p1]
+                          :where [[p1 :name name]
+                                  [p1 :age age]
+                                  [p1 :salary salary]]}))))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — or
+;; ---------------------------------------------------------------------------
+
+(deftest test-or-query
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 2 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 3 :name "Ivan" :last-name "Ivannotov"}
+                        {:db/id 4 :name "Bob" :last-name "Controlguy"}])
+
+  (testing "Or works as expected"
+    (is (= 3 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [e :name "Ivan"]
+                                  (or [e :last-name "Ivanov"]
+                                      [e :last-name "Ivannotov"])]}))))
+
+    (is (= 4 (count (q '{:find [e]
+                          :where [(or [e :last-name "Ivanov"]
+                                      [e :last-name "Ivannotov"]
+                                      [e :last-name "Controlguy"])]}))))
+
+    (is (= 0 (count (q '{:find [e]
+                          :where [(or [e :last-name "Controlguy"])
+                                  (or [e :last-name "Ivanov"]
+                                      [e :last-name "Ivannotov"])]}))))
+
+    (is (= 0 (count (q '{:find [e]
+                          :where [(or [e :last-name "Ivanov"])
+                                  (or [e :last-name "Ivannotov"])]}))))
+
+    (is (= 0 (count (q '{:find [e]
+                          :where [[e :last-name "Controlguy"]
+                                  (or [e :last-name "Ivanov"]
+                                      [e :last-name "Ivannotov"])]}))))
+
+    (is (= 3 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  (or [e :last-name "Ivanov"]
+                                      [e :name "Bob"])]})))))
+
+  (testing "Or edge case - can take a single clause"
+    (is (= 2 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [e :name "Ivan"]
+                                  (or [e :last-name "Ivanov"])]}))))))
+
+(deftest test-or-query-can-use-and
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :sex :male}
+                        {:db/id 2 :name "Bob" :sex :male}
+                        {:db/id 3 :name "Ivana" :sex :female}])
+
+  (is (= #{["Ivan"]
+            ["Ivana"]}
+         (q '{:find [name]
+              :where [[e :name name]
+                      (or [e :sex :female]
+                          (and [e :sex :male]
+                               [e :name "Ivan"]))]})))
+
+  (is (= #{[1]}
+         (q '{:find [e]
+              :where [(or [e :name "Ivan"])]})))
+
+  (is (= #{}
+         (q '{:find [name]
+              :where [[e :name name]
+                      (or (and [e :sex :female]
+                               [e :name "Ivan"]))]}))))
+
+(deftest test-ors-must-use-same-vars
+  (is (thrown? TriploxException
+              (q '{:find [e]
+                   :where [[e :name name]
+                           (or [e1 :last-name "Ivanov"]
+                               [e2 :last-name "Ivanov"])]}))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — not
+;; ---------------------------------------------------------------------------
+
+(deftest test-not-query
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 2 :name "Ivan" :last-name "Ivanov"}
+                        {:db/id 3 :name "Ivan" :last-name "Ivannotov"}])
+
+  (testing "literal v"
+    (is (= 1 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [e :name "Ivan"]
+                                  (not [e :last-name "Ivanov"])]}))))
+    (is (= 1 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  (not [e :last-name "Ivanov"])]}))))
+
+    (is (= 1 (count (q '{:find [e]
+                          :where [[e :name "Ivan"]
+                                  (not [e :last-name "Ivanov"])]}))))
+
+    (is (= 2 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [e :name "Ivan"]
+                                  (not [e :last-name "Ivannotov"])]}))))
+
+    (testing "multiple clauses in not"
+      (is (= 2 (count (q '{:find [e]
+                            :where [[e :name name]
+                                    [e :name "Ivan"]
+                                    (not [e :last-name "Ivannotov"]
+                                         [e :name "Ivan"])]}))))
+      ;; string?/number? type predicates commented out — needs type predicate support
+      #_(is (= 2 (count (q '{:find [e]
+                              :where [[e :name name]
+                                      [e :name "Ivan"]
+                                      (not [e :last-name "Ivannotov"]
+                                           [(string? name)])]}))))
+
+      #_(is (= 3 (count (q '{:find [e]
+                              :where [[e :name name]
+                                      [e :name "Ivan"]
+                                      (not [e :last-name "Ivannotov"]
+                                           [(number? name)])]}))))
+
+      (is (= 3 (count (q '{:find [e]
+                            :where [[e :name name]
+                                    [e :name "Ivan"]
+                                    (not [e :last-name "Ivannotov"]
+                                         [e :name "Bob"])]}))))))
+
+  (testing "variable v"
+    (is (= 0 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [e :name "Ivan"]
+                                  (not [e :name name])]}))))
+
+    (is (= 0 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  (not [e :name name])]}))))
+
+    (is (= 2 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  [3 :last-name i-name]
+                                  (not [e :last-name i-name])]})))))
+
+  (testing "literal entities"
+    (is (= 0 (count (q '{:find [e]
+                          :where [[e :name name]
+                                  (not [1 :name name])]}))))
+
+    (is (= 1 (count (q '{:find [e]
+                          :where [[e :last-name last-name]
+                                  (not [1 :last-name last-name])]})))))
+
+  (testing "not can come before positive clauses"
+    (is (= 2 (count (q '{:find [e]
+                          :where [(not [e :last-name "Ivannotov"])
+                                  [e :name name]
+                                  [e :name "Ivan"]]}))))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — predicates & functions
+;; ---------------------------------------------------------------------------
+
+(deftest test-predicate-expression
+  (tc/transact *conn* [{:db/id 1 :name "Ivan" :last-name "Ivanov" :age 30}
+                        {:db/id 2 :name "Bob" :last-name "Ivanov" :age 40}
+                        {:db/id 3 :name "Dominic" :last-name "Monroe" :age 50}])
+
+  (testing "range expressions"
+    (is (= #{["Ivan"] ["Bob"]}
+           (q '{:find [name]
+                :where [[e :name name]
+                        [e :age age]
+                        [(< age 50)]]})))
+
+    (is (= #{["Dominic"]}
+           (q '{:find [name]
+                :where [[e :name name]
+                        [e :age age]
+                        [(>= age 50)]]})))
+
+    (testing "fallback to built in predicate for vars"
+      (is (= #{["Ivan" 30 "Ivan" 30]
+               ["Ivan" 30 "Bob" 40]
+               ["Ivan" 30 "Dominic" 50]
+               ["Bob" 40 "Bob" 40]
+               ["Bob" 40 "Dominic" 50]
+               ["Dominic" 50 "Dominic" 50]}
+             (q '{:find [name age1 name2 age2]
+                  :where [[e :name name]
+                          [e :age age1]
+                          [e2 :name name2]
+                          [e2 :age age2]
+                          [(<= age1 age2)]]})))))
+
+  ;; re-find tests commented out — see triplox-bwi for tracking
+  #_(testing "re-find predicate"
+      (is (= #{["Bob"] ["Dominic"]}
+             (q '{:find [name]
+                  :where [[e :name name]
+                          [(re-find #"o" name)]]})))
+
+      (testing "No results"
+        (is (empty? (q '{:find [name]
+                         :where [[e :name name]
+                                 [(re-find #"X" name)]]}))))
+
+      (testing "Not predicate"
+        (is (= #{["Ivan"]}
+               (q '{:find [name]
+                    :where [[e :name name]
+                            (not [(re-find #"o" name)])]})))))
+
+  (testing "Entity variable"
+    (is (= #{["Ivan"]}
+           (q '{:find [name]
+                :where [[e :name name]
+                        [(= 1 e)]]})))
+
+    (testing "Filtered by value"
+      (is (= #{[2] [1]}
+             (q '{:find [e]
+                  :where [[e :last-name last-name]
+                          [(= "Ivanov" last-name)]]})))
+
+      (is (= #{[1]}
+             (q '{:find [e]
+                  :where [[e :last-name last-name]
+                          [e :age age]
+                          [(= "Ivanov" last-name)]
+                          [(= 30 age)]]})))))
+
+  ;; re-find tests commented out — see triplox-bwi
+  #_(testing "Several variables with re-find"
+      (is (= #{["Bob"]}
+             (q '{:find [name]
+                  :where [[e :name name]
+                          [e :age age]
+                          [(= 40 age)]
+                          [(re-find #"o" name)]
+                          [(not= age name)]]})))
+
+      (is (= #{[2 "Ivanov"]}
+             (q '{:find [e last-name]
+                  :where [[e :last-name last-name]
+                          [e :age age]
+                          [(re-find #"ov$" last-name)]
+                          (not [(= age 30)])]})))
+
+      (testing "No results"
+        (is (= #{}
+               (q '{:find [name]
+                    :where [[e :name name]
+                            [e :age age]
+                            [(re-find #"o" name)]
+                            [(= age name)]]})))))
+
+  (testing "Bind result to var"
+    (is (= #{["Dominic" 25] ["Ivan" 15] ["Bob" 20]}
+           (q '{:find [name half-age]
+                :where [[e :name name]
+                        [e :age age]
+                        [(quot age 2) half-age]]})))
+
+    (testing "Order of joins is rearranged to ensure arguments are bound"
+      (is (= #{["Dominic" 25] ["Ivan" 15] ["Bob" 20]}
+             (q '{:find [name half-age]
+                  :where [[e :name name]
+                          [e :age real-age]
+                          [(quot real-age 2) half-age]]}))))
+
+    (testing "Binding more than once intersects result"
+      (is (= #{["Ivan" 15]}
+             (q '{:find [name half-age]
+                  :where [[e :name name]
+                          [e :age real-age]
+                          [(quot real-age 2) half-age]
+                          [(- real-age 15) half-age]]}))))
+
+    (testing "Binding can use range predicates"
+      (is (= #{["Dominic" 25]}
+             (q '{:find [name half-age]
+                  :where [[e :name name]
+                          [e :age real-age]
+                          [(quot real-age 2) half-age]
+                          [(> half-age 20)]]}))))))
+
+
+;; ---------------------------------------------------------------------------
+;; Tests — additive transact
+;; ---------------------------------------------------------------------------
+
+(deftest datomic-style-addition
+  (tc/transact *conn* [{:db/id 1 :name "Alice"}])
+
+  (is (= #{["Alice"]} (q '{:find [name]
+                            :where [[p :name name]]})))
+
+  (tc/transact *conn* [{:db/id 1 :city "NYC"}])
+
+  (is (= #{["Alice" "NYC"]} (q '{:find [name city]
+                                  :where [[p :name name]
+                                          [p :city city]]}))))

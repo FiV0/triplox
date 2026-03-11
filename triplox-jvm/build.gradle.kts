@@ -29,6 +29,14 @@ tasks.test {
     useJUnitPlatform {
         excludeTags("integration")
     }
+    exclude("**/integration/**")
+}
+
+tasks.register<Test>("integrationTest") {
+    useJUnitPlatform()
+    include("**/integration/**", "**/Integration*")
+    systemProperty("triplox.host", System.getenv("TRIPLOX_HOST") ?: "localhost")
+    systemProperty("triplox.port", System.getenv("TRIPLOX_PORT") ?: "5490")
 }
 
 tasks.clojureRepl {
