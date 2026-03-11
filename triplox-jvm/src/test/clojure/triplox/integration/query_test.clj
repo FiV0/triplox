@@ -328,7 +328,7 @@
                           [?e :age ?age1]
                           [?e2 :name ?name2]
                           [?e2 :age ?age2]
-                          [(<= ?age1 ?age2)]]}))))))
+                          [(<= ?age1 ?age2)]]})))))
 
   ;; re-find tests commented out — see triplox-bwi for tracking
   #_(testing "re-find predicate"
