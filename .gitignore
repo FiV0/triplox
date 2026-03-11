@@ -4,3 +4,6 @@
 
 .claude-worktrees/
 .claude/worktrees
+
+.lsp/
+.clj-kondo/
