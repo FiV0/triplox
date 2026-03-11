@@ -195,7 +195,8 @@ mod tests {
     use slatedb::config::ScanOptions;
 
     use crate::codec;
-    use crate::datalog::{FindElement, FindSpec, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
+    use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
+    use crate::expr::{BinaryExpr, BinaryOp, Expr};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
     use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
     use crate::schema::test_schema_tx;
@@ -919,5 +920,264 @@ mod tests {
         assert_eq!(basis.seq_num, 0);
 
         node.close().await;
+    }
+
+    /// Insert 3 people: Ivan (100, age=30), Bob (101, age=40), Dominic (102, age=50).
+    async fn insert_three_people(node: &impl SubmitNode) {
+        let people = vec![
+            (100, "Ivan", 30),
+            (101, "Bob", 40),
+            (102, "Dominic", 50),
+        ];
+        for (id, name, age) in people {
+            let mut doc = BTreeMap::new();
+            doc.insert("db/id".to_string(), DataType::Long(id));
+            doc.insert("name".to_string(), DataType::String(name.to_string()));
+            doc.insert("age".to_string(), DataType::Long(age));
+            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+        }
+    }
+
+    fn predicate(left: Expr, op: BinaryOp, right: Expr) -> WhereClause {
+        WhereClause::Predicate(Expr::BinaryExpr(BinaryExpr {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        }))
+    }
+
+    fn fn_expr(left: Expr, op: BinaryOp, right: Expr, output: &str) -> WhereClause {
+        WhereClause::FnExpr(FnExpr {
+            expr: Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            }),
+            output: output.to_string(),
+        })
+    }
+
+    fn var(name: &str) -> Expr {
+        Expr::Variable(name.to_string())
+    }
+
+    fn lit_long(n: i64) -> Expr {
+        Expr::Literal(DataType::Long(n))
+    }
+
+    fn lit_string(s: &str) -> Expr {
+        Expr::Literal(DataType::String(s.to_string()))
+    }
+
+    fn find_vars(names: &[&str]) -> FindSpec {
+        FindSpec::FindRel(names.iter().map(|n| FindElement::Variable(n.to_string())).collect())
+    }
+
+    fn triple(entity: &str, attr: &str, value: &str) -> WhereClause {
+        WhereClause::Triple(TriplePattern {
+            entity: PatternElement::Variable(entity.to_string()),
+            attribute: PatternElement::Constant(kw(attr)),
+            value: PatternElement::Variable(value.to_string()),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_lt() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                triple("?e", "age", "?age"),
+                predicate(var("?age"), BinaryOp::Lt, lit_long(50)),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_gte() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                triple("?e", "age", "?age"),
+                predicate(var("?age"), BinaryOp::GtEq, lit_long(50)),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("Dominic".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_eq_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                predicate(lit_long(100), BinaryOp::Eq, var("?e")),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("Ivan".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_eq_value() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?e"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                predicate(lit_string("Ivan"), BinaryOp::Eq, var("?name")),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::Long(100)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_lte_two_vars() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name1", "?name2"]),
+            where_clauses: vec![
+                triple("?e1", "name", "?name1"),
+                triple("?e1", "age", "?age1"),
+                triple("?e2", "name", "?name2"),
+                triple("?e2", "age", "?age2"),
+                predicate(var("?age1"), BinaryOp::LtEq, var("?age2")),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        // 3 people → 6 pairs where age1 <= age2:
+        // (Ivan,Ivan), (Ivan,Bob), (Ivan,Dominic), (Bob,Bob), (Bob,Dominic), (Dominic,Dominic)
+        assert_eq!(result.len(), 6);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_fn_div() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name", "?half"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                triple("?e", "age", "?age"),
+                fn_expr(var("?age"), BinaryOp::Div, lit_long(2), "?half"),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string()), DataType::Long(15)]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string()), DataType::Long(20)]));
+        assert!(result.contains(&vec![DataType::String("Dominic".to_string()), DataType::Long(25)]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_fn_with_predicate() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name", "?half"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                triple("?e", "age", "?age"),
+                fn_expr(var("?age"), BinaryOp::Div, lit_long(2), "?half"),
+                predicate(var("?half"), BinaryOp::Gt, lit_long(20)),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("Dominic".to_string()), DataType::Long(25)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_fn_sub() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name", "?result"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                triple("?e", "age", "?age"),
+                fn_expr(var("?age"), BinaryOp::Sub, lit_long(15), "?result"),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string()), DataType::Long(15)]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string()), DataType::Long(25)]));
+        assert!(result.contains(&vec![DataType::String("Dominic".to_string()), DataType::Long(35)]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_not_clause() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                WhereClause::Not(vec![WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("age")),
+                    value: PatternElement::Constant(DataType::Long(50)),
+                })]),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
     }
 }
