@@ -1180,4 +1180,106 @@ mod tests {
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
         assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
     }
+
+    /// Reproduce: querying with a keyword constant in value position should only return
+    /// entities whose stored keyword value matches, not all entities.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_keyword_value_comparison() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Define "sex" attribute (ID 54) with keyword value type
+        let mut sex_attr = BTreeMap::new();
+        sex_attr.insert("db/id".to_string(), DataType::Long(54));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+
+        let people = vec![
+            (100, "Ivan", "male"),
+            (101, "Ivana", "female"),
+            (102, "Petr", "male"),
+            (103, "Doris", "female"),
+        ];
+        for (id, name, sex) in people {
+            let mut doc = BTreeMap::new();
+            doc.insert("db/id".to_string(), DataType::Long(id));
+            doc.insert("name".to_string(), DataType::String(name.to_string()));
+            doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
+            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+        }
+
+        // find ?name where [?e :sex :male] [?e :name ?name]
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("sex")),
+                    value: PatternElement::Constant(DataType::Keyword(Keyword::plain("male"))),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("name")),
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+
+        // Only Ivan and Petr are male
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
+        assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("Ivana".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("Doris".to_string())]));
+    }
+
+    /// Reproduce: a literal entity ID in the entity position of a triple pattern
+    /// should filter by that exact entity — currently EAV constant prefix is broken.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_literal_entity_in_triple() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Define "last-name" attribute (ID 54)
+        let mut attr = BTreeMap::new();
+        attr.insert("db/id".to_string(), DataType::Long(54));
+        attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
+        attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
+        node.execute_tx(vec![TxOp::Put(Document(attr))]).await.unwrap();
+
+        // Insert entity 200 and entity 201 with last-names
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("db/id".to_string(), DataType::Long(200));
+        doc1.insert("last-name".to_string(), DataType::String("Ivannotov".to_string()));
+        let mut doc2 = BTreeMap::new();
+        doc2.insert("db/id".to_string(), DataType::Long(201));
+        doc2.insert("last-name".to_string(), DataType::String("Bobnev".to_string()));
+        node.execute_tx(vec![
+            TxOp::Put(Document(doc1)),
+            TxOp::Put(Document(doc2)),
+        ]).await.unwrap();
+
+        // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
+        let query = Query {
+            find: find_vars(&["?ln"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Constant(DataType::Long(200)),
+                    attribute: PatternElement::Constant(kw("last-name")),
+                    value: PatternElement::Variable("?ln".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+
+        // Should return exactly one row: "Ivannotov"
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("Ivannotov".to_string())]);
+    }
 }
