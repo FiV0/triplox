@@ -26,8 +26,9 @@
     (tc/connect host port)))
 
 (defn with-conn [f]
-  (binding [*conn* (connect)]
-    (try (f) (finally (tc/close *conn*)))))
+  (with-open [conn (connect)]
+    (binding [*conn* conn]
+      (f))))
 
 (defn with-people-schema [f]
   (tc/transact *conn* people-schema)
@@ -39,11 +40,8 @@
   "Open a DB, run query, close DB, return results as a set."
   ([query-edn] (q *conn* query-edn))
   ([conn query-edn]
-   (let [db (tc/open-db conn)]
-     (try
-       (set (tc/q db query-edn))
-       (finally
-         (tc/close-db db))))))
+   (with-open [db (tc/open-db conn)]
+     (set (tc/q db query-edn)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests — triple patterns

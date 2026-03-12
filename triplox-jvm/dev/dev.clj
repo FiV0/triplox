@@ -13,14 +13,12 @@
                          {:db/id 1002 :person/name "bob" :person/age 25}])
 
   ;; Open a DB snapshot and query
-  (def db (client/open-db conn))
-
-  (client/q db '{:find [?name ?age]
-                 :where [[?e :person/name ?name]
-                         [?e :person/age ?age]]})
+  (with-open [db (client/open-db conn)]
+    (client/q db '{:find [?name ?age]
+                   :where [[?e :person/name ?name]
+                           [?e :person/age ?age]]}))
 
   ;; Clean up
-  (client/close-db db)
-  (client/close conn)
+  (.close conn)
 
   )
