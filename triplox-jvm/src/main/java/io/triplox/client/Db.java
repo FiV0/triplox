@@ -8,12 +8,12 @@ import java.io.IOException;
  * <p>Obtained via {@link TriploxNode#openDb()}. Provides query execution
  * and must be closed when no longer needed to release server resources.</p>
  */
-public class DbHandle implements AutoCloseable {
+public class Db implements AutoCloseable {
     private final TriploxNode node;
     private final int dbId;
     private final long txId;
 
-    DbHandle(TriploxNode node, int dbId, long txId) {
+    Db(TriploxNode node, int dbId, long txId) {
         this.node = node;
         this.dbId = dbId;
         this.txId = txId;

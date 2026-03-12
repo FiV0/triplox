@@ -49,21 +49,21 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Open a DB snapshot at the latest indexed transaction.
      */
-    public DbHandle openDb() throws IOException {
+    public Db openDb() throws IOException {
         return openDb(null);
     }
 
     /**
      * Open a DB snapshot at a specific transaction ID.
      */
-    public DbHandle openDb(Long basisTxId) throws IOException {
+    public Db openDb(Long basisTxId) throws IOException {
         WireCodec.writeOpenDb(out, basisTxId);
         out.flush();
 
         BackendMessage msg = readExpecting("DbOpened");
         if (msg instanceof BackendMessage.DbOpened opened) {
             expectReadyForQuery();
-            return new DbHandle(this, opened.dbId(), opened.txId());
+            return new Db(this, opened.dbId(), opened.txId());
         }
         throw unexpectedMessage("DbOpened", msg);
     }
@@ -71,7 +71,7 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Release a previously opened DB snapshot.
      */
-    void closeDbInternal(DbHandle db) throws IOException {
+    void closeDbInternal(Db db) throws IOException {
         WireCodec.writeCloseDb(out, db.dbId());
         out.flush();
 
@@ -89,7 +89,7 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Execute a Datalog query against an open DB snapshot.
      */
-    QueryResult queryInternal(DbHandle db, String edn) throws IOException {
+    QueryResult queryInternal(Db db, String edn) throws IOException {
         WireCodec.writeQuery(out, edn, db.dbId());
         out.flush();
 
@@ -149,7 +149,7 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Stub — subscription not yet supported.
      */
-    public void subscribe(DbHandle db, String edn) {
+    public void subscribe(Db db, String edn) {
         throw new UnsupportedOperationException("subscribe is not yet supported");
     }
 

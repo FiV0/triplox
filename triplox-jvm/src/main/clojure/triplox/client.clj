@@ -2,7 +2,7 @@
   "Clojure client API for Triplox."
   (:require [triplox.types :as types]
             [triplox.tx :as tx])
-  (:import [io.triplox.client TriploxNode DbHandle QueryResult TxKeyResult TxResultValue]))
+  (:import [io.triplox.client TriploxNode Db QueryResult TxKeyResult TxResultValue]))
 
 (defn connect
   "Connect to a Triplox server. Returns a connection map."
@@ -25,20 +25,20 @@
    (open-db conn nil))
   ([conn opts]
    (let [basis-tx-id (when-let [b (:basis-tx-id opts)] (Long/valueOf (long b)))
-         ^DbHandle handle (.openDb ^TriploxNode (:node conn) basis-tx-id)]
+         ^Db handle (.openDb ^TriploxNode (:node conn) basis-tx-id)]
      {:conn conn
       :handle handle})))
 
 (defn close-db
   "Release a DB snapshot."
   [db]
-  (.close ^DbHandle (:handle db)))
+  (.close ^Db (:handle db)))
 
 (defn q
   "Execute a Datalog query. Returns a vector of vectors."
   [db query-edn]
   (let [query-str (pr-str query-edn)
-        ^QueryResult result (.query ^DbHandle (:handle db) query-str)]
+        ^QueryResult result (.query ^Db (:handle db) query-str)]
     (mapv (fn [row] (mapv types/wire->clj row))
           (.rows result))))
 
