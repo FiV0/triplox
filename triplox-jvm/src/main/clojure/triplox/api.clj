@@ -9,32 +9,26 @@
   (^TriploxNode [host port]
    (connect host port {}))
   (^TriploxNode [host port params]
-   (let [str-params (java.util.TreeMap.)]
-     (doseq [[k v] params]
-       (.put str-params (name k) (str v)))
-     (TriploxNode/connect host (int port) str-params))))
+   (TriploxNode/connect host (int port) (into {} (map (fn [[k v]] [(name k) (str v)])) params))))
 
 (defn db
   "Open a DB snapshot. Returns a Db (AutoCloseable)."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn opts]
-   (let [basis-tx-id (when-let [b (:basis-tx-id opts)] (Long/valueOf (long b)))]
-     (.openDb ^TriploxNode conn basis-tx-id))))
+  (^Db [conn {:keys [basis-tx-id] :as _opts}]
+   (.openDb ^TriploxNode conn (when basis-tx-id (long basis-tx-id)))))
 
 (defn q
   "Execute a Datalog query. Returns a vector of vectors."
-  [db query-edn]
-  (let [query-str (pr-str query-edn)
-        ^QueryResult result (.query ^Db db query-str)]
+  [db query]
+  (let [^QueryResult result (.query ^Db db (pr-str query))]
     (mapv (fn [row] (mapv types/wire->clj row))
           (.rows result))))
 
 (defn transact
   "Execute a transaction and wait for indexing. Returns result map."
   [conn tx-data]
-  (let [ops (tx/tx-data->ops tx-data)
-        ^TxResultValue result (.executeTx ^TriploxNode conn ops)]
+  (let [^TxResultValue result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
     {:tx-id (.txId result)
      :system-time (.systemTime result)
      :committed? (.isCommitted result)
