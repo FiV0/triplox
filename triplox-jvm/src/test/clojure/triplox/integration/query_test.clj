@@ -3,7 +3,7 @@
    Adapted from hooray2/src/test/clojure/hooray/query_test.clj.
    Requires a running Triplox DevServer."
   (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
-            [triplox.client :as tc])
+            [triplox.api :as tc])
   (:import (io.triplox.client TriploxException)))
 
 ;; ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@
   "Open a DB, run query, close DB, return results as a set."
   ([query-edn] (q *conn* query-edn))
   ([conn query-edn]
-   (with-open [db (tc/open-db conn)]
+   (with-open [db (tc/db conn)]
      (set (tc/q db query-edn)))))
 
 ;; ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-(ns triplox.client
+(ns triplox.api
   "Clojure client API for Triplox."
   (:require [triplox.types :as types]
             [triplox.tx :as tx])
@@ -14,10 +14,10 @@
        (.put str-params (name k) (str v)))
      (TriploxNode/connect host (int port) str-params))))
 
-(defn open-db
+(defn db
   "Open a DB snapshot. Returns a Db (AutoCloseable)."
   (^Db [conn]
-   (open-db conn nil))
+   (db conn nil))
   (^Db [conn opts]
    (let [basis-tx-id (when-let [b (:basis-tx-id opts)] (Long/valueOf (long b)))]
      (.openDb ^TriploxNode conn basis-tx-id))))
