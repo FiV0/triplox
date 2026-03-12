@@ -1,7 +1,6 @@
 (ns triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
-  (:import [io.triplox.client TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]
-           [java.util TreeMap]))
+  (:import [io.triplox.client TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (defn- keyword->attr
   "Convert a keyword to a string attribute name.
@@ -13,10 +12,7 @@
 (defn- map->put
   "Convert a Clojure map to a TxOp.Put."
   [m]
-  (let [tm (TreeMap.)]
-    (doseq [[k v] m]
-      (.put tm (keyword->attr k) v))
-    (TxOp$Put. tm)))
+  (TxOp$Put. (into {} (map (fn [[k v]] [(keyword->attr k) v])) m)))
 
 (defn- vec->tx-op
   "Convert a Datomic-style tx-data vector to a TxOp."

@@ -5,7 +5,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.TreeMap;
+import java.util.Map;
 
 import static io.triplox.client.MessageTypes.*;
 
@@ -60,7 +60,7 @@ public final class TxOpCodec {
         byte tag = in.readByte();
         return switch (tag) {
             case TXOP_PUT -> {
-                TreeMap<String, Object> doc = DataTypeCodec.decodeDataTypeMap(in);
+                Map<String, Object> doc = DataTypeCodec.decodeDataTypeMap(in);
                 yield new TxOp.Put(doc);
             }
             case TXOP_ADD -> {

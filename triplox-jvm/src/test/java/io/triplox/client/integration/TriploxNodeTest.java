@@ -5,7 +5,7 @@ import io.triplox.client.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.TreeMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,17 +23,14 @@ class TriploxNodeTest {
     void testConnectTransactQueryClose() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
-            var schema = new TreeMap<String, Object>();
-            schema.put("db/id", 50L);
-            schema.put("db/ident", Keyword.intern("name"));
-            schema.put("db/valueType", Keyword.intern("db.type", "string"));
-            node.executeTx(List.of(new TxOp.Put(schema)));
+            node.executeTx(List.of(new TxOp.Put(Map.of(
+                    "db/id", 50L,
+                    "db/ident", Keyword.intern("name"),
+                    "db/valueType", Keyword.intern("db.type", "string")))));
 
             // Data
-            var doc = new TreeMap<String, Object>();
-            doc.put("db/id", 100L);
-            doc.put("name", "alice");
-            var txResult = node.executeTx(List.of(new TxOp.Put(doc)));
+            var txResult = node.executeTx(List.of(new TxOp.Put(
+                    Map.of("db/id", 100L, "name", "alice"))));
             assertTrue(txResult.isCommitted());
 
             // Query

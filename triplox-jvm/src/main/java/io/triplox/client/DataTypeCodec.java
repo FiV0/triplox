@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -86,10 +87,10 @@ public final class DataTypeCodec {
                 out.writeByte(TAG_KEYWORD);
                 encodeString(out, kw.toString());
             }
-            case TreeMap<?, ?> map -> {
+            case Map<?, ?> map -> {
                 out.writeByte(TAG_MAP);
                 @SuppressWarnings("unchecked")
-                var typedMap = (TreeMap<String, Object>) map;
+                var typedMap = (Map<String, Object>) map;
                 encodeDataTypeMap(out, typedMap);
             }
             case List<?> list -> {
@@ -259,9 +260,10 @@ public final class DataTypeCodec {
         return list;
     }
 
-    public static void encodeDataTypeMap(DataOutputStream out, TreeMap<String, Object> map) throws IOException {
-        out.writeInt(map.size());
-        for (var entry : map.entrySet()) {
+    public static void encodeDataTypeMap(DataOutputStream out, Map<String, Object> map) throws IOException {
+        var sorted = new TreeMap<>(map);
+        out.writeInt(sorted.size());
+        for (var entry : sorted.entrySet()) {
             encodeString(out, entry.getKey());
             encode(out, entry.getValue());
         }
