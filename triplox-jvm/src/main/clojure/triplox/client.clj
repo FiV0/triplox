@@ -20,28 +20,25 @@
   (.close ^TriploxNode (:node conn)))
 
 (defn open-db
-  "Open a DB snapshot. Returns a db map with :conn, :db-id, :tx-id."
+  "Open a DB snapshot. Returns a db map with :conn and :handle."
   ([conn]
    (open-db conn nil))
   ([conn opts]
    (let [basis-tx-id (when-let [b (:basis-tx-id opts)] (Long/valueOf (long b)))
          ^DbHandle handle (.openDb ^TriploxNode (:node conn) basis-tx-id)]
      {:conn conn
-      :db-id (.dbId handle)
-      :tx-id (.txId handle)})))
+      :handle handle})))
 
 (defn close-db
   "Release a DB snapshot."
-  [conn db]
-  (.closeDb ^TriploxNode (:node conn) (DbHandle. (:db-id db) (:tx-id db))))
+  [db]
+  (.close ^DbHandle (:handle db)))
 
 (defn q
   "Execute a Datalog query. Returns a vector of vectors."
   [db query-edn]
   (let [query-str (pr-str query-edn)
-        ^QueryResult result (.query ^TriploxNode (get-in db [:conn :node])
-                                    (DbHandle. (:db-id db) (:tx-id db))
-                                    query-str)]
+        ^QueryResult result (.query ^DbHandle (:handle db) query-str)]
     (mapv (fn [row] (mapv types/wire->clj row))
           (.rows result))))
 

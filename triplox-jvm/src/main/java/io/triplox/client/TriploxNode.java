@@ -63,7 +63,7 @@ public class TriploxNode implements AutoCloseable {
         BackendMessage msg = readExpecting("DbOpened");
         if (msg instanceof BackendMessage.DbOpened opened) {
             expectReadyForQuery();
-            return new DbHandle(opened.dbId(), opened.txId());
+            return new DbHandle(this, opened.dbId(), opened.txId());
         }
         throw unexpectedMessage("DbOpened", msg);
     }
@@ -71,7 +71,7 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Release a previously opened DB snapshot.
      */
-    public void closeDb(DbHandle db) throws IOException {
+    void closeDbInternal(DbHandle db) throws IOException {
         WireCodec.writeCloseDb(out, db.dbId());
         out.flush();
 
@@ -89,7 +89,7 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Execute a Datalog query against an open DB snapshot.
      */
-    public QueryResult query(DbHandle db, String edn) throws IOException {
+    QueryResult queryInternal(DbHandle db, String edn) throws IOException {
         WireCodec.writeQuery(out, edn, db.dbId());
         out.flush();
 

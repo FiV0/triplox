@@ -43,7 +43,7 @@
      (try
        (set (tc/q db query-edn))
        (finally
-         (tc/close-db conn db))))))
+         (tc/close-db db))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests — triple patterns

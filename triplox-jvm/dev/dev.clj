@@ -18,7 +18,7 @@
                          [?e :person/age ?age]]})
 
   ;; Clean up
-  (client/close-db conn db)
+  (client/close-db db)
   (client/close conn)
   ;;
   )
