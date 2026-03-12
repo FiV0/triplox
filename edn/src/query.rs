@@ -426,10 +426,11 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
             ::SpannedValue::Uuid(ref u) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Uuid(u.clone()))),
 
-            // These don't appear in queries.
+            // TODO(triplox-14x): review which of these types should be supported
+            // in the value position of query patterns.
             ::SpannedValue::Nil => None,
             ::SpannedValue::NamespacedSymbol(_) => None,
-            ::SpannedValue::Keyword(_) => None,                // … yet.
+            ::SpannedValue::Keyword(ref x) => Some(x.clone().into()),
             ::SpannedValue::Map(_) => None,
             ::SpannedValue::List(_) => None,
             ::SpannedValue::Set(_) => None,
