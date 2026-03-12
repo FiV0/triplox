@@ -60,4 +60,4 @@
 (deftest invalid-form-throws
   (testing "Invalid form throws"
     (is (thrown? clojure.lang.ExceptionInfo
-                (tx/tx-data->ops ["not-a-map-or-vector"])))))
+                 (tx/tx-data->ops ["not-a-map-or-vector"])))))

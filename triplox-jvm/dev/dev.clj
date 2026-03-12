@@ -6,11 +6,11 @@
   (def conn (t/connect "localhost" 5490))
 
   (t/transact conn [{:db/id 50 :db/ident :person/name :db/valueType :db.type/string}
-                         {:db/id 51 :db/ident :person/age :db/valueType :db.type/long}])
+                    {:db/id 51 :db/ident :person/age :db/valueType :db.type/long}])
 
   ;; Transact some data
   (t/transact conn [{:db/id 1001 :person/name "alice" :person/age 30}
-                         {:db/id 1002 :person/name "bob" :person/age 25}])
+                    {:db/id 1002 :person/name "bob" :person/age 25}])
 
   ;; Open a DB snapshot and query
   (with-open [db (t/db conn)]
