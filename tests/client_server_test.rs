@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, Document, TxOp};
+use edn::symbols::Keyword;
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::{Basis, TransactionResult};
@@ -316,5 +317,47 @@ async fn test_dev_server_connections_are_isolated() {
     db2.close().await.unwrap();
     client1.close().await.unwrap();
     client2.close().await.unwrap();
+    token.cancel();
+}
+
+/// Mirror of Clojure test-query-using-keywords, exercised through the full
+/// client-server wire protocol via query_edn.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_query_keyword_value_comparison_via_wire() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+
+    // Add sex attribute (keyword type) at ID 54
+    let mut sex_attr = BTreeMap::new();
+    sex_attr.insert("db/id".to_string(), DataType::Long(54));
+    sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
+    sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+    client.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+
+    // Insert 4 people with keyword sex values
+    for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
+                             (102, "Doris", "female"), (103, "Jane", "female")] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("name".to_string(), DataType::String(name.to_string()));
+        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    // Same clause order as Clojure: name first (binds ?e), sex filter second
+    let result = db
+        .query_edn("{:find [?name] :where [[?e :name ?name] [?e :sex :male]]}")
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 2, "expected only Ivan and Petr, got {:?}", result);
+    assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
+    assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
     token.cancel();
 }

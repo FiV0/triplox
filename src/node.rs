@@ -1181,10 +1181,8 @@ mod tests {
         assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
     }
 
-    /// Reproduce: querying with a keyword constant in value position should only return
-    /// entities whose stored keyword value matches, not all entities.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_keyword_value_comparison() {
+    async fn test_query_keyword_in_value_position() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -1237,10 +1235,58 @@ mod tests {
         assert!(!result.contains(&vec![DataType::String("Doris".to_string())]));
     }
 
-    /// Reproduce: a literal entity ID in the entity position of a triple pattern
-    /// should filter by that exact entity — currently EAV constant prefix is broken.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_literal_entity_in_triple() {
+    async fn test_query_keyword_value_comparison_name_first() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut sex_attr = BTreeMap::new();
+        sex_attr.insert("db/id".to_string(), DataType::Long(54));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+
+        let people = vec![
+            (100, "Ivan", "male"),
+            (101, "Petr", "male"),
+            (102, "Doris", "female"),
+            (103, "Jane", "female"),
+        ];
+        for (id, name, sex) in people {
+            let mut doc = BTreeMap::new();
+            doc.insert("db/id".to_string(), DataType::Long(id));
+            doc.insert("name".to_string(), DataType::String(name.to_string()));
+            doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
+            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+        }
+
+        // Same clause order as Clojure: name first (binds ?e), sex filter second
+        let query = Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![
+                triple("?e", "name", "?name"),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("sex")),
+                    value: PatternElement::Constant(DataType::Keyword(Keyword::plain("male"))),
+                }),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
+        assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("Doris".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("Jane".to_string())]));
+    }
+
+
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_literal_entity_id_in_triple() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
