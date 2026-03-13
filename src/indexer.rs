@@ -280,7 +280,7 @@ impl Indexer {
                 match rx.recv().await {
                     Ok((completed_tx_key, result)) => {
                         if completed_tx_key >= tx_key {
-                            return result.map_err(|e| anyhow::anyhow!("{}", e));
+                            return result.map_err(|e| anyhow::anyhow!("{:#}", e));
                         }
                         // Keep waiting for higher tx_id
                     },
