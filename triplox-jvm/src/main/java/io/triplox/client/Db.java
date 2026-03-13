@@ -1,6 +1,7 @@
 package io.triplox.client;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * Handle to an open DB snapshot on the server.
@@ -19,14 +20,14 @@ public class Db implements AutoCloseable {
         this.txId = txId;
     }
 
-    public int dbId() { return dbId; }
+    int dbId() { return dbId; }
     public long txId() { return txId; }
 
     /**
      * Execute a Datalog query against this DB snapshot.
      */
-    public QueryResult query(String edn) throws IOException {
-        return node.queryInternal(this, edn);
+    public List<List<Object>> query(String edn) throws IOException {
+        return node.queryInternal(this, edn).rows();
     }
 
     /**

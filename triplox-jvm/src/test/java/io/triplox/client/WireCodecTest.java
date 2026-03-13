@@ -140,23 +140,6 @@ class WireCodecTest {
     }
 
     @Test
-    void testCommandComplete() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        DataTypeCodec.encodeString(dos, "SELECT");
-        dos.writeLong(42);
-        dos.flush();
-
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_COMMAND_COMPLETE, payload.toByteArray());
-
-        var msg = (BackendMessage.CommandComplete) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals("SELECT", msg.tag());
-        assertEquals(42, msg.rowCount());
-    }
-
-    @Test
     void testTxKey() throws IOException {
         var payload = new ByteArrayOutputStream();
         var dos = new DataOutputStream(payload);

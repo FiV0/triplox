@@ -35,9 +35,9 @@ class TriploxNodeTest {
 
             // Query
             try (var db = node.openDb()) {
-                var result = db.query("{:find [?name] :where [[?e :name ?name]]}");
-                assertEquals(1, result.rows().size());
-                assertEquals("alice", result.rows().get(0).get(0));
+                var rows = db.query("{:find [?name] :where [[?e :name ?name]]}");
+                assertEquals(1, rows.size());
+                assertEquals("alice", rows.get(0).get(0));
             }
         }
     }

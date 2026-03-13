@@ -2,7 +2,7 @@
   "Clojure client API for Triplox."
   (:require [triplox.types :as types]
             [triplox.tx :as tx])
-  (:import [io.triplox.client TriploxNode Db QueryResult TxKeyResult TxResultValue]))
+  (:import [io.triplox.client TriploxNode Db TxKeyResult TxResultValue]))
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
@@ -21,9 +21,8 @@
 (defn q
   "Execute a Datalog query. Returns a vector of vectors."
   [db query]
-  (let [^QueryResult result (.query ^Db db (pr-str query))]
-    (mapv (fn [row] (mapv types/wire->clj row))
-          (.rows result))))
+  (mapv (fn [row] (mapv types/wire->clj row))
+        (.query ^Db db (pr-str query))))
 
 (defn transact
   "Execute a transaction and wait for indexing. Returns result map."

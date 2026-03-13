@@ -165,9 +165,6 @@ public final class WireCodec {
                 yield new BackendMessage.DataRow(values);
             }
 
-            case MSG_COMMAND_COMPLETE -> new BackendMessage.CommandComplete(
-                    DataTypeCodec.decodeString(in), in.readLong());
-
             case MSG_DATA_BATCH_COMPLETE -> new BackendMessage.DataBatchComplete(in.readLong());
 
             case MSG_READY_FOR_QUERY -> new BackendMessage.ReadyForQuery(in.readByte());

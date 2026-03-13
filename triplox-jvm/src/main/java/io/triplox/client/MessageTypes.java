@@ -25,7 +25,6 @@ public final class MessageTypes {
     public static final byte MSG_DB_CLOSED            = (byte) 'J';
     public static final byte MSG_ROW_DESCRIPTION      = (byte) 'T';
     public static final byte MSG_DATA_ROW             = (byte) 'D';
-    public static final byte MSG_COMMAND_COMPLETE      = (byte) 'C';
     public static final byte MSG_DATA_BATCH_COMPLETE   = (byte) 'B';
     public static final byte MSG_READY_FOR_QUERY       = (byte) 'Z';
     public static final byte MSG_TX_KEY                = (byte) 'Y';
