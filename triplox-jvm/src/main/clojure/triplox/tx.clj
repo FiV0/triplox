@@ -2,6 +2,7 @@
   "Convert Datomic-style transaction data to TxOp objects."
   (:import [io.triplox.client TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
+;; TODO(triplox-878) - check if this is really needed
 (defn- keyword->attr
   "Convert a keyword to a string attribute name.
    :person/name → \"person/name\"
