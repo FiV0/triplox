@@ -10,12 +10,12 @@
 (def ^:dynamic *conn* nil)
 
 (def people-schema
-  [{:db/id 50 :db/ident :name :db/valueType :db.type/string}
-   {:db/id 51 :db/ident :last-name :db/valueType :db.type/string}
-   {:db/id 52 :db/ident :sex :db/valueType :db.type/keyword}
-   {:db/id 53 :db/ident :age :db/valueType :db.type/long}
-   {:db/id 54 :db/ident :salary :db/valueType :db.type/long}
-   {:db/id 55 :db/ident :city :db/valueType :db.type/string}])
+  [{:db/id 200 :db/ident :name :db/valueType :db.type/string}
+   {:db/id 201 :db/ident :last-name :db/valueType :db.type/string}
+   {:db/id 202 :db/ident :sex :db/valueType :db.type/keyword}
+   {:db/id 203 :db/ident :age :db/valueType :db.type/long}
+   {:db/id 204 :db/ident :salary :db/valueType :db.type/long}
+   {:db/id 205 :db/ident :city :db/valueType :db.type/string}])
 
 (defn connect []
   (let [host (System/getProperty "triplox.host" "localhost")
@@ -45,13 +45,13 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-sanity-check
-  (tc/transact *conn* [{:db/id 100 :name "Ivan"}])
-  (is (= #{[100]} (q '{:find [?e]
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan"}])
+  (is (= #{[1000]} (q '{:find [?e]
                        :where [[?e :name "Ivan"]]}))))
 
 (deftest test-basic-query
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
-                       {:db/id 101 :name "Petr" :last-name "Petrov"}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :last-name "Ivanov"}
+                       {:db/id 1001 :name "Petr" :last-name "Petrov"}])
 
   (testing "Can query value by single field"
     (is (= #{["Ivan"]} (q '{:find [?name]
@@ -62,9 +62,9 @@
                                     [?e :name ?name]]}))))
 
   (testing "Can query entity by single field"
-    (is (= #{[100]} (q '{:find [?e]
+    (is (= #{[1000]} (q '{:find [?e]
                          :where [[?e :name "Ivan"]]})))
-    (is (= #{[101]} (q '{:find [?e]
+    (is (= #{[1001]} (q '{:find [?e]
                          :where [[?e :name "Petr"]]}))))
 
   (testing "Can query using multiple terms"
@@ -83,31 +83,31 @@
     (is (= #{["Ivan"] ["Petr"]}
            (q '{:find [?name] :where [[?e :name ?name]]}))))
 
-  (tc/transact *conn* [{:db/id 102 :name "Smith" :last-name "Smith"}])
+  (tc/transact *conn* [{:db/id 1002 :name "Smith" :last-name "Smith"}])
 
   (testing "Can query across fields for same value"
-    (is (= #{[102]}
+    (is (= #{[1002]}
            (q '{:find [?p1] :where [[?p1 :name ?name]
                                     [?p1 :last-name ?name]]}))))
 
   (testing "Can query across fields for same value when value is passed in"
-    (is (= #{[102]}
+    (is (= #{[1002]}
            (q '{:find [?p1] :where [[?p1 :name ?name]
                                     [?p1 :last-name ?name]
                                     [?p1 :name "Smith"]]})))))
 
 (deftest test-multiple-results
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "1"}
-                       {:db/id 101 :name "Ivan" :last-name "2"}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :last-name "1"}
+                       {:db/id 1001 :name "Ivan" :last-name "2"}])
 
   (is (= 2
          (count (q '{:find [?e] :where [[?e :name "Ivan"]]})))))
 
 (deftest test-query-using-keywords
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :sex :male}
-                       {:db/id 101 :name "Petr" :sex :male}
-                       {:db/id 102 :name "Doris" :sex :female}
-                       {:db/id 103 :name "Jane" :sex :female}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :sex :male}
+                       {:db/id 1001 :name "Petr" :sex :male}
+                       {:db/id 1002 :name "Doris" :sex :female}
+                       {:db/id 1003 :name "Jane" :sex :female}])
 
   (testing "Can query by single field"
     (is (= #{["Ivan"] ["Petr"]} (q '{:find [?name]
@@ -118,11 +118,11 @@
                                               [?e :sex :female]]})))))
 
 (deftest test-query-across-entities-using-join
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :age 30 :salary 50000}
-                       {:db/id 101 :name "Petr" :age 25 :salary 45000}
-                       {:db/id 102 :name "Sergei" :age 35 :salary 55000}
-                       {:db/id 103 :name "Denis" :age 28 :salary 48000}
-                       {:db/id 104 :name "Denis" :age 32 :salary 52000}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :age 30 :salary 50000}
+                       {:db/id 1001 :name "Petr" :age 25 :salary 45000}
+                       {:db/id 1002 :name "Sergei" :age 35 :salary 55000}
+                       {:db/id 1003 :name "Denis" :age 28 :salary 48000}
+                       {:db/id 1004 :name "Denis" :age 32 :salary 52000}])
 
   (testing "Five people, without a join"
     (is (= 5 (count (q '{:find [?p1]
@@ -135,10 +135,10 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-or-query
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
-                       {:db/id 101 :name "Ivan" :last-name "Ivanov"}
-                       {:db/id 102 :name "Ivan" :last-name "Ivannotov"}
-                       {:db/id 103 :name "Bob" :last-name "Controlguy"}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :last-name "Ivanov"}
+                       {:db/id 1001 :name "Ivan" :last-name "Ivanov"}
+                       {:db/id 1002 :name "Ivan" :last-name "Ivannotov"}
+                       {:db/id 1003 :name "Bob" :last-name "Controlguy"}])
 
   (testing "Or works as expected"
     (is (= 3 (count (q '{:find [?e]
@@ -178,9 +178,9 @@
                                  (or [?e :last-name "Ivanov"])]}))))))
 
 (deftest test-or-query-can-use-and
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :sex :male}
-                       {:db/id 101 :name "Bob" :sex :male}
-                       {:db/id 102 :name "Ivana" :sex :female}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :sex :male}
+                       {:db/id 1001 :name "Bob" :sex :male}
+                       {:db/id 1002 :name "Ivana" :sex :female}])
 
   (is (= #{["Ivan"]
            ["Ivana"]}
@@ -190,7 +190,7 @@
                           (and [?e :sex :male]
                                [?e :name "Ivan"]))]})))
 
-  (is (= #{[100]}
+  (is (= #{[1000]}
          (q '{:find [?e]
               :where [(or [?e :name "Ivan"])]})))
 
@@ -212,9 +212,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-not-query
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov"}
-                       {:db/id 101 :name "Ivan" :last-name "Ivanov"}
-                       {:db/id 102 :name "Ivan" :last-name "Ivannotov"}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :last-name "Ivanov"}
+                       {:db/id 1001 :name "Ivan" :last-name "Ivanov"}
+                       {:db/id 1002 :name "Ivan" :last-name "Ivannotov"}])
 
   (testing "literal v"
     (is (= 1 (count (q '{:find [?e]
@@ -271,17 +271,17 @@
 
     (is (= 2 (count (q '{:find [?e]
                          :where [[?e :name ?name]
-                                 [102 :last-name ?i-name]
+                                 [1002 :last-name ?i-name]
                                  (not [?e :last-name ?i-name])]})))))
 
   (testing "literal entities"
     (is (= 0 (count (q '{:find [?e]
                          :where [[?e :name ?name]
-                                 (not [100 :name ?name])]}))))
+                                 (not [1000 :name ?name])]}))))
 
     (is (= 1 (count (q '{:find [?e]
                          :where [[?e :last-name ?last-name]
-                                 (not [100 :last-name ?last-name])]})))))
+                                 (not [1000 :last-name ?last-name])]})))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
@@ -294,9 +294,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-predicate-expression
-  (tc/transact *conn* [{:db/id 100 :name "Ivan" :last-name "Ivanov" :age 30}
-                       {:db/id 101 :name "Bob" :last-name "Ivanov" :age 40}
-                       {:db/id 102 :name "Dominic" :last-name "Monroe" :age 50}])
+  (tc/transact *conn* [{:db/id 1000 :name "Ivan" :last-name "Ivanov" :age 30}
+                       {:db/id 1001 :name "Bob" :last-name "Ivanov" :age 40}
+                       {:db/id 1002 :name "Dominic" :last-name "Monroe" :age 50}])
 
   (testing "range expressions"
     (is (= #{["Ivan"] ["Bob"]}
@@ -347,15 +347,15 @@
     (is (= #{["Ivan"]}
            (q '{:find [?name]
                 :where [[?e :name ?name]
-                        [(= 100 ?e)]]})))
+                        [(= 1000 ?e)]]})))
 
     (testing "Filtered by value"
-      (is (= #{[101] [100]}
+      (is (= #{[1001] [1000]}
              (q '{:find [?e]
                   :where [[?e :last-name ?last-name]
                           [(= "Ivanov" ?last-name)]]})))
 
-      (is (= #{[100]}
+      (is (= #{[1000]}
              (q '{:find [?e]
                   :where [[?e :last-name ?last-name]
                           [?e :age ?age]
@@ -372,7 +372,7 @@
                           [(re-find #"o" ?name)]
                           [(not= ?age ?name)]]})))
 
-      (is (= #{[101 "Ivanov"]}
+      (is (= #{[1001 "Ivanov"]}
              (q '{:find [?e ?last-name]
                   :where [[?e :last-name ?last-name]
                           [?e :age ?age]
@@ -423,12 +423,12 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest datomic-style-addition
-  (tc/transact *conn* [{:db/id 100 :name "Alice"}])
+  (tc/transact *conn* [{:db/id 1000 :name "Alice"}])
 
   (is (= #{["Alice"]} (q '{:find [?name]
                            :where [[?p :name ?name]]})))
 
-  (tc/transact *conn* [{:db/id 100 :city "NYC"}])
+  (tc/transact *conn* [{:db/id 1000 :city "NYC"}])
 
   (is (= #{["Alice" "NYC"]} (q '{:find [?name ?city]
                                  :where [[?p :name ?name]

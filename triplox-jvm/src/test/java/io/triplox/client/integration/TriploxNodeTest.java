@@ -24,13 +24,13 @@ class TriploxNodeTest {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
             node.executeTx(List.of(new TxOp.Put(Map.of(
-                    "db/id", 50L,
+                    "db/id", 200L,
                     "db/ident", Keyword.intern("name"),
                     "db/valueType", Keyword.intern("db.type", "string")))));
 
             // Data
             var txResult = node.executeTx(List.of(new TxOp.Put(
-                    Map.of("db/id", 100L, "name", "alice"))));
+                    Map.of("db/id", 1000L, "name", "alice"))));
             assertTrue(txResult.isCommitted());
 
             // Query
