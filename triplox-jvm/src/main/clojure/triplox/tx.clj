@@ -29,11 +29,9 @@
   "Convert a sequence of Datomic-style tx-data forms to a List<TxOp>.
    Maps → TxOp.Put, vectors → TxOp.Add/Retract/Delete/Erase."
   [tx-data]
-  (java.util.ArrayList.
-   ^java.util.Collection
-   (mapv (fn [form]
-           (cond
-             (map? form) (map->put form)
-             (vector? form) (vec->tx-op form)
-             :else (throw (ex-info "tx-data form must be a map or vector" {:form form}))))
-         tx-data)))
+  (mapv (fn [form]
+          (cond
+            (map? form) (map->put form)
+            (vector? form) (vec->tx-op form)
+            :else (throw (ex-info "tx-data form must be a map or vector" {:form form}))))
+        tx-data))
