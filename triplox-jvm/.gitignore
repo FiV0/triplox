@@ -1,0 +1,8 @@
+.gradle
+build
+.idea
+.lsp
+.clj-kondo
+**/.nrepl-port
+.cpcache
+.claude
