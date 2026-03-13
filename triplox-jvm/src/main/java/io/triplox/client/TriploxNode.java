@@ -214,8 +214,10 @@ public class TriploxNode implements AutoCloseable {
                 throw ex;
             }
             // Non-fatal: ReadyForQuery follows, but we throw for the caller
-            // Read and discard the ReadyForQuery
-            WireCodec.readBackendMessage(in);
+            BackendMessage next = WireCodec.readBackendMessage(in);
+            if (!(next instanceof BackendMessage.ReadyForQuery)) {
+                throw unexpectedMessage("ReadyForQuery", next);
+            }
             throw ex;
         }
         return msg;
