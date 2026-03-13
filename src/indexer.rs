@@ -275,7 +275,9 @@ impl Indexer {
                 }
             }
 
-            // Wait for matching or later transaction
+            // TODO(triplox-j7t): The >= check can return a different tx's result if the
+            // broadcast channel lags. Will be revisited when the log is removed and we
+            // ingest directly into Slate.
             loop {
                 match rx.recv().await {
                     Ok((completed_tx_key, result)) => {
