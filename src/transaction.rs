@@ -16,6 +16,7 @@ pub struct Basis {
     pub seq_num: u64,
 }
 
+#[derive(Debug)]
 pub enum TransactionResult {
     TxCommited(Basis),
     TxAborted(TxKey, Box<dyn Error>),

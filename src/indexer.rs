@@ -26,7 +26,7 @@ pub struct Indexer {
     slatedb: Arc<Db>,
     schema_cache: SchemaCache,
     latest_indexed_tx: Option<(TxKey, u64)>,
-    tx_completion_sender: broadcast::Sender<(TxKey, u64)>,
+    tx_completion_sender: broadcast::Sender<(TxKey, Result<u64, Arc<anyhow::Error>>)>,
 }
 
 struct TxIndexKeys {
@@ -232,7 +232,7 @@ impl Indexer {
 
         // Send notification (warn if no receivers, matching memory_log.rs:51-52)
         // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
-        if let Err(e) = self.tx_completion_sender.send((tx_key, seq_num)) {
+        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(seq_num))) {
             warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
         }
 
@@ -275,12 +275,14 @@ impl Indexer {
                 }
             }
 
-            // Wait for matching or later transaction
+            // TODO(triplox-j7t): The >= check can return a different tx's result if the
+            // broadcast channel lags. Will be revisited when the log is removed and we
+            // ingest directly into Slate.
             loop {
                 match rx.recv().await {
-                    Ok((completed_tx_key, seq_num)) => {
+                    Ok((completed_tx_key, result)) => {
                         if completed_tx_key >= tx_key {
-                            return Ok(seq_num);
+                            return result.map_err(|e| anyhow::anyhow!("{:#}", e));
                         }
                         // Keep waiting for higher tx_id
                     },
@@ -303,14 +305,20 @@ impl Indexer {
 
 
 impl Subscriber for Indexer {
-    // TODO(triplox-33k): Handle transaction failures gracefully instead of panicking.
-    // Failed transactions should be recorded in the transaction log as failed/aborted
-    // so the indexer can continue processing and callers get meaningful errors via await_tx.
     async fn accept(&mut self, record: Record) {
-        let tx_ops: Vec<TxOp> = bincode::deserialize(&record.record)
-            .expect("Failed to deserialize TxOps from log record");
-        self.transact_tx(record.tx_key, tx_ops).await
-            .expect("Indexer failed to process transaction");
+        let tx_ops: Vec<TxOp> = match bincode::deserialize(&record.record) {
+            Ok(ops) => ops,
+            Err(e) => {
+                let err = anyhow::anyhow!("Failed to deserialize TxOps: {}", e);
+                warn!("Transaction {} deserialization failed: {}", record.tx_key.tx_id, err);
+                let _ = self.tx_completion_sender.send((record.tx_key, Err(Arc::new(err))));
+                return;
+            }
+        };
+        if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
+            warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+            let _ = self.tx_completion_sender.send((record.tx_key, Err(Arc::new(e))));
+        }
     }
 }
 

@@ -1283,8 +1283,6 @@ mod tests {
         assert!(!result.contains(&vec![DataType::String("Jane".to_string())]));
     }
 
-
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_literal_entity_id_in_triple() {
         let node = Node::memory_node().await;
@@ -1327,5 +1325,46 @@ mod tests {
         // Should return exactly one row: "Ivannotov"
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("Ivannotov".to_string())]);
+    }
+
+    /// Failed transactions return TxAborted and the indexer continues processing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_failed_tx_returns_aborted_and_indexer_continues() {
+        let node = Node::memory_node().await;
+
+        // Submit a tx with unknown attribute — should fail with TxAborted
+        let mut bad_doc = BTreeMap::new();
+        bad_doc.insert("db/id".to_string(), DataType::Long(1));
+        bad_doc.insert("nonexistent/attr".to_string(), DataType::String("x".to_string()));
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            node.execute_tx(vec![TxOp::Put(Document(bad_doc))]),
+        ).await.expect("Should not hang").expect("execute_tx should not return Err");
+
+        match &result {
+            TransactionResult::TxAborted(_, err) => {
+                let msg = err.to_string();
+                assert!(msg.contains("Unknown attribute"), "Expected 'Unknown attribute' error, got: {}", msg);
+            },
+            TransactionResult::TxCommited(_) => panic!("Expected TxAborted, got TxCommited"),
+        }
+
+        // Define schema and submit a valid tx — indexer should still be alive
+        let result = node.execute_tx(test_schema_tx()).await.unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)),
+                "Expected TxCommited for schema tx, got: {:?}", result);
+
+        let mut good_doc = BTreeMap::new();
+        good_doc.insert("db/id".to_string(), DataType::Long(2));
+        good_doc.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            node.execute_tx(vec![TxOp::Put(Document(good_doc))]),
+        ).await.expect("Should not hang").expect("execute_tx should not return Err");
+
+        assert!(matches!(result, TransactionResult::TxCommited(_)),
+                "Expected TxCommited for valid tx, got: {:?}", result);
     }
 }
