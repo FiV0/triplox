@@ -9,8 +9,7 @@ import java.util.Map;
 /**
  * Manages a TCP connection to a Triplox server.
  *
- * <p>Not thread-safe. The wire protocol is serial (one operation at a time),
- * so callers needing concurrency should use separate connections.</p>
+ * <p>Not thread-safe. Callers needing concurrency should use separate connections.</p>
  */
 public class TriploxNode implements AutoCloseable {
     private final Socket socket;
@@ -116,7 +115,7 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Submit a fire-and-forget transaction (await_indexing=false).
+     * Submit a fire-and-forget transaction.
      */
     public TxKeyResult submitTx(List<TxOp> ops) throws IOException {
         WireCodec.writeExecute(out, ops, false);
@@ -131,7 +130,7 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Execute a transaction and wait for indexing (await_indexing=true).
+     * Execute a transaction and wait for indexing.
      */
     public TxResultValue executeTx(List<TxOp> ops) throws IOException {
         WireCodec.writeExecute(out, ops, true);

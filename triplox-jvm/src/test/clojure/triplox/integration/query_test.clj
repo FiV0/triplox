@@ -1,7 +1,4 @@
 (ns triplox.integration.query-test
-  "Integration tests for Triplox query engine.
-   Adapted from hooray2/src/test/clojure/hooray/query_test.clj.
-   Requires a running Triplox DevServer."
   (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
             [triplox.api :as tc])
   (:import (io.triplox.client TriploxException)))
