@@ -7,24 +7,12 @@
 
 ## 1. Overview
 
-Triplox currently uses Rust's `serde` + `bincode` for all serialization of index keys and values stored in SlateDB. This has several problems:
+Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is split into two modes:
 
-1. **No order preservation.** Bincode uses little-endian encoding for integers. SlateDB compares keys lexicographically, so bincode-encoded i64 keys do not sort in numeric order.
-2. **Wasted space.** Bincode uses 4-byte variant tags for every `DataType` enum, so encoding entity IDs as `DataType::Long(id)` costs 12 bytes instead of 8.
-3. **No raw-byte predicate evaluation.** Comparing two encoded values requires full deserialization. An order-preserving encoding allows comparison directly on encoded bytes.
-4. **No control over format.** Bincode's format is not stable across versions and is not designed for sorted storage.
-
-This specification defines two encoding modes:
-
-- **Key Encoding**: Order-preserving, prefix-free encoding for SlateDB index keys. Guarantees that `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`.
+- **Key Encoding**: Order-preserving, prefix-free encoding for SlateDB index keys. Guarantees that `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization, and allows range predicates to be pushed into index scans as key bounds.
 - **Value Encoding**: Compact, non-order-preserving encoding for SlateDB values and general serialization where ordering does not matter.
 
-Both modes use explicit hand-rolled encoding, implemented in `src/codec.rs`.
-
-### Reference Systems
-
-- **CockroachDB** (`pkg/util/encoding/encoding.go`): Hand-rolled encode/decode per type. Key encoding is order-preserving with type markers. Value encoding is compact with column-ID-delta + type tag.
-- **OpenData** (`common/src/serde/`): Modular encoding primitives — `terminated_bytes`, `sortable`, `encoding`, `varint`. Encode/Decode traits defined per downstream crate; shared primitives in common.
+Both modes use explicit encode/decode functions per type, implemented in `src/codec.rs`.
 
 ---
 
@@ -52,7 +40,7 @@ pub trait Decode: Sized {
 - `encode` appends to a `Vec<u8>`.
 - `decode` reads from a `&mut &[u8]` slice, advancing the cursor past consumed bytes.
 
-Since triplox owns both the traits and `DataType`, there are no orphan-rule issues (unlike OpenData, which must define traits per downstream crate).
+Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate.
 
 ### 2.3 Shared Encoding Primitives
 
@@ -183,7 +171,7 @@ true  => 0x01   (1 byte)
 
 Variable-length data in key position must be **prefix-free**: no encoded value can be a prefix of another. This is required because key components are concatenated without length headers.
 
-**Encoding rules** (follows OpenData's `terminated_bytes`):
+**Encoding rules**:
 
 1. For each byte `b` in the input:
    - `0x00` → `0x01 0x01`
@@ -340,7 +328,7 @@ Map keys are `String` (length-prefixed, not type-tagged). Map values are tagged 
 | Value        | Type-specific key encoding | Variable     |
 | Op           | Raw byte (ADD/RETRACT)     | 1            |
 
-Entity IDs shrink from 12 bytes (bincode's 4-byte variant tag + 8-byte i64) to 8 bytes.
+Entity and attribute IDs are encoded as raw 8-byte order-preserving integers.
 
 ### 5.2 Index Key Layouts
 
@@ -542,24 +530,13 @@ pub fn lex_increment(data: &[u8]) -> Option<Vec<u8>>;
 
 ---
 
-## 8. Migration
+## 8. Testing Strategy
 
-The encoding change is breaking — existing bincode data cannot be read with the new encoding.
-
-1. Implement the new codec alongside existing bincode serialization.
-2. Add comprehensive tests (Section 9).
-3. Flag-day migration: re-index all data from the transaction log using the new encoding.
-4. Remove all `bincode::serialize` / `bincode::deserialize` calls from index key construction and `TxMeta` serialization.
-
----
-
-## 9. Testing Strategy
-
-### 9.1 Round-trip
+### 8.1 Round-trip
 
 For every type: `decode(encode(value)) == value`.
 
-### 9.2 Ordering (Key Encoding)
+### 8.2 Ordering (Key Encoding)
 
 For every orderable type:
 ```rust
@@ -568,14 +545,14 @@ assert_eq!(encode(a).cmp(&encode(b)), a.partial_compare(&b).unwrap());
 
 Edge cases: min/max values, zero crossings, NaN, empty strings, strings with embedded nulls.
 
-### 9.3 Prefix-Free (Key Encoding)
+### 8.3 Prefix-Free (Key Encoding)
 
 For variable-length types:
 ```rust
 assert!(!encode("abcd").starts_with(&encode("abc")));
 ```
 
-### 9.4 Composite Key Ordering
+### 8.4 Composite Key Ordering
 
 ```rust
 let key1 = encode_eav_key(1, 10, &DataType::String("alice".into()), ADD);
@@ -583,6 +560,6 @@ let key2 = encode_eav_key(1, 10, &DataType::String("bob".into()), ADD);
 assert!(key1 < key2);
 ```
 
-### 9.5 Property-Based Tests
+### 8.5 Property-Based Tests
 
-Use `proptest` to generate random `DataType` values and verify round-trip and ordering properties across thousands of random inputs. Follow the pattern from OpenData's `terminated_bytes` tests.
+Use `proptest` to generate random `DataType` values and verify round-trip and ordering properties across thousands of random inputs.
