@@ -14,6 +14,11 @@ Triplox uses a custom binary encoding for all data stored in SlateDB. The encodi
 
 Both modes use explicit encode/decode functions per type, implemented in `src/codec.rs`.
 
+### Design Influences
+
+- **CockroachDB** (`pkg/util/encoding/encoding.go`): Hand-rolled per-type encode/decode functions with separate key encoding (order-preserving, prefix-free) and value encoding (compact with type tags). Triplox follows the same two-mode split. CockroachDB's key encoding uses escape byte `0x00` with marker bytes; triplox uses a simpler escape scheme (see Section 3.5).
+- **OpenData** (`common/src/serde/`): Modular encoding primitives — `terminated_bytes`, `sortable`, `varint`. The `Encode`/`Decode` trait pattern and buffer API (`encode(&self, buf: &mut BytesMut)` / `decode(cursor: &mut &[u8])`) are adopted from OpenData. The escaped terminated encoding (Section 3.5) follows OpenData's approach.
+
 ---
 
 ## 2. Conventions
@@ -40,7 +45,7 @@ pub trait Decode: Sized {
 - `encode` appends to a `Vec<u8>`.
 - `decode` reads from a `&mut &[u8]` slice, advancing the cursor past consumed bytes.
 
-Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate.
+Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate. (OpenData must define Encode/Decode traits per downstream crate due to the orphan rule — the traits and the types they're implemented for live in different crates.)
 
 ### 2.3 Shared Encoding Primitives
 
@@ -170,6 +175,8 @@ true  => 0x01   (1 byte)
 ### 3.5 Variable-Length Bytes and Strings: Escaped Terminated Encoding
 
 Variable-length data in key position must be **prefix-free**: no encoded value can be a prefix of another. This is required because key components are concatenated without length headers.
+
+This uses the same escape scheme as OpenData's `terminated_bytes` module. CockroachDB's `EncodeBytesAscending` uses a different approach (escape byte `0x00`, marker byte `0x12`); the OpenData scheme is simpler — no marker byte, and the escape sequences are straightforward to reason about. Both produce correct lexicographic ordering.
 
 **Encoding rules**:
 
