@@ -109,7 +109,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AVE => match position {
@@ -119,11 +119,11 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
                 ),
                 2.. => (
-                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AEV => match position {
@@ -137,7 +137,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AE => match position {
@@ -147,7 +147,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AV => match position {
@@ -157,7 +157,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
         };
@@ -187,7 +187,7 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
             IndexType::AVE => match position {
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                2.. => total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                2.. => total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
             },
             IndexType::AEV => match position {
                 0 => codec::CODEC_LENGTH,
@@ -210,3 +210,4 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
 pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
     prefix_extractor(position, index)(bytes)
 }
+

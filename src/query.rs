@@ -7,6 +7,7 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
+use crate::clock::Instant;
 use crate::datalog::{
     FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query, TriplePattern,
     Variable, WhereClause,
@@ -343,6 +344,7 @@ pub fn compile_pattern(
     attribute_id: i64,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
+    as_of: Instant,
 ) -> Result<GenericPrefixExtender, Error> {
     let pattern_clause = PatternClause::from(pattern.clone());
     let pattern_vars = pattern_clause.variables();
@@ -371,6 +373,7 @@ pub fn compile_pattern(
         attribute_id,
         constant_prefix,
         participating_levels,
+        as_of,
     ))
 }
 
@@ -475,15 +478,16 @@ fn compile_or_branch(
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, i64>,
+    as_of: Instant,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrBranch::Clause(clause) => {
-            compile_where_clause(clause, join_order, var_index, slate, handle, attribute_map)
+            compile_where_clause(clause, join_order, var_index, slate, handle, attribute_map, as_of)
         }
         OrBranch::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
                 .iter()
-                .map(|c| compile_where_clause(c, join_order, var_index, slate, handle, attribute_map))
+                .map(|c| compile_where_clause(c, join_order, var_index, slate, handle, attribute_map, as_of))
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericAndPrefixExtender::new(extenders)))
         }
@@ -498,6 +502,7 @@ fn compile_where_clause(
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, i64>,
+    as_of: Instant,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
         WhereClause::Triple(pattern) => {
@@ -509,13 +514,14 @@ fn compile_where_clause(
                 attr_id,
                 slate.clone(),
                 handle.clone(),
+                as_of,
             )?;
             Ok(Box::new(extender))
         }
         WhereClause::Or(branches) => {
             let children: Vec<Box<dyn PrefixExtender>> = branches
                 .iter()
-                .map(|b| compile_or_branch(b, join_order, var_index, slate, handle, attribute_map))
+                .map(|b| compile_or_branch(b, join_order, var_index, slate, handle, attribute_map, as_of))
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericOrPrefixExtender::new(children)))
         }
@@ -523,7 +529,7 @@ fn compile_where_clause(
             let children: Vec<Box<dyn PrefixExtender>> = inner_clauses
                 .iter()
                 .map(|c| {
-                    compile_where_clause(c, join_order, var_index, slate, handle, attribute_map)
+                    compile_where_clause(c, join_order, var_index, slate, handle, attribute_map, as_of)
                 })
                 .collect::<Result<_, _>>()?;
             let not_level = var_index.len() - 1;
@@ -544,6 +550,7 @@ pub fn execute_query(
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
     attribute_map: &HashMap<String, i64>,
+    as_of: Instant,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);
@@ -561,6 +568,7 @@ pub fn execute_query(
             &slate,
             &handle,
             attribute_map,
+            as_of,
         )?);
     }
 

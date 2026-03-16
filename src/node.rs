@@ -77,9 +77,10 @@ impl Database for DB {
         let handle = self.handle.clone();
         let attribute_map = self.attribute_map.clone();
         let query = query.clone();
+        let as_of = self.basis.tx_key.system_time;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &attribute_map)
+            execute_query(&query, snapshot, handle, &attribute_map, as_of)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -237,7 +238,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
                 assert_eq!(value, DataType::String("alice".to_string()));
@@ -253,7 +254,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, value, entity_id, suffix) = ave_key_to_parts(kv.key).unwrap();
+            let (attribute, value, entity_id, _timestamp, suffix) = ave_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
                 assert_eq!(value, DataType::String("alice".to_string()));
@@ -268,7 +269,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, entity_id, value, suffix) = aev_key_to_parts(kv.key).unwrap();
+            let (attribute, entity_id, value, _timestamp, suffix) = aev_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
                 assert_eq!(value, DataType::String("alice".to_string()));
@@ -283,7 +284,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, entity_id, suffix) = ae_key_to_parts(kv.key).unwrap();
+            let (attribute, entity_id, _timestamp, suffix) = ae_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
                 assert_eq!(suffix, codec::ADD);
@@ -297,7 +298,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, value, suffix) = av_key_to_parts(kv.key).unwrap();
+            let (attribute, value, _timestamp, suffix) = av_key_to_parts(kv.key).unwrap();
             if attribute == name_id && value == DataType::String("alice".to_string()) {
                 assert_eq!(suffix, codec::ADD);
                 found = true;
@@ -335,7 +336,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
                 assert_eq!(value, DataType::String("bob".to_string()));
@@ -371,7 +372,7 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, suffix) = eav_key_to_parts(kv.key).unwrap();
+            let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, email_id);
                 assert_eq!(value, DataType::String("test@example.com".to_string()));

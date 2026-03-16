@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use anyhow::Error;
 
+use crate::clock::Instant;
 use crate::index::IndexType;
 
 // TODO should this become 2 bytes?
@@ -31,6 +32,9 @@ pub const DELETE: u8 = 1;
 pub const RETRACT: u8 = 2;
 
 
+/// Suffix length: timestamp (8 bytes) + op (1 byte), used for end-of-key extraction.
+pub const TIMESTAMP_OP_SUFFIX: usize = TIMESTAMP_LENGTH + OP_LENGTH;
+
 // TODO move this to lazy_static
 pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
     match index_type {
@@ -40,4 +44,18 @@ pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
         IndexType::AE => Ok(AE),
         IndexType::AV => Ok(AV),
     }
+}
+
+/// Encode a timestamp as inverted big-endian i64 microseconds.
+/// Inverted so that newer timestamps sort first in ascending byte order.
+pub fn encode_timestamp(t: Instant) -> [u8; 8] {
+    let micros = t.timestamp_micros();
+    (!micros).to_be_bytes()
+}
+
+/// Decode an inverted big-endian timestamp back to an Instant.
+pub fn decode_timestamp(bytes: &[u8]) -> Instant {
+    let inverted = i64::from_be_bytes(bytes.try_into().expect("timestamp must be 8 bytes"));
+    let micros = !inverted;
+    chrono::TimeZone::timestamp_micros(&chrono::Utc, micros).unwrap()
 }
