@@ -106,7 +106,7 @@ SchemaAttribute {
 
 ### 3.2 Attribute Map
 
-`SchemaCache::attribute_map()` returns `HashMap<String, i64>` — a projection of ident to entity_id. This is the **only** interface the query engine uses. The query engine does not use value type or cardinality information; type checking is a transaction-time concern.
+`SchemaCache::attribute_map()` returns `HashMap<String, i64>` — a projection of ident to entity_id. The query engine uses this for attribute resolution (converting attribute names to entity IDs for index key construction). The query engine also uses cardinality information for scan optimization (see [Section 5](#5-query-side-cardinality)).
 
 ### 3.3 Lifecycle
 
@@ -175,7 +175,34 @@ Schema attributes are **immutable** once installed. The following operations are
 
 ---
 
-## 5. Examples
+## 5. Query-Side Cardinality
+
+Cardinality information is not only relevant at write time — it also affects how the query engine scans indices. The key insight is that for a `:db.cardinality/one` attribute, a given `(entity, attribute)` pair has **at most one value** in the indices.
+
+### 5.1 Index Scan Behavior
+
+The query engine resolves patterns by scanning index prefixes. When an entity is already bound and the value is free, the engine scans the AEV index with prefix `[AEV][attr][entity]`. This prefix covers all values for that entity+attribute pair.
+
+| Cardinality | Scan prefix               | Behavior                                                       |
+|-------------|---------------------------|----------------------------------------------------------------|
+| one         | `[AEV][attr][entity]`     | At most one key — stop after first result                      |
+| many        | `[AEV][attr][entity]`     | Multiple keys possible — must scan all                         |
+
+For scans where the entity is the free variable (AVE, AE prefixes), cardinality does not bound the result count — many entities can share the same attribute or value.
+
+### 5.2 Join Ordering
+
+The generic join algorithm selects a proposer at each level by picking the extender with the lowest `count()`. For a `:db.cardinality/one` attribute with a bound entity, `count()` should return `1`. This allows the join planner to prefer cardinality-one patterns as proposers when multiple patterns share the same entity variable, reducing intermediate result sizes.
+
+### 5.3 Intersection
+
+When intersecting candidate extensions against an AEV prefix for a `:db.cardinality/one` attribute, there is at most one matching key. This means intersection can use a single point lookup rather than a prefix scan with seek.
+
+> **Note:** Query-side cardinality optimization is not yet implemented. Currently all scans exhaustively iterate the prefix regardless of cardinality, and `count()` returns a stub value.
+
+---
+
+## 6. Examples
 
 Define a schema attribute via `Put`:
 
