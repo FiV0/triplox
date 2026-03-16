@@ -14,11 +14,11 @@ Schema is stored as regular entity-attribute-value triples in the same indices a
 
 A **schema attribute** defines a named attribute that can appear on data entities. It is itself an entity with three required properties:
 
-| Property | Key | Value Type | Description |
-|---|---|---|---|
-| Ident | `db/ident` | Keyword | The attribute's name, e.g. `:person/name` |
-| Value type | `db/valueType` | Keyword | The type of values, e.g. `:db.type/string` |
-| Cardinality | `db/cardinality` | Long (entity ref) | `30` (one) or `31` (many) |
+| Property    | Key                | Value Type       | Description                                  |
+|-------------|--------------------|------------------|----------------------------------------------|
+| Ident       | `db/ident`         | Keyword          | The attribute's name, e.g. `:person/name`    |
+| Value type  | `db/valueType`     | Keyword          | The type of values, e.g. `:db.type/string`   |
+| Cardinality | `db/cardinality`   | Long (entity ref) | `30` (one) or `31` (many)                   |
 
 Plus `db/id` (Long) — the entity's unique identifier.
 
@@ -32,29 +32,29 @@ The operation type does not matter — what matters is that by the end of the tr
 
 ### 1.1 Supported Value Types
 
-| Keyword | Description |
-|---|---|
-| `:db.type/keyword` | EDN keyword |
-| `:db.type/string` | UTF-8 string |
-| `:db.type/long` | 64-bit signed integer |
-| `:db.type/ref` | Entity reference (stored as Long) |
-| `:db.type/boolean` | true / false |
-| `:db.type/double` | 64-bit IEEE 754 float |
-| `:db.type/float` | 32-bit IEEE 754 float |
-| `:db.type/instant` | Timestamp (microseconds since epoch) |
-| `:db.type/uuid` | 128-bit UUID |
-| `:db.type/bytes` | Arbitrary binary data |
-| `:db.type/bigint` | Arbitrary precision integer |
-| `:db.type/tuple` | Ordered heterogeneous collection |
-| `:db.type/vector` | Ordered homogeneous collection |
-| `:db.type/map` | String-keyed map |
+| Keyword              | Description                          |
+|----------------------|--------------------------------------|
+| `:db.type/keyword`   | EDN keyword                          |
+| `:db.type/string`    | UTF-8 string                         |
+| `:db.type/long`      | 64-bit signed integer                |
+| `:db.type/ref`       | Entity reference (stored as Long)    |
+| `:db.type/boolean`   | true / false                         |
+| `:db.type/double`    | 64-bit IEEE 754 float                |
+| `:db.type/float`     | 32-bit IEEE 754 float                |
+| `:db.type/instant`   | Timestamp (microseconds since epoch) |
+| `:db.type/uuid`      | 128-bit UUID                         |
+| `:db.type/bytes`     | Arbitrary binary data                |
+| `:db.type/bigint`    | Arbitrary precision integer          |
+| `:db.type/tuple`     | Ordered heterogeneous collection     |
+| `:db.type/vector`    | Ordered homogeneous collection       |
+| `:db.type/map`       | String-keyed map                     |
 
 ### 1.2 Cardinality
 
-| Entity ID | Keyword | Meaning |
-|---|---|---|
-| 30 | `:db.cardinality/one` | An entity has at most one value for this attribute |
-| 31 | `:db.cardinality/many` | An entity may have multiple values for this attribute |
+| Entity ID | Keyword                | Meaning                                               |
+|-----------|------------------------|-------------------------------------------------------|
+| 30        | `:db.cardinality/one`  | An entity has at most one value for this attribute     |
+| 31        | `:db.cardinality/many` | An entity may have multiple values for this attribute  |
 
 ---
 
@@ -62,11 +62,11 @@ The operation type does not matter — what matters is that by the end of the tr
 
 A fresh database is initialized with a bootstrap transaction (tx_id=0) that installs the three meta-attributes that describe schema itself:
 
-| Entity ID | Ident | Value Type | Cardinality |
-|---|---|---|---|
-| 1 | `db/ident` | keyword | one |
-| 2 | `db/valueType` | keyword | one |
-| 3 | `db/cardinality` | long | one |
+| Entity ID | Ident              | Value Type | Cardinality |
+|-----------|--------------------|------------|-------------|
+| 1         | `db/ident`         | keyword    | one         |
+| 2         | `db/valueType`     | keyword    | one         |
+| 3         | `db/cardinality`   | long       | one         |
 
 These three attributes are self-referential: they describe themselves. They are the minimal set needed to define any further schema attributes.
 
@@ -74,11 +74,11 @@ The bootstrap transaction also installs enum entities for value types (IDs 10–
 
 Reserved entity ID ranges:
 
-| Range | Purpose |
-|---|---|
-| 1–3 | Bootstrap schema attributes |
-| 10–23 | Value type enum entities |
-| 30–31 | Cardinality enum entities |
+| Range | Purpose                      |
+|-------|------------------------------|
+| 1–3   | Bootstrap schema attributes  |
+| 10–23 | Value type enum entities     |
+| 30–31 | Cardinality enum entities    |
 
 ---
 
@@ -156,12 +156,12 @@ The transaction is **rejected** if a schema-defining entity:
 
 Schema attributes are **immutable** once installed. The following operations are rejected:
 
-| Operation | Condition | Error |
-|---|---|---|
-| `Put` | `db/id` matches an existing schema entity | "Cannot redefine schema attribute" |
-| `Retract` | attribute is `db/ident`, `db/valueType`, or `db/cardinality` | "Cannot retract schema attributes" |
-| `Delete` | entity ID belongs to a schema entity | "Cannot delete schema entity" |
-| `Erase` | entity ID belongs to a schema entity | "Cannot erase schema entity" |
+| Operation  | Condition                                                     | Error                                |
+|------------|---------------------------------------------------------------|--------------------------------------|
+| `Put`      | `db/id` matches an existing schema entity                     | "Cannot redefine schema attribute"   |
+| `Retract`  | attribute is `db/ident`, `db/valueType`, or `db/cardinality`  | "Cannot retract schema attributes"   |
+| `Delete`   | entity ID belongs to a schema entity                          | "Cannot delete schema entity"        |
+| `Erase`    | entity ID belongs to a schema entity                          | "Cannot erase schema entity"         |
 
 ---
 
