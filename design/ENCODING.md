@@ -11,11 +11,6 @@ Triplox uses a custom binary encoding for all data stored in SlateDB. The encodi
 
 All encode/decode functions are implemented in `src/codec.rs`.
 
-### Design Influences
-
-- **CockroachDB** (`pkg/util/encoding/encoding.go`): Hand-rolled per-type encode/decode functions with order-preserving, prefix-free encoding. CockroachDB's encoding uses escape byte `0x00` with marker bytes; triplox uses a simpler escape scheme (see Section 3.5).
-- **OpenData** (`common/src/serde/`): Modular encoding primitives — `terminated_bytes`, `sortable`, `varint`. The `Encode`/`Decode` trait pattern and buffer API (`encode(&self, buf: &mut Vec<u8>)` / `decode(cursor: &mut &[u8])`) are adopted from OpenData. The escaped terminated encoding (Section 3.5) follows OpenData's approach.
-
 ---
 
 ## 2. Conventions
@@ -30,16 +25,18 @@ A single `Encode`/`Decode` trait pair, defined in `src/codec.rs`:
 
 ```rust
 pub trait Encode {
-    fn encode(&self, buf: &mut Vec<u8>);
+    fn encode(&self) -> Vec<u8>;
 }
 
 pub trait Decode: Sized {
-    fn decode(cursor: &mut &[u8]) -> Result<Self, DecodeError>;
+    fn decode(buf: &[u8]) -> Result<Self, DecodeError>;
 }
 ```
 
-- `encode` appends to a `Vec<u8>`.
-- `decode` reads from a `&mut &[u8]` slice, advancing the cursor past consumed bytes.
+- `encode` returns the complete encoded byte vector.
+- `decode` takes a byte slice and returns the decoded value.
+
+For tagged `DataType` values, `decode` reads the type tag and delegates to the appropriate type-specific decoding.
 
 Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate.
 
@@ -260,11 +257,11 @@ Within a given attribute, values of the same type share the same tag byte, so th
 
 ```rust
 pub trait Encode {
-    fn encode(&self, buf: &mut Vec<u8>);
+    fn encode(&self) -> Vec<u8>;
 }
 
 pub trait Decode: Sized {
-    fn decode(cursor: &mut &[u8]) -> Result<Self, DecodeError>;
+    fn decode(buf: &[u8]) -> Result<Self, DecodeError>;
 }
 ```
 
@@ -300,7 +297,7 @@ pub fn decode_bytes(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError>;
 pub fn encode_string(value: &str, buf: &mut Vec<u8>);
 pub fn decode_string(cursor: &mut &[u8]) -> Result<String, DecodeError>;
 
-// Composite types
+// Derived types
 pub fn encode_instant(value: &DateTime<Utc>, buf: &mut Vec<u8>);
 pub fn decode_instant(cursor: &mut &[u8]) -> Result<DateTime<Utc>, DecodeError>;
 
@@ -339,7 +336,3 @@ For variable-length types:
 ```rust
 assert!(!encode("abcd").starts_with(&encode("abc")));
 ```
-
-### 5.4 Property-Based Tests
-
-Use `proptest` to generate random `DataType` values and verify round-trip and ordering properties across thousands of random inputs.
