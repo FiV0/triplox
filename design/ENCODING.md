@@ -7,17 +7,14 @@
 
 ## 1. Overview
 
-Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is split into two modes:
+Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is order-preserving and prefix-free: `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization, and allows range predicates to be pushed into index scans as key bounds.
 
-- **Key Encoding**: Order-preserving, prefix-free encoding for SlateDB index keys. Guarantees that `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization, and allows range predicates to be pushed into index scans as key bounds.
-- **Value Encoding**: Compact, non-order-preserving encoding for SlateDB values and general serialization where ordering does not matter.
-
-Both modes use explicit encode/decode functions per type, implemented in `src/codec.rs`.
+All encode/decode functions are implemented in `src/codec.rs`.
 
 ### Design Influences
 
-- **CockroachDB** (`pkg/util/encoding/encoding.go`): Hand-rolled per-type encode/decode functions with separate key encoding (order-preserving, prefix-free) and value encoding (compact with type tags). Triplox follows the same two-mode split. CockroachDB's key encoding uses escape byte `0x00` with marker bytes; triplox uses a simpler escape scheme (see Section 3.5).
-- **OpenData** (`common/src/serde/`): Modular encoding primitives — `terminated_bytes`, `sortable`, `varint`. The `Encode`/`Decode` trait pattern and buffer API (`encode(&self, buf: &mut BytesMut)` / `decode(cursor: &mut &[u8])`) are adopted from OpenData. The escaped terminated encoding (Section 3.5) follows OpenData's approach.
+- **CockroachDB** (`pkg/util/encoding/encoding.go`): Hand-rolled per-type encode/decode functions with order-preserving, prefix-free encoding. CockroachDB's encoding uses escape byte `0x00` with marker bytes; triplox uses a simpler escape scheme (see Section 3.5).
+- **OpenData** (`common/src/serde/`): Modular encoding primitives — `terminated_bytes`, `sortable`, `varint`. The `Encode`/`Decode` trait pattern and buffer API (`encode(&self, buf: &mut Vec<u8>)` / `decode(cursor: &mut &[u8])`) are adopted from OpenData. The escaped terminated encoding (Section 3.5) follows OpenData's approach.
 
 ---
 
@@ -25,8 +22,7 @@ Both modes use explicit encode/decode functions per type, implemented in `src/co
 
 ### 2.1 Endianness
 
-- **Key encoding**: Big-endian. Lexicographic byte comparison matches numeric comparison for unsigned values.
-- **Value encoding**: Little-endian. No ordering requirement; prefer decode speed on common architectures (x86, ARM).
+Big-endian throughout. Lexicographic byte comparison matches numeric comparison for unsigned values.
 
 ### 2.2 Encode/Decode Traits
 
@@ -45,9 +41,9 @@ pub trait Decode: Sized {
 - `encode` appends to a `Vec<u8>`.
 - `decode` reads from a `&mut &[u8]` slice, advancing the cursor past consumed bytes.
 
-Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate. (OpenData must define Encode/Decode traits per downstream crate due to the orphan rule — the traits and the types they're implemented for live in different crates.)
+Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate.
 
-### 2.3 Shared Encoding Primitives
+### 2.3 Encoding Primitives
 
 The traits delegate to standalone encoding primitives for the actual byte manipulation:
 
@@ -60,9 +56,6 @@ The traits delegate to standalone encoding primitives for the actual byte manipu
 ├────────────────────┼──────────────────────────────────────────────────────────────┤
 │ terminated_bytes   │ Variable-length byte sequences terminated with 0x00, with    │
 │                    │ 0x00/0x01 escaped. Preserves lexicographic ordering.         │
-├────────────────────┼──────────────────────────────────────────────────────────────┤
-│ length_prefixed    │ u32 LE length + raw bytes. For value encoding of strings     │
-│                    │ and byte arrays.                                             │
 ├────────────────────┼──────────────────────────────────────────────────────────────┤
 │ lex_increment      │ Increment a byte slice lexicographically. Used for prefix    │
 │                    │ range query upper bounds.                                    │
@@ -81,11 +74,9 @@ A single error type for all decoding failures.
 
 ### 2.5 Type Tag Policy
 
-Type tags are used **only** in:
-1. **Value encoding** — KV values stored in SlateDB
-2. **Heterogeneous collection interiors** — elements of `Vector`, `Map`, `Tuple`
+Type tags are used **only** in heterogeneous collection interiors — elements of `Vector`, `Map`, `Tuple`.
 
-In key position, the schema determines the type, so no type tag is emitted. Entity IDs and attribute IDs are always `i64` and encoded as raw 8-byte order-preserving integers.
+In all other positions, the schema determines the type, so no type tag is emitted. Entity IDs and attribute IDs are always `i64` and encoded as raw 8-byte order-preserving integers.
 
 ### 2.6 Type Tag Values
 
@@ -110,9 +101,9 @@ Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 
 ---
 
-## 3. Key Encoding (Order-Preserving)
+## 3. Type Encodings
 
-All key encodings guarantee: `memcmp(encode(a), encode(b))` equals `DataType::partial_compare(a, b)` for values of the same type.
+All encodings guarantee: `memcmp(encode(a), encode(b))` equals `DataType::partial_compare(a, b)` for values of the same type.
 
 ### 3.1 Signed Integers: `i64`, `i128`
 
@@ -174,7 +165,7 @@ true  => 0x01   (1 byte)
 
 ### 3.5 Variable-Length Bytes and Strings: Escaped Terminated Encoding
 
-Variable-length data in key position must be **prefix-free**: no encoded value can be a prefix of another. This is required because key components are concatenated without length headers.
+Variable-length data must be **prefix-free**: no encoded value can be a prefix of another. This is required because components are concatenated without length headers.
 
 This uses the same escape scheme as OpenData's `terminated_bytes` module. CockroachDB's `EncodeBytesAscending` uses a different approach (escape byte `0x00`, marker byte `0x12`); the OpenData scheme is simpler — no marker byte, and the escape sequences are straightforward to reason about. Both produce correct lexicographic ordering.
 
@@ -213,7 +204,7 @@ Convert to microseconds since Unix epoch (as `i64`), then apply signed integer e
 
 ```
 let micros = datetime.timestamp_micros();
-encode_i64_key(micros, buf);
+encode_i64(micros, buf);
 ```
 
 **Size**: 8 bytes.
@@ -237,16 +228,14 @@ Plain:        encode_terminated("")         + encode_terminated(name)
 
 Plain keywords (empty namespace → just `0x00`) sort before all namespaced keywords.
 
-### 3.9 Composite Types in Keys
+### 3.9 Composite Types
 
-Tuple, Vector, and Map are generally not used in key position. For completeness:
-
-Each element is preceded by a 1-byte type tag (Section 2.6), followed by the key-encoded payload. The composite is terminated with a `0x00` end marker.
+Each element is preceded by a 1-byte type tag (Section 2.6), followed by the encoded payload. The composite is terminated with a `0x00` end marker.
 
 ```
 for each element:
     buf.push(type_tag);
-    element.key_encode(buf);
+    element.encode(buf);
 buf.push(0x00);  // end-of-composite
 ```
 
@@ -254,90 +243,33 @@ Tag `0x00` is not assigned to any type, so it serves unambiguously as the end ma
 
 Maps encode entries as sorted key-value pairs (BTreeMap guarantees order).
 
----
+### 3.10 Tagged DataType
 
-## 4. Value Encoding (Compact, Non-Order-Preserving)
-
-Used for SlateDB values, log records, and any position where ordering is not required.
-
-### 4.1 Tagged DataType Values
-
-Every `DataType` value is encoded as:
+When the type is not known from context (e.g., heterogeneous collection elements), encode as:
 
 ```
 [type_tag: u8] [payload]
 ```
 
-| Tag | Name    | Payload                                    | Size         |
-|-----|---------|--------------------------------------------|--------------|
-| 1   | BigInt  | i128 little-endian                         | 1 + 16 = 17  |
-| 2   | Boolean | 1 byte: `0x00`=false, `0x01`=true          | 1 + 1 = 2    |
-| 3   | Bytes   | u32 LE length + raw bytes                  | 1 + 4 + N    |
-| 4   | Double  | f64 IEEE 754 little-endian                 | 1 + 8 = 9    |
-| 5   | Float   | f32 IEEE 754 little-endian                 | 1 + 4 = 5    |
-| 6   | Instant | i64 LE (microseconds since epoch)          | 1 + 8 = 9    |
-| 7   | Long    | i64 little-endian                          | 1 + 8 = 9    |
-| 9   | String  | u32 LE length + UTF-8 bytes                | 1 + 4 + N    |
-| 10  | Tuple   | u32 LE count + tagged elements             | 1 + 4 + ...  |
-| 11  | Uuid    | 16 raw bytes (RFC 4122)                    | 1 + 16 = 17  |
-| 12  | Vector  | u32 LE count + tagged elements             | 1 + 4 + ...  |
-| 13  | Map     | u32 LE count + (String key, tagged value)* | 1 + 4 + ...  |
-| 14  | Keyword | see Section 4.3                            | variable     |
-
-### 4.2 Untagged Primitives
-
-When the type is known from context (e.g., `TxMeta.seq_num` is always `u64`), values are encoded without a type tag:
-
-```rust
-fn encode_i64_value(value: i64, buf: &mut Vec<u8>);    // 8 bytes LE
-fn encode_u64_value(value: u64, buf: &mut Vec<u8>);    // 8 bytes LE
-fn encode_i128_value(value: i128, buf: &mut Vec<u8>);  // 16 bytes LE
-fn encode_string_value(value: &str, buf: &mut Vec<u8>); // u32 LE len + UTF-8
-fn encode_bytes_value(value: &[u8], buf: &mut Vec<u8>); // u32 LE len + raw
-```
-
-### 4.3 Keyword Value Encoding
-
-```
-[tag=14] [flag: u8] [namespace: String (if flag=1)] [name: String]
-```
-
-- `flag=0`: plain keyword, only name follows
-- `flag=1`: namespaced keyword, namespace then name
-
-Strings are encoded as u32 LE length + UTF-8 bytes.
-
-### 4.4 Collection Value Encoding
-
-**Vector / Tuple**:
-```
-[tag] [count: u32 LE] [element₀: tagged DataType] [element₁: tagged DataType] ...
-```
-
-**Map**:
-```
-[tag=13] [count: u32 LE] [key₀: String] [value₀: tagged DataType] ...
-```
-
-Map keys are `String` (length-prefixed, not type-tagged). Map values are tagged `DataType`.
+The payload uses the type-specific encoding from the sections above.
 
 ---
 
-## 5. Index Key Structure
+## 4. Index Key Structure
 
-### 5.1 Component Sizes
+### 4.1 Component Sizes
 
 | Component    | Encoding                   | Size (bytes) |
 |--------------|----------------------------|--------------|
 | Prefix       | Raw byte (index type)      | 1            |
 | Entity ID    | i64 order-preserving (§3.1)| 8            |
 | Attribute ID | i64 order-preserving (§3.1)| 8            |
-| Value        | Type-specific key encoding | Variable     |
+| Value        | Type-specific encoding     | Variable     |
 | Op           | Raw byte (ADD/RETRACT)     | 1            |
 
 Entity and attribute IDs are encoded as raw 8-byte order-preserving integers.
 
-### 5.2 Index Key Layouts
+### 4.2 Index Key Layouts
 
 **EAV**: `[prefix:1] [entity:8] [attribute:8] [value:var] [op:1]`
 
@@ -353,16 +285,16 @@ In AVE, the value is variable-width but the terminated encoding is self-delimiti
 
 **TX_TO_SEQ**: `[prefix:1] [tx_id:8]` — fixed 9 bytes
 
-### 5.3 Value Encoding in Keys
+### 4.3 Value Encoding in Keys
 
 The type is known from the schema (`SchemaCache`), so no type tag is emitted:
 
 ```rust
-fn encode_datatype_key(value: &DataType, buf: &mut Vec<u8>) {
+fn encode_datatype(value: &DataType, buf: &mut Vec<u8>) {
     match value {
-        DataType::Long(v) => encode_i64_key(*v, buf),
-        DataType::String(v) => encode_string_key(v, buf),
-        DataType::Double(v) => encode_f64_key(*v, buf),
+        DataType::Long(v) => encode_i64(*v, buf),
+        DataType::String(v) => encode_string(v, buf),
+        DataType::Double(v) => encode_f64(*v, buf),
         // ... dispatch per variant
     }
 }
@@ -371,10 +303,10 @@ fn encode_datatype_key(value: &DataType, buf: &mut Vec<u8>) {
 Decoding requires a `ValueType` parameter:
 
 ```rust
-fn decode_datatype_key(value_type: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
+fn decode_datatype(value_type: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
 ```
 
-### 5.4 Prefix Scan Boundaries
+### 4.4 Prefix Scan Boundaries
 
 For prefix scans, construct from fixed-width components:
 
@@ -382,8 +314,8 @@ For prefix scans, construct from fixed-width components:
 fn eav_prefix(entity_id: i64, attribute_id: i64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(17);
     buf.push(EAV);
-    encode_i64_key(entity_id, &mut buf);
-    encode_i64_key(attribute_id, &mut buf);
+    encode_i64(entity_id, &mut buf);
+    encode_i64(attribute_id, &mut buf);
     buf
 }
 ```
@@ -409,21 +341,21 @@ Range: `[prefix, lex_increment(prefix))`
 
 ---
 
-## 6. TxMeta Value Encoding
+## 5. TxMeta Encoding
 
-The `TxMeta` struct uses untagged value encoding (fixed schema):
+The `TxMeta` struct uses untagged encoding (fixed schema):
 
 ```
-[seq_num: u64 LE (8 bytes)] [system_time: i64 LE (8 bytes, microseconds)]
+[seq_num: u64 BE (8 bytes)] [system_time: i64 order-preserving (8 bytes, microseconds)]
 ```
 
 Total: 16 bytes.
 
 ---
 
-## 7. API Surface
+## 6. API Surface
 
-### 7.1 Traits
+### 6.1 Traits
 
 ```rust
 pub trait Encode {
@@ -435,76 +367,59 @@ pub trait Decode: Sized {
 }
 ```
 
-### 7.2 Key Encoding Primitives
+### 6.2 Encoding Primitives
 
 ```rust
 // Signed integers — order-preserving (XOR sign bit + BE)
-pub fn encode_i64_key(value: i64, buf: &mut Vec<u8>);
-pub fn decode_i64_key(cursor: &mut &[u8]) -> Result<i64, DecodeError>;
+pub fn encode_i64(value: i64, buf: &mut Vec<u8>);
+pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError>;
 
-pub fn encode_i128_key(value: i128, buf: &mut Vec<u8>);
-pub fn decode_i128_key(cursor: &mut &[u8]) -> Result<i128, DecodeError>;
+pub fn encode_i128(value: i128, buf: &mut Vec<u8>);
+pub fn decode_i128(cursor: &mut &[u8]) -> Result<i128, DecodeError>;
 
 // Unsigned integers — BE
-pub fn encode_u64_key(value: u64, buf: &mut Vec<u8>);
-pub fn decode_u64_key(cursor: &mut &[u8]) -> Result<u64, DecodeError>;
+pub fn encode_u64(value: u64, buf: &mut Vec<u8>);
+pub fn decode_u64(cursor: &mut &[u8]) -> Result<u64, DecodeError>;
 
 // Floats — IEEE 754 sortable
-pub fn encode_f64_key(value: f64, buf: &mut Vec<u8>);
-pub fn decode_f64_key(cursor: &mut &[u8]) -> Result<f64, DecodeError>;
+pub fn encode_f64(value: f64, buf: &mut Vec<u8>);
+pub fn decode_f64(cursor: &mut &[u8]) -> Result<f64, DecodeError>;
 
-pub fn encode_f32_key(value: f32, buf: &mut Vec<u8>);
-pub fn decode_f32_key(cursor: &mut &[u8]) -> Result<f32, DecodeError>;
+pub fn encode_f32(value: f32, buf: &mut Vec<u8>);
+pub fn decode_f32(cursor: &mut &[u8]) -> Result<f32, DecodeError>;
 
 // Booleans
-pub fn encode_bool_key(value: bool, buf: &mut Vec<u8>);
-pub fn decode_bool_key(cursor: &mut &[u8]) -> Result<bool, DecodeError>;
+pub fn encode_bool(value: bool, buf: &mut Vec<u8>);
+pub fn decode_bool(cursor: &mut &[u8]) -> Result<bool, DecodeError>;
 
 // Variable-length — escaped terminated encoding
-pub fn encode_bytes_key(value: &[u8], buf: &mut Vec<u8>);
-pub fn decode_bytes_key(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError>;
+pub fn encode_bytes(value: &[u8], buf: &mut Vec<u8>);
+pub fn decode_bytes(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError>;
 
-pub fn encode_string_key(value: &str, buf: &mut Vec<u8>);
-pub fn decode_string_key(cursor: &mut &[u8]) -> Result<String, DecodeError>;
+pub fn encode_string(value: &str, buf: &mut Vec<u8>);
+pub fn decode_string(cursor: &mut &[u8]) -> Result<String, DecodeError>;
 
 // Composite types
-pub fn encode_instant_key(value: &DateTime<Utc>, buf: &mut Vec<u8>);
-pub fn decode_instant_key(cursor: &mut &[u8]) -> Result<DateTime<Utc>, DecodeError>;
+pub fn encode_instant(value: &DateTime<Utc>, buf: &mut Vec<u8>);
+pub fn decode_instant(cursor: &mut &[u8]) -> Result<DateTime<Utc>, DecodeError>;
 
-pub fn encode_uuid_key(value: &Uuid, buf: &mut Vec<u8>);
-pub fn decode_uuid_key(cursor: &mut &[u8]) -> Result<Uuid, DecodeError>;
+pub fn encode_uuid(value: &Uuid, buf: &mut Vec<u8>);
+pub fn decode_uuid(cursor: &mut &[u8]) -> Result<Uuid, DecodeError>;
 
-pub fn encode_keyword_key(value: &Keyword, buf: &mut Vec<u8>);
-pub fn decode_keyword_key(cursor: &mut &[u8]) -> Result<Keyword, DecodeError>;
+pub fn encode_keyword(value: &Keyword, buf: &mut Vec<u8>);
+pub fn decode_keyword(cursor: &mut &[u8]) -> Result<Keyword, DecodeError>;
 
 // DataType dispatch (schema-aware, no type tag)
-pub fn encode_datatype_key(value: &DataType, buf: &mut Vec<u8>);
-pub fn decode_datatype_key(vt: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
-pub fn skip_datatype_key(vt: ValueType, cursor: &mut &[u8]) -> Result<(), DecodeError>;
+pub fn encode_datatype(value: &DataType, buf: &mut Vec<u8>);
+pub fn decode_datatype(vt: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
+pub fn skip_datatype(vt: ValueType, cursor: &mut &[u8]) -> Result<(), DecodeError>;
+
+// Tagged DataType (for heterogeneous collections)
+pub fn encode_datatype_tagged(value: &DataType, buf: &mut Vec<u8>);
+pub fn decode_datatype_tagged(cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
 ```
 
-### 7.3 Value Encoding Primitives
-
-```rust
-// Tagged DataType (type tag + payload)
-pub fn encode_datatype_value(value: &DataType, buf: &mut Vec<u8>);
-pub fn decode_datatype_value(cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
-
-// Untagged primitives (known-schema contexts)
-pub fn encode_i64_value(value: i64, buf: &mut Vec<u8>);
-pub fn decode_i64_value(cursor: &mut &[u8]) -> Result<i64, DecodeError>;
-
-pub fn encode_u64_value(value: u64, buf: &mut Vec<u8>);
-pub fn decode_u64_value(cursor: &mut &[u8]) -> Result<u64, DecodeError>;
-
-pub fn encode_string_value(value: &str, buf: &mut Vec<u8>);
-pub fn decode_string_value(cursor: &mut &[u8]) -> Result<String, DecodeError>;
-
-pub fn encode_bytes_value(value: &[u8], buf: &mut Vec<u8>);
-pub fn decode_bytes_value(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError>;
-```
-
-### 7.4 Index Key Builders
+### 6.3 Index Key Builders
 
 ```rust
 pub fn encode_eav_key(entity: i64, attribute: i64, value: &DataType, op: u8) -> Vec<u8>;
@@ -529,7 +444,7 @@ pub fn decode_ae_key(key: &[u8]) -> Result<(i64, i64, u8), DecodeError>;
 pub fn decode_av_key(key: &[u8], vt: ValueType) -> Result<(i64, DataType, u8), DecodeError>;
 ```
 
-### 7.5 Utilities
+### 6.4 Utilities
 
 ```rust
 pub fn lex_increment(data: &[u8]) -> Option<Vec<u8>>;
@@ -537,13 +452,13 @@ pub fn lex_increment(data: &[u8]) -> Option<Vec<u8>>;
 
 ---
 
-## 8. Testing Strategy
+## 7. Testing Strategy
 
-### 8.1 Round-trip
+### 7.1 Round-trip
 
 For every type: `decode(encode(value)) == value`.
 
-### 8.2 Ordering (Key Encoding)
+### 7.2 Ordering
 
 For every orderable type:
 ```rust
@@ -552,14 +467,14 @@ assert_eq!(encode(a).cmp(&encode(b)), a.partial_compare(&b).unwrap());
 
 Edge cases: min/max values, zero crossings, NaN, empty strings, strings with embedded nulls.
 
-### 8.3 Prefix-Free (Key Encoding)
+### 7.3 Prefix-Free
 
 For variable-length types:
 ```rust
 assert!(!encode("abcd").starts_with(&encode("abc")));
 ```
 
-### 8.4 Composite Key Ordering
+### 7.4 Composite Key Ordering
 
 ```rust
 let key1 = encode_eav_key(1, 10, &DataType::String("alice".into()), ADD);
@@ -567,6 +482,6 @@ let key2 = encode_eav_key(1, 10, &DataType::String("bob".into()), ADD);
 assert!(key1 < key2);
 ```
 
-### 8.5 Property-Based Tests
+### 7.5 Property-Based Tests
 
 Use `proptest` to generate random `DataType` values and verify round-trip and ordering properties across thousands of random inputs.
