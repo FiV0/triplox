@@ -6,6 +6,7 @@ use tokio::runtime::Handle;
 use crate::clock::Instant;
 use crate::codec;
 use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::util::next_prefix;
 
 use super::slate_iterator::{Extractor, Index};
 
@@ -77,9 +78,11 @@ impl TemporalFilterIterator {
                 }
                 Some(kv) => {
                     let key = kv.key;
-                    if key.len() < codec::TIMESTAMP_OP_SUFFIX {
-                        continue; // malformed key, skip
-                    }
+                    assert!(
+                        key.len() >= codec::TIMESTAMP_OP_SUFFIX,
+                        "Key too short ({} bytes) to contain timestamp + op suffix",
+                        key.len()
+                    );
 
                     let ts = timestamp_bytes(&key);
                     // Inverted encoding: smaller encoded bytes = newer real time.
@@ -97,75 +100,23 @@ impl TemporalFilterIterator {
         }
     }
 
-    /// Skip past all remaining entries in the current logical key group.
-    fn skip_current_group(&mut self) -> Result<(), Error> {
+    /// Seek the underlying iterator past all entries in the current logical key group.
+    fn advance_past_current_group(&mut self) -> Result<(), Error> {
         let current = match &self.current_key {
             Some(k) => k.clone(),
             None => return Ok(()),
         };
-        let current_logical = logical_key(&current).to_vec();
 
-        loop {
-            let entry = self.handle.block_on(self.inner.next())?;
-            match entry {
-                None => {
-                    self.current_key = None;
-                    return Ok(());
-                }
-                Some(kv) => {
-                    if kv.key.len() < codec::TIMESTAMP_OP_SUFFIX {
-                        continue; // malformed, skip
-                    }
-                    if logical_key(&kv.key) != current_logical.as_slice() {
-                        // New group — check if this entry is valid
-                        let ts = timestamp_bytes(&kv.key);
-                        if ts >= &self.as_of_encoded[..] {
-                            self.current_key = Some(kv.key);
-                            return Ok(());
-                        }
-                        // New group but this entry is too new — continue scanning
-                        // We need to find a valid entry in this or subsequent groups
-                        return self.advance_to_next_valid_from(kv.key);
-                    }
-                    // Same group — skip
-                }
+        match next_prefix(logical_key(&current)) {
+            Some(target) => {
+                self.handle
+                    .block_on(self.inner.seek(Bytes::from(target)))?;
+                self.advance_to_next_valid()
             }
-        }
-    }
-
-    /// Continue scanning from a key that started a new group but wasn't valid itself.
-    fn advance_to_next_valid_from(&mut self, start_key: Bytes) -> Result<(), Error> {
-        let start_logical = logical_key(&start_key).to_vec();
-
-        loop {
-            let entry = self.handle.block_on(self.inner.next())?;
-            match entry {
-                None => {
-                    self.current_key = None;
-                    return Ok(());
-                }
-                Some(kv) => {
-                    if kv.key.len() < codec::TIMESTAMP_OP_SUFFIX {
-                        continue;
-                    }
-                    let ts = timestamp_bytes(&kv.key);
-                    let is_same_group = logical_key(&kv.key) == start_logical.as_slice();
-
-                    if is_same_group && ts >= &self.as_of_encoded[..] {
-                        // Found a valid entry in this group
-                        self.current_key = Some(kv.key);
-                        return Ok(());
-                    } else if !is_same_group {
-                        // Moved to a new group
-                        if ts >= &self.as_of_encoded[..] {
-                            self.current_key = Some(kv.key);
-                            return Ok(());
-                        }
-                        // New group, entry too new — recurse with new group
-                        return self.advance_to_next_valid_from(kv.key);
-                    }
-                    // Same group, entry too new — keep scanning
-                }
+            None => {
+                // Logical key is all 0xFF — no successor, we're done
+                self.current_key = None;
+                Ok(())
             }
         }
     }
@@ -198,8 +149,8 @@ impl Index for TemporalFilterIterator {
     }
 
     fn next(&mut self) -> Result<Option<Bytes>, Error> {
-        // Skip rest of current group, then find next valid entry
-        self.skip_current_group()?;
+        // Seek past current group, then find next valid entry
+        self.advance_past_current_group()?;
         match &self.current_key {
             Some(key) => Ok(Some((self.extractor)(key.clone()))),
             None => Ok(None),

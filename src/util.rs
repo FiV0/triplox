@@ -211,3 +211,19 @@ pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, inde
     prefix_extractor(position, index)(bytes)
 }
 
+/// Compute the lexicographic successor of a byte string.
+/// Returns None if all bytes are 0xFF (no successor exists).
+///
+/// Note: this duplicates `BytesRange::increment_prefix` in SlateDB
+/// (`slatedb/src/bytes_range.rs`), which is not publicly exposed.
+pub fn next_prefix(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut next = prefix.to_vec();
+    for i in (0..next.len()).rev() {
+        if next[i] < 0xFF {
+            next[i] += 1;
+            next.truncate(i + 1);
+            return Some(next);
+        }
+    }
+    None
+}
