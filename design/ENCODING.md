@@ -7,7 +7,7 @@
 
 ## 1. Overview
 
-Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is order-preserving and prefix-free: `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization, and allows range predicates to be pushed into index scans as key bounds.
+Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is order-preserving and prefix-free: `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization.
 
 All encode/decode functions are implemented in `src/codec.rs`.
 
@@ -56,9 +56,6 @@ The traits delegate to standalone encoding primitives for the actual byte manipu
 ├────────────────────┼──────────────────────────────────────────────────────────────┤
 │ terminated_bytes   │ Variable-length byte sequences terminated with 0x00, with    │
 │                    │ 0x00/0x01 escaped. Preserves lexicographic ordering.         │
-├────────────────────┼──────────────────────────────────────────────────────────────┤
-│ lex_increment      │ Increment a byte slice lexicographically. Used for prefix    │
-│                    │ range query upper bounds.                                    │
 └────────────────────┴──────────────────────────────────────────────────────────────┘
 ```
 
@@ -74,9 +71,9 @@ A single error type for all decoding failures.
 
 ### 2.5 Type Tag Policy
 
-Type tags are used **only** in heterogeneous collection interiors — elements of `Vector`, `Map`, `Tuple`.
+All `DataType` values are self-describing: every encoded value is prefixed with a 1-byte type tag. This means decoding never requires schema knowledge — the tag tells the decoder what type follows.
 
-In all other positions, the schema determines the type, so no type tag is emitted. Entity IDs and attribute IDs are always `i64` and encoded as raw 8-byte order-preserving integers.
+Structural fields with fixed schemas (e.g., entity IDs, attribute IDs) are **not** tagged — they use untagged encoding since the type is known from context.
 
 ### 2.6 Type Tag Values
 
@@ -128,7 +125,7 @@ XORing the sign bit maps the signed range `[MIN, MAX]` to the unsigned range `[0
 
 ### 3.2 Unsigned Integers: `u64`
 
-Big-endian bytes. Used for seq_num and tx_to_seq values.
+Big-endian bytes.
 
 ```
 encoded = value.to_be_bytes()   // 8 bytes
@@ -245,117 +242,21 @@ Maps encode entries as sorted key-value pairs (BTreeMap guarantees order).
 
 ### 3.10 Tagged DataType
 
-When the type is not known from context (e.g., heterogeneous collection elements), encode as:
+All `DataType` values are encoded as:
 
 ```
 [type_tag: u8] [payload]
 ```
 
-The payload uses the type-specific encoding from the sections above.
+The payload uses the type-specific encoding from the sections above. The tag makes every value self-describing — the decoder reads the tag byte to determine the type and payload format without external schema knowledge.
+
+Within a given attribute, values of the same type share the same tag byte, so the tag does not affect relative ordering — values still sort by payload.
 
 ---
 
-## 4. Index Key Structure
+## 4. API Surface
 
-### 4.1 Component Sizes
-
-| Component    | Encoding                   | Size (bytes) |
-|--------------|----------------------------|--------------|
-| Prefix       | Raw byte (index type)      | 1            |
-| Entity ID    | i64 order-preserving (§3.1)| 8            |
-| Attribute ID | i64 order-preserving (§3.1)| 8            |
-| Value        | Type-specific encoding     | Variable     |
-| Op           | Raw byte (ADD/RETRACT)     | 1            |
-
-Entity and attribute IDs are encoded as raw 8-byte order-preserving integers.
-
-### 4.2 Index Key Layouts
-
-**EAV**: `[prefix:1] [entity:8] [attribute:8] [value:var] [op:1]`
-
-**AVE**: `[prefix:1] [attribute:8] [value:var] [entity:8] [op:1]`
-
-In AVE, the value is variable-width but the terminated encoding is self-delimiting — the decoder scans for the unescaped `0x00` terminator to find the boundary between value and entity.
-
-**AEV**: `[prefix:1] [attribute:8] [entity:8] [value:var] [op:1]`
-
-**AE**: `[prefix:1] [attribute:8] [entity:8] [op:1]` — fixed 18 bytes
-
-**AV**: `[prefix:1] [attribute:8] [value:var] [op:1]`
-
-**TX_TO_SEQ**: `[prefix:1] [tx_id:8]` — fixed 9 bytes
-
-### 4.3 Value Encoding in Keys
-
-The type is known from the schema (`SchemaCache`), so no type tag is emitted:
-
-```rust
-fn encode_datatype(value: &DataType, buf: &mut Vec<u8>) {
-    match value {
-        DataType::Long(v) => encode_i64(*v, buf),
-        DataType::String(v) => encode_string(v, buf),
-        DataType::Double(v) => encode_f64(*v, buf),
-        // ... dispatch per variant
-    }
-}
-```
-
-Decoding requires a `ValueType` parameter:
-
-```rust
-fn decode_datatype(value_type: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
-```
-
-### 4.4 Prefix Scan Boundaries
-
-For prefix scans, construct from fixed-width components:
-
-```rust
-fn eav_prefix(entity_id: i64, attribute_id: i64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(17);
-    buf.push(EAV);
-    encode_i64(entity_id, &mut buf);
-    encode_i64(attribute_id, &mut buf);
-    buf
-}
-```
-
-For range scans over a prefix, compute the exclusive upper bound using `lex_increment`:
-
-```rust
-/// Increment a byte slice lexicographically. Returns None if all bytes are 0xFF.
-fn lex_increment(data: &[u8]) -> Option<Vec<u8>> {
-    let mut result = data.to_vec();
-    while let Some(last) = result.last_mut() {
-        if *last < 0xFF {
-            *last += 1;
-            return Some(result);
-        }
-        result.truncate(result.len() - 1);
-    }
-    None
-}
-```
-
-Range: `[prefix, lex_increment(prefix))`
-
----
-
-## 5. TxMeta Encoding
-
-The `TxMeta` struct uses untagged encoding (fixed schema):
-
-```
-[seq_num: u64 BE (8 bytes)] [system_time: i64 order-preserving (8 bytes, microseconds)]
-```
-
-Total: 16 bytes.
-
----
-
-## 6. API Surface
-
-### 6.1 Traits
+### 4.1 Traits
 
 ```rust
 pub trait Encode {
@@ -367,7 +268,7 @@ pub trait Decode: Sized {
 }
 ```
 
-### 6.2 Encoding Primitives
+### 4.2 Encoding Primitives
 
 ```rust
 // Signed integers — order-preserving (XOR sign bit + BE)
@@ -409,56 +310,21 @@ pub fn decode_uuid(cursor: &mut &[u8]) -> Result<Uuid, DecodeError>;
 pub fn encode_keyword(value: &Keyword, buf: &mut Vec<u8>);
 pub fn decode_keyword(cursor: &mut &[u8]) -> Result<Keyword, DecodeError>;
 
-// DataType dispatch (schema-aware, no type tag)
+// DataType dispatch (self-describing: type tag + payload)
 pub fn encode_datatype(value: &DataType, buf: &mut Vec<u8>);
-pub fn decode_datatype(vt: ValueType, cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
-pub fn skip_datatype(vt: ValueType, cursor: &mut &[u8]) -> Result<(), DecodeError>;
-
-// Tagged DataType (for heterogeneous collections)
-pub fn encode_datatype_tagged(value: &DataType, buf: &mut Vec<u8>);
-pub fn decode_datatype_tagged(cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
-```
-
-### 6.3 Index Key Builders
-
-```rust
-pub fn encode_eav_key(entity: i64, attribute: i64, value: &DataType, op: u8) -> Vec<u8>;
-pub fn encode_ave_key(attribute: i64, value: &DataType, entity: i64, op: u8) -> Vec<u8>;
-pub fn encode_aev_key(attribute: i64, entity: i64, value: &DataType, op: u8) -> Vec<u8>;
-pub fn encode_ae_key(attribute: i64, entity: i64, op: u8) -> Vec<u8>;
-pub fn encode_av_key(attribute: i64, value: &DataType, op: u8) -> Vec<u8>;
-pub fn encode_tx_to_seq_key(tx_id: i64) -> Vec<u8>;
-
-// Prefix builders for scan operations
-pub fn eav_prefix(entity: i64, attribute: i64) -> Vec<u8>;
-pub fn ave_prefix(attribute: i64) -> Vec<u8>;
-pub fn aev_prefix(attribute: i64, entity: i64) -> Vec<u8>;
-pub fn ae_prefix(attribute: i64) -> Vec<u8>;
-pub fn av_prefix(attribute: i64) -> Vec<u8>;
-
-// Index key decoders
-pub fn decode_eav_key(key: &[u8], vt: ValueType) -> Result<(i64, i64, DataType, u8), DecodeError>;
-pub fn decode_ave_key(key: &[u8], vt: ValueType) -> Result<(i64, DataType, i64, u8), DecodeError>;
-pub fn decode_aev_key(key: &[u8], vt: ValueType) -> Result<(i64, i64, DataType, u8), DecodeError>;
-pub fn decode_ae_key(key: &[u8]) -> Result<(i64, i64, u8), DecodeError>;
-pub fn decode_av_key(key: &[u8], vt: ValueType) -> Result<(i64, DataType, u8), DecodeError>;
-```
-
-### 6.4 Utilities
-
-```rust
-pub fn lex_increment(data: &[u8]) -> Option<Vec<u8>>;
+pub fn decode_datatype(cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
+pub fn skip_datatype(cursor: &mut &[u8]) -> Result<(), DecodeError>;
 ```
 
 ---
 
-## 7. Testing Strategy
+## 5. Testing Strategy
 
-### 7.1 Round-trip
+### 5.1 Round-trip
 
 For every type: `decode(encode(value)) == value`.
 
-### 7.2 Ordering
+### 5.2 Ordering
 
 For every orderable type:
 ```rust
@@ -467,21 +333,13 @@ assert_eq!(encode(a).cmp(&encode(b)), a.partial_compare(&b).unwrap());
 
 Edge cases: min/max values, zero crossings, NaN, empty strings, strings with embedded nulls.
 
-### 7.3 Prefix-Free
+### 5.3 Prefix-Free
 
 For variable-length types:
 ```rust
 assert!(!encode("abcd").starts_with(&encode("abc")));
 ```
 
-### 7.4 Composite Key Ordering
-
-```rust
-let key1 = encode_eav_key(1, 10, &DataType::String("alice".into()), ADD);
-let key2 = encode_eav_key(1, 10, &DataType::String("bob".into()), ADD);
-assert!(key1 < key2);
-```
-
-### 7.5 Property-Based Tests
+### 5.4 Property-Based Tests
 
 Use `proptest` to generate random `DataType` values and verify round-trip and ordering properties across thousands of random inputs.
