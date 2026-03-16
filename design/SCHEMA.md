@@ -140,7 +140,17 @@ For `Put`, `Add`, and `Retract` operations on data entities:
 
 `Delete` and `Erase` operations are not validated against schema (they only reference entity IDs).
 
-### 4.3 Schema Definition
+### 4.3 Cardinality Enforcement
+
+When writing to the indices, the `SchemaCache` is consulted to determine how a `Put` or `Add` interacts with existing data for the same entity+attribute pair:
+
+- **`:db.cardinality/one`** — An entity may hold at most one value for this attribute. When a `Put` or `Add` asserts a new value, the indexer must first look up the existing value (if any) and emit retraction index keys for it before writing the new assertion. This ensures the old value is no longer visible in queries.
+
+- **`:db.cardinality/many`** — An entity may hold multiple values for this attribute. A `Put` or `Add` simply writes the new assertion without retracting anything. Multiple values coexist.
+
+> **Note:** Cardinality enforcement is not yet implemented. Currently all writes behave as cardinality-many (no automatic retraction).
+
+### 4.4 Schema Definition
 
 Schema detection operates at the **transaction level**, not the individual operation level. After collecting all ops in a transaction, `process_tx()` aggregates the attributes asserted for each entity. An entity is a schema definition if it has both `db/ident` and `db/valueType` (from any combination of `Put` and `Add` ops).
 
@@ -152,7 +162,7 @@ The transaction is **rejected** if a schema-defining entity:
 - Has a `db/cardinality` that is not a valid cardinality entity ID (30 or 31)
 - Is missing `db/id` or `db/id` is not a Long
 
-### 4.4 Schema Immutability
+### 4.5 Schema Immutability
 
 Schema attributes are **immutable** once installed. The following operations are rejected:
 
