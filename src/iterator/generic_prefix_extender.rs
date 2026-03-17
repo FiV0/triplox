@@ -200,7 +200,7 @@ mod tests {
     }
 
     fn encode_string(s: &str) -> Bytes {
-        Bytes::from(s.as_bytes().to_vec())
+        Bytes::from(DataType::String(s.to_string()).encode())
     }
 
     async fn insert_ave(
