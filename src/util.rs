@@ -140,6 +140,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                     total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
+            // AE/AV are atemporal — no T+op suffix
             IndexType::AE => match position {
                 0 => (
                     codec::CODEC_LENGTH,
@@ -147,7 +148,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length,
                 ),
             },
             IndexType::AV => match position {
@@ -157,7 +158,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length,
                 ),
             },
         };

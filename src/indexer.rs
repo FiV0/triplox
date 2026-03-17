@@ -75,8 +75,8 @@ fn op_to_index_keys(tx_op: &TxOp, schema_cache: &SchemaCache, timestamp: &[u8; 8
                 eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::ADD]]));
                 ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::ADD]]));
                 aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::ADD]]));
-                ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id, timestamp, &[codec::ADD]]));
-                av.push(concat_bytes(&[&[codec::AV], &attribute, &value, timestamp, &[codec::ADD]]));
+                ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id]));
+                av.push(concat_bytes(&[&[codec::AV], &attribute, &value]));
             }
 
             Ok(TxIndexKeys { eav, ave, aev, ae, av })
@@ -92,8 +92,8 @@ fn op_to_index_keys(tx_op: &TxOp, schema_cache: &SchemaCache, timestamp: &[u8; 8
             let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::ADD]]);
             let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::ADD]]);
             let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::ADD]]);
-            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, timestamp, &[codec::ADD]]);
-            let av = concat_bytes(&[&[codec::AV], &attribute, &value, timestamp, &[codec::ADD]]);
+            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id]);
+            let av = concat_bytes(&[&[codec::AV], &attribute, &value]);
 
             Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
         },
@@ -108,10 +108,11 @@ fn op_to_index_keys(tx_op: &TxOp, schema_cache: &SchemaCache, timestamp: &[u8; 8
             let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::RETRACT]]);
             let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::RETRACT]]);
             let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::RETRACT]]);
-            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id, timestamp, &[codec::RETRACT]]);
-            let av = concat_bytes(&[&[codec::AV], &attribute, &value, timestamp, &[codec::RETRACT]]);
+            // AE/AV are purely additive — retractions are not written to partial indices
+            let ae = vec![];
+            let av = vec![];
 
-            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
+            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae, av })
         },
         TxOp::Delete(_entity) => todo!(),
         TxOp::Erase(_entity) => todo!(),
@@ -392,7 +393,7 @@ pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant,
     Ok((attribute, entity_id, value, timestamp, suffix))
 }
 
-pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType, Instant, u8), Error> {
+pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AE {
@@ -402,18 +403,16 @@ pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType, Instant, u8), Error
     if key.len() < 2 {
         return Err(anyhow::anyhow!("Key too short"));
     }
-    let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]);
-    let suffix = key[key.len()-1];
+    let without_prefix = &key[1..];
 
-    let mut cursor = std::io::Cursor::new(without_prefix_and_suffix);
+    let mut cursor = std::io::Cursor::new(without_prefix);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
 
-    Ok((attribute, entity_id, timestamp, suffix))
+    Ok((attribute, entity_id))
 }
 
-pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType, Instant, u8), Error> {
+pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
     let key = key.as_ref();
 
     if key.is_empty() || key[0] != codec::AV {
@@ -423,15 +422,13 @@ pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType, Instant, u8), Error
     if key.len() < 2 {
         return Err(anyhow::anyhow!("Key too short"));
     }
-    let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]);
-    let suffix = key[key.len()-1];
+    let without_prefix = &key[1..];
 
-    let mut cursor = std::io::Cursor::new(without_prefix_and_suffix);
+    let mut cursor = std::io::Cursor::new(without_prefix);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
 
-    Ok((attribute, value, timestamp, suffix))
+    Ok((attribute, value))
 }
 
 #[cfg(test)]

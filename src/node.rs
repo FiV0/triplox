@@ -284,10 +284,9 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, entity_id, _timestamp, suffix) = ae_key_to_parts(kv.key).unwrap();
+            let (attribute, entity_id) = ae_key_to_parts(kv.key).unwrap();
             if entity_id == DataType::Long(100) {
                 assert_eq!(attribute, name_id);
-                assert_eq!(suffix, codec::ADD);
                 found = true;
                 break;
             }
@@ -298,9 +297,8 @@ mod tests {
         let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, value, _timestamp, suffix) = av_key_to_parts(kv.key).unwrap();
+            let (attribute, value) = av_key_to_parts(kv.key).unwrap();
             if attribute == name_id && value == DataType::String("alice".to_string()) {
-                assert_eq!(suffix, codec::ADD);
                 found = true;
                 break;
             }
