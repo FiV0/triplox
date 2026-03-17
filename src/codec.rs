@@ -25,9 +25,8 @@ pub const INDEX_VERSION: u8 = 1;
 
 // TODO use these throughout the codebase
 pub const CODEC_LENGTH: usize = 1;
-// TODO: Entity IDs are encoded as DataType::Long (4-byte variant tag + 8-byte i64).
-// Revisit with schema/custom encoding — could go back to raw i64 (8 bytes).
-pub const ENTITY_LENGTH: usize = 12;
+// Entity IDs are encoded as DataType::Long (1-byte type tag + 8-byte order-preserving i64).
+pub const ENTITY_LENGTH: usize = 9;
 pub const ATTRIBUTE_LENGTH: usize = 8;
 pub const OP_LENGTH: usize = 1;
 pub const TIMESTAMP_LENGTH: usize = 8;

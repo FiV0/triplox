@@ -6,7 +6,7 @@ use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::clock::Instant;
-use crate::codec::index_type_to_prefix;
+use crate::codec::{self, index_type_to_prefix};
 use crate::index::IndexType;
 use crate::util::make_extractor;
 
@@ -35,8 +35,8 @@ impl GenericPrefixExtender {
         participating_levels: Vec<usize>,
         as_of: Instant,
     ) -> Self {
-        let mut full_prefix = bincode::serialize(&attribute_id)
-            .expect("Failed to serialize attribute_id");
+        let mut full_prefix = Vec::new();
+        codec::encode_i64(attribute_id, &mut full_prefix);
         full_prefix.extend_from_slice(&constant_prefix);
 
         Self {
@@ -191,12 +191,12 @@ impl PrefixExtender for GenericPrefixExtender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::Encode;
     use crate::ops::DataType;
     use crate::slate::in_memory_slate;
 
     fn encode_entity(val: i64) -> Bytes {
-        // Entity IDs are encoded as DataType::Long to match value-position encoding
-        Bytes::from(bincode::serialize(&DataType::Long(val)).unwrap())
+        Bytes::from(DataType::Long(val).encode())
     }
 
     fn encode_string(s: &str) -> Bytes {
@@ -210,9 +210,9 @@ mod tests {
         entity: i64,
     ) -> anyhow::Result<()> {
         let mut key = vec![crate::codec::AVE];
-        key.extend_from_slice(&bincode::serialize(&attribute)?);
+        codec::encode_i64(attribute, &mut key);
         key.extend_from_slice(&value);
-        key.extend_from_slice(&bincode::serialize(&DataType::Long(entity))?);
+        key.extend_from_slice(&DataType::Long(entity).encode());
         key.extend_from_slice(&crate::codec::encode_timestamp(crate::clock::st_from_unix_epoch(1_000_000)));
         key.push(crate::codec::ADD);
 
@@ -223,7 +223,7 @@ mod tests {
     async fn insert_av(slate: &slatedb::Db, attribute: i64, value: Bytes) -> anyhow::Result<()> {
         // AV is atemporal — no timestamp or op suffix
         let mut key = vec![crate::codec::AV];
-        key.extend_from_slice(&bincode::serialize(&attribute)?);
+        codec::encode_i64(attribute, &mut key);
         key.extend_from_slice(&value);
 
         slate.put(&key, b"dummy_value").await?;
@@ -389,7 +389,7 @@ mod tests {
         let slate = runtime.block_on(in_memory_slate());
         let attr_name = 42i64;
 
-        let value_bytes = Bytes::from(bincode::serialize(&DataType::String("alice".to_string()))?);
+        let value_bytes = Bytes::from(DataType::String("alice".to_string()).encode());
         runtime.block_on(insert_ave(&slate, attr_name, value_bytes.clone(), 1))?;
 
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();

@@ -22,6 +22,7 @@ use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
 use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
+use crate::codec::{Encode, Decode};
 use crate::ops::DataType;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -315,7 +316,7 @@ fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Re
             // AVE key order: [attr, value, entity]
             // If value is constant, include it in prefix
             if let PatternElement::Constant(value) = &pattern.value {
-                Ok(bincode::serialize(value)?)
+                Ok(value.encode())
             } else {
                 Ok(vec![])
             }
@@ -324,7 +325,7 @@ fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Re
             // AEV key order: [attr, entity, value]
             // If entity is constant, include it in prefix
             if let PatternElement::Constant(entity) = &pattern.entity {
-                Ok(bincode::serialize(entity)?)
+                Ok(entity.encode())
             } else {
                 Ok(vec![])
             }
@@ -461,7 +462,7 @@ fn project_results(
                 .map(|proj| match proj {
                     Projection::GroupVar(group_pos) => {
                         let join_idx = plan.group_key_indices[*group_pos];
-                        bincode::deserialize::<DataType>(&tuple[join_idx])
+                        DataType::decode(&tuple[join_idx])
                             .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
                     }
                     Projection::Aggregate(_, _) => unreachable!(),
@@ -513,7 +514,7 @@ fn execute_aggregation(
                 let group_values: Vec<DataType> = plan
                     .group_key_indices
                     .iter()
-                    .map(|&idx| bincode::deserialize::<DataType>(&tuple[idx]))
+                    .map(|&idx| DataType::decode(&tuple[idx]).map_err(|e| anyhow::anyhow!("{}", e)))
                     .collect::<Result<Vec<_>, _>>()?;
                 let accs: Vec<Box<dyn Accumulator>> =
                     agg_funcs.iter().map(|f| make_accumulator(f)).collect();
@@ -525,7 +526,7 @@ fn execute_aggregation(
         let mut agg_idx = 0;
         for proj in &plan.projections {
             if let Projection::Aggregate(_, join_idx) = proj {
-                let value = bincode::deserialize::<DataType>(&tuple[*join_idx])?;
+                let value = DataType::decode(&tuple[*join_idx]).map_err(|e| anyhow::anyhow!("{}", e))?;
                 accumulators[agg_idx].accumulate(&value)?;
                 agg_idx += 1;
             }

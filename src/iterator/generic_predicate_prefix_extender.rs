@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
+use crate::codec::Decode;
 use crate::datalog::Variable;
 use crate::expr::{evaluate_as_bool, EvalContext, Expr};
 use crate::ops::DataType;
@@ -50,13 +51,13 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        // Pre-deserialize prefix variables once (same for all extensions).
+        // Pre-decode prefix variables once (same for all extensions).
         let prefix_values: Vec<(Variable, DataType)> = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = bincode::deserialize::<DataType>(&prefix[*idx])
-                    .expect("failed to deserialize prefix variable");
+                let dt = DataType::decode(&prefix[*idx])
+                    .expect("failed to decode prefix variable");
                 (var.clone(), dt)
             })
             .collect();
@@ -64,8 +65,8 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
         extensions
             .iter()
             .filter(|ext| {
-                let ext_val = bincode::deserialize::<DataType>(ext)
-                    .expect("failed to deserialize extension value");
+                let ext_val = DataType::decode(ext)
+                    .expect("failed to decode extension value");
 
                 let mut bindings: HashMap<Variable, &DataType> = prefix_values
                     .iter()
@@ -91,10 +92,11 @@ mod tests {
     use bytes::Bytes;
 
     use crate::algo::generic_join::{GenericJoin, SingleLevelExtender};
+    use crate::codec::Encode;
     use crate::expr::{BinaryExpr, BinaryOp};
 
     fn serialize(dt: &DataType) -> Bytes {
-        Bytes::from(bincode::serialize(dt).unwrap())
+        Bytes::from(dt.encode())
     }
 
     #[test]
@@ -154,11 +156,11 @@ mod tests {
         let result = ext.intersect(&vec![], &extensions);
         assert_eq!(result.len(), 2);
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[0]).unwrap(),
+            DataType::decode(&result[0]).unwrap(),
             DataType::Long(25)
         );
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[1]).unwrap(),
+            DataType::decode(&result[1]).unwrap(),
             DataType::Long(10)
         );
     }
@@ -190,11 +192,11 @@ mod tests {
         let result = ext.intersect(&prefix, &extensions);
         assert_eq!(result.len(), 2);
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[0]).unwrap(),
+            DataType::decode(&result[0]).unwrap(),
             DataType::Long(15)
         );
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[1]).unwrap(),
+            DataType::decode(&result[1]).unwrap(),
             DataType::Long(20)
         );
     }
@@ -226,7 +228,7 @@ mod tests {
         let result = ext.intersect(&prefix, &extensions);
         assert_eq!(result.len(), 1);
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[0]).unwrap(),
+            DataType::decode(&result[0]).unwrap(),
             DataType::Long(5)
         );
     }
@@ -261,11 +263,11 @@ mod tests {
 
         assert_eq!(result.len(), 2);
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[0][0]).unwrap(),
+            DataType::decode(&result[0][0]).unwrap(),
             DataType::Long(10)
         );
         assert_eq!(
-            bincode::deserialize::<DataType>(&result[1][0]).unwrap(),
+            DataType::decode(&result[1][0]).unwrap(),
             DataType::Long(20)
         );
     }
