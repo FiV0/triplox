@@ -198,7 +198,7 @@ mod tests {
     use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::expr::{BinaryExpr, BinaryOp, Expr};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
+    use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp};
     use crate::schema::test_schema_tx;
     // "name" has entity_id 50, "age" 51, "email" 52, "follows" 53 from test_schema_tx
     use crate::transaction::TransactionResult;
@@ -357,7 +357,7 @@ mod tests {
         let triple = Triple {
             entity: EntityId::new(100),
             attribute: Attribute("email".to_string()),
-            value: Value::new(DataType::String("test@example.com".to_string())),
+            value: DataType::String("test@example.com".to_string()),
         };
         let tx_ops = vec![TxOp::Add(triple)];
 

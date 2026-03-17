@@ -254,12 +254,12 @@ impl SchemaCache {
                 TxOp::Add(Triple {
                     attribute, value, ..
                 }) => {
-                    self.validate_attribute_value(&attribute.0, value.data_type())?;
+                    self.validate_attribute_value(&attribute.0, value)?;
                 }
                 TxOp::Retract(Triple {
                     attribute, value, ..
                 }) => {
-                    self.validate_attribute_value(&attribute.0, value.data_type())?;
+                    self.validate_attribute_value(&attribute.0, value)?;
                 }
                 TxOp::Delete(_) | TxOp::Erase(_) => {}
             }
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_validate_tx_add_triple() {
-        use crate::ops::{Attribute, EntityId, Value};
+        use crate::ops::{Attribute, EntityId};
 
         let cache = bootstrapped_cache_with_person_name();
 
@@ -692,7 +692,7 @@ mod tests {
         let op = TxOp::Add(Triple {
             entity: EntityId(200),
             attribute: Attribute("person/name".to_string()),
-            value: Value::new(DataType::String("Bob".to_string())),
+            value: DataType::String("Bob".to_string()),
         });
         assert!(cache.validate_tx(&[op]).is_ok());
 
@@ -700,14 +700,14 @@ mod tests {
         let op = TxOp::Add(Triple {
             entity: EntityId(200),
             attribute: Attribute("person/name".to_string()),
-            value: Value::new(DataType::Long(42)),
+            value: DataType::Long(42),
         });
         assert!(cache.validate_tx(&[op]).is_err());
     }
 
     #[test]
     fn test_validate_tx_retract_triple() {
-        use crate::ops::{Attribute, EntityId, Value};
+        use crate::ops::{Attribute, EntityId};
 
         let cache = bootstrapped_cache_with_person_name();
 
@@ -715,7 +715,7 @@ mod tests {
         let op = TxOp::Retract(Triple {
             entity: EntityId(200),
             attribute: Attribute("person/name".to_string()),
-            value: Value::new(DataType::String("Bob".to_string())),
+            value: DataType::String("Bob".to_string()),
         });
         assert!(cache.validate_tx(&[op]).is_ok());
 
@@ -723,7 +723,7 @@ mod tests {
         let op = TxOp::Retract(Triple {
             entity: EntityId(200),
             attribute: Attribute("person/age".to_string()),
-            value: Value::new(DataType::Long(30)),
+            value: DataType::Long(30),
         });
         assert!(cache.validate_tx(&[op]).is_err());
     }

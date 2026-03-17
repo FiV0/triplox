@@ -11,7 +11,7 @@ use edn::symbols::Keyword;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp, Value};
+use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -423,7 +423,7 @@ fn encode_data_type_map(buf: &mut Vec<u8>, map: &BTreeMap<String, DataType>) {
 fn encode_triple(buf: &mut Vec<u8>, triple: &Triple) {
     encode_i64(buf, triple.entity.0);
     encode_string(buf, &triple.attribute.0);
-    encode_data_type(buf, &triple.value.0);
+    encode_data_type(buf, &triple.value);
 }
 
 fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
@@ -668,7 +668,7 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 fn decode_triple(cursor: &mut Cursor) -> Result<Triple> {
     let entity = EntityId(cursor.read_i64()?);
     let attribute = Attribute(cursor.read_string()?);
-    let value = Value::new(decode_data_type(cursor)?);
+    let value = decode_data_type(cursor)?;
     Ok(Triple {
         entity,
         attribute,
@@ -1264,7 +1264,7 @@ mod tests {
         let op = TxOp::Add(Triple {
             entity: EntityId(42),
             attribute: Attribute("email".to_string()),
-            value: Value::new(DataType::String("test@example.com".to_string())),
+            value: DataType::String("test@example.com".to_string()),
         });
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1274,7 +1274,7 @@ mod tests {
         let op = TxOp::Retract(Triple {
             entity: EntityId(42),
             attribute: Attribute("email".to_string()),
-            value: Value::new(DataType::String("old@example.com".to_string())),
+            value: DataType::String("old@example.com".to_string()),
         });
         assert_eq!(roundtrip_tx_op(&op), op);
     }

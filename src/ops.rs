@@ -20,19 +20,6 @@ impl EntityId {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Attribute(pub String);
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Value(pub DataType);
-
-impl Value {
-    pub fn new(data: DataType) -> Self {
-        Value(data)
-    }
-
-    pub fn data_type(&self) -> &DataType {
-        &self.0
-    }
-}
-
 // TODO: Ref commented out for now — entity refs are stored as DataType::Long.
 // Revisit when schema is added (ref-typed attributes should use entity encoding).
 // pub type Ref = i64;
@@ -149,7 +136,7 @@ pub struct Document(pub BTreeMap<String, DataType>);
 pub struct Triple {
     pub entity: EntityId,
     pub attribute: Attribute,
-    pub value: Value,
+    pub value: DataType,
 }
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
@@ -222,7 +209,7 @@ mod tests {
         let op = TxOp::Add(Triple {
             entity: EntityId(1),
             attribute: Attribute("string".to_string()),
-            value: Value(DataType::String("string_value".to_string())),
+            value: DataType::String("string_value".to_string()),
         });
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -234,7 +221,7 @@ mod tests {
         let op = TxOp::Retract(Triple {
             entity: EntityId(1),
             attribute: Attribute("string".to_string()),
-            value: Value(DataType::String("string_value".to_string())),
+            value: DataType::String("string_value".to_string()),
         });
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
