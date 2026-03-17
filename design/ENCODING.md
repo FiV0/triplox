@@ -78,6 +78,7 @@ Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 
 | Tag | Name    | Rust Type                      |
 |-----|---------|--------------------------------|
+| 0   | *(reserved — end-of-composite sentinel)* | — |
 | 1   | BigInt  | `i128`                         |
 | 2   | Boolean | `bool`                         |
 | 3   | Bytes   | `Vec<u8>`                      |
@@ -92,6 +93,7 @@ Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 | 12  | Vector  | `Vec<DataType>`                |
 | 13  | Map     | `BTreeMap<String, DataType>`   |
 | 14  | Keyword | `Keyword`                      |
+| 15  | Nil     | *(reserved)*                   |
 
 ---
 

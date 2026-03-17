@@ -75,7 +75,6 @@ pub const SEVERITY_ERROR: u8 = b'E';
 pub const SEVERITY_FATAL: u8 = b'F';
 
 // DataType tag bytes
-pub const TAG_NIL: u8 = 0;
 pub const TAG_BIG_INT: u8 = 1;
 pub const TAG_BOOLEAN: u8 = 2;
 pub const TAG_BYTES: u8 = 3;
@@ -607,7 +606,6 @@ fn parse_keyword_string(s: &str) -> Result<Keyword> {
 fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
     let tag = cursor.read_u8()?;
     match tag {
-        TAG_NIL => bail!("TAG_NIL is no longer a valid DataType"),
         TAG_BIG_INT => Ok(DataType::BigInt(cursor.read_i128()?)),
         TAG_BOOLEAN => Ok(DataType::Boolean(cursor.read_bool()?)),
         TAG_BYTES => Ok(DataType::Bytes(cursor.read_byte_array()?)),

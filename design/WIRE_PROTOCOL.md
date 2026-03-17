@@ -566,6 +566,7 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 
 | Tag | Name    |
 |-----|---------|
+| 0   | *(reserved — end-of-composite sentinel in storage encoding)* |
 | 1   | BigInt  |
 | 2   | Boolean |
 | 3   | Bytes   |
@@ -580,6 +581,7 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 | 12  | Vector  |
 | 13  | Map     |
 | 14  | Keyword |
+| 15  | Nil *(reserved)* |
 | 127 | Union   |
 | 255 | Unknown |
 
