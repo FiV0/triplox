@@ -67,7 +67,7 @@ impl TemporalFilterIterator {
     }
 
     /// Advance the underlying iterator to the next key whose timestamp <= as_of,
-    /// resolving temporal groups (skip newer entries and duplicates).
+    /// skipping entries newer than as_of.
     fn advance_to_next_valid(&mut self) -> Result<(), Error> {
         loop {
             let entry = self.handle.block_on(self.inner.next())?;
