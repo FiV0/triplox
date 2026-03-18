@@ -156,7 +156,7 @@ impl Indexer {
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
 
-        self.schema_cache.validate_tx(&datoms, &tx_ops)?;
+        self.schema_cache.validate_tx(&datoms)?;
 
         let write_batch = build_index_write_batch(&datoms, &self.schema_cache, tx_key.system_time)?;
 
