@@ -15,7 +15,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::TxOp;
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::slate::{in_memory_slate, local_slate};
-pub use crate::transaction::{Basis, TransactionResult, TxKey};
+pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
 
 #[allow(async_fn_in_trait)]
@@ -33,14 +33,14 @@ pub trait Database {
 pub trait QueryNode {
     type DB: Database;
     async fn db(&self) -> Result<Self::DB, Error>;
-    async fn db_with_basis(&self, basis: Basis) -> Result<Self::DB, Error>;
+    async fn db_as_of(&self, tx_key: TxKey) -> Result<Self::DB, Error>;
 }
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
     attribute_map: HashMap<String, i64>,
     handle: Handle,
-    basis: Basis,
+    tx_key: TxKey,
 }
 
 #[allow(unused)]
@@ -48,18 +48,18 @@ pub struct Eid {}
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, basis: Basis) -> Self {
-        Self { snapshot, attribute_map, handle, basis }
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey) -> Self {
+        Self { snapshot, attribute_map, handle, tx_key }
     }
 
-    /// Construct a DB from a snapshot by scanning TX_TO_SEQ keys to find the latest basis.
+    /// Construct a DB from a snapshot by scanning TX_TO_META keys to find the latest TxKey.
     pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
-        let basis = crate::indexer::latest_basis_from_snapshot(&snapshot).await?;
-        Ok(Self { snapshot, attribute_map, handle, basis })
+        let tx_key = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
+        Ok(Self { snapshot, attribute_map, handle, tx_key })
     }
 
-    pub fn basis(&self) -> &Basis {
-        &self.basis
+    pub fn tx_key(&self) -> &TxKey {
+        &self.tx_key
     }
 
     pub fn entity(&self, _eid: Eid) {
@@ -77,7 +77,7 @@ impl Database for DB {
         let handle = self.handle.clone();
         let attribute_map = self.attribute_map.clone();
         let query = query.clone();
-        let as_of = self.basis.tx_key.system_time;
+        let as_of = self.tx_key.system_time;
 
         tokio::task::spawn_blocking(move || {
             execute_query(&query, snapshot, handle, &attribute_map, as_of)
@@ -138,15 +138,6 @@ impl Node<FileLog> {
 }
 
 impl<L: TxLog> Node<L> {
-    /// Look up the Basis for a given TxKey from the persisted index.
-    /// Returns None if the tx_id has not been indexed yet.
-    pub async fn basis_for_tx(&self, tx_key: TxKey) -> Result<Basis, Error> {
-        self.indexer.read().await.await_tx(tx_key).await?;
-        crate::indexer::get_basis_for_tx(self.slatedb.clone(), tx_key.tx_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("No basis found for tx {}", tx_key.tx_id))
-    }
-
     pub async fn close(self) {
         self.subscription.cancel();
         self.slatedb.close().await.unwrap();
@@ -166,7 +157,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let wait_future = self.indexer.read().await.await_tx(tx_key);
         match wait_future.await {
-            Ok(seq_num) => Ok(TransactionResult::TxCommited(Basis { tx_key, seq_num })),
+            Ok(()) => Ok(TransactionResult::TxCommited(tx_key)),
             Err(e) => Ok(TransactionResult::TxAborted(tx_key, e.into())),
         }
     }
@@ -180,11 +171,11 @@ impl<L: TxLog> QueryNode for Node<L> {
         let handle = Handle::current();
         DB::from_latest_snapshot(snapshot, attribute_map, handle).await
     }
-    async fn db_with_basis(&self, basis: Basis) -> Result<DB, Error> {
-        let snapshot = self.slatedb.snapshot_as_of(basis.seq_num).await?;
+    async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
+        let snapshot = self.slatedb.snapshot().await?;
         let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
-        Ok(DB::new(snapshot, attribute_map, handle, basis))
+        Ok(DB::new(snapshot, attribute_map, handle, tx_key))
     }
 }
 
@@ -706,7 +697,7 @@ mod tests {
     // TODO(triplox-5ox): Once cardinality/one override is implemented, update this test to use
     // the same entity in both transactions and verify only the latest value is returned.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_db_with_basis_time_travel() {
+    async fn test_db_as_of_time_travel() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -714,8 +705,8 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let basis1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
+        let tx_key1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
+            TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx1 should commit"),
         };
 
@@ -723,8 +714,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        let basis2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
+        let tx_key2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
+            TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx2 should commit"),
         };
 
@@ -740,69 +731,20 @@ mod tests {
             })],
         };
 
-        // db_with_basis(basis1): should only see entity 100
-        let db1 = node.db_with_basis(basis1).await.unwrap();
+        // db_as_of(tx_key1): should only see entity 100
+        let db1 = node.db_as_of(tx_key1).await.unwrap();
         let result1 = db1.query(&query).await.unwrap();
         assert_eq!(result1.len(), 1);
         assert_eq!(result1[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
-        // db_with_basis(basis2): should see both entities
-        let db2 = node.db_with_basis(basis2).await.unwrap();
+        // db_as_of(tx_key2): should see both entities
+        let db2 = node.db_as_of(tx_key2).await.unwrap();
         let result2 = db2.query(&query).await.unwrap();
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_basis_for_tx_returns_correct_seq_num_per_tx() {
-        // basis_for_tx should return the seq_num corresponding to the specific tx,
-        // not the latest indexed tx's seq_num.
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        // Tx1: entity 1 with name "alice"
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let basis1_from_execute = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
-            _ => panic!("Tx1 should commit"),
-        };
-
-        // Tx2: entity 2 with name "bob"
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        let basis2_from_execute = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
-            _ => panic!("Tx2 should commit"),
-        };
-
-        // Both txs are now indexed. Call basis_for_tx for each.
-        // BUG: basis_for_tx hits the fast path and returns the latest indexed seq_num
-        // for both, instead of the seq_num specific to each tx.
-        let basis1 = node.basis_for_tx(basis1_from_execute.tx_key).await.unwrap();
-        let basis2 = node.basis_for_tx(basis2_from_execute.tx_key).await.unwrap();
-
-        // The two bases must have different seq_nums since they are different transactions
-        assert_ne!(
-            basis1.seq_num, basis2.seq_num,
-            "basis_for_tx(tx1) and basis_for_tx(tx2) should have different seq_nums, \
-             but both returned {}",
-            basis1.seq_num
-        );
-
-        // basis1.seq_num should be less than basis2.seq_num
-        assert!(
-            basis1.seq_num < basis2.seq_num,
-            "basis1.seq_num ({}) should be less than basis2.seq_num ({})",
-            basis1.seq_num,
-            basis2.seq_num
-        );
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_survives_restart() {
@@ -864,7 +806,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_db_with_basis_pins_snapshot() {
+    async fn test_db_as_of_pins_snapshot() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -873,8 +815,8 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(1));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         let result1 = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        let basis1 = match result1 {
-            TransactionResult::TxCommited(b) => b,
+        let tx_key1 = match result1 {
+            TransactionResult::TxCommited(tk) => tk,
             _ => panic!("Expected TxCommited"),
         };
 
@@ -884,8 +826,8 @@ mod tests {
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
-        // db_with_basis pinned to first tx should only see alice
-        let db = node.db_with_basis(basis1).await.unwrap();
+        // db_as_of pinned to first tx should only see alice
+        let db = node.db_as_of(tx_key1).await.unwrap();
         let query = Query {
             find: FindSpec::FindRel(vec![
                 FindElement::Variable("?e".to_string()),
@@ -898,7 +840,7 @@ mod tests {
             })],
         };
         let results = db.query(&query).await.unwrap();
-        assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
+        assert_eq!(results.len(), 1, "as-of-pinned DB should only see alice, got {:?}", results);
         assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
 
         // latest db should see both
@@ -910,13 +852,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_db_on_fresh_node_returns_sentinel_basis() {
+    async fn test_db_on_fresh_node_returns_sentinel_tx_key() {
         let node = Node::memory_node().await;
 
         let db = node.db().await.unwrap();
-        let basis = db.basis();
-        assert_eq!(basis.tx_key.tx_id, 0);
-        assert_eq!(basis.seq_num, 0);
+        let tx_key = db.tx_key();
+        assert_eq!(tx_key.tx_id, 0);
 
         node.close().await;
     }

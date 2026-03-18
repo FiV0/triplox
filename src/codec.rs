@@ -22,7 +22,8 @@ pub const AEV: u8 = 2;
 pub const AE: u8 = 3;
 pub const AV: u8 = 4;
 
-pub const TX_TO_SEQ: u8 = 6;
+/// Prefix for tx_id → TxMeta (system_time) mapping in SlateDB.
+pub const TX_TO_META: u8 = 6;
 
 pub const STATS_INDEX: u8 = 128;
 pub const META_INDEX: u8 = 129;

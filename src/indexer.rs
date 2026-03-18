@@ -16,7 +16,7 @@ use crate::log::{Record, Subscriber};
 use crate::ops::{Attribute, Document, Triple, TxOp};
 use crate::codec;
 use crate::schema::SchemaCache;
-use crate::transaction::{Basis, TxKey};
+use crate::transaction::TxKey;
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
@@ -25,8 +25,8 @@ use crate::clock::Instant;
 pub struct Indexer {
     slatedb: Arc<Db>,
     schema_cache: SchemaCache,
-    latest_indexed_tx: Option<(TxKey, u64)>,
-    tx_completion_sender: broadcast::Sender<(TxKey, Result<u64, Arc<anyhow::Error>>)>,
+    latest_indexed_tx: Option<TxKey>,
+    tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
 
 struct TxIndexKeys {
@@ -142,29 +142,27 @@ pub(crate) fn build_index_write_batch(
     Ok(write_batch)
 }
 
-/// Interim mapping stored in SlateDB to look up seq_num (and system_time) by tx_id.
-/// Will be replaced when SlateDB exposes WriteHandle.seqnum() (PR #1247).
+/// Metadata stored per transaction in SlateDB (keyed by tx_id under TX_TO_META prefix).
 #[derive(Serialize, Deserialize)]
 struct TxMeta {
-    seq_num: u64,
     system_time: Instant,
 }
 
-fn tx_to_seq_key(tx_id: i64) -> Vec<u8> {
-    concat_bytes(&[&[codec::TX_TO_SEQ], &bincode::serialize(&tx_id).unwrap()])
+fn tx_meta_key(tx_id: i64) -> Vec<u8> {
+    concat_bytes(&[&[codec::TX_TO_META], &bincode::serialize(&tx_id).unwrap()])
 }
 
-/// Scan all TX_TO_SEQ keys in a snapshot and return the Basis for the highest tx_id.
-/// If the snapshot contains no TX_TO_SEQ entries, returns a sentinel basis
-/// (tx_id=0, system_time=epoch, seq_num=0).
+/// Scan all TX_TO_META keys in a snapshot and return the TxKey for the highest tx_id.
+/// If the snapshot contains no TX_TO_META entries, returns a sentinel TxKey
+/// (tx_id=0, system_time=epoch).
 ///
-/// TODO: return a real "empty database" basis once we have one.
+/// TODO: return a real "empty database" TxKey once we have one.
 ///
-/// TODO(triplox-1vr): Switch tx_to_seq_key() to big-endian encoding (tx_id.to_be_bytes())
+/// TODO(triplox-1vr): Switch tx_meta_key() to big-endian encoding (tx_id.to_be_bytes())
 /// so byte order matches numeric order, enabling a reverse iterator for O(1) lookup
 /// instead of this full scan. Breaking change — requires migration or flag day.
-pub async fn latest_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<Basis> {
-    let mut iter = snapshot.scan_prefix_with_options(&[codec::TX_TO_SEQ], &DEFAULT_SCAN_OPTIONS).await?;
+pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
+    let mut iter = snapshot.scan_prefix_with_options(&[codec::TX_TO_META], &DEFAULT_SCAN_OPTIONS).await?;
     let mut latest: Option<(i64, TxMeta)> = None;
     while let Some(kv) = iter.next().await? {
         let tx_id: i64 = bincode::deserialize(&kv.key[1..])?;
@@ -173,25 +171,13 @@ pub async fn latest_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> 
             latest = Some((tx_id, meta));
         }
     }
-    Ok(latest.map(|(tx_id, meta)| Basis {
-        tx_key: TxKey { tx_id, system_time: meta.system_time },
-        seq_num: meta.seq_num,
-    }).unwrap_or_else(|| Basis {
-        tx_key: TxKey { tx_id: 0, system_time: crate::clock::st_from_unix_epoch(0) },
-        seq_num: 0,
+    Ok(latest.map(|(tx_id, meta)| TxKey {
+        tx_id,
+        system_time: meta.system_time,
+    }).unwrap_or_else(|| TxKey {
+        tx_id: 0,
+        system_time: crate::clock::st_from_unix_epoch(0),
     }))
-}
-
-/// Look up the Basis for a given tx_id from SlateDB.
-/// Returns None if no mapping exists for that tx_id.
-pub async fn get_basis_for_tx(slatedb: Arc<Db>, tx_id: i64) -> Option<Basis> {
-    let key = tx_to_seq_key(tx_id);
-    let bytes = slatedb.get_with_options(&key, &DEFAULT_READ_OPTIONS).await.ok()??;
-    let meta: TxMeta = bincode::deserialize(&bytes).ok()?;
-    Some(Basis {
-        tx_key: TxKey { tx_id, system_time: meta.system_time },
-        seq_num: meta.seq_num,
-    })
 }
 
 impl Indexer {
@@ -224,18 +210,16 @@ impl Indexer {
         // tradeoff (see TODO).
         self.schema_cache.process_tx(&tx_ops)?;
 
-        let seq_num = self.slatedb.last_committed_seq();
-
-        // Persist tx_id -> seq_num mapping (interim, see SlateDB PR #1247)
-        let meta = TxMeta { seq_num, system_time: tx_key.system_time };
-        self.slatedb.put(&tx_to_seq_key(tx_key.tx_id), &bincode::serialize(&meta)?).await;
+        // Persist tx_id -> system_time mapping
+        let meta = TxMeta { system_time: tx_key.system_time };
+        self.slatedb.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?).await;
 
         // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = Some((tx_key, seq_num));
+        self.latest_indexed_tx = Some(tx_key);
 
         // Send notification (warn if no receivers, matching memory_log.rs:51-52)
         // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
-        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(seq_num))) {
+        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
             warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
         }
 
@@ -264,7 +248,7 @@ impl Indexer {
     /// let future = indexer.read().await.await_tx(tx_key);
     /// tokio::time::timeout(Duration::from_millis(500), future).await??;
     /// ```
-    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<u64, Error>> + 'static {
+    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
         // Capture everything we need from self (clone/copy)
         let latest_tx = self.latest_indexed_tx;
         let mut rx = self.tx_completion_sender.subscribe();
@@ -272,9 +256,9 @@ impl Indexer {
         // Return a future that doesn't borrow self
         async move {
             // Fast path: Check if already indexed
-            if let Some((latest_key, seq_num)) = latest_tx {
+            if let Some(latest_key) = latest_tx {
                 if tx_key <= latest_key {
-                    return Ok(seq_num);
+                    return Ok(());
                 }
             }
 
@@ -504,7 +488,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tx_to_seq_mapping_written() -> Result<(), Error> {
+    async fn test_tx_meta_written() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
@@ -515,25 +499,24 @@ mod tests {
         let tx_ops = vec![TxOp::Put(Document(map))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        let basis = get_basis_for_tx(slate.clone(), 42).await;
-        assert!(basis.is_some(), "Should find basis for tx_id 42");
-        let basis = basis.unwrap();
-        assert_eq!(basis.tx_key.tx_id, 42);
-        assert_eq!(basis.tx_key.system_time, st_from_unix_epoch(1000));
-        assert!(basis.seq_num > 0, "seq_num should be positive after a write");
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        assert_eq!(latest.tx_id, 42);
+        assert_eq!(latest.system_time, st_from_unix_epoch(1000));
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_tx_to_seq_mapping_not_found() -> Result<(), Error> {
+    async fn test_tx_meta_empty_db() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let basis = get_basis_for_tx(slate.clone(), 999).await;
-        assert!(basis.is_none(), "Should return None for non-existent tx_id");
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        assert_eq!(latest.tx_id, 0, "Should return sentinel for empty DB");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_tx_to_seq_multiple_txs() -> Result<(), Error> {
+    async fn test_tx_meta_latest_wins() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
@@ -548,12 +531,10 @@ mod tests {
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        let basis0 = get_basis_for_tx(slate.clone(), 1).await.unwrap();
-        let basis1 = get_basis_for_tx(slate.clone(), 2).await.unwrap();
-        let basis2 = get_basis_for_tx(slate.clone(), 3).await.unwrap();
-
-        assert!(basis0.seq_num < basis1.seq_num);
-        assert!(basis1.seq_num < basis2.seq_num);
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        assert_eq!(latest.tx_id, 3, "Should return highest tx_id");
+        assert_eq!(latest.system_time, st_from_unix_epoch(300));
         Ok(())
     }
 

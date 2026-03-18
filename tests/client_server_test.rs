@@ -10,7 +10,7 @@ use triplox::ops::{DataType, Document, TxOp};
 use edn::symbols::Keyword;
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
-use triplox::{Basis, TransactionResult};
+use triplox::TransactionResult;
 
 async fn define_test_schema(client: &ClientNode) {
     let result = client.execute_tx(test_schema_tx()).await.unwrap();
@@ -173,7 +173,7 @@ async fn test_two_connections() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_execute_tx_returns_basis_with_seq_num() {
+async fn test_execute_tx_returns_tx_key() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
@@ -184,8 +184,8 @@ async fn test_execute_tx_returns_basis_with_seq_num() {
     let result = client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 
     match result {
-        TransactionResult::TxCommited(basis) => {
-            assert!(basis.seq_num > 0, "seq_num should be positive after indexing");
+        TransactionResult::TxCommited(tx_key) => {
+            assert!(tx_key.tx_id > 0, "tx_id should be positive after indexing");
         }
         _ => panic!("Expected TxCommited"),
     }
@@ -195,7 +195,7 @@ async fn test_execute_tx_returns_basis_with_seq_num() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_db_with_basis() {
+async fn test_db_as_of() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
@@ -205,8 +205,8 @@ async fn test_db_with_basis() {
     doc1.insert("db/id".to_string(), DataType::Long(1));
     doc1.insert("name".to_string(), DataType::String("alice".to_string()));
     let result1 = client.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-    let basis1 = match result1 {
-        TransactionResult::TxCommited(b) => b,
+    let tx_key1 = match result1 {
+        TransactionResult::TxCommited(tk) => tk,
         _ => panic!("Expected TxCommited"),
     };
 
@@ -216,45 +216,13 @@ async fn test_db_with_basis() {
     doc2.insert("name".to_string(), DataType::String("bob".to_string()));
     client.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
-    // Open DB pinned to basis after first tx — should only see alice
-    let db = client.db_with_basis(basis1).await.unwrap();
+    // Open DB pinned to tx_key after first tx — should only see alice
+    let db = client.db_as_of(tx_key1).await.unwrap();
     let result = db
         .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
-
-    db.close().await.unwrap();
-    client.close().await.unwrap();
-    token.cancel();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_basis_for_tx_after_submit() {
-    let (addr, token) = start_test_server().await;
-    let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
-
-    // Fire-and-forget submit
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    let tx_key = client.submit_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-
-    // Look up the full basis (server waits for indexing)
-    let basis = client.basis_for_tx(tx_key.clone()).await.unwrap();
-    assert_eq!(basis.tx_key.tx_id, tx_key.tx_id);
-    assert_eq!(basis.tx_key.system_time, tx_key.system_time);
-    assert!(basis.seq_num > 0, "seq_num should be positive after indexing");
-
-    // The basis should be usable to pin a DB snapshot
-    let db = client.db_with_basis(basis).await.unwrap();
-    let result = db
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
-        .await
-        .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
 

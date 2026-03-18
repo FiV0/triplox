@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use crate::datalog::{FindElement, FindSpec, OrBranch, PatternElement, Query, WhereClause};
-use crate::node::{Basis, Database, QueryNode, SubmitNode, TransactionResult, TxKey};
+use crate::node::{Database, QueryNode, SubmitNode, TransactionResult, TxKey};
 use crate::ops::{DataType, TxOp};
 use crate::protocol::*;
 use crate::query::QueryResult;
@@ -75,19 +75,18 @@ impl ClientNode {
         })
     }
 
-    async fn open_db(&self, basis: Option<Basis>) -> Result<ClientDb> {
+    async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
         let mut conn = self.conn.lock().await;
-        let (basis_tx_id, basis_system_time, basis_seq_num) = match &basis {
-            None => (None, None, None),
-            Some(b) => (
-                Some(b.tx_key.tx_id),
-                Some(b.tx_key.system_time.timestamp_micros()),
-                Some(b.seq_num),
+        let (basis_tx_id, basis_system_time) = match &tx_key {
+            None => (None, None),
+            Some(tk) => (
+                Some(tk.tx_id),
+                Some(tk.system_time.timestamp_micros()),
             ),
         };
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::OpenDb { basis_tx_id, basis_system_time, basis_seq_num },
+            &FrontendMessage::OpenDb { basis_tx_id, basis_system_time },
         )
         .await?;
         conn.writer.flush().await?;
@@ -115,46 +114,6 @@ impl ClientNode {
             tx_id,
             conn: self.conn.clone(),
         })
-    }
-
-    /// Look up the full Basis for a previously submitted transaction.
-    /// The server waits until the transaction has been indexed before responding.
-    pub async fn basis_for_tx(&self, tx_key: TxKey) -> Result<Basis> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::BasisForTx {
-                tx_id: tx_key.tx_id,
-                system_time: tx_key.system_time.timestamp_micros(),
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
-
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        let basis = match msg {
-            BackendMessage::BasisResult { tx_id, system_time, seq_num } => {
-                let dt = crate::protocol::micros_to_datetime(system_time)?;
-                Basis {
-                    tx_key: TxKey { tx_id, system_time: dt },
-                    seq_num,
-                }
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("BasisForTx error: {}", message);
-            }
-            other => bail!("Expected BasisResult, got {:?}", other),
-        };
-
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery { .. } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
-        }
-
-        Ok(basis)
     }
 
     /// Gracefully close the connection.
@@ -221,13 +180,12 @@ impl SubmitNode for ClientNode {
                 status,
                 tx_id,
                 system_time,
-                seq_num,
                 error_message,
             } => {
                 let dt = crate::protocol::micros_to_datetime(system_time)?;
                 let tx_key = TxKey { tx_id, system_time: dt };
                 if status == 0 {
-                    TransactionResult::TxCommited(Basis { tx_key, seq_num })
+                    TransactionResult::TxCommited(tx_key)
                 } else {
                     let err_msg =
                         error_message.unwrap_or_else(|| "transaction aborted".to_string());
@@ -260,8 +218,8 @@ impl QueryNode for ClientNode {
         self.open_db(None).await
     }
 
-    async fn db_with_basis(&self, basis: Basis) -> Result<ClientDb, Error> {
-        self.open_db(Some(basis)).await
+    async fn db_as_of(&self, tx_key: TxKey) -> Result<ClientDb, Error> {
+        self.open_db(Some(tx_key)).await
     }
 }
 
