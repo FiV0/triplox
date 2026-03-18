@@ -128,3 +128,13 @@ In it's final form we likely reject any modifications to bootstrap schema attrib
 We still strive for a deprecation guided schema evolution.
 
 ---
+
+## Schema defintion
+
+### Version 1
+ - A schema attribute needs to be fully defined within the same transaction. If `db/ident`, `db/valueType` or
+ `db/cardinality` is missing, the transaction is rejected.
+ - These attributes can be defined with `Put` or `Add` statements (or combinations thereof) as long as the
+ final set of required attributes is met.
+ - Updating or deleting a schema attribute is rejected.
+ - Attribute id resolution always works against the head of the db (basis-t in Datomic slang).
