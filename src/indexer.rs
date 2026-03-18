@@ -156,7 +156,7 @@ impl Indexer {
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
 
-        self.schema_cache.validate_tx(&tx_ops)?;
+        self.schema_cache.validate_tx(&datoms, &tx_ops)?;
 
         let write_batch = build_index_write_batch(&datoms, &self.schema_cache, tx_key.system_time)?;
 
@@ -166,7 +166,7 @@ impl Indexer {
         // visible within the transaction that defines them.
         // If the write above succeeded but process_tx fails, the cache is stale — acceptable
         // tradeoff (see TODO).
-        self.schema_cache.process_tx(&tx_ops)?;
+        self.schema_cache.process_tx(&datoms)?;
 
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };

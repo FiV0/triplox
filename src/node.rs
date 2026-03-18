@@ -745,7 +745,6 @@ mod tests {
         assert!(result2.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
     }
 
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -812,7 +811,7 @@ mod tests {
 
         // First transaction: insert alice
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(1));
+        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         let result1 = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
         let tx_key1 = match result1 {
@@ -822,7 +821,7 @@ mod tests {
 
         // Second transaction: insert bob
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2));
+        doc2.insert("db/id".to_string(), DataType::Long(200));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
@@ -840,8 +839,8 @@ mod tests {
             })],
         };
         let results = db.query(&query).await.unwrap();
-        assert_eq!(results.len(), 1, "as-of-pinned DB should only see alice, got {:?}", results);
-        assert_eq!(results[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+        assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
+        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
         // latest db should see both
         let db_latest = node.db().await.unwrap();
@@ -1274,7 +1273,7 @@ mod tests {
 
         // Submit a tx with unknown attribute — should fail with TxAborted
         let mut bad_doc = BTreeMap::new();
-        bad_doc.insert("db/id".to_string(), DataType::Long(1));
+        bad_doc.insert("db/id".to_string(), DataType::Long(100));
         bad_doc.insert("nonexistent/attr".to_string(), DataType::String("x".to_string()));
 
         let result = tokio::time::timeout(
@@ -1296,7 +1295,7 @@ mod tests {
                 "Expected TxCommited for schema tx, got: {:?}", result);
 
         let mut good_doc = BTreeMap::new();
-        good_doc.insert("db/id".to_string(), DataType::Long(2));
+        good_doc.insert("db/id".to_string(), DataType::Long(200));
         good_doc.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let result = tokio::time::timeout(
