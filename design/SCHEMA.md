@@ -8,6 +8,15 @@ Every user-defined attribute in Triplox must be declared before use. Schema defi
 
 Schema is stored as regular entity-attribute-value triples in the same indices as user data. The `SchemaCache` is an in-memory structure that mirrors this information for fast validation and attribute resolution.
 
+### Guiding principles
+
+Schema is not tracked across history. This follows Datomic's example. It is encouraged to deprecate attributes instead of renaming
+them or changing their constraints. We call this deprecation guided schema evolution. Overall the schema for queries (no matter the T we query at) will use the schema at the head of the db. We roughly envision three stages of schema support:
+
+1. In initial version supports additive schema only. Reasserting a schema attribute just fails.
+2. In a second version schema can be changed, but the effects are only for incoming transactions. The existing indices are not checked for the newly defined schema.
+3. Full schema migration support. One can change the schema constraints, but one has do the work so that the existing data fits the new schema. Schema is still always taken at head and resolved for head, but the schema can have a history.
+
 ---
 
 ## 1. Schema Attributes
@@ -20,15 +29,9 @@ A **schema attribute** defines a named attribute that can appear on data entitie
 | Value type  | `db/valueType`     | Keyword          | The type of values, e.g. `:db.type/string`   |
 | Cardinality | `db/cardinality`   | Long (entity ref) | `30` (one) or `31` (many)                   |
 
-Plus `db/id` (Long) — the entity's unique identifier.
-
-An entity becomes a schema attribute when all three properties (`db/ident`, `db/valueType`, `db/cardinality`) are asserted for it **within the same transaction**. This can happen via:
-
-- A single `Put` document containing all three keys
-- Multiple `Add` triples targeting the same entity ID
-- A mix of `Put` and `Add` operations
-
-The operation type does not matter — what matters is that by the end of the transaction, the entity has all three properties. If an entity has `db/ident` and `db/valueType` but is missing `db/cardinality`, the transaction is **rejected**.
+An entity becomes a schema attribute when all three properties (`db/ident`, `db/valueType`, `db/cardinality`) are present.
+Initially the 3 attributes need to be asserted in the same transaction. In later stages we might want to allow for more
+granular schema evolvement. This will require more work in the indexer so likely needs more thought.
 
 ### 1.1 Supported Value Types
 
@@ -84,85 +87,33 @@ Reserved entity ID ranges:
 
 ## 3. SchemaCache
 
-`SchemaCache` is the in-memory representation of all known schema attributes. It is owned by the `Indexer` and used for two purposes:
+`SchemaCache` is the in-memory representation of all known schema attributes. It is owned by the `Indexer` and used for three purposes:
 
-1. **Transaction validation** — reject unknown attributes and type mismatches
-2. **Attribute resolution** — map attribute names to entity IDs for index key construction
+1. **Transaction validation** - reject unknown attributes and type mismatches
+2. **Attribute resolution** - map attribute names to entity IDs for index key construction
+3. **Cardinality enforcement** - enforcing the cardinality constraints of the attributes in the indexer.
 
-### 3.1 Data Structure
 
-```
-SchemaCache {
-    by_ident: HashMap<String, SchemaAttribute>
-}
-
-SchemaAttribute {
-    ident:       String        // e.g. "person/name"
-    value_type:  ValueType     // e.g. String
-    cardinality: Cardinality   // e.g. One
-    entity_id:   i64           // e.g. 100
-}
-```
-
-### 3.2 Attribute Map
-
-`SchemaCache::attribute_map()` returns `HashMap<String, i64>` — a projection of ident to entity_id. The query engine uses this for attribute resolution (converting attribute names to entity IDs for index key construction). The query engine also uses cardinality information for scan optimization (see [Section 5](#5-query-side-cardinality)).
-
-### 3.3 Lifecycle
+### Lifecycle
 
 1. **Fresh database**: `SchemaCache` is populated by processing the bootstrap transaction through `process_tx()`.
-2. **Existing database**: `SchemaCache` is rebuilt from stored data by `load_schema_from_indices()`, which runs a Datalog query joining on `db/ident`, `db/valueType`, and `db/cardinality`.
-3. **During operation**: Each transaction may define new schema attributes. After a transaction is written to the indices, `process_tx()` aggregates all ops by entity ID, detects entities that have `db/ident` + `db/valueType`, validates completeness (requires `db/cardinality`), and adds new schema attributes to the cache.
+2. **Existing database**: `SchemaCache` is rebuilt from stored data by running a query against the indices.
+3. **During operation**: Each transaction may define new schema attributes. After the triples have been written to the indices. The `SchemaCache` updates if the new data contains schema attributes.
 
----
+### 3.1 Validation Flow
 
-## 4. Transaction Rules
+Newly defined attributes become available in the next transaction. Inside a transaction only the current schema is available and the data is checked against that schema.
 
-### 4.1 Validation Flow
-
-In `Indexer::transact_tx()`:
-
-```
-1. validate_tx(ops)    — check all ops against current SchemaCache
-2. write to indices    — persist the data
-3. process_tx(ops)     — update SchemaCache with new attributes
-```
-
-This ordering means newly defined attributes are **not available within the same transaction** that defines them. A schema-defining document validates against the bootstrap schema (its keys are `db/ident`, `db/valueType`, `db/cardinality` — all known bootstrap attributes). The new attribute becomes available starting with the next transaction.
-
-### 4.2 Data Validation
-
-For `Put`, `Add`, and `Retract` operations on data entities:
-
-- Every attribute key (except `db/id`) **must** exist in the schema cache
-- Every value **must** match the attribute's declared `ValueType`
-- `db/id` must be a Long
-
-`Delete` and `Erase` operations are not validated against schema (they only reference entity IDs).
-
-### 4.3 Cardinality Enforcement
+### 3.2 Cardinality Enforcement
 
 When writing to the indices, the `SchemaCache` is consulted to determine how a `Put` or `Add` interacts with existing data for the same entity+attribute pair:
 
-- **`:db.cardinality/one`** — An entity may hold at most one value for this attribute. When a `Put` or `Add` asserts a new value, the indexer must first look up the existing value (if any) and emit retraction index keys for it before writing the new assertion. This ensures the old value is no longer visible in queries.
+- **`:db.cardinality/one`** — An entity may hold at most one value for this attribute. When a `Put` or `Add` asserts a new value, the indexer must first look up the existing value (if any) and emit retraction index keys for it before writing the new assertion.
 
 - **`:db.cardinality/many`** — An entity may hold multiple values for this attribute. A `Put` or `Add` simply writes the new assertion without retracting anything. Multiple values coexist.
 
-> **Note:** Cardinality enforcement is not yet implemented. Currently all writes behave as cardinality-many (no automatic retraction).
 
-### 4.4 Schema Definition
-
-Schema detection operates at the **transaction level**, not the individual operation level. After collecting all ops in a transaction, `process_tx()` aggregates the attributes asserted for each entity. An entity is a schema definition if it has both `db/ident` and `db/valueType` (from any combination of `Put` and `Add` ops).
-
-The transaction is **rejected** if a schema-defining entity:
-
-- Is missing `db/cardinality`
-- Has a `db/ident` that is not a Keyword
-- Has a `db/valueType` that is not a recognized value type keyword
-- Has a `db/cardinality` that is not a valid cardinality entity ID (30 or 31)
-- Is missing `db/id` or `db/id` is not a Long
-
-### 4.5 Schema Immutability
+## 4 Schema Immutability
 
 Schema attributes are **immutable** once installed. The following operations are rejected:
 
@@ -173,82 +124,7 @@ Schema attributes are **immutable** once installed. The following operations are
 | `Delete`   | entity ID belongs to a schema entity                          | "Cannot delete schema entity"        |
 | `Erase`    | entity ID belongs to a schema entity                          | "Cannot erase schema entity"         |
 
----
-
-## 5. Query-Side Cardinality
-
-Cardinality information is not only relevant at write time — it also affects how the query engine scans indices. The key insight is that for a `:db.cardinality/one` attribute, a given `(entity, attribute)` pair has **at most one value** in the indices.
-
-### 5.1 Index Scan Behavior
-
-The query engine resolves patterns by scanning index prefixes. When an entity is already bound and the value is free, the engine scans the AEV index with prefix `[AEV][attr][entity]`. This prefix covers all values for that entity+attribute pair.
-
-| Cardinality | Scan prefix               | Behavior                                                       |
-|-------------|---------------------------|----------------------------------------------------------------|
-| one         | `[AEV][attr][entity]`     | At most one key — stop after first result                      |
-| many        | `[AEV][attr][entity]`     | Multiple keys possible — must scan all                         |
-
-For scans where the entity is the free variable (AVE, AE prefixes), cardinality does not bound the result count — many entities can share the same attribute or value.
-
-### 5.2 Join Ordering
-
-The generic join algorithm selects a proposer at each level by picking the extender with the lowest `count()`. For a `:db.cardinality/one` attribute with a bound entity, `count()` should return `1`. This allows the join planner to prefer cardinality-one patterns as proposers when multiple patterns share the same entity variable, reducing intermediate result sizes.
-
-### 5.3 Intersection
-
-When intersecting candidate extensions against an AEV prefix for a `:db.cardinality/one` attribute, there is at most one matching key. This means intersection can use a single point lookup rather than a prefix scan with seek.
-
-> **Note:** Query-side cardinality optimization is not yet implemented. Currently all scans exhaustively iterate the prefix regardless of cardinality, and `count()` returns a stub value.
+In it's final form we likely reject any modifications to bootstrap schema attributes, but allow changes to user defined attributes.
+We still strive for a deprecation guided schema evolution.
 
 ---
-
-## 6. Examples
-
-Define a schema attribute via `Put`:
-
-```edn
-[{:db/id 100
-  :db/ident :person/name
-  :db/valueType :db.type/string
-  :db/cardinality 30}]
-```
-
-Equivalently, via multiple `Add` triples in the same transaction:
-
-```edn
-[[:db/add 100 :db/ident :person/name]
- [:db/add 100 :db/valueType :db.type/string]
- [:db/add 100 :db/cardinality 30]]
-```
-
-Use it in a subsequent transaction:
-
-```edn
-[{:db/id 200
-  :person/name "Alice"}]
-```
-
-Rejected — unknown attribute:
-
-```edn
-[{:db/id 200
-  :person/email "alice@example.com"}]
-;; Error: Unknown attribute: person/email
-```
-
-Rejected — type mismatch:
-
-```edn
-[{:db/id 200
-  :person/name 42}]
-;; Error: Type mismatch for attribute person/name: expected string, got Long
-```
-
-Rejected — missing cardinality:
-
-```edn
-[{:db/id 101
-  :db/ident :person/age
-  :db/valueType :db.type/long}]
-;; Error: Schema attribute must have db/cardinality
-```
