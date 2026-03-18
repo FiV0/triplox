@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use slatedb::Db;
-use crate::clock;
+use crate::clock::{self, st_from_unix_epoch};
 use crate::codec;
 use crate::indexer::build_index_write_batch;
+use crate::ops::tx_ops_to_datoms;
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, SchemaCache};
 use crate::slate::DEFAULT_WRITE_OPTIONS;
 use crate::util::concat_bytes;
@@ -28,7 +29,8 @@ pub async fn init_db(slatedb: Arc<Db>) -> SchemaCache {
             let mut cache = SchemaCache::new();
             cache.process_tx(&tx_ops).unwrap();
 
-            let write_batch = build_index_write_batch(&tx_ops, &cache, clock::st_from_unix_epoch(0)).unwrap();
+            let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
+            let write_batch = build_index_write_batch(&datoms, &cache, clock::st_from_unix_epoch(0)).unwrap();
             slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await.unwrap();
 
             // Write version

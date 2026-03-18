@@ -13,7 +13,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
-use crate::ops::{Attribute, Document, Triple, TxOp};
+use crate::ops::{Attribute, Datom, DatomOp, Document, Triple, TxOp, tx_ops_to_datoms};
 use crate::codec;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
@@ -48,95 +48,51 @@ fn resolve_attribute_id(schema_cache: &SchemaCache, attr: &str) -> Result<i64, E
         .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr))
 }
 
-fn op_to_index_keys(tx_op: &TxOp, schema_cache: &SchemaCache, timestamp: &[u8; 8]) -> Result<TxIndexKeys, Error> {
-    match tx_op {
-        TxOp::Put(Document(doc)) => {
-            let entity_id = match doc.get("db/id") {
-                Some(DataType::Long(id)) => id,
-                Some(_) => return Err(anyhow::anyhow!("Document db/id must be a long")),
-                None => return Err(anyhow::anyhow!("Document must have a db/id")),
-            };
-            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-            // Revisit with schema/custom encoding.
-            let entity_id = bincode::serialize(&DataType::Long(*entity_id))?;
-            let mut attribute_and_values = Vec::new();
-            for (k, v) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                let attribute_id = resolve_attribute_id(schema_cache, k)?;
-                attribute_and_values.push((bincode::serialize(&attribute_id)?, bincode::serialize(v)?));
-            }
+fn datom_to_index_keys(datom: &Datom, schema_cache: &SchemaCache, timestamp: &[u8; 8]) -> Result<TxIndexKeys, Error> {
+    // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+    // Revisit with schema/custom encoding.
+    let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
+    let attribute_id = resolve_attribute_id(schema_cache, &datom.attribute)?;
+    let attribute = bincode::serialize(&attribute_id)?;
+    let value = bincode::serialize(&datom.value)?;
+    let op_byte = match datom.op {
+        DatomOp::Assert => codec::ADD,
+        DatomOp::Retract => codec::RETRACT,
+    };
 
-            let mut eav: Vec<Vec<u8>> = Vec::new();
-            let mut ave: Vec<Vec<u8>> = Vec::new();
-            let mut aev: Vec<Vec<u8>> = Vec::new();
-            let mut ae: Vec<Vec<u8>> = Vec::new();
-            let mut av: Vec<Vec<u8>> = Vec::new();
+    // Temporal indices include timestamp + op
+    let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[op_byte]]);
+    let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[op_byte]]);
+    let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[op_byte]]);
 
-            for (attribute, value) in attribute_and_values {
-                eav.push(concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::ADD]]));
-                ave.push(concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::ADD]]));
-                aev.push(concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::ADD]]));
-                ae.push(concat_bytes(&[&[codec::AE], &attribute, &entity_id]));
-                av.push(concat_bytes(&[&[codec::AV], &attribute, &value]));
-            }
+    // AE/AV are atemporal and purely additive — retractions are not written
+    let (ae, av) = if datom.op == DatomOp::Assert {
+        (
+            vec![concat_bytes(&[&[codec::AE], &attribute, &entity_id])],
+            vec![concat_bytes(&[&[codec::AV], &attribute, &value])],
+        )
+    } else {
+        (vec![], vec![])
+    };
 
-            Ok(TxIndexKeys { eav, ave, aev, ae, av })
-        },
-        TxOp::Add(Triple { entity: entity_id, attribute, value }) => {
-            let Attribute(attr) = attribute;
-            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-            let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-            let attribute_id = resolve_attribute_id(schema_cache, attr)?;
-            let attribute = bincode::serialize(&attribute_id)?;
-            let value = bincode::serialize(&value)?;
-
-            let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::ADD]]);
-            let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::ADD]]);
-            let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::ADD]]);
-            let ae = concat_bytes(&[&[codec::AE], &attribute, &entity_id]);
-            let av = concat_bytes(&[&[codec::AV], &attribute, &value]);
-
-            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae: vec![ae], av: vec![av] })
-        },
-        TxOp::Retract(Triple { entity: entity_id, attribute, value }) => {
-            let Attribute(attr) = attribute;
-            // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-            let entity_id = bincode::serialize(&DataType::Long(entity_id.0))?;
-            let attribute_id = resolve_attribute_id(schema_cache, attr)?;
-            let attribute = bincode::serialize(&attribute_id)?;
-            let value = bincode::serialize(&value)?;
-
-            let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[codec::RETRACT]]);
-            let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[codec::RETRACT]]);
-            let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[codec::RETRACT]]);
-            // AE/AV are purely additive — retractions are not written to partial indices
-            let ae = vec![];
-            let av = vec![];
-
-            Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae, av })
-        },
-        TxOp::Delete(_entity) => todo!(),
-        TxOp::Erase(_entity) => todo!(),
-    }
+    Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae, av })
 }
 
 pub(crate) fn build_index_write_batch(
-    tx_ops: &[TxOp],
+    datoms: &[Datom],
     schema_cache: &SchemaCache,
     system_time: Instant,
 ) -> Result<WriteBatch, Error> {
     let timestamp = codec::encode_timestamp(system_time);
-    let index_keys: Vec<TxIndexKeys> = tx_ops.iter()
-        .map(|op| op_to_index_keys(op, schema_cache, &timestamp))
-        .collect::<Result<Vec<_>, _>>()?;
-
     let mut write_batch = WriteBatch::new();
 
-    for index_keys in index_keys.iter() {
-        for key in &index_keys.eav { write_batch.put(key.as_slice(), &[]); }
-        for key in &index_keys.ave { write_batch.put(key.as_slice(), &[]); }
-        for key in &index_keys.aev { write_batch.put(key.as_slice(), &[]); }
-        for key in &index_keys.ae { write_batch.put(key.as_slice(), &[]); }
-        for key in &index_keys.av { write_batch.put(key.as_slice(), &[]); }
+    for datom in datoms {
+        let keys = datom_to_index_keys(datom, schema_cache, &timestamp)?;
+        for key in &keys.eav { write_batch.put(key.as_slice(), &[]); }
+        for key in &keys.ave { write_batch.put(key.as_slice(), &[]); }
+        for key in &keys.aev { write_batch.put(key.as_slice(), &[]); }
+        for key in &keys.ae { write_batch.put(key.as_slice(), &[]); }
+        for key in &keys.av { write_batch.put(key.as_slice(), &[]); }
     }
 
     Ok(write_batch)
@@ -198,9 +154,11 @@ impl Indexer {
     // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
     // when a Put/Add overwrites an existing entity+attribute pair.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
+
         self.schema_cache.validate_tx(&tx_ops)?;
 
-        let write_batch = build_index_write_batch(&tx_ops, &self.schema_cache, tx_key.system_time)?;
+        let write_batch = build_index_write_batch(&datoms, &self.schema_cache, tx_key.system_time)?;
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
