@@ -85,9 +85,6 @@ fn check_position(position: usize, index: IndexType) {
         IndexType::AE | IndexType::AV => {
             assert!(position < 2, "Position must be less than 2");
         }
-        IndexType::VAE => {
-            todo!("VAE index not (yet) supported")
-        }
     }
 }
 
@@ -163,9 +160,6 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                     total_length - codec::OP_LENGTH,
                 ),
             },
-            IndexType::VAE => {
-                todo!("VAE index not (yet) supported")
-            }
         };
         bytes.get_slice(start, end)
     }
@@ -208,9 +202,6 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
                 0 => codec::CODEC_LENGTH,
                 1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
             },
-            IndexType::VAE => {
-                todo!("VAE index not (yet) supported")
-            }
         };
         bytes.get_slice(0, end)
     }

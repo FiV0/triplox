@@ -221,7 +221,7 @@ impl PatternClause {
             IndexType::EAV => Ok(vec![self.entity.clone(), self.attribute.clone(), self.value.clone()]),
             IndexType::AVE => Ok(vec![self.attribute.clone(), self.value.clone(), self.entity.clone()]),
             IndexType::AEV => Ok(vec![self.attribute.clone(), self.entity.clone(), self.value.clone()]),
-            _ => Err(anyhow::anyhow!("VAE index not (yet) supported")),
+            IndexType::AE | IndexType::AV => Err(anyhow::anyhow!("AE/AV indices are not triple indices")),
         }
     }
 

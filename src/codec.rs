@@ -39,6 +39,5 @@ pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
         IndexType::AEV => Ok(AEV),
         IndexType::AE => Ok(AE),
         IndexType::AV => Ok(AV),
-        _ => Err(anyhow::anyhow!("VAE index not (yet) supported"))
     }
 }

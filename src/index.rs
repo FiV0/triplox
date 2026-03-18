@@ -3,7 +3,7 @@ use anyhow::Error;
 use crate::datalog::{PatternElement, PatternClause, Variable};
 
 #[derive(Debug, Clone, Copy)]
-pub enum IndexType { EAV, AVE, AEV, VAE , AE, AV}
+pub enum IndexType { EAV, AVE, AEV, AE, AV}
 
 pub (crate) fn remove_index_type(bytes: bytes::Bytes) -> bytes::Bytes {
     let mut bytes = bytes.to_vec();
