@@ -469,7 +469,7 @@ mod tests {
 
     fn bootstrapped_cache_with_person_name() -> SchemaCache {
         let mut cache = bootstrapped_cache();
-        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "person/name", "string")])).unwrap();
+        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "name", "string")])).unwrap();
         cache
     }
 
@@ -516,10 +516,10 @@ mod tests {
     #[test]
     fn test_process_tx_user_attribute() {
         let mut cache = bootstrapped_cache();
-        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "person/name", "string")])).unwrap();
+        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "name", "string")])).unwrap();
         assert_eq!(cache.len(), 4);
 
-        let attr = cache.get("person/name").unwrap();
+        let attr = cache.get("name").unwrap();
         assert_eq!(attr.entity_id, 100);
         assert_eq!(attr.value_type, ValueType::String);
     }
@@ -536,7 +536,7 @@ mod tests {
         let cache = bootstrapped_cache_with_person_name();
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("person/name".to_string(), DataType::String("Alice".to_string()));
+        doc.insert("name".to_string(), DataType::String("Alice".to_string()));
         assert!(cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).is_ok());
     }
 
@@ -555,7 +555,7 @@ mod tests {
         let cache = bootstrapped_cache_with_person_name();
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("person/name".to_string(), DataType::Long(42));
+        doc.insert("name".to_string(), DataType::Long(42));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn test_validate_tx_schema_defining_tx() {
         let cache = bootstrapped_cache();
-        let ops = [plain_schema_attribute(100, "person/name", "string")];
+        let ops = [plain_schema_attribute(100, "name", "string")];
         assert!(cache.validate_tx(&to_datoms(&ops)).is_ok());
     }
 
@@ -574,7 +574,7 @@ mod tests {
         // Cannot redefine existing schema entity
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), kw_ns("person", "name"));
+        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
