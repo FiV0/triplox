@@ -203,10 +203,6 @@ mod tests {
         Bytes::from(s.as_bytes().to_vec())
     }
 
-    fn default_timestamp() -> [u8; 8] {
-        crate::codec::encode_timestamp(crate::clock::st_from_unix_epoch(1_000_000))
-    }
-
     async fn insert_ave(
         slate: &slatedb::Db,
         attribute: i64,
@@ -217,7 +213,7 @@ mod tests {
         key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
         key.extend_from_slice(&bincode::serialize(&DataType::Long(entity))?);
-        key.extend_from_slice(&default_timestamp());
+        key.extend_from_slice(&crate::codec::encode_timestamp(crate::clock::st_from_unix_epoch(1_000_000)));
         key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
