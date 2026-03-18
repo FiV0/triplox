@@ -66,6 +66,20 @@ impl TemporalFilterIterator {
         Ok(iter)
     }
 
+    /// Seek the underlying iterator past a logical key group.
+    /// Returns true if the seek succeeded, false if no successor exists (all 0xFF).
+    fn seek_past_logical_key(&mut self, key: &[u8]) -> Result<bool, Error> {
+        // Assumes prefix-free value encodings
+        match next_prefix(logical_key(key)) {
+            Some(target) => {
+                self.handle
+                    .block_on(self.inner.seek(Bytes::from(target)))?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Advance the underlying iterator to the next key whose timestamp <= as_of,
     /// skipping entries newer than as_of and groups whose newest valid entry is a retraction.
     fn advance_to_next_valid(&mut self) -> Result<(), Error> {
@@ -92,10 +106,11 @@ impl TemporalFilterIterator {
                         // Check the op byte: if retracted, skip the entire group.
                         let op = key[key.len() - 1];
                         if op == codec::RETRACT {
-                            // Seek past this logical key group and find the next valid entry.
-                            // advance_past_current_group calls advance_to_next_valid internally.
-                            self.current_key = Some(key);
-                            return self.advance_past_current_group();
+                            if !self.seek_past_logical_key(&key)? {
+                                self.current_key = None;
+                                return Ok(());
+                            }
+                            continue;
                         }
                         self.current_key = Some(key);
                         return Ok(());
@@ -107,26 +122,18 @@ impl TemporalFilterIterator {
         }
     }
 
-    /// Seek the underlying iterator past all entries in the current logical key group.
+    /// Seek the underlying iterator past all entries in the current logical key group,
+    /// then advance to the next valid entry.
     fn advance_past_current_group(&mut self) -> Result<(), Error> {
         let current = match &self.current_key {
             Some(k) => k.clone(),
             None => return Ok(()),
         };
-
-        // Assumes prefix-free value encodings
-        match next_prefix(logical_key(&current)) {
-            Some(target) => {
-                self.handle
-                    .block_on(self.inner.seek(Bytes::from(target)))?;
-                self.advance_to_next_valid()
-            }
-            None => {
-                // Logical key is all 0xFF — no successor, we're done
-                self.current_key = None;
-                Ok(())
-            }
+        if !self.seek_past_logical_key(&current)? {
+            self.current_key = None;
+            return Ok(());
         }
+        self.advance_to_next_valid()
     }
 }
 
