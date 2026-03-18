@@ -114,6 +114,7 @@ impl TemporalFilterIterator {
             None => return Ok(()),
         };
 
+        // Assumes prefix-free value encodings
         match next_prefix(logical_key(&current)) {
             Some(target) => {
                 self.handle
