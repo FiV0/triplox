@@ -301,6 +301,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_add_add_cycle() {
+        // TODO: update to add_retract_add cycle
         // Same (E, A, V) added at T1 and T2.
         // Query as-of T1 sees it once, as-of T2 sees it once, as-of T0 sees nothing.
         let slate = in_memory_slate().await;
@@ -346,6 +347,43 @@ mod tests {
                 PFX, &snap, handle, extractor, t2,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
+            iter.next().unwrap();
+            assert!(!iter.has_next());
+        }).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_temporal_filter_seek() {
+        // Three logical keys: alice, bob, charlie at T1.
+        // Seek to "bob" should land on bob, then next gives charlie.
+        let slate = in_memory_slate().await;
+        let t1 = st_from_unix_epoch(1_000_000);
+
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"charlie", t1, codec::ADD), b"").await;
+
+        let snapshot = slate.snapshot().await.unwrap();
+        let handle = tokio::runtime::Handle::current();
+
+        tokio::task::spawn_blocking(move || {
+            let extractor = make_test_extractor(PFX.len());
+            let mut iter = TemporalFilterIterator::new(
+                PFX, &snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
+            ).unwrap();
+
+            // Initially at alice
+            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
+
+            // Seek to bob
+            iter.seek(Bytes::from("bob")).unwrap();
+            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
+
+            // Next gives charlie
+            iter.next().unwrap();
+            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("charlie")));
+
+            // No more
             iter.next().unwrap();
             assert!(!iter.has_next());
         }).await.unwrap();
