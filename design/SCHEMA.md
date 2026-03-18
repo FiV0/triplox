@@ -94,17 +94,17 @@ Reserved entity ID ranges:
 3. **Cardinality enforcement** - enforcing the cardinality constraints of the attributes in the indexer.
 
 
-### Lifecycle
+### 3.1 Lifecycle
 
 1. **Fresh database**: `SchemaCache` is populated by processing the bootstrap transaction through `process_tx()`.
 2. **Existing database**: `SchemaCache` is rebuilt from stored data by running a query against the indices.
 3. **During operation**: Each transaction may define new schema attributes. After the triples have been written to the indices. The `SchemaCache` updates if the new data contains schema attributes.
 
-### 3.1 Validation Flow
+### 3.2 Validation Flow
 
 Newly defined attributes become available in the next transaction. Inside a transaction only the current schema is available and the data is checked against that schema.
 
-### 3.2 Cardinality Enforcement
+### 3.3 Cardinality Enforcement
 
 When writing to the indices, the `SchemaCache` is consulted to determine how a `Put` or `Add` interacts with existing data for the same entity+attribute pair:
 
@@ -113,7 +113,7 @@ When writing to the indices, the `SchemaCache` is consulted to determine how a `
 - **`:db.cardinality/many`** — An entity may hold multiple values for this attribute. A `Put` or `Add` simply writes the new assertion without retracting anything. Multiple values coexist.
 
 
-## 4 Schema Immutability
+## 4. Schema Immutability
 
 Schema attributes are **immutable** once installed. The following operations are rejected:
 
@@ -124,17 +124,17 @@ Schema attributes are **immutable** once installed. The following operations are
 | `Delete`   | entity ID belongs to a schema entity                          | "Cannot delete schema entity"        |
 | `Erase`    | entity ID belongs to a schema entity                          | "Cannot erase schema entity"         |
 
-In it's final form we likely reject any modifications to bootstrap schema attributes, but allow changes to user defined attributes.
+In its final form we likely reject any modifications to bootstrap schema attributes, but allow changes to user defined attributes.
 We still strive for a deprecation guided schema evolution.
 
 ---
 
-## Schema defintion
+## 5. Schema Definition
 
-### Version 1
- - A schema attribute needs to be fully defined within the same transaction. If `db/ident`, `db/valueType` or
- `db/cardinality` is missing, the transaction is rejected.
- - These attributes can be defined with `Put` or `Add` statements (or combinations thereof) as long as the
- final set of required attributes is met.
- - Updating or deleting a schema attribute is rejected.
- - Attribute id resolution always works against the head of the db (basis-t in Datomic slang).
+### 5.1 Version 1
+- A schema attribute needs to be fully defined within the same transaction. If `db/ident`, `db/valueType` or
+  `db/cardinality` is missing, the transaction is rejected.
+- These attributes can be defined with `Put` or `Add` statements (or combinations thereof) as long as the
+  final set of required attributes is met.
+- Updating or deleting a schema attribute is rejected.
+- Attribute id resolution always works against the head of the db (basis-t in Datomic slang).
