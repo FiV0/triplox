@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::log::TxLog;
-use crate::node::{Basis, Database, Node, QueryNode, SubmitNode, TransactionResult, DB};
+use crate::node::{Database, Node, QueryNode, SubmitNode, TransactionResult, DB};
 use crate::parse::parse_query;
 use crate::protocol::*;
 use crate::query::QueryResult;
@@ -414,8 +414,8 @@ async fn handle_connection<L: TxLog + 'static>(
                 return Ok(());
             }
 
-            FrontendMessage::OpenDb { basis_tx_id, basis_system_time, basis_seq_num } => {
-                match handle_open_db(&node, &db_cache, &mut conn_state, basis_tx_id, basis_system_time, basis_seq_num).await {
+            FrontendMessage::OpenDb { basis_tx_id, basis_system_time } => {
+                match handle_open_db(&node, &db_cache, &mut conn_state, basis_tx_id, basis_system_time).await {
                     Ok((db_id, tx_id)) => {
                         write_backend_message(
                             &mut writer,
@@ -537,18 +537,6 @@ async fn handle_connection<L: TxLog + 'static>(
                 ready_for_query_flush(&mut writer).await?;
             }
 
-            FrontendMessage::BasisForTx { tx_id, system_time } => {
-                match handle_basis_for_tx(&node, tx_id, system_time).await {
-                    Ok(basis_msg) => {
-                        write_backend_message(&mut writer, &basis_msg).await?;
-                    }
-                    Err(e) => {
-                        write_error_response(&mut writer, SEVERITY_ERROR, e).await?;
-                    }
-                }
-                ready_for_query_flush(&mut writer).await?;
-            }
-
             FrontendMessage::Startup { .. } => {
                 write_backend_message(
                     &mut writer,
@@ -579,32 +567,30 @@ async fn handle_open_db<L: TxLog + 'static>(
     conn_state: &mut ConnectionState,
     basis_tx_id: Option<i64>,
     basis_system_time: Option<i64>,
-    basis_seq_num: Option<u64>,
 ) -> Result<(u32, i64)> {
-    let (arc_db, tx_id) = match (basis_tx_id, basis_system_time, basis_seq_num) {
-        (None, None, None) => {
+    let (arc_db, tx_id) = match (basis_tx_id, basis_system_time) {
+        (None, None) => {
             // TODO: on cache hit, `db` is created and immediately dropped.
             // Consider a DbCache::get_or_insert API to avoid the waste.
             let db = node.db().await?;
-            let tx_id = db.basis().tx_key.tx_id;
+            let tx_id = db.tx_key().tx_id;
             let arc_db = db_cache.acquire(tx_id, || async move { Ok(db) }).await?;
             (arc_db, tx_id)
         }
-        (Some(tid), Some(st), Some(seq)) => {
+        (Some(tid), Some(st)) => {
             let system_time = crate::protocol::micros_to_datetime(st)?;
             let tx_key = crate::transaction::TxKey {
                 tx_id: tid,
                 system_time,
             };
-            let basis = Basis { tx_key, seq_num: seq };
-            let tx_id = basis.tx_key.tx_id;
+            let tx_id = tx_key.tx_id;
             let node = node.clone();
             let arc_db = db_cache.acquire(tx_id, || async move {
-                node.db_with_basis(basis).await
+                node.db_as_of(tx_key).await
             }).await?;
             (arc_db, tx_id)
         }
-        _ => bail!("OpenDb requires all three basis fields or none"),
+        _ => bail!("OpenDb requires both basis fields or none"),
     };
 
     let db_id = conn_state.allocate_handle(tx_id, arc_db)?;
@@ -638,23 +624,6 @@ async fn handle_query(
     Ok((result, find_vars))
 }
 
-async fn handle_basis_for_tx<L: TxLog + 'static>(
-    node: &Arc<Node<L>>,
-    tx_id: i64,
-    system_time: i64,
-) -> Result<BackendMessage> {
-    let tx_key = crate::transaction::TxKey {
-        tx_id,
-        system_time: crate::protocol::micros_to_datetime(system_time)?,
-    };
-    let basis = node.basis_for_tx(tx_key).await?;
-    Ok(BackendMessage::BasisResult {
-        tx_id: basis.tx_key.tx_id,
-        system_time: basis.tx_key.system_time.timestamp_micros(),
-        seq_num: basis.seq_num,
-    })
-}
-
 async fn handle_execute<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     ops: Vec<crate::ops::TxOp>,
@@ -663,18 +632,16 @@ async fn handle_execute<L: TxLog + 'static>(
     if await_indexing {
         let result = node.execute_tx(ops).await?;
         match result {
-            TransactionResult::TxCommited(basis) => Ok(BackendMessage::TxResult {
+            TransactionResult::TxCommited(tx_key) => Ok(BackendMessage::TxResult {
                 status: 0,
-                tx_id: basis.tx_key.tx_id,
-                system_time: basis.tx_key.system_time.timestamp_micros(),
-                seq_num: basis.seq_num,
+                tx_id: tx_key.tx_id,
+                system_time: tx_key.system_time.timestamp_micros(),
                 error_message: None,
             }),
             TransactionResult::TxAborted(tx_key, err) => Ok(BackendMessage::TxResult {
                 status: 1,
                 tx_id: tx_key.tx_id,
                 system_time: tx_key.system_time.timestamp_micros(),
-                seq_num: 0,
                 error_message: Some(err.to_string()),
             }),
         }

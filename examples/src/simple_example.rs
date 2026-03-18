@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {
-        TransactionResult::TxCommited(basis) => {
-            println!("Schema defined (tx_id={}).", basis.tx_key.tx_id);
+        TransactionResult::TxCommited(tx_key) => {
+            println!("Schema defined (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
             anyhow::bail!("Schema transaction aborted: {err}");
@@ -67,8 +67,8 @@ async fn main() -> Result<()> {
     let data_ops = vec![TxOp::Put(Document(alice)), TxOp::Put(Document(bob))];
     let result = node.execute_tx(data_ops).await?;
     match &result {
-        TransactionResult::TxCommited(basis) => {
-            println!("Data inserted (tx_id={}).", basis.tx_key.tx_id);
+        TransactionResult::TxCommited(tx_key) => {
+            println!("Data inserted (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
             anyhow::bail!("Data transaction aborted: {err}");
