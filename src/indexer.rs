@@ -325,109 +325,71 @@ impl Subscriber for Indexer {
     }
 }
 
-// TODO: something to refactor
-
-pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, Instant, u8), Error> {
-    let key = key.as_ref();
-
-    if key.is_empty() || key[0] != codec::EAV {
-        return Err(anyhow::anyhow!("Not an EAV key"));
+/// Strip a temporal index key into (data_bytes, timestamp, op).
+fn strip_temporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Result<(&'a [u8], Instant, u8), Error> {
+    if key.first() != Some(&expected_prefix) {
+        return Err(anyhow::anyhow!("Not a {} key", name));
     }
+    if key.len() < 1 + codec::TIMESTAMP_OP_SUFFIX {
+        return Err(anyhow::anyhow!("Key too short"));
+    }
+    let data = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
+    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
+    let op = key[key.len() - 1];
+    Ok((data, timestamp, op))
+}
 
+/// Strip an atemporal index key, returning data bytes after the prefix.
+fn strip_atemporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Result<&'a [u8], Error> {
+    if key.first() != Some(&expected_prefix) {
+        return Err(anyhow::anyhow!("Not a {} key", name));
+    }
     if key.len() < 2 {
         return Err(anyhow::anyhow!("Key too short"));
     }
-    let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
-    let suffix = key[key.len()-1];
+    Ok(&key[1..])
+}
 
-    let mut cursor = Cursor::new(without_prefix_and_suffix);
+pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, Instant, u8), Error> {
+    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::EAV, "EAV")?;
+    let mut cursor = Cursor::new(data);
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
-
-    Ok((entity_id, attribute, value, timestamp, suffix))
+    Ok((entity_id, attribute, value, timestamp, op))
 }
 
 pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
-    let key = key.as_ref();
-
-    if key.is_empty() || key[0] != codec::AVE {
-        return Err(anyhow::anyhow!("Not an AVE key"));
-    }
-
-    if key.len() < 2 {
-        return Err(anyhow::anyhow!("Key too short"));
-    }
-    let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
-    let suffix = key[key.len()-1];
-
-    let mut cursor = Cursor::new(without_prefix_and_suffix);
+    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AVE, "AVE")?;
+    let mut cursor = Cursor::new(data);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
-
-    Ok((attribute, value, entity_id, timestamp, suffix))
+    Ok((attribute, value, entity_id, timestamp, op))
 }
 
 pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
-    let key = key.as_ref();
-
-    if key.is_empty() || key[0] != codec::AEV {
-        return Err(anyhow::anyhow!("Not an AEV key"));
-    }
-
-    if key.len() < 2 {
-        return Err(anyhow::anyhow!("Key too short"));
-    }
-    let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
-    let suffix = key[key.len()-1];
-
-    let mut cursor = std::io::Cursor::new(without_prefix_and_suffix);
+    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AEV, "AEV")?;
+    let mut cursor = Cursor::new(data);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
-
-    Ok((attribute, entity_id, value, timestamp, suffix))
+    Ok((attribute, entity_id, value, timestamp, op))
 }
 
 pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
-    let key = key.as_ref();
-
-    if key.is_empty() || key[0] != codec::AE {
-        return Err(anyhow::anyhow!("Not an AE key"));
-    }
-
-    if key.len() < 2 {
-        return Err(anyhow::anyhow!("Key too short"));
-    }
-    let without_prefix = &key[1..];
-
-    let mut cursor = std::io::Cursor::new(without_prefix);
+    let data = strip_atemporal_key(key.as_ref(), codec::AE, "AE")?;
+    let mut cursor = Cursor::new(data);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
-
     Ok((attribute, entity_id))
 }
 
 pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
-    let key = key.as_ref();
-
-    if key.is_empty() || key[0] != codec::AV {
-        return Err(anyhow::anyhow!("Not an AV key"));
-    }
-
-    if key.len() < 2 {
-        return Err(anyhow::anyhow!("Key too short"));
-    }
-    let without_prefix = &key[1..];
-
-    let mut cursor = std::io::Cursor::new(without_prefix);
+    let data = strip_atemporal_key(key.as_ref(), codec::AV, "AV")?;
+    let mut cursor = Cursor::new(data);
     let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
     let value: DataType = bincode::deserialize_from(&mut cursor)?;
-
     Ok((attribute, value))
 }
 
