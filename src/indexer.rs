@@ -338,7 +338,7 @@ pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, Instant,
         return Err(anyhow::anyhow!("Key too short"));
     }
     let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]);
+    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
     let suffix = key[key.len()-1];
 
     let mut cursor = Cursor::new(without_prefix_and_suffix);
@@ -360,7 +360,7 @@ pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant,
         return Err(anyhow::anyhow!("Key too short"));
     }
     let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]);
+    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
     let suffix = key[key.len()-1];
 
     let mut cursor = Cursor::new(without_prefix_and_suffix);
@@ -382,7 +382,7 @@ pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant,
         return Err(anyhow::anyhow!("Key too short"));
     }
     let without_prefix_and_suffix = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]);
+    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
     let suffix = key[key.len()-1];
 
     let mut cursor = std::io::Cursor::new(without_prefix_and_suffix);

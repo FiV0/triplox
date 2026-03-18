@@ -54,8 +54,13 @@ pub fn encode_timestamp(t: Instant) -> [u8; 8] {
 }
 
 /// Decode an inverted big-endian timestamp back to an Instant.
-pub fn decode_timestamp(bytes: &[u8]) -> Instant {
-    let inverted = i64::from_be_bytes(bytes.try_into().expect("timestamp must be 8 bytes"));
+pub fn decode_timestamp(bytes: &[u8]) -> Result<Instant, Error> {
+    let arr: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("timestamp must be exactly 8 bytes, got {}", bytes.len()))?;
+    let inverted = i64::from_be_bytes(arr);
     let micros = !inverted;
-    chrono::TimeZone::timestamp_micros(&chrono::Utc, micros).unwrap()
+    chrono::TimeZone::timestamp_micros(&chrono::Utc, micros)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("ambiguous or invalid timestamp: {} micros", micros))
 }
