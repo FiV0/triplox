@@ -5,11 +5,13 @@ use bytes::Bytes;
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
+use crate::clock::Instant;
 use crate::codec::index_type_to_prefix;
 use crate::index::IndexType;
 use crate::util::make_extractor;
 
 use super::slate_iterator::{Extractor, Index, SlateIterator};
+use super::temporal_filter_iterator::TemporalFilterIterator;
 
 /// GenericPrefixExtender implements PrefixExtender using SlateDB with byte prefixes.
 ///
@@ -20,6 +22,7 @@ pub struct GenericPrefixExtender {
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
+    as_of: Instant,                   // temporal filter: only see facts at or before this time
 }
 
 impl GenericPrefixExtender {
@@ -30,6 +33,7 @@ impl GenericPrefixExtender {
         attribute_id: i64,
         constant_prefix: Vec<u8>,
         participating_levels: Vec<usize>,
+        as_of: Instant,
     ) -> Self {
         let mut full_prefix = bincode::serialize(&attribute_id)
             .expect("Failed to serialize attribute_id");
@@ -41,6 +45,7 @@ impl GenericPrefixExtender {
             index_types,
             constant_prefix: full_prefix,
             participating_levels,
+            as_of,
         }
     }
 
@@ -55,7 +60,8 @@ impl GenericPrefixExtender {
     /// Build SlateDB key prefix from join prefix
     ///
     /// Selects index type based on join depth and constructs the appropriate byte prefix.
-    fn build_slate_prefix(&self, join_prefix: &Prefix) -> Result<Bytes, Error> {
+    /// Returns both the prefix bytes and the resolved index type.
+    fn build_slate_prefix(&self, join_prefix: &Prefix) -> Result<(Bytes, IndexType), Error> {
         let pattern_level = self.pattern_level(join_prefix);
         let index_type = self.index_types[pattern_level];
         let codec = index_type_to_prefix(index_type)?;
@@ -71,7 +77,39 @@ impl GenericPrefixExtender {
             key.extend_from_slice(&join_prefix[level]);
         }
 
-        Ok(Bytes::from(key))
+        Ok((Bytes::from(key), index_type))
+    }
+
+    /// Create the appropriate iterator for the given prefix and index type.
+    ///
+    /// AE/AV are atemporal indices — use SlateIterator (no temporal filtering).
+    /// Full indices (EAV, AVE, AEV) — use TemporalFilterIterator.
+    fn create_iterator(
+        &self,
+        slate_prefix: &Bytes,
+        index_type: IndexType,
+        extractor: Extractor,
+    ) -> Box<dyn Index> {
+        match index_type {
+            IndexType::AE | IndexType::AV => {
+                Box::new(
+                    SlateIterator::new(slate_prefix, self.slate.as_ref(), self.handle.clone(), extractor)
+                        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
+                )
+            }
+            IndexType::EAV | IndexType::AVE | IndexType::AEV => {
+                Box::new(
+                    TemporalFilterIterator::new(
+                        slate_prefix,
+                        self.slate.as_ref(),
+                        self.handle.clone(),
+                        extractor,
+                        self.as_of,
+                    )
+                    .unwrap_or_else(|e| panic!("Failed to create TemporalFilterIterator: {}", e)),
+                )
+            }
+        }
     }
 
     /// Create an extractor function for the current index type and position.
@@ -94,36 +132,23 @@ impl GenericPrefixExtender {
 impl PrefixExtender for GenericPrefixExtender {
     fn count(&self, join_prefix: &Prefix) -> usize {
         // TODO: proper error handling
-        let slate_prefix = self
+        let (slate_prefix, index_type) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let iter = SlateIterator::new(
-            &slate_prefix,
-            self.slate.as_ref(),
-            self.handle.clone(),
-            extractor,
-        )
-        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
-
+        let iter = self.create_iterator(&slate_prefix, index_type, extractor);
         iter.count().unwrap_or(0) as usize
     }
 
     fn propose(&self, join_prefix: &Prefix) -> Vec<Extension> {
         // TODO: proper error handling
-        let slate_prefix = self
+        let (slate_prefix, index_type) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = SlateIterator::new(
-            &slate_prefix,
-            self.slate.as_ref(),
-            self.handle.clone(),
-            extractor,
-        )
-        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
+        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
 
         let mut extensions = Vec::new();
         while let Ok(Some(extension)) = iter.get_value() {
@@ -137,18 +162,12 @@ impl PrefixExtender for GenericPrefixExtender {
 
     fn intersect(&self, join_prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         // TODO: proper error handling
-        let slate_prefix = self
+        let (slate_prefix, index_type) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = SlateIterator::new(
-            &slate_prefix,
-            self.slate.as_ref(),
-            self.handle.clone(),
-            extractor,
-        )
-        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e));
+        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
 
         let mut result = Vec::new();
         for ext in extensions {
@@ -194,6 +213,7 @@ mod tests {
         key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
         key.extend_from_slice(&bincode::serialize(&DataType::Long(entity))?);
+        key.extend_from_slice(&crate::codec::encode_timestamp(crate::clock::st_from_unix_epoch(1_000_000)));
         key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
@@ -201,10 +221,10 @@ mod tests {
     }
 
     async fn insert_av(slate: &slatedb::Db, attribute: i64, value: Bytes) -> anyhow::Result<()> {
+        // AV is atemporal — no timestamp or op suffix
         let mut key = vec![crate::codec::AV];
         key.extend_from_slice(&bincode::serialize(&attribute)?);
         key.extend_from_slice(&value);
-        key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
         Ok(())
@@ -223,6 +243,7 @@ mod tests {
             42,
             vec![],
             vec![0, 1],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         assert!(extender.participates_in_level(0));
@@ -249,6 +270,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         let count = extender.count(&vec![]);
@@ -276,6 +298,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         let values = extender.propose(&vec![]);
@@ -306,6 +329,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0, 1],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         let values = extender.propose(&vec![]);
@@ -336,6 +360,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         let candidates = vec![
@@ -380,6 +405,7 @@ mod tests {
             attr_name,
             value_bytes.to_vec(),
             vec![0],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         let proposed = extender.propose(&vec![]);
@@ -405,6 +431,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
+            crate::clock::st_from_unix_epoch(2_000_000),
         );
 
         // Note: estimate_key_count may return non-zero even for empty ranges

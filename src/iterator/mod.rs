@@ -6,6 +6,7 @@ pub(crate) mod generic_predicate_prefix_extender;
 pub(crate) mod generic_prefix_extender;
 mod prefix_extender;
 pub(crate) mod slate_iterator;
+pub(crate) mod temporal_filter_iterator;
 
 pub use generic_and_prefix_extender::GenericAndPrefixExtender;
 pub use generic_fn_prefix_extender::GenericFnPrefixExtender;

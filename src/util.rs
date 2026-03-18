@@ -109,7 +109,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AVE => match position {
@@ -119,11 +119,11 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
                 ),
                 2.. => (
-                    total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
             IndexType::AEV => match position {
@@ -137,9 +137,10 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length - codec::TIMESTAMP_OP_SUFFIX,
                 ),
             },
+            // AE/AV are atemporal — no T+op suffix
             IndexType::AE => match position {
                 0 => (
                     codec::CODEC_LENGTH,
@@ -147,7 +148,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length,
                 ),
             },
             IndexType::AV => match position {
@@ -157,7 +158,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::OP_LENGTH,
+                    total_length,
                 ),
             },
         };
@@ -187,7 +188,7 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
             IndexType::AVE => match position {
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                2.. => total_length - codec::ENTITY_LENGTH - codec::OP_LENGTH,
+                2.. => total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
             },
             IndexType::AEV => match position {
                 0 => codec::CODEC_LENGTH,
@@ -209,4 +210,21 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
 
 pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
     prefix_extractor(position, index)(bytes)
+}
+
+/// Compute the lexicographic successor of a byte string.
+/// Returns None if all bytes are 0xFF (no successor exists).
+///
+/// Note: this duplicates `BytesRange::increment_prefix` in SlateDB
+/// (`slatedb/src/bytes_range.rs`), which is not publicly exposed.
+pub fn next_prefix(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut next = prefix.to_vec();
+    for i in (0..next.len()).rev() {
+        if next[i] < 0xFF {
+            next[i] += 1;
+            next.truncate(i + 1);
+            return Some(next);
+        }
+    }
+    None
 }
