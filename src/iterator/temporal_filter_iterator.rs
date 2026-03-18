@@ -49,7 +49,7 @@ impl TemporalFilterIterator {
     ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let as_of_encoded = codec::encode_timestamp(as_of);
-        let mut iterator =
+        let iterator =
             handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
 
         let mut iter = Self {
