@@ -149,14 +149,11 @@ impl Index for TemporalFilterIterator {
         let full_key = Bytes::from(full_key);
 
         // Skip forward if already past the target
-        match &self.current_key {
-            Some(current) => {
-                let current_logical = logical_key(current);
-                if current_logical >= full_key.as_ref() {
-                    return Ok(());
-                }
+        if let Some(current) = &self.current_key {
+            let current_logical = logical_key(current);
+            if current_logical >= full_key.as_ref() {
+                return Ok(());
             }
-            _ => {}
         }
 
         self.handle.block_on(self.inner.seek(full_key))?;

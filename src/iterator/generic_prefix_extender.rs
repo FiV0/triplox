@@ -97,7 +97,7 @@ impl GenericPrefixExtender {
                         .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
                 )
             }
-            _ => {
+            IndexType::EAV | IndexType::AVE | IndexType::AEV => {
                 Box::new(
                     TemporalFilterIterator::new(
                         slate_prefix,
