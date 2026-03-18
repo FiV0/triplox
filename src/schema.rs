@@ -393,6 +393,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
     validate_query(&query).expect("Schema query validation failed");
 
     let results = tokio::task::spawn_blocking(move || {
+        // TODO: use the latest submitted system_time instead of Utc::now() for consistency
         execute_query(&query, snapshot, handle, &attribute_map, chrono::Utc::now())
     })
     .await
