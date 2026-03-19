@@ -26,6 +26,8 @@ Once the new tests pass, also run all tests with:
 cargo test
 ```
 
+For JVM client integration tests, see [triplox-jvm/README.md](triplox-jvm/README.md).
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
