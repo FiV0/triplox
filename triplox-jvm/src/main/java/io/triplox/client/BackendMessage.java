@@ -14,7 +14,7 @@ public sealed interface BackendMessage {
     record DataBatchComplete(long txId) implements BackendMessage {}
     record ReadyForQuery(byte status) implements BackendMessage {}
     record TxKey(long txId, long systemTime) implements BackendMessage {}
-    record TxResult(byte status, long txId, long systemTime, long seqNum, String errorMessage) implements BackendMessage {}
+    record TxResult(byte status, long txId, long systemTime, String errorMessage) implements BackendMessage {}
     record UnsubscribeComplete() implements BackendMessage {}
     record Heartbeat() implements BackendMessage {}
     record ErrorResponse(byte severity, short code, String message, String detail, String hint) implements BackendMessage {}

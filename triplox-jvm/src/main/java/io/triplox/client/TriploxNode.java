@@ -140,7 +140,7 @@ public class TriploxNode implements AutoCloseable {
         if (msg instanceof BackendMessage.TxResult txResult) {
             expectReadyForQuery();
             return new TxResultValue(txResult.status(), txResult.txId(),
-                    txResult.systemTime(), txResult.seqNum(), txResult.errorMessage());
+                    txResult.systemTime(), txResult.errorMessage());
         }
         throw unexpectedMessage("TxResult", msg);
     }

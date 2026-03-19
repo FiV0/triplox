@@ -46,7 +46,6 @@ public final class WireCodec {
         writeFramed(out, MSG_OPEN_DB, dos -> {
             DataTypeCodec.encodeOptionalLong(dos, basisTxId);  // basis_tx_id
             DataTypeCodec.encodeOptionalLong(dos, null);       // basis_system_time
-            DataTypeCodec.encodeOptionalLong(dos, null);       // basis_seq_num
         });
     }
 
@@ -172,7 +171,7 @@ public final class WireCodec {
             case MSG_TX_KEY -> new BackendMessage.TxKey(in.readLong(), in.readLong());
 
             case MSG_TX_RESULT -> new BackendMessage.TxResult(
-                    in.readByte(), in.readLong(), in.readLong(), in.readLong(),
+                    in.readByte(), in.readLong(), in.readLong(),
                     DataTypeCodec.decodeOptionalString(in));
 
             case MSG_UNSUBSCRIBE_COMPLETE -> new BackendMessage.UnsubscribeComplete();
