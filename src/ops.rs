@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use anyhow::Result;
+use crate::clock::Instant;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct EntityId(pub i64);
@@ -147,6 +149,74 @@ pub enum TxOp {
     Erase(EntityId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatomOp {
+    Assert,
+    Retract,
+}
+
+/// A normalized fact: (entity, attribute, value, tx, op).
+/// The attribute is an unresolved string name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Datom {
+    pub entity: i64,
+    pub attribute: String, // TODO(triplox-gaz): avoid cloning, consider Cow or interning
+    pub value: DataType,
+    pub tx: Instant,
+    pub op: DatomOp,
+}
+
+/// Expand TxOps into a flat vec of Datoms.
+/// - Put(doc) → N Assert datoms (one per non-db/id field)
+/// - Add(triple) → 1 Assert datom
+/// - Retract(triple) → 1 Retract datom
+/// - Delete/Erase → panics (not yet implemented)
+pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
+    let mut datoms = Vec::new();
+    for op in ops {
+        match op {
+            TxOp::Put(Document(doc)) => {
+                let entity = match doc.get("db/id") {
+                    Some(DataType::Long(id)) => *id,
+                    Some(_) => return Err(anyhow::anyhow!("Document db/id must be a Long")),
+                    None => return Err(anyhow::anyhow!("Document must have a db/id")),
+                };
+                for (attr, value) in doc.iter().filter(|(k, _)| *k != "db/id") {
+                    datoms.push(Datom {
+                        entity,
+                        attribute: attr.clone(),
+                        value: value.clone(),
+                        tx,
+                        op: DatomOp::Assert,
+                    });
+                }
+            }
+            TxOp::Add(Triple { entity, attribute, value }) => {
+                datoms.push(Datom {
+                    entity: entity.0,
+                    attribute: attribute.0.clone(),
+                    value: value.clone(),
+                    tx,
+                    op: DatomOp::Assert,
+                });
+            }
+            TxOp::Retract(Triple { entity, attribute, value }) => {
+                datoms.push(Datom {
+                    entity: entity.0,
+                    attribute: attribute.0.clone(),
+                    value: value.clone(),
+                    tx,
+                    op: DatomOp::Retract,
+                });
+            }
+            TxOp::Delete(_) | TxOp::Erase(_) => {
+                panic!("Delete/Erase not yet implemented");
+            }
+        }
+    }
+    Ok(datoms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +312,90 @@ mod tests {
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
+    }
+
+    #[test]
+    fn test_tx_ops_to_datoms_put() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        doc.insert("age".to_string(), DataType::Long(30));
+        let ops = vec![TxOp::Put(Document(doc))];
+
+        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
+        assert_eq!(datoms.len(), 2);
+        assert!(datoms.iter().all(|d| d.entity == 100));
+        assert!(datoms.iter().all(|d| d.op == DatomOp::Assert));
+        assert!(datoms.iter().all(|d| d.tx == tx));
+    }
+
+    #[test]
+    fn test_tx_ops_to_datoms_add() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        let ops = vec![TxOp::Add(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("name".to_string()),
+            value: DataType::String("bob".to_string()),
+        })];
+
+        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
+        assert_eq!(datoms.len(), 1);
+        assert_eq!(datoms[0].entity, 200);
+        assert_eq!(datoms[0].attribute, "name");
+        assert_eq!(datoms[0].value, DataType::String("bob".to_string()));
+        assert_eq!(datoms[0].op, DatomOp::Assert);
+    }
+
+    #[test]
+    fn test_tx_ops_to_datoms_retract() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        let ops = vec![TxOp::Retract(Triple {
+            entity: EntityId(200),
+            attribute: Attribute("name".to_string()),
+            value: DataType::String("bob".to_string()),
+        })];
+
+        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
+        assert_eq!(datoms.len(), 1);
+        assert_eq!(datoms[0].op, DatomOp::Retract);
+    }
+
+    #[test]
+    #[should_panic(expected = "Delete/Erase not yet implemented")]
+    fn test_tx_ops_to_datoms_delete_panics() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        tx_ops_to_datoms(&[TxOp::Delete(EntityId(100))], tx).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Delete/Erase not yet implemented")]
+    fn test_tx_ops_to_datoms_erase_panics() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        tx_ops_to_datoms(&[TxOp::Erase(EntityId(200))], tx).unwrap();
+    }
+
+    #[test]
+    fn test_tx_ops_to_datoms_put_missing_id() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        let mut doc = BTreeMap::new();
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        let ops = vec![TxOp::Put(Document(doc))];
+
+        let result = tx_ops_to_datoms(&ops, tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("db/id"));
+    }
+
+    #[test]
+    fn test_tx_ops_to_datoms_put_wrong_id_type() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::String("not-a-long".to_string()));
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        let ops = vec![TxOp::Put(Document(doc))];
+
+        let result = tx_ops_to_datoms(&ops, tx);
+        assert!(result.is_err());
     }
 }

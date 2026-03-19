@@ -52,7 +52,7 @@ async fn test_execute_tx_and_query() {
 
     // Insert a document
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
     let result = client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -65,7 +65,7 @@ async fn test_execute_tx_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -79,7 +79,7 @@ async fn test_submit_tx() {
     define_test_schema(&client).await;
 
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("bob".to_string()));
     let tx_key = client.submit_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
     assert!(tx_key.tx_id >= 0);
@@ -96,12 +96,12 @@ async fn test_multiple_transactions_and_query() {
 
     // Insert two documents in separate transactions
     let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(1));
+    doc1.insert("db/id".to_string(), DataType::Long(100));
     doc1.insert("name".to_string(), DataType::String("alice".to_string()));
     client.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
 
     let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(2));
+    doc2.insert("db/id".to_string(), DataType::Long(200));
     doc2.insert("name".to_string(), DataType::String("bob".to_string()));
     client.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
@@ -112,8 +112,8 @@ async fn test_multiple_transactions_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.contains(&vec![DataType::Long(1), DataType::String("alice".to_string())]));
-    assert!(result.contains(&vec![DataType::Long(2), DataType::String("bob".to_string())]));
+    assert!(result.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
+    assert!(result.contains(&vec![DataType::Long(200), DataType::String("bob".to_string())]));
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -128,7 +128,7 @@ async fn test_open_close_multiple_dbs() {
 
     // Insert data
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
     client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 
@@ -156,7 +156,7 @@ async fn test_two_connections() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client1).await;
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
     client1.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 
@@ -179,7 +179,7 @@ async fn test_execute_tx_returns_tx_key() {
     define_test_schema(&client).await;
 
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
     let result = client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 
@@ -202,7 +202,7 @@ async fn test_db_as_of() {
 
     // First transaction
     let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(1));
+    doc1.insert("db/id".to_string(), DataType::Long(100));
     doc1.insert("name".to_string(), DataType::String("alice".to_string()));
     let result1 = client.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
     let tx_key1 = match result1 {
@@ -212,7 +212,7 @@ async fn test_db_as_of() {
 
     // Second transaction
     let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(2));
+    doc2.insert("db/id".to_string(), DataType::Long(200));
     doc2.insert("name".to_string(), DataType::String("bob".to_string()));
     client.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
 
@@ -224,7 +224,7 @@ async fn test_db_as_of() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], vec![DataType::Long(1), DataType::String("alice".to_string())]);
+    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -259,7 +259,7 @@ async fn test_dev_server_connections_are_isolated() {
     define_test_schema(&client1).await;
 
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(1));
+    doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
     client1.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 
