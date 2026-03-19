@@ -13,7 +13,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
-use crate::ops::{Attribute, Datom, DatomOp, Document, Triple, TxOp, tx_ops_to_datoms};
+use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
 use crate::codec;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
