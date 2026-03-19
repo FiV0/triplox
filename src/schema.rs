@@ -121,8 +121,8 @@ pub enum Cardinality {
 impl std::fmt::Display for Cardinality {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Cardinality::One => write!(f, "one"),
-            Cardinality::Many => write!(f, "many"),
+            Cardinality::One => write!(f, "db.cardinality/one"),
+            Cardinality::Many => write!(f, "db.cardinality/many"),
         }
     }
 }
@@ -187,6 +187,8 @@ impl SchemaCache {
 
         let mut attrs = Vec::new();
         for (entity_id, f) in &facts {
+            // TODO: should match against a namespaced Keyword and use its
+            // namespace/name directly instead of string-stripping the colon prefix.
             let ident = match f.get("db/ident") {
                 Some(DataType::Keyword(kw)) => {
                     let s = kw.to_string();
