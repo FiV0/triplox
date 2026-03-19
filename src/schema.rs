@@ -6,7 +6,7 @@ use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
 use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
-use crate::ops::{Attribute, DataType, Datom, DatomOp, Document, EntityId, Triple, TxOp};
+use crate::ops::{Attribute, DataType, Datom, DatomOp, Document, EntityId, TxOp};
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---
@@ -272,11 +272,11 @@ fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
 /// Build a Put operation for an enum entity (value type or cardinality).
 /// Enum entities only have db/ident.
 fn enum_entity(id: i64, ns: &str, name: &str) -> TxOp {
-    TxOp::Add(Triple {
-        entity: EntityId(id),
+    TxOp::Add {
+        entity_id: EntityId(id),
         attribute: Attribute("db/ident".to_string()),
         value: DataType::Keyword(Keyword::namespaced(ns, name)),
-    })
+    }
 }
 
 /// Build the bootstrap schema transaction.
@@ -458,7 +458,7 @@ mod tests {
                 Some(DataType::Long(id)) => *id,
                 _ => panic!("Expected db/id Long"),
             },
-            TxOp::Add(Triple { entity, .. }) => entity.0,
+            TxOp::Add { entity_id, .. } => entity_id.0,
             _ => panic!("Expected Put or Add"),
         }).collect();
         ids.sort();
