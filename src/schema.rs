@@ -253,20 +253,15 @@ impl SchemaCache {
 
 // --- Bootstrap transaction builders ---
 
-/// Build a Put operation for a schema attribute entity.
-/// Schema attributes have db/ident, db/valueType, and db/cardinality.
-fn schema_attribute(id: i64, ns: &str, name: &str, value_type: &str, cardinality: i64) -> TxOp {
+fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::namespaced(ns, name)),
-    );
+    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
     doc.insert(
         "db/valueType".to_string(),
         DataType::Keyword(Keyword::namespaced("db.type", value_type)),
     );
-    doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
+    doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
     TxOp::Put(Document(doc))
 }
 
@@ -285,23 +280,11 @@ fn enum_entity(id: i64, ns: &str, name: &str) -> TxOp {
 pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     vec![
         // Schema attribute entities (IDs 1-3)
-        schema_attribute(DB_IDENT, "db", "ident", "keyword", DB_CARDINALITY_ONE),
-        schema_attribute(
-            DB_VALUE_TYPE,
-            "db",
-            "valueType",
-            "keyword",
-            DB_CARDINALITY_ONE,
-        ),
+        schema_attribute(DB_IDENT, Keyword::namespaced("db", "ident"), "keyword"),
+        schema_attribute(DB_VALUE_TYPE, Keyword::namespaced("db", "valueType"), "keyword"),
         // TODO: db/cardinality still uses Long (entity ref) values. Consider switching to
         // keywords (like db/valueType) for consistency.
-        schema_attribute(
-            DB_CARDINALITY,
-            "db",
-            "cardinality",
-            "long",
-            DB_CARDINALITY_ONE,
-        ),
+        schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "long"),
         // Value type enum entities (IDs 10-23)
         enum_entity(DB_TYPE_KEYWORD, "db.type", "keyword"),
         enum_entity(DB_TYPE_STRING, "db.type", "string"),
@@ -418,33 +401,16 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
     cache
 }
 
-/// Build a Put operation for a plain (non-namespaced) schema attribute.
-/// Used by tests that define attributes like "name", "age", etc.
-#[cfg(any(test, feature = "test-helpers"))]
-fn plain_schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::plain(name)),
-    );
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-    );
-    TxOp::Put(Document(doc))
-}
-
 /// Build a transaction that defines common test attributes.
 /// Use entity IDs 50-59 (between bootstrap schema 1-31 and test data 100+).
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn test_schema_tx() -> Vec<TxOp> {
     vec![
-        plain_schema_attribute(50, "name", "string"),
-        plain_schema_attribute(51, "age", "long"),
-        plain_schema_attribute(52, "email", "string"),
+        schema_attribute(50, Keyword::plain("name"), "string"),
+        schema_attribute(51, Keyword::plain("age"), "long"),
+        schema_attribute(52, Keyword::plain("email"), "string"),
         // TODO: update this to ref once we support DataType::Ref
-        plain_schema_attribute(53, "follows", "long"),
+        schema_attribute(53, Keyword::plain("follows"), "long"),
     ]
 }
 
@@ -474,7 +440,7 @@ mod tests {
 
     fn bootstrapped_cache_with_person_name() -> SchemaCache {
         let mut cache = bootstrapped_cache();
-        extract_and_process(&mut cache, &to_datoms(&[plain_schema_attribute(100, "name", "string")]));
+        extract_and_process(&mut cache, &to_datoms(&[schema_attribute(100, Keyword::plain("name"), "string")]));
         cache
     }
 
@@ -522,7 +488,7 @@ mod tests {
     #[test]
     fn test_process_tx_user_attribute() {
         let mut cache = bootstrapped_cache();
-        extract_and_process(&mut cache, &to_datoms(&[plain_schema_attribute(100, "name", "string")]));
+        extract_and_process(&mut cache, &to_datoms(&[schema_attribute(100, Keyword::plain("name"), "string")]));
         assert_eq!(cache.len(), 4);
 
         let attr = cache.get("name").unwrap();
@@ -569,7 +535,7 @@ mod tests {
     #[test]
     fn test_validate_tx_schema_defining_tx() {
         let cache = bootstrapped_cache();
-        let ops = [plain_schema_attribute(100, "name", "string")];
+        let ops = [schema_attribute(100, Keyword::plain("name"), "string")];
         assert!(cache.validate_tx(&to_datoms(&ops)).is_ok());
     }
 
