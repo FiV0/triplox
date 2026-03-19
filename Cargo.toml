@@ -15,7 +15,7 @@ log = "0.4"
 object_store = "0.11.1"
 rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
-slatedb = { git = "https://github.com/FiV0/slatedb.git", branch = "range-apis" }
+slatedb = "0.11.2"
 thiserror = "2.0.1"
 time = { version = "0.3.36", features = ["serde"] }
 toml = "0.8"
