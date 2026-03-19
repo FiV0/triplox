@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::WriteBatch;
+use slatedb::IsolationLevel;
 use anyhow::{Error, Result};
 use bincode;
 use std::io::Cursor;
@@ -57,9 +58,11 @@ pub(crate) fn build_index_write_batch(
         write_batch.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[]);
         write_batch.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[]);
 
-        // AE/AV are atemporal and purely additive — retractions are not written
+        // AE stores the current value for (attribute, entity) — overwritten on each Assert.
+        // AV is atemporal and purely additive.
+        // Retractions are not written to AE/AV.
         if datom.op == DatomOp::Assert {
-            write_batch.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &[]);
+            write_batch.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value);
             write_batch.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[]);
         }
     }
@@ -120,24 +123,88 @@ impl Indexer {
         &self.schema_cache
     }
 
-    // TODO(triplox-5ox): Before writing, retract old values for :db.cardinality/one attributes
-    // when a Put/Add overwrites an existing entity+attribute pair.
+    /// Transact a set of operations, automatically retracting old values for
+    /// cardinality:one attributes when a new value is asserted.
+    ///
+    /// Uses a SlateDB transaction for atomic read-then-write: the AE index lookup
+    /// and all index writes happen in a single transaction.
+    ///
+    /// TODO: If AE/AV indices are dropped in favor of 3 covering indices (EAV/AVE/AEV),
+    /// the current-value lookup must switch to an AEV prefix scan.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
+        let mut datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
-        let write_batch = build_index_write_batch(&datoms, &self.schema_cache, tx_key.system_time)?;
+        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
 
-        self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
+        // For each Assert datom, look up the current value via AE index.
+        // If an old value exists and differs, add a Retract datom.
+        let mut retractions = Vec::new();
+        for datom in &datoms {
+            if datom.op != DatomOp::Assert {
+                continue;
+            }
+            let attribute_id = self.schema_cache
+                .get(&datom.attribute)
+                .map(|a| a.entity_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+            let entity_id_bytes = bincode::serialize(&DataType::Long(datom.entity))?;
+            let attr_id_bytes = bincode::serialize(&attribute_id)?;
+            let ae_key = concat_bytes(&[&[codec::AE], &attr_id_bytes, &entity_id_bytes]);
 
-        // Update schema cache after write so new attributes are only visible
-        // in subsequent transactions.
-        self.schema_cache.process_tx(new_schema_attrs);
+            if let Some(old_value_bytes) = txn.get(&ae_key).await? {
+                let old_value: DataType = bincode::deserialize(&old_value_bytes)?;
+                if old_value != datom.value {
+                    retractions.push(Datom {
+                        entity: datom.entity,
+                        attribute: datom.attribute.clone(),
+                        value: old_value,
+                        tx: datom.tx,
+                        op: DatomOp::Retract,
+                    });
+                }
+            }
+        }
+        datoms.extend(retractions);
+
+        // Write all index entries within the transaction
+        let timestamp = codec::encode_timestamp(tx_key.system_time);
+        for datom in &datoms {
+            let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
+            let attribute_id = self.schema_cache
+                .get(&datom.attribute)
+                .map(|a| a.entity_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+            let attribute = bincode::serialize(&attribute_id)?;
+            let value = bincode::serialize(&datom.value)?;
+            let op_byte = match datom.op {
+                DatomOp::Assert => codec::ADD,
+                DatomOp::Retract => codec::RETRACT,
+            };
+
+            // Temporal indices include timestamp + op
+            txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
+            txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
+            txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
+
+            // AE stores the current value — overwritten on each Assert.
+            // AV is atemporal and purely additive.
+            if datom.op == DatomOp::Assert {
+                txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value)?;
+                txn.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[])?;
+            }
+        }
 
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };
-        self.slatedb.put_with_options(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?, &Default::default(), &DEFAULT_WRITE_OPTIONS).await?;
+        txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
+
+        txn.commit().await?;
+
+        // Update schema cache after commit so new attributes are only visible
+        // in subsequent transactions.
+        self.schema_cache.process_tx(new_schema_attrs);
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
@@ -612,6 +679,122 @@ mod tests {
             assert!(result.is_ok(), "Task should complete before timeout");
             assert!(result.unwrap()?.is_ok(), "Task should succeed");
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_on_overwrite() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        // First tx: assert name="alice" for entity 100
+        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+
+        // Second tx: assert name="bob" for same entity — should auto-retract "alice"
+        let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("name".to_string(), DataType::String("bob".to_string()));
+        indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
+
+        // Scan EAV for entity 100 — expect: alice ADD, alice RETRACT, bob ADD
+        let name_id: i64 = 50;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut alice_add = false;
+        let mut alice_retract = false;
+        let mut bob_add = false;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if entity_id != DataType::Long(100) || attribute != name_id {
+                continue;
+            }
+            match (&value, op) {
+                (DataType::String(s), codec::ADD) if s == "alice" => alice_add = true,
+                (DataType::String(s), codec::RETRACT) if s == "alice" => alice_retract = true,
+                (DataType::String(s), codec::ADD) if s == "bob" => bob_add = true,
+                _ => {}
+            }
+        }
+        assert!(alice_add, "Expected ADD for alice");
+        assert!(alice_retract, "Expected RETRACT for alice");
+        assert!(bob_add, "Expected ADD for bob");
+
+        // Verify AE stores "bob" as current value
+        let attr_bytes = bincode::serialize(&name_id)?;
+        let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
+        let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
+        let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
+        let current: DataType = bincode::deserialize(&ae_val)?;
+        assert_eq!(current, DataType::String("bob".to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_same_value_no_retract() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        // First tx: assert name="alice"
+        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+
+        // Second tx: assert same name="alice" — should NOT generate a retraction
+        let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
+
+        // Count EAV entries for entity 100, name attr — should be 2 ADDs, 0 RETRACTs
+        let name_id: i64 = 50;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut add_count = 0;
+        let mut retract_count = 0;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if entity_id != DataType::Long(100) || attribute != name_id {
+                continue;
+            }
+            match op {
+                codec::ADD => add_count += 1,
+                codec::RETRACT => retract_count += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(add_count, 2, "Expected 2 ADD entries (one per tx)");
+        assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ae_stores_value() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let mut map = BTreeMap::new();
+        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("name".to_string(), DataType::String("alice".to_string()));
+        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+
+        // Verify AE stores the serialized value, not empty bytes
+        let name_id: i64 = 50;
+        let attr_bytes = bincode::serialize(&name_id)?;
+        let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
+        let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
+        let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
+        let value: DataType = bincode::deserialize(&ae_val)?;
+        assert_eq!(value, DataType::String("alice".to_string()));
 
         Ok(())
     }
