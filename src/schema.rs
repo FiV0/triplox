@@ -177,7 +177,7 @@ impl SchemaCache {
     /// Extract schema attributes defined by assert datoms.
     /// Entities with both db/ident and db/valueType become SchemaAttributes.
     /// Entities with only db/ident (enum entities) are skipped.
-    pub fn extract_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
+    pub fn validate_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
         if !datoms.iter().any(|d| d.op == DatomOp::Assert
             && matches!(d.attribute.as_str(), "db/ident" | "db/valueType"))
         {
@@ -247,7 +247,9 @@ impl SchemaCache {
             }
         }
 
-        Self::extract_schema_attrs(datoms)
+        // Also validates schema definitions
+        // (e.g. db/ident must be a Keyword, db/valueType must map to a valid ValueType).
+        Self::validate_schema_attrs(datoms)
     }
 }
 
@@ -429,7 +431,7 @@ mod tests {
     }
 
     fn extract_and_process(cache: &mut SchemaCache, datoms: &[Datom]) {
-        cache.process_tx(SchemaCache::extract_schema_attrs(datoms).unwrap());
+        cache.process_tx(SchemaCache::validate_schema_attrs(datoms).unwrap());
     }
 
     fn bootstrapped_cache() -> SchemaCache {

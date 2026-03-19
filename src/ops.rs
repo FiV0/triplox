@@ -170,7 +170,7 @@ pub struct Datom {
 /// - Put(doc) → N Assert datoms (one per non-db/id field)
 /// - Add(triple) → 1 Assert datom
 /// - Retract(triple) → 1 Retract datom
-/// - Delete/Erase → not expanded (entity-level ops, handled separately)
+/// - Delete/Erase → panics (not yet implemented)
 pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
     let mut datoms = Vec::new();
     for op in ops {
@@ -209,7 +209,9 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
                     op: DatomOp::Retract,
                 });
             }
-            TxOp::Delete(_) | TxOp::Erase(_) => {}
+            TxOp::Delete(_) | TxOp::Erase(_) => {
+                panic!("Delete/Erase not yet implemented");
+            }
         }
     }
     Ok(datoms)
@@ -360,15 +362,17 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_ops_to_datoms_delete_erase_skipped() {
+    #[should_panic(expected = "Delete/Erase not yet implemented")]
+    fn test_tx_ops_to_datoms_delete_panics() {
         let tx = crate::clock::st_from_unix_epoch(1000);
-        let ops = vec![
-            TxOp::Delete(EntityId(100)),
-            TxOp::Erase(EntityId(200)),
-        ];
+        tx_ops_to_datoms(&[TxOp::Delete(EntityId(100))], tx).unwrap();
+    }
 
-        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
-        assert!(datoms.is_empty());
+    #[test]
+    #[should_panic(expected = "Delete/Erase not yet implemented")]
+    fn test_tx_ops_to_datoms_erase_panics() {
+        let tx = crate::clock::st_from_unix_epoch(1000);
+        tx_ops_to_datoms(&[TxOp::Erase(EntityId(200))], tx).unwrap();
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> SchemaCache {
             let tx_ops = bootstrap_schema_tx();
             let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
             let mut cache = SchemaCache::new();
-            cache.process_tx(SchemaCache::extract_schema_attrs(&datoms).unwrap());
+            cache.process_tx(SchemaCache::validate_schema_attrs(&datoms).unwrap());
             let write_batch = build_index_write_batch(&datoms, &cache, clock::st_from_unix_epoch(0)).unwrap();
             slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await.unwrap();
 
