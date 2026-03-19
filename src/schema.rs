@@ -6,7 +6,7 @@ use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
 use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
-use crate::ops::{DataType, Datom, DatomOp, Document, TxOp};
+use crate::ops::{Attribute, DataType, Datom, DatomOp, Document, EntityId, Triple, TxOp};
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---
@@ -178,6 +178,12 @@ impl SchemaCache {
     /// Entities with both db/ident and db/valueType become SchemaAttributes.
     /// Entities with only db/ident (enum entities) are skipped.
     pub fn extract_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
+        if !datoms.iter().any(|d| d.op == DatomOp::Assert
+            && matches!(d.attribute.as_str(), "db/ident" | "db/valueType"))
+        {
+            return Ok(Vec::new());
+        }
+
         let mut facts: HashMap<i64, HashMap<&str, &DataType>> = HashMap::new();
         for d in datoms.iter().filter(|d| d.op == DatomOp::Assert) {
             if matches!(d.attribute.as_str(), "db/ident" | "db/valueType") {
@@ -267,13 +273,11 @@ fn schema_attribute(id: i64, ns: &str, name: &str, value_type: &str, cardinality
 /// Build a Put operation for an enum entity (value type or cardinality).
 /// Enum entities only have db/ident.
 fn enum_entity(id: i64, ns: &str, name: &str) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::namespaced(ns, name)),
-    );
-    TxOp::Put(Document(doc))
+    TxOp::Add(Triple {
+        entity: EntityId(id),
+        attribute: Attribute("db/ident".to_string()),
+        value: DataType::Keyword(Keyword::namespaced(ns, name)),
+    })
 }
 
 /// Build the bootstrap schema transaction.
@@ -484,7 +488,8 @@ mod tests {
                 Some(DataType::Long(id)) => *id,
                 _ => panic!("Expected db/id Long"),
             },
-            _ => panic!("Expected Put"),
+            TxOp::Add(Triple { entity, .. }) => entity.0,
+            _ => panic!("Expected Put or Add"),
         }).collect();
         ids.sort();
         ids.dedup();
