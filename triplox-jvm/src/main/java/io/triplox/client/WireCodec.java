@@ -42,10 +42,10 @@ public final class WireCodec {
         frame.flush();
     }
 
-    public static void writeOpenDb(OutputStream out, Long basisTxId) throws IOException {
+    public static void writeOpenDb(OutputStream out, Long txId) throws IOException {
         writeFramed(out, MSG_OPEN_DB, dos -> {
-            DataTypeCodec.encodeOptionalLong(dos, basisTxId);  // basis_tx_id
-            DataTypeCodec.encodeOptionalLong(dos, null);       // basis_system_time
+            DataTypeCodec.encodeOptionalLong(dos, txId);   // tx_id
+            DataTypeCodec.encodeOptionalLong(dos, null);   // system_time
         });
     }
 

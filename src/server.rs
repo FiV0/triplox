@@ -414,8 +414,8 @@ async fn handle_connection<L: TxLog + 'static>(
                 return Ok(());
             }
 
-            FrontendMessage::OpenDb { basis_tx_id, basis_system_time } => {
-                match handle_open_db(&node, &db_cache, &mut conn_state, basis_tx_id, basis_system_time).await {
+            FrontendMessage::OpenDb { tx_id, system_time } => {
+                match handle_open_db(&node, &db_cache, &mut conn_state, tx_id, system_time).await {
                     Ok((db_id, tx_id)) => {
                         write_backend_message(
                             &mut writer,
@@ -565,10 +565,10 @@ async fn handle_open_db<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     db_cache: &DbCache,
     conn_state: &mut ConnectionState,
-    basis_tx_id: Option<i64>,
-    basis_system_time: Option<i64>,
+    tx_id: Option<i64>,
+    system_time: Option<i64>,
 ) -> Result<(u32, i64)> {
-    let (arc_db, tx_id) = match (basis_tx_id, basis_system_time) {
+    let (arc_db, tx_id) = match (tx_id, system_time) {
         (None, None) => {
             // TODO: on cache hit, `db` is created and immediately dropped.
             // Consider a DbCache::get_or_insert API to avoid the waste.
@@ -590,7 +590,7 @@ async fn handle_open_db<L: TxLog + 'static>(
             }).await?;
             (arc_db, tx_id)
         }
-        _ => bail!("OpenDb requires both basis fields or none"),
+        _ => bail!("OpenDb requires both tx_id and system_time, or neither"),
     };
 
     let db_id = conn_state.allocate_handle(tx_id, arc_db)?;

@@ -77,7 +77,7 @@ impl ClientNode {
 
     async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
         let mut conn = self.conn.lock().await;
-        let (basis_tx_id, basis_system_time) = match &tx_key {
+        let (tx_id, system_time) = match &tx_key {
             None => (None, None),
             Some(tk) => (
                 Some(tk.tx_id),
@@ -86,7 +86,7 @@ impl ClientNode {
         };
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::OpenDb { basis_tx_id, basis_system_time },
+            &FrontendMessage::OpenDb { tx_id, system_time },
         )
         .await?;
         conn.writer.flush().await?;

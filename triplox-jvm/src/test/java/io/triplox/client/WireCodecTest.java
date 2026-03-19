@@ -323,7 +323,7 @@ class WireCodecTest {
         var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertEquals(MSG_OPEN_DB, dis.readByte());
         int length = dis.readInt();
-        assertEquals(6, length); // 4 + 2x 1 byte None tags (basis_tx_id, basis_system_time)
+        assertEquals(6, length); // 4 + 2x 1 byte None tags (tx_id, system_time)
 
         baos = new ByteArrayOutputStream();
         WireCodec.writeOpenDb(baos, 42L);

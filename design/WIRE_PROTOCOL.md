@@ -97,12 +97,12 @@ Sent after successful version negotiation.
 
 ### 4.3 OpenDb (Frontend, `O`)
 
-Open a DB snapshot. The server pins a point-in-time database view and returns a handle the client uses for subsequent queries. Either both basis fields are present (pinned snapshot) or both are absent (latest indexed).
+Open a DB snapshot. The server pins a point-in-time database view and returns a handle the client uses for subsequent queries. Either both fields are present (pinned snapshot) or both are absent (latest indexed).
 
-| Field             | Type            | Description                                          |
-|-------------------|-----------------|------------------------------------------------------|
-| basis_tx_id       | Option\<i64\>   | If set, snapshot at this tx; otherwise latest indexed |
-| basis_system_time | Option\<i64\>   | Microseconds since epoch of the tx                   |
+| Field       | Type            | Description                                          |
+|-------------|-----------------|------------------------------------------------------|
+| tx_id       | Option\<i64\>   | If set, snapshot at this tx; otherwise latest indexed |
+| system_time | Option\<i64\>   | Microseconds since epoch of the tx                   |
 
 ### 4.4 DbOpened (Backend, `H`)
 
@@ -331,7 +331,7 @@ Client                                Server
 ```
 Client                                Server
   |                                     |
-  |--- OpenDb(basis_tx_id?) --------->|
+  |--- OpenDb(tx_id?) --------->|
   |                                     |  obtain snapshot
   |<------------ DbOpened(db_id, tx) -|
   |<------------ ReadyForQuery('I') --|
@@ -382,7 +382,7 @@ Client                                Server
 ```
 Client                                Server
   |                                     |
-  |--- OpenDb(basis_tx_id?) --------->|
+  |--- OpenDb(tx_id?) --------->|
   |<------------ DbOpened(db_id, tx) -|
   |<------------ ReadyForQuery('I') --|
   |                                     |

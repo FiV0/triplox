@@ -55,8 +55,8 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Open a DB snapshot at a specific transaction ID.
      */
-    public Db openDb(Long basisTxId) throws IOException {
-        WireCodec.writeOpenDb(out, basisTxId);
+    public Db openDb(Long txId) throws IOException {
+        WireCodec.writeOpenDb(out, txId);
         out.flush();
 
         BackendMessage msg = readExpecting("DbOpened");

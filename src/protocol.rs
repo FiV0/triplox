@@ -179,8 +179,8 @@ pub enum FrontendMessage {
         params: BTreeMap<String, String>,
     },
     OpenDb {
-        basis_tx_id: Option<i64>,
-        basis_system_time: Option<i64>,
+        tx_id: Option<i64>,
+        system_time: Option<i64>,
     },
     CloseDb {
         db_id: u32,
@@ -703,9 +703,9 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
             encode_u16(buf, *version_minor);
             encode_string_map(buf, params);
         }
-        FrontendMessage::OpenDb { basis_tx_id, basis_system_time } => {
-            encode_option_i64(buf, basis_tx_id);
-            encode_option_i64(buf, basis_system_time);
+        FrontendMessage::OpenDb { tx_id, system_time } => {
+            encode_option_i64(buf, tx_id);
+            encode_option_i64(buf, system_time);
         }
         FrontendMessage::CloseDb { db_id } => {
             encode_u32(buf, *db_id);
@@ -804,8 +804,8 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
 fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<FrontendMessage> {
     match msg_type {
         MSG_OPEN_DB => Ok(FrontendMessage::OpenDb {
-            basis_tx_id: cursor.read_option_i64()?,
-            basis_system_time: cursor.read_option_i64()?,
+            tx_id: cursor.read_option_i64()?,
+            system_time: cursor.read_option_i64()?,
         }),
         MSG_CLOSE_DB => Ok(FrontendMessage::CloseDb {
             db_id: cursor.read_u32()?,
@@ -1268,14 +1268,14 @@ mod tests {
     #[tokio::test]
     async fn test_open_db_roundtrip() {
         let msg = FrontendMessage::OpenDb {
-            basis_tx_id: Some(42),
-            basis_system_time: Some(1700000000000000),
+            tx_id: Some(42),
+            system_time: Some(1700000000000000),
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
 
         let msg = FrontendMessage::OpenDb {
-            basis_tx_id: None,
-            basis_system_time: None,
+            tx_id: None,
+            system_time: None,
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }
