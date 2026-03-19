@@ -31,7 +31,6 @@
     {:tx-id (.txId result)
      :system-time (.systemTime result)
      :committed? (.isCommitted result)
-     :seq-num (.seqNum result)
      :error-message (.errorMessage result)}))
 
 (defn submit-tx

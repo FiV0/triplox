@@ -163,7 +163,6 @@ class WireCodecTest {
         dos.writeByte(0); // committed
         dos.writeLong(42);
         dos.writeLong(1700000000000000L);
-        dos.writeLong(7);
         DataTypeCodec.encodeOptionalString(dos, null);
         dos.flush();
 
@@ -174,7 +173,6 @@ class WireCodecTest {
                 new ByteArrayInputStream(frame.toByteArray()));
         assertEquals(0, msg.status());
         assertEquals(42, msg.txId());
-        assertEquals(7, msg.seqNum());
         assertNull(msg.errorMessage());
     }
 
@@ -185,7 +183,6 @@ class WireCodecTest {
         dos.writeByte(1); // aborted
         dos.writeLong(42);
         dos.writeLong(1700000000000000L);
-        dos.writeLong(0);
         DataTypeCodec.encodeOptionalString(dos, "constraint violation");
         dos.flush();
 
@@ -326,7 +323,7 @@ class WireCodecTest {
         var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertEquals(MSG_OPEN_DB, dis.readByte());
         int length = dis.readInt();
-        assertEquals(7, length); // 4 + 3x 1 byte None tags (basis_tx_id, basis_system_time, basis_seq_num)
+        assertEquals(6, length); // 4 + 2x 1 byte None tags (basis_tx_id, basis_system_time)
 
         baos = new ByteArrayOutputStream();
         WireCodec.writeOpenDb(baos, 42L);
@@ -334,6 +331,6 @@ class WireCodecTest {
         dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
         assertEquals(MSG_OPEN_DB, dis.readByte());
         length = dis.readInt();
-        assertEquals(15, length); // 4 + (1 tag + 8 i64) + 1 None + 1 None
+        assertEquals(14, length); // 4 + (1 tag + 8 i64) + 1 None
     }
 }
