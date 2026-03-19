@@ -160,7 +160,7 @@ pub enum DatomOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Datom {
     pub entity: i64,
-    pub attribute: String,
+    pub attribute: String, // TODO(triplox-gaz): avoid cloning, consider Cow or interning
     pub value: DataType,
     pub tx: Instant,
     pub op: DatomOp,

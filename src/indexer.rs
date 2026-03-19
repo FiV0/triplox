@@ -29,55 +29,6 @@ pub struct Indexer {
     tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
 
-struct TxIndexKeys {
-    eav: Vec<Vec<u8>>,
-    ave: Vec<Vec<u8>>,
-    aev: Vec<Vec<u8>>,
-    ae: Vec<Vec<u8>>,
-    av: Vec<Vec<u8>>,
-}
-
-// db/ prefix restriction removed for schema bootstrap (triplox-6x7).
-// Schema-defining attributes (db/ident, db/valueType, db/cardinality) are now
-// allowed. Validation of user attributes is handled by the schema cache (triplox-jxz).
-
-fn resolve_attribute_id(schema_cache: &SchemaCache, attr: &str) -> Result<i64, Error> {
-    schema_cache
-        .get(attr)
-        .map(|a| a.entity_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", attr))
-}
-
-fn datom_to_index_keys(datom: &Datom, schema_cache: &SchemaCache, timestamp: &[u8; 8]) -> Result<TxIndexKeys, Error> {
-    // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-    // Revisit with schema/custom encoding.
-    let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
-    let attribute_id = resolve_attribute_id(schema_cache, &datom.attribute)?;
-    let attribute = bincode::serialize(&attribute_id)?;
-    let value = bincode::serialize(&datom.value)?;
-    let op_byte = match datom.op {
-        DatomOp::Assert => codec::ADD,
-        DatomOp::Retract => codec::RETRACT,
-    };
-
-    // Temporal indices include timestamp + op
-    let eav = concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, timestamp, &[op_byte]]);
-    let ave = concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, timestamp, &[op_byte]]);
-    let aev = concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, timestamp, &[op_byte]]);
-
-    // AE/AV are atemporal and purely additive — retractions are not written
-    let (ae, av) = if datom.op == DatomOp::Assert {
-        (
-            vec![concat_bytes(&[&[codec::AE], &attribute, &entity_id])],
-            vec![concat_bytes(&[&[codec::AV], &attribute, &value])],
-        )
-    } else {
-        (vec![], vec![])
-    };
-
-    Ok(TxIndexKeys { eav: vec![eav], ave: vec![ave], aev: vec![aev], ae, av })
-}
-
 pub(crate) fn build_index_write_batch(
     datoms: &[Datom],
     schema_cache: &SchemaCache,
@@ -87,12 +38,30 @@ pub(crate) fn build_index_write_batch(
     let mut write_batch = WriteBatch::new();
 
     for datom in datoms {
-        let keys = datom_to_index_keys(datom, schema_cache, &timestamp)?;
-        for key in &keys.eav { write_batch.put(key.as_slice(), &[]); }
-        for key in &keys.ave { write_batch.put(key.as_slice(), &[]); }
-        for key in &keys.aev { write_batch.put(key.as_slice(), &[]); }
-        for key in &keys.ae { write_batch.put(key.as_slice(), &[]); }
-        for key in &keys.av { write_batch.put(key.as_slice(), &[]); }
+        // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+        // Revisit with schema/custom encoding.
+        let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
+        let attribute_id = schema_cache
+            .get(&datom.attribute)
+            .map(|a| a.entity_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+        let attribute = bincode::serialize(&attribute_id)?;
+        let value = bincode::serialize(&datom.value)?;
+        let op_byte = match datom.op {
+            DatomOp::Assert => codec::ADD,
+            DatomOp::Retract => codec::RETRACT,
+        };
+
+        // Temporal indices include timestamp + op
+        write_batch.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[]);
+        write_batch.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[]);
+        write_batch.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[]);
+
+        // AE/AV are atemporal and purely additive — retractions are not written
+        if datom.op == DatomOp::Assert {
+            write_batch.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &[]);
+            write_batch.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[]);
+        }
     }
 
     Ok(write_batch)

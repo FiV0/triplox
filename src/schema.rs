@@ -229,6 +229,8 @@ impl SchemaCache {
         self.by_ident.is_empty()
     }
 
+    /// Validate datoms against the schema and return any new schema attributes
+    /// defined by this transaction.
     pub fn validate_tx(&self, datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
         for datom in datoms {
             if self.is_schema_entity(datom.entity) {
