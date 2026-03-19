@@ -11,7 +11,7 @@ use edn::symbols::Keyword;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::ops::{Attribute, DataType, Document, EntityId, Triple, TxOp};
+use crate::ops::{Attribute, DataType, Document, EntityId, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -406,10 +406,10 @@ fn encode_data_type_map(buf: &mut Vec<u8>, map: &BTreeMap<String, DataType>) {
 // Wire Encoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn encode_triple(buf: &mut Vec<u8>, triple: &Triple) {
-    encode_i64(buf, triple.entity.0);
-    encode_string(buf, &triple.attribute.0);
-    encode_data_type(buf, &triple.value);
+fn encode_eav(buf: &mut Vec<u8>, entity_id: &EntityId, attribute: &Attribute, value: &DataType) {
+    encode_i64(buf, entity_id.0);
+    encode_string(buf, &attribute.0);
+    encode_data_type(buf, value);
 }
 
 fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
@@ -418,13 +418,13 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_PUT);
             encode_data_type_map(buf, &doc.0);
         }
-        TxOp::Add(triple) => {
+        TxOp::Add { entity_id, attribute, value } => {
             encode_u8(buf, TXOP_ADD);
-            encode_triple(buf, triple);
+            encode_eav(buf, entity_id, attribute, value);
         }
-        TxOp::Retract(triple) => {
+        TxOp::Retract { entity_id, attribute, value } => {
             encode_u8(buf, TXOP_RETRACT);
-            encode_triple(buf, triple);
+            encode_eav(buf, entity_id, attribute, value);
         }
         TxOp::Delete(eid) => {
             encode_u8(buf, TXOP_DELETE);
@@ -650,15 +650,11 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 // Wire Decoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn decode_triple(cursor: &mut Cursor) -> Result<Triple> {
-    let entity = EntityId(cursor.read_i64()?);
+fn decode_eav(cursor: &mut Cursor) -> Result<(EntityId, Attribute, DataType)> {
+    let entity_id = EntityId(cursor.read_i64()?);
     let attribute = Attribute(cursor.read_string()?);
     let value = decode_data_type(cursor)?;
-    Ok(Triple {
-        entity,
-        attribute,
-        value,
-    })
+    Ok((entity_id, attribute, value))
 }
 
 fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
@@ -668,8 +664,14 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
             let map = decode_data_type_map(cursor)?;
             Ok(TxOp::Put(Document(map)))
         }
-        TXOP_ADD => Ok(TxOp::Add(decode_triple(cursor)?)),
-        TXOP_RETRACT => Ok(TxOp::Retract(decode_triple(cursor)?)),
+        TXOP_ADD => {
+            let (entity_id, attribute, value) = decode_eav(cursor)?;
+            Ok(TxOp::Add { entity_id, attribute, value })
+        }
+        TXOP_RETRACT => {
+            let (entity_id, attribute, value) = decode_eav(cursor)?;
+            Ok(TxOp::Retract { entity_id, attribute, value })
+        }
         TXOP_DELETE => Ok(TxOp::Delete(EntityId(cursor.read_i64()?))),
         TXOP_ERASE => Ok(TxOp::Erase(EntityId(cursor.read_i64()?))),
         _ => bail!("Unknown TxOp tag: {}", tag),
@@ -1221,21 +1223,21 @@ mod tests {
 
     #[test]
     fn test_tx_op_add() {
-        let op = TxOp::Add(Triple {
-            entity: EntityId(42),
+        let op = TxOp::Add {
+            entity_id: EntityId(42),
             attribute: Attribute("email".to_string()),
             value: DataType::String("test@example.com".to_string()),
-        });
+        };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 
     #[test]
     fn test_tx_op_retract() {
-        let op = TxOp::Retract(Triple {
-            entity: EntityId(42),
+        let op = TxOp::Retract {
+            entity_id: EntityId(42),
             attribute: Attribute("email".to_string()),
             value: DataType::String("old@example.com".to_string()),
-        });
+        };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 

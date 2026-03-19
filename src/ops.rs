@@ -132,19 +132,11 @@ impl_from_for_enum!(
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Document(pub BTreeMap<String, DataType>);
 
-// either extend this with t and op as options or create another type for running through indices
-// make value optional ?
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Triple {
-    pub entity: EntityId,
-    pub attribute: Attribute,
-    pub value: DataType,
-}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(Document),
-    Add(Triple),
-    Retract(Triple),
+    Add { entity_id: EntityId, attribute: Attribute, value: DataType },
+    Retract { entity_id: EntityId, attribute: Attribute, value: DataType },
     Delete(EntityId),
     Erase(EntityId),
 }
@@ -191,18 +183,18 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
                     });
                 }
             }
-            TxOp::Add(Triple { entity, attribute, value }) => {
+            TxOp::Add { entity_id, attribute, value } => {
                 datoms.push(Datom {
-                    entity: entity.0,
+                    entity: entity_id.0,
                     attribute: attribute.0.clone(),
                     value: value.clone(),
                     tx,
                     op: DatomOp::Assert,
                 });
             }
-            TxOp::Retract(Triple { entity, attribute, value }) => {
+            TxOp::Retract { entity_id, attribute, value } => {
                 datoms.push(Datom {
-                    entity: entity.0,
+                    entity: entity_id.0,
                     attribute: attribute.0.clone(),
                     value: value.clone(),
                     tx,
@@ -276,11 +268,11 @@ mod tests {
 
     #[test]
     fn test_op_add() {
-        let op = TxOp::Add(Triple {
-            entity: EntityId(1),
+        let op = TxOp::Add {
+            entity_id: EntityId(1),
             attribute: Attribute("string".to_string()),
             value: DataType::String("string_value".to_string()),
-        });
+        };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -288,11 +280,11 @@ mod tests {
 
     #[test]
     fn test_op_retract() {
-        let op = TxOp::Retract(Triple {
-            entity: EntityId(1),
+        let op = TxOp::Retract {
+            entity_id: EntityId(1),
             attribute: Attribute("string".to_string()),
             value: DataType::String("string_value".to_string()),
-        });
+        };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -333,11 +325,11 @@ mod tests {
     #[test]
     fn test_tx_ops_to_datoms_add() {
         let tx = crate::clock::st_from_unix_epoch(1000);
-        let ops = vec![TxOp::Add(Triple {
-            entity: EntityId(200),
+        let ops = vec![TxOp::Add {
+            entity_id: EntityId(200),
             attribute: Attribute("name".to_string()),
             value: DataType::String("bob".to_string()),
-        })];
+        }];
 
         let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
         assert_eq!(datoms.len(), 1);
@@ -350,11 +342,11 @@ mod tests {
     #[test]
     fn test_tx_ops_to_datoms_retract() {
         let tx = crate::clock::st_from_unix_epoch(1000);
-        let ops = vec![TxOp::Retract(Triple {
-            entity: EntityId(200),
+        let ops = vec![TxOp::Retract {
+            entity_id: EntityId(200),
             attribute: Attribute("name".to_string()),
             value: DataType::String("bob".to_string()),
-        })];
+        }];
 
         let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
         assert_eq!(datoms.len(), 1);
