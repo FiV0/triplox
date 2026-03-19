@@ -156,17 +156,15 @@ impl Indexer {
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
 
-        self.schema_cache.validate_tx(&datoms)?;
+        let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
         let write_batch = build_index_write_batch(&datoms, &self.schema_cache, tx_key.system_time)?;
 
         self.slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await?;
 
-        // Process schema definitions after the write so that new attributes are not
-        // visible within the transaction that defines them.
-        // If the write above succeeded but process_tx fails, the cache is stale — acceptable
-        // tradeoff (see TODO).
-        self.schema_cache.process_tx(&datoms)?;
+        // Update schema cache after write so new attributes are only visible
+        // in subsequent transactions.
+        self.schema_cache.process_tx(new_schema_attrs);
 
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };

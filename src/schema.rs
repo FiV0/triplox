@@ -177,7 +177,7 @@ impl SchemaCache {
     /// Extract schema attributes defined by assert datoms.
     /// Entities with both db/ident and db/valueType become SchemaAttributes.
     /// Entities with only db/ident (enum entities) are skipped.
-    fn extract_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
+    pub fn extract_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
         let mut facts: HashMap<i64, HashMap<&str, &DataType>> = HashMap::new();
         for d in datoms.iter().filter(|d| d.op == DatomOp::Assert) {
             if matches!(d.attribute.as_str(), "db/ident" | "db/valueType") {
@@ -207,11 +207,10 @@ impl SchemaCache {
         Ok(attrs)
     }
 
-    pub fn process_tx(&mut self, datoms: &[Datom]) -> Result<()> {
-        for attr in Self::extract_schema_attrs(datoms)? {
+    pub fn process_tx(&mut self, new_attrs: Vec<SchemaAttribute>) {
+        for attr in new_attrs {
             self.insert(attr);
         }
-        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -222,16 +221,14 @@ impl SchemaCache {
         self.by_ident.is_empty()
     }
 
-    pub fn validate_tx(&self, datoms: &[Datom]) -> Result<()> {
+    pub fn validate_tx(&self, datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
         for datom in datoms {
-            // Schema immutability
             if self.is_schema_entity(datom.entity) {
                 return Err(anyhow::anyhow!(
                     "Cannot modify schema entity {}", datom.entity
                 ));
             }
 
-            // Attribute existence and type check
             let schema_attr = self.by_ident.get(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
             if !schema_attr.value_type.matches(&datom.value) {
@@ -242,9 +239,7 @@ impl SchemaCache {
             }
         }
 
-        // Validate that new schema definitions parse correctly
-        Self::extract_schema_attrs(datoms)?;
-        Ok(())
+        Self::extract_schema_attrs(datoms)
     }
 }
 
@@ -461,15 +456,19 @@ mod tests {
         tx_ops_to_datoms(ops, st_from_unix_epoch(0)).unwrap()
     }
 
+    fn extract_and_process(cache: &mut SchemaCache, datoms: &[Datom]) {
+        cache.process_tx(SchemaCache::extract_schema_attrs(datoms).unwrap());
+    }
+
     fn bootstrapped_cache() -> SchemaCache {
         let mut cache = SchemaCache::new();
-        cache.process_tx(&to_datoms(&bootstrap_schema_tx())).unwrap();
+        extract_and_process(&mut cache, &to_datoms(&bootstrap_schema_tx()));
         cache
     }
 
     fn bootstrapped_cache_with_person_name() -> SchemaCache {
         let mut cache = bootstrapped_cache();
-        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "name", "string")])).unwrap();
+        extract_and_process(&mut cache, &to_datoms(&[plain_schema_attribute(100, "name", "string")]));
         cache
     }
 
@@ -516,7 +515,7 @@ mod tests {
     #[test]
     fn test_process_tx_user_attribute() {
         let mut cache = bootstrapped_cache();
-        cache.process_tx(&to_datoms(&[plain_schema_attribute(100, "name", "string")])).unwrap();
+        extract_and_process(&mut cache, &to_datoms(&[plain_schema_attribute(100, "name", "string")]));
         assert_eq!(cache.len(), 4);
 
         let attr = cache.get("name").unwrap();
