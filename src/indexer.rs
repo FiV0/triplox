@@ -139,10 +139,12 @@ impl Indexer {
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
 
         // For each Assert datom, look up the current value via AE index.
-        // If an old value exists and differs, add a Retract datom.
-        let mut retractions = Vec::new();
-        for datom in &datoms {
+        // If the old value equals the new value, drop the datom (no-op).
+        // If the old value differs, add a Retract datom for the old value.
+        let mut filtered_datoms = Vec::with_capacity(datoms.len());
+        for datom in datoms {
             if datom.op != DatomOp::Assert {
+                filtered_datoms.push(datom);
                 continue;
             }
             let attribute_id = self.schema_cache
@@ -155,18 +157,20 @@ impl Indexer {
 
             if let Some(old_value_bytes) = txn.get(&ae_key).await? {
                 let old_value: DataType = bincode::deserialize(&old_value_bytes)?;
-                if old_value != datom.value {
-                    retractions.push(Datom {
-                        entity: datom.entity,
-                        attribute: datom.attribute.clone(),
-                        value: old_value,
-                        tx: datom.tx,
-                        op: DatomOp::Retract,
-                    });
+                if old_value == datom.value {
+                    continue; // same value, drop the datom
                 }
+                filtered_datoms.push(Datom {
+                    entity: datom.entity,
+                    attribute: datom.attribute.clone(),
+                    value: old_value,
+                    tx: datom.tx,
+                    op: DatomOp::Retract,
+                });
             }
+            filtered_datoms.push(datom);
         }
-        datoms.extend(retractions);
+        let datoms = filtered_datoms;
 
         // Write all index entries within the transaction
         let timestamp = codec::encode_timestamp(tx_key.system_time);
@@ -747,14 +751,14 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
 
-        // Second tx: assert same name="alice" — should NOT generate a retraction
+        // Second tx: assert same name="alice" — datom should be dropped entirely
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
 
-        // Count EAV entries for entity 100, name attr — should be 2 ADDs, 0 RETRACTs
+        // Count EAV entries for entity 100, name attr — should be 1 ADD, 0 RETRACTs
         let name_id: i64 = 50;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
@@ -770,7 +774,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(add_count, 2, "Expected 2 ADD entries (one per tx)");
+        assert_eq!(add_count, 1, "Expected 1 ADD entry (second tx dropped)");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
 
         Ok(())
