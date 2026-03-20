@@ -140,6 +140,7 @@ impl Indexer {
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
+        let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
         let mut resolved_datoms: HashSet<Datom> = HashSet::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
@@ -159,14 +160,15 @@ impl Indexer {
             // This duplicates the temporal resolution logic from advance_to_next_valid().
             // TODO(triplox-vbc): unify with TemporalFilterIterator once the iterator
             // layer becomes fully async, eliminating this duplication.
-            let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
             let mut iter = txn.scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS).await?;
             let mut old_value: Option<DataType> = None;
             while let Some(kv) = iter.next().await? {
                 let key = &kv.key;
-                if key.len() < codec::TIMESTAMP_OP_SUFFIX {
-                    continue;
-                }
+                assert!(
+                    key.len() >= codec::TIMESTAMP_OP_SUFFIX,
+                    "Key too short ({} bytes) to contain timestamp + op suffix",
+                    key.len()
+                );
                 match temporal_filter_iterator::resolve_temporal_key(key, &as_of_encoded) {
                     Some(op) if op == codec::RETRACT => {
                         old_value = None;
