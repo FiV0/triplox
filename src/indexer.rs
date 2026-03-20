@@ -1,5 +1,6 @@
 #![allow(dead_code, unused)]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::IsolationLevel;
@@ -58,11 +59,10 @@ pub(crate) fn write_index_entries(
         txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
         txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
 
-        // AE stores the current value for (attribute, entity) — overwritten on each Assert.
-        // AV is atemporal and purely additive.
+        // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
         if datom.op == DatomOp::Assert {
-            txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value)?;
+            txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &[])?;
             txn.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[])?;
         }
     }
@@ -126,27 +126,23 @@ impl Indexer {
     /// Transact a set of operations, automatically retracting old values for
     /// cardinality:one attributes when a new value is asserted.
     ///
-    /// Uses a SlateDB transaction for atomic read-then-write: the AE index lookup
+    /// Uses a SlateDB transaction for atomic read-then-write: the EAV index scan
     /// and all index writes happen in a single transaction.
-    ///
-    /// TODO: If AE/AV indices are dropped in favor of 3 covering indices (EAV/AVE/AEV),
-    /// the current-value lookup must switch to an AEV prefix scan.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let mut datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
+        let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
 
-        // For each Assert datom, look up the current value via AE index.
+        // For each Assert datom, scan EAV for the current value of (entity, attribute).
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
-        // TODO: attribute_id lookup + serialization happens twice per Assert datom
-        // (once here, once in the write loop below). Cache and reuse.
-        let mut resolved_datoms = Vec::with_capacity(datoms.len());
+        // Collect into HashSet to deduplicate explicit + auto-generated retractions.
+        let mut resolved_datoms: HashSet<Datom> = HashSet::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
-                resolved_datoms.push(datom);
+                resolved_datoms.insert(datom);
                 continue;
             }
             let attribute_id = self.schema_cache
@@ -155,14 +151,44 @@ impl Indexer {
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
             let entity_id_bytes = bincode::serialize(&DataType::Long(datom.entity))?;
             let attr_id_bytes = bincode::serialize(&attribute_id)?;
-            let ae_key = concat_bytes(&[&[codec::AE], &attr_id_bytes, &entity_id_bytes]);
+            let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
-            if let Some(old_value_bytes) = txn.get(&ae_key).await? {
-                let old_value: DataType = bincode::deserialize(&old_value_bytes)?;
+            // Scan EAV prefix on the transaction to find the current value.
+            // Resolves temporal versions inline: finds the newest entry <= tx time
+            // and checks whether it's an assert or retract.
+            let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
+            let mut iter = txn.scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS).await?;
+            let mut old_value: Option<DataType> = None;
+            while let Some(kv) = iter.next().await? {
+                let key = &kv.key;
+                if key.len() < codec::TIMESTAMP_OP_SUFFIX {
+                    continue;
+                }
+                let ts = &key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+                // Inverted encoding: encoded_T >= as_of_encoded means real_T <= as_of
+                if ts >= &as_of_encoded[..] {
+                    let op = key[key.len() - 1];
+                    if op == codec::RETRACT {
+                        old_value = None;
+                    } else {
+                        // Extract value from EAV key: [prefix(1) | entity | attr | value | ts | op]
+                        let data = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
+                        let mut cursor = Cursor::new(data);
+                        let _entity: DataType = bincode::deserialize_from(&mut cursor)?;
+                        let _attr: i64 = bincode::deserialize_from(&mut cursor)?;
+                        let value: DataType = bincode::deserialize_from(&mut cursor)?;
+                        old_value = Some(value);
+                    }
+                    break; // Newest valid entry found, stop scanning
+                }
+                // ts < as_of_encoded means this entry is newer than as_of — skip it
+            }
+
+            if let Some(old_value) = old_value {
                 if old_value == datom.value {
                     continue; // same value, drop the datom
                 }
-                resolved_datoms.push(Datom {
+                resolved_datoms.insert(Datom {
                     entity: datom.entity,
                     attribute: datom.attribute.clone(),
                     value: old_value,
@@ -170,9 +196,9 @@ impl Indexer {
                     op: DatomOp::Retract,
                 });
             }
-            resolved_datoms.push(datom);
+            resolved_datoms.insert(datom);
         }
-        let datoms = resolved_datoms;
+        let datoms: Vec<Datom> = resolved_datoms.into_iter().collect();
 
         write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
 
@@ -704,13 +730,12 @@ mod tests {
         assert!(alice_retract, "Expected RETRACT for alice");
         assert!(bob_add, "Expected ADD for bob");
 
-        // Verify AE stores "bob" as current value
+        // Verify AE entry exists (stores empty bytes, not the value)
         let attr_bytes = bincode::serialize(&name_id)?;
         let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
         let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
-        let current: DataType = bincode::deserialize(&ae_val)?;
-        assert_eq!(current, DataType::String("bob".to_string()));
+        assert!(ae_val.is_empty(), "AE should store empty bytes");
 
         Ok(())
     }
@@ -757,7 +782,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ae_stores_value() -> Result<(), Error> {
+    async fn test_ae_stores_empty_bytes() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
@@ -767,14 +792,13 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
 
-        // Verify AE stores the serialized value, not empty bytes
+        // Verify AE stores empty bytes (not the value)
         let name_id: i64 = 50;
         let attr_bytes = bincode::serialize(&name_id)?;
         let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
         let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
-        let value: DataType = bincode::deserialize(&ae_val)?;
-        assert_eq!(value, DataType::String("alice".to_string()));
+        assert!(ae_val.is_empty(), "AE should store empty bytes");
 
         Ok(())
     }

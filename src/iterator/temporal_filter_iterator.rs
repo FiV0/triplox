@@ -3,6 +3,8 @@ use bytes::Bytes;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
+use slatedb::DbRead;
+
 use crate::clock::Instant;
 use crate::codec;
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -42,7 +44,7 @@ fn timestamp_bytes(key: &[u8]) -> &[u8] {
 impl TemporalFilterIterator {
     pub fn new(
         prefix: &[u8],
-        slate: &slatedb::DbSnapshot,
+        slate: &(impl DbRead + Sync),
         handle: Handle,
         extractor: Extractor,
         as_of: Instant,
@@ -216,7 +218,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
+                PFX, &*snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
             ).unwrap();
 
             assert!(iter.has_next());
@@ -241,7 +243,7 @@ mod tests {
             // Query as-of t1 — should see alice (t2 is in the future)
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, t1,
+                PFX, &*snapshot, handle, extractor, t1,
             ).unwrap();
 
             assert!(iter.has_next());
@@ -263,7 +265,7 @@ mod tests {
             // Query as-of before t1 — should see nothing
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(1_000_000),
+                PFX, &*snapshot, handle, extractor, st_from_unix_epoch(1_000_000),
             ).unwrap();
 
             assert!(!iter.has_next());
@@ -287,7 +289,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(3_000_000),
+                PFX, &*snapshot, handle, extractor, st_from_unix_epoch(3_000_000),
             ).unwrap();
 
             // Should see alice and bob (deduplicated)
@@ -324,7 +326,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t0,
+                PFX, &*snap, handle, extractor, t0,
             ).unwrap();
             assert!(!iter.has_next());
         }).await.unwrap();
@@ -335,7 +337,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
+                PFX, &*snap, handle, extractor, t1,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
@@ -348,7 +350,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
+                PFX, &*snap, handle, extractor, t2,
             ).unwrap();
             assert!(!iter.has_next());
         }).await.unwrap();
@@ -359,7 +361,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t3,
+                PFX, &*snap, handle, extractor, t3,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
@@ -384,7 +386,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
+                PFX, &*snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
             ).unwrap();
 
             // Initially at alice
@@ -425,7 +427,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
+                PFX, &*snap, handle, extractor, t1,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
@@ -440,7 +442,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
+                PFX, &*snap, handle, extractor, t2,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
             iter.next().unwrap();
@@ -469,7 +471,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
+                PFX, &*snap, handle, extractor, t1,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         }).await.unwrap();
@@ -480,7 +482,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
+                PFX, &*snap, handle, extractor, t2,
             ).unwrap();
             assert!(!iter.has_next());
         }).await.unwrap();
@@ -491,7 +493,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t3,
+                PFX, &*snap, handle, extractor, t3,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         }).await.unwrap();
