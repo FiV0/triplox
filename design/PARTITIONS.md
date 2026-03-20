@@ -6,11 +6,10 @@ Version 0.1
 
 A partition is a logical grouping of entities that occupy a distinct region of the entity ID space. The partition is encoded directly in the upper bits of the entity ID, so entities in the same partition are contiguous in sorted order without any additional indirection.
 
-Partitions serve three purposes:
+Partitions serve two purposes:
 
 1. **Index locality** — entities in the same partition are adjacent in E-leading indices (EAVT, AEVT), enabling efficient prefix scans in the storage layer.
-2. **Automatic entity ID allocation** — clients do not assign entity IDs manually. They provide tempids, and the system allocates permanent IDs from a global counter within the appropriate partition.
-3. **Namespace separation** — schema entities, transaction entities, and user data occupy non-overlapping regions of the ID space, preventing accidental collision.
+2. **Namespace separation** — schema entities, transaction entities, and user data occupy non-overlapping regions of the ID space, preventing accidental collision.
 
 ### Guiding principles
 
@@ -42,7 +41,7 @@ Because partition 0 places no bits above the counter, entities in `:db.part/db` 
 
 ### 1.1 Tempids
 
-A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices. See Section 4.
+A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices.
 
 ---
 
@@ -116,70 +115,11 @@ If the system crashes before step 3 completes, the root still holds the old `nex
 
 ---
 
-## 4. Tempids and Allocation
-
-### 4.1 Tempid Representation
-
-A tempid is any negative i64. Clients use tempids in place of entity IDs when creating new entities:
-
-```rust
-// Two assertions about the same new entity
-TxOp::Add { entity_id: EntityId(-1), attribute: "name",  value: "Alice" }
-TxOp::Add { entity_id: EntityId(-1), attribute: "email", value: "alice@example.com" }
-
-// A different new entity
-TxOp::Add { entity_id: EntityId(-2), attribute: "name",  value: "Bob" }
-```
-
-Within a single transaction, all occurrences of the same negative value refer to the same to-be-allocated entity. Different negative values refer to different entities. The actual magnitude of the tempid is meaningless — it is only a correlation handle.
-
-Tempids in `TxOp::Put` documents appear as the `db/id` field:
-
-```rust
-TxOp::Put(Document({
-    "db/id": Long(-1),
-    "name": String("Alice"),
-}))
-```
-
-### 4.2 Partition Assignment
-
-Each tempid is resolved to a permanent entity ID in one of the three built-in partitions. The partition is determined by what the entity represents:
-
-| Condition | Target Partition |
-|-----------|-----------------|
-| Entity defines a schema attribute (`db/ident` + `db/valueType`) | `:db.part/db` (0) |
-| Transaction entity (automatically created per transaction) | `:db.part/tx` (1) |
-| Everything else | `:db.part/user` (2) |
-
-### 4.3 Resolution Algorithm
-
-Tempid resolution runs inside the transactor before datoms are written to the indices:
-
-1. Scan all datoms in the transaction for negative entity values. Collect the set of unique tempids.
-2. For each unique tempid, determine the target partition (see 4.2).
-3. Allocate a permanent entity ID: `(partition << 42) | T`, then `T += 1`.
-4. Replace every occurrence of the tempid in the datom vector with its permanent ID.
-5. Return the tempid → permanent ID mapping as part of the transaction result.
-
-### 4.4 Transaction Result
-
-The transaction result includes a map from tempids to resolved entity IDs, so clients can discover the permanent IDs of entities they created:
-
-```rust
-pub struct TransactionResult {
-    pub tx_key: TxKey,
-    pub tempids: HashMap<i64, i64>,  // tempid → permanent entity ID
-}
-```
-
----
-
-## 5. Index Locality
+## 4. Index Locality
 
 Because entity IDs encode the partition in their upper bits, and because entity IDs are encoded with an order-preserving scheme (see `ENCODING.md`), all entities in the same partition are adjacent in the E-leading indices.
 
-### 5.1 E-leading Indices (EAVT, AEVT)
+### 4.1 E-leading Indices (EAVT, AEVT)
 
 Within EAVT, keys are sorted by entity ID first. The partition bits dominate the sort order, producing three contiguous regions:
 
@@ -195,17 +135,17 @@ Within EAVT, keys are sorted by entity ID first. The partition bits dominate the
 ...
 ```
 
-### 5.2 Prefix Scans
+### 4.2 Prefix Scans
 
 A storage-layer prefix scan with the encoded entity ID prefix can efficiently enumerate all entities in a single partition. For example, scanning all user entities means scanning EAVT keys whose entity ID bytes fall in the partition-2 range. No full index scan is required.
 
-### 5.3 Attribute-Leading Indices
+### 4.3 Attribute-Leading Indices
 
 The AVE, AEV, AE, and AV indices sort by attribute first. Partition encoding has no effect on their layout. Partitions benefit entity-centric access patterns (EAVT lookups, entity-range scans), not attribute-centric patterns.
 
 ---
 
-## 6. User-Defined Partitions
+## 5. User-Defined Partitions
 
 _This section covers a future phase. The details of partition creation and assignment are TBD._
 
