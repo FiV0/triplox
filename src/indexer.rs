@@ -145,10 +145,16 @@ impl Indexer {
                 resolved_datoms.insert(datom);
                 continue;
             }
-            let attribute_id = self.schema_cache
+            let attr_schema = self.schema_cache
                 .get(&datom.attribute)
-                .map(|a| a.entity_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+            let attribute_id = attr_schema.entity_id;
+
+            // Cardinality-many attributes accumulate values without retraction.
+            if attr_schema.cardinality == crate::schema::Cardinality::Many {
+                resolved_datoms.insert(datom);
+                continue;
+            }
             let entity_id_bytes = bincode::serialize(&DataType::Long(datom.entity))?;
             let attr_id_bytes = bincode::serialize(&attribute_id)?;
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
@@ -750,6 +756,92 @@ mod tests {
         }
         assert_eq!(add_count, 1, "Expected 1 ADD entry (second tx dropped)");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_many_no_retract() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        // First tx: assert tags="rust" for entity 100
+        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_ops1 = vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("rust".to_string()),
+        }];
+        indexer.transact_tx(tx1, tx_ops1).await?;
+
+        // Second tx: assert tags="database" for same entity — should NOT retract "rust"
+        let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        let tx_ops2 = vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("database".to_string()),
+        }];
+        indexer.transact_tx(tx2, tx_ops2).await?;
+
+        // Scan EAV for entity 100, tags attr (entity_id 54) — expect 2 ADDs, 0 RETRACTs
+        let tags_id: i64 = 54;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut add_count = 0;
+        let mut retract_count = 0;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if entity_id != DataType::Long(100) || attribute != tags_id {
+                continue;
+            }
+            match op {
+                codec::ADD => add_count += 1,
+                codec::RETRACT => retract_count += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(add_count, 2, "Expected 2 ADD entries for cardinality-many");
+        assert_eq!(retract_count, 0, "Expected no RETRACT entries for cardinality-many");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_many_same_value() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        // First tx: assert tags="rust" for entity 100
+        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_ops1 = vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("rust".to_string()),
+        }];
+        indexer.transact_tx(tx1, tx_ops1).await?;
+
+        // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
+        let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
+        let tx_ops2 = vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("rust".to_string()),
+        }];
+        indexer.transact_tx(tx2, tx_ops2).await?;
+
+        // Scan EAV for entity 100, tags attr — expect 2 ADDs (both written)
+        let tags_id: i64 = 54;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut add_count = 0;
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if entity_id != DataType::Long(100) || attribute != tags_id {
+                continue;
+            }
+            if op == codec::ADD {
+                add_count += 1;
+            }
+        }
+        assert_eq!(add_count, 2, "Expected 2 ADD entries for same value on cardinality-many");
 
         Ok(())
     }

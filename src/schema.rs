@@ -179,14 +179,14 @@ impl SchemaCache {
     /// Entities with only db/ident (enum entities) are skipped.
     pub fn validate_schema_attrs(datoms: &[Datom]) -> Result<Vec<SchemaAttribute>> {
         if !datoms.iter().any(|d| d.op == DatomOp::Assert
-            && matches!(d.attribute.as_str(), "db/ident" | "db/valueType"))
+            && matches!(d.attribute.as_str(), "db/ident" | "db/valueType" | "db/cardinality"))
         {
             return Ok(Vec::new());
         }
 
         let mut facts: HashMap<i64, HashMap<&str, &DataType>> = HashMap::new();
         for d in datoms.iter().filter(|d| d.op == DatomOp::Assert) {
-            if matches!(d.attribute.as_str(), "db/ident" | "db/valueType") {
+            if matches!(d.attribute.as_str(), "db/ident" | "db/valueType" | "db/cardinality") {
                 facts.entry(d.entity).or_default().insert(&d.attribute, &d.value);
             }
         }
@@ -208,8 +208,15 @@ impl SchemaCache {
                 Some(_) => return Err(anyhow::anyhow!("db/valueType must be a Keyword")),
                 None => continue, // enum entity
             };
+            let cardinality = match f.get("db/cardinality") {
+                Some(DataType::Long(id)) => Cardinality::from_entity_id(*id)?,
+                Some(_) => return Err(anyhow::anyhow!("db/cardinality must be a Long")),
+                None => return Err(anyhow::anyhow!(
+                    "db/cardinality is required for schema attribute '{}'", ident
+                )),
+            };
             attrs.push(SchemaAttribute {
-                ident, value_type, cardinality: Cardinality::One, entity_id: *entity_id,
+                ident, value_type, cardinality, entity_id: *entity_id,
             });
         }
         Ok(attrs)
@@ -257,7 +264,7 @@ impl SchemaCache {
 
 // --- Bootstrap transaction builders ---
 
-fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
+fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, cardinality: i64) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert("db/ident".to_string(), DataType::Keyword(ident));
@@ -265,8 +272,12 @@ fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
         "db/valueType".to_string(),
         DataType::Keyword(Keyword::namespaced("db.type", value_type)),
     );
-    doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+    doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
     TxOp::Put(Document(doc))
+}
+
+fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality(id, ident, value_type, DB_CARDINALITY_ONE)
 }
 
 /// Build a Put operation for an enum entity (value type or cardinality).
@@ -415,6 +426,7 @@ pub fn test_schema_tx() -> Vec<TxOp> {
         schema_attribute(52, Keyword::plain("email"), "string"),
         // TODO: update this to ref once we support DataType::Ref
         schema_attribute(53, Keyword::plain("follows"), "long"),
+        schema_attribute_with_cardinality(54, Keyword::plain("tags"), "string", DB_CARDINALITY_MANY),
     ]
 }
 
@@ -552,6 +564,7 @@ mod tests {
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
+        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
@@ -561,5 +574,35 @@ mod tests {
         assert!(ValueType::String.matches(&DataType::String("hello".to_string())));
         assert!(ValueType::Long.matches(&DataType::Long(42)));
         assert!(!ValueType::String.matches(&DataType::Long(42)));
+    }
+
+    #[test]
+    fn test_validate_schema_attrs_parses_cardinality_many() {
+        let ops = [schema_attribute_with_cardinality(
+            100, Keyword::plain("tags"), "string", DB_CARDINALITY_MANY,
+        )];
+        let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].ident, "tags");
+        assert_eq!(attrs[0].cardinality, Cardinality::Many);
+    }
+
+    #[test]
+    fn test_validate_schema_attrs_parses_cardinality_one() {
+        let ops = [schema_attribute(100, Keyword::plain("name"), "string")];
+        let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].cardinality, Cardinality::One);
+    }
+
+    #[test]
+    fn test_validate_schema_attrs_missing_cardinality_errors() {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
+        doc.insert("db/valueType".to_string(), kw_ns("db.type", "string"));
+        // No db/cardinality
+        let err = SchemaCache::validate_schema_attrs(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
+        assert!(err.to_string().contains("db/cardinality is required"));
     }
 }

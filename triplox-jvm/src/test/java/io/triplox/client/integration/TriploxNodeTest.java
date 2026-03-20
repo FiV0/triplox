@@ -26,7 +26,8 @@ class TriploxNodeTest {
             node.executeTx(List.of(new TxOp.Put(Map.of(
                     "db/id", 200L,
                     "db/ident", Keyword.intern("name"),
-                    "db/valueType", Keyword.intern("db.type", "string")))));
+                    "db/valueType", Keyword.intern("db.type", "string"),
+                    "db/cardinality", 30L))));
 
             // Data
             var txResult = node.executeTx(List.of(new TxOp.Put(

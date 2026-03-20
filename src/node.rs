@@ -1131,11 +1131,12 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Define "sex" attribute (ID 54) with keyword value type
+        // Define "sex" attribute (ID 55) with keyword value type
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/id".to_string(), DataType::Long(54));
+        sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Long(30));
         node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
 
         let people = vec![
@@ -1186,9 +1187,10 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/id".to_string(), DataType::Long(54));
+        sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Long(30));
         node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
 
         let people = vec![
@@ -1233,11 +1235,12 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Define "last-name" attribute (ID 54)
+        // Define "last-name" attribute (ID 55)
         let mut attr = BTreeMap::new();
-        attr.insert("db/id".to_string(), DataType::Long(54));
+        attr.insert("db/id".to_string(), DataType::Long(55));
         attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
         attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
+        attr.insert("db/cardinality".to_string(), DataType::Long(30));
         node.execute_tx(vec![TxOp::Put(Document(attr))]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names
@@ -1311,5 +1314,45 @@ mod tests {
 
         assert!(matches!(result, TransactionResult::TxCommited(_)),
                 "Expected TxCommited for valid tx, got: {:?}", result);
+    }
+
+    /// Cardinality-many attributes accumulate values without retracting old ones.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cardinality_many_attribute() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Insert entity 100 with tags="rust"
+        node.execute_tx(vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("rust".to_string()),
+        }]).await.unwrap();
+
+        // Add another tag to the same entity — should NOT retract "rust"
+        node.execute_tx(vec![TxOp::Add {
+            entity_id: crate::ops::EntityId::new(100),
+            attribute: crate::ops::Attribute("tags".to_string()),
+            value: DataType::String("database".to_string()),
+        }]).await.unwrap();
+
+        // Query: find all tags for entity 100
+        let query = Query {
+            find: find_vars(&["?tag"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Constant(DataType::Long(100)),
+                    attribute: PatternElement::Constant(kw("tags")),
+                    value: PatternElement::Variable("?tag".to_string()),
+                }),
+            ],
+        };
+
+        let db = node.db().await.unwrap();
+        let result = db.query(&query).await.unwrap();
+
+        assert_eq!(result.len(), 2, "Expected both tags, got {:?}", result);
+        assert!(result.contains(&vec![DataType::String("rust".to_string())]));
+        assert!(result.contains(&vec![DataType::String("database".to_string())]));
     }
 }

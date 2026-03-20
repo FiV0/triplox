@@ -28,6 +28,7 @@ fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
         "db/valueType".to_string(),
         DataType::Keyword(Keyword::namespaced("db.type", value_type)),
     );
+    doc.insert("db/cardinality".to_string(), DataType::Long(30));
     TxOp::Put(Document(doc))
 }
 
