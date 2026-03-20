@@ -30,13 +30,27 @@ pub(crate) struct TemporalFilterIterator {
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
-fn logical_key(key: &[u8]) -> &[u8] {
+pub(crate) fn logical_key(key: &[u8]) -> &[u8] {
     &key[..key.len() - codec::TIMESTAMP_OP_SUFFIX]
 }
 
 /// Extract the encoded timestamp bytes from a full key.
-fn timestamp_bytes(key: &[u8]) -> &[u8] {
+pub(crate) fn timestamp_bytes(key: &[u8]) -> &[u8] {
     &key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]
+}
+
+/// Resolve a temporal key against an as-of timestamp.
+///
+/// Returns `Some(op_byte)` if the key's timestamp <= as_of (i.e. it is the newest
+/// valid entry), or `None` if the entry is newer than as_of and should be skipped.
+pub(crate) fn resolve_temporal_key(key: &[u8], as_of_encoded: &[u8; 8]) -> Option<u8> {
+    let ts = timestamp_bytes(key);
+    // Inverted encoding: encoded_T >= as_of_encoded means real_T <= as_of
+    if ts >= &as_of_encoded[..] {
+        Some(key[key.len() - 1])
+    } else {
+        None
+    }
 }
 
 impl TemporalFilterIterator {
@@ -98,25 +112,22 @@ impl TemporalFilterIterator {
                         key.len()
                     );
 
-                    let ts = timestamp_bytes(&key);
-                    // Inverted encoding: smaller encoded bytes = newer real time.
-                    // We want real_T <= as_of, i.e. encoded_T >= as_of_encoded.
-                    if ts >= &self.as_of_encoded[..] {
-                        // This is the newest valid entry for this logical key group.
-                        // Check the op byte: if retracted, skip the entire group.
-                        let op = key[key.len() - 1];
-                        if op == codec::RETRACT {
+                    match resolve_temporal_key(&key, &self.as_of_encoded) {
+                        Some(op) if op == codec::RETRACT => {
                             if !self.seek_past_logical_key(&key)? {
                                 self.current_key = None;
                                 return Ok(());
                             }
                             continue;
                         }
-                        self.current_key = Some(key);
-                        return Ok(());
+                        Some(_) => {
+                            self.current_key = Some(key);
+                            return Ok(());
+                        }
+                        None => {
+                            // Entry is newer than as_of — skip it, keep scanning.
+                        }
                     }
-                    // ts < as_of_encoded means this entry is newer than as_of — skip it,
-                    // but we're still in the same or a new group, keep scanning.
                 }
             }
         }
@@ -300,17 +311,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_temporal_filter_add_add_cycle() {
-        // TODO: update to add_retract_add cycle
-        // Same (E, A, V) added at T1 and T2.
-        // Query as-of T1 sees it once, as-of T2 sees it once, as-of T0 sees nothing.
+    async fn test_temporal_filter_add_retract_add_cycle() {
+        // Same (E, A, V) added at T1, retracted at T2, re-added at T3.
+        // as-of T0: nothing
+        // as-of T1: alice visible
+        // as-of T2: alice hidden (retracted)
+        // as-of T3: alice visible again (re-added)
         let slate = in_memory_slate().await;
         let t0 = st_from_unix_epoch(500_000);
         let t1 = st_from_unix_epoch(1_000_000);
         let t2 = st_from_unix_epoch(2_000_000);
+        let t3 = st_from_unix_epoch(3_000_000);
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"alice", t2, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
+        slate.put(&make_key(PFX, b"alice", t3, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
 
@@ -325,7 +340,7 @@ mod tests {
             assert!(!iter.has_next());
         }).await.unwrap();
 
-        // as-of T1: alice once
+        // as-of T1: alice visible
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
@@ -338,13 +353,24 @@ mod tests {
             assert!(!iter.has_next());
         }).await.unwrap();
 
-        // as-of T2: alice once (deduplicated)
+        // as-of T2: alice hidden (retracted)
+        let handle = tokio::runtime::Handle::current();
+        let snap = snapshot.clone();
+        tokio::task::spawn_blocking(move || {
+            let extractor = make_test_extractor(PFX.len());
+            let iter = TemporalFilterIterator::new(
+                PFX, &snap, handle, extractor, t2,
+            ).unwrap();
+            assert!(!iter.has_next());
+        }).await.unwrap();
+
+        // as-of T3: alice visible again (re-added)
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
+                PFX, &snap, handle, extractor, t3,
             ).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();

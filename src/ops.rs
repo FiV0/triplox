@@ -56,6 +56,29 @@ pub enum DataType {
 }
 
 
+impl Eq for DataType {}
+
+impl std::hash::Hash for DataType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            DataType::BigInt(v) => v.hash(state),
+            DataType::Boolean(v) => v.hash(state),
+            DataType::Bytes(v) => v.hash(state),
+            DataType::Double(v) => v.to_bits().hash(state),
+            DataType::Float(v) => v.to_bits().hash(state),
+            DataType::Instant(v) => v.hash(state),
+            DataType::Keyword(v) => v.hash(state),
+            DataType::Long(v) => v.hash(state),
+            DataType::String(v) => v.hash(state),
+            DataType::Tuple(v) => v.hash(state),
+            DataType::Uuid(v) => v.hash(state),
+            DataType::Vector(v) => v.hash(state),
+            DataType::Map(v) => v.hash(state),
+        }
+    }
+}
+
 impl DataType {
     /// Return the ValueType corresponding to this DataType's variant.
     pub fn value_type(&self) -> crate::schema::ValueType {
@@ -141,7 +164,7 @@ pub enum TxOp {
     Erase(EntityId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatomOp {
     Assert,
     Retract,
@@ -149,7 +172,7 @@ pub enum DatomOp {
 
 /// A normalized fact: (entity, attribute, value, tx, op).
 /// The attribute is an unresolved string name.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Datom {
     pub entity: i64,
     pub attribute: String, // TODO(triplox-gaz): avoid cloning, consider Cow or interning
