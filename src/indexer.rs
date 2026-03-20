@@ -137,7 +137,7 @@ impl Indexer {
 
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };
-        self.slatedb.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?).await;
+        self.slatedb.put_with_options(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?, &Default::default(), &DEFAULT_WRITE_OPTIONS).await?;
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
