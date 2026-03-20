@@ -499,9 +499,7 @@ pub fn execute_aggregation(
 
     // When there are no group-by variables (all-aggregate query), all rows
     // collapse into a single group. Seed it so that empty input still
-    // produces one output row (e.g. (count ?e) on no matches → [[0]]).
-    // This works because the concatenated group key for zero indices is
-    // the empty vec, matching this seeded entry.
+    // produces one output row.
     if plan.group_indices.is_empty() {
         let accs: Vec<Box<dyn Accumulator>> =
             agg_funcs.iter().map(|f| make_accumulator(f)).collect();
@@ -510,9 +508,7 @@ pub fn execute_aggregation(
 
     for tuple in &results {
         // Build group key by concatenating raw serialized bytes of group
-        // columns. Bincode is self-delimiting (enum discriminants + length
-        // prefixes for variable-size data), so concatenation is unambiguous.
-        // Group values are only deserialized once per distinct group.
+        // columns.
         let mut group_key = Vec::new();
         for &idx in &plan.group_indices {
             group_key.extend_from_slice(&tuple[idx]);
