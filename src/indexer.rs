@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use slatedb::Db;
-use slatedb::WriteBatch;
 use slatedb::IsolationLevel;
 use anyhow::{Error, Result};
 use bincode;
@@ -30,13 +29,14 @@ pub struct Indexer {
     tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
 
-pub(crate) fn build_index_write_batch(
+/// Write index entries for datoms into a SlateDB transaction.
+pub(crate) fn write_index_entries(
+    txn: &slatedb::DbTransaction,
     datoms: &[Datom],
     schema_cache: &SchemaCache,
     system_time: Instant,
-) -> Result<WriteBatch, Error> {
+) -> Result<(), Error> {
     let timestamp = codec::encode_timestamp(system_time);
-    let mut write_batch = WriteBatch::new();
 
     for datom in datoms {
         // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
@@ -54,20 +54,20 @@ pub(crate) fn build_index_write_batch(
         };
 
         // Temporal indices include timestamp + op
-        write_batch.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[]);
-        write_batch.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[]);
-        write_batch.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[]);
+        txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
+        txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
+        txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
 
         // AE stores the current value for (attribute, entity) — overwritten on each Assert.
         // AV is atemporal and purely additive.
         // Retractions are not written to AE/AV.
         if datom.op == DatomOp::Assert {
-            write_batch.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value);
-            write_batch.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[]);
+            txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value)?;
+            txn.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[])?;
         }
     }
 
-    Ok(write_batch)
+    Ok(())
 }
 
 /// Metadata stored per transaction in SlateDB (keyed by tx_id under TX_TO_META prefix).
@@ -174,33 +174,7 @@ impl Indexer {
         }
         let datoms = resolved_datoms;
 
-        // Write all index entries within the transaction
-        let timestamp = codec::encode_timestamp(tx_key.system_time);
-        for datom in &datoms {
-            let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
-            let attribute_id = self.schema_cache
-                .get(&datom.attribute)
-                .map(|a| a.entity_id)
-                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-            let attribute = bincode::serialize(&attribute_id)?;
-            let value = bincode::serialize(&datom.value)?;
-            let op_byte = match datom.op {
-                DatomOp::Assert => codec::ADD,
-                DatomOp::Retract => codec::RETRACT,
-            };
-
-            // Temporal indices include timestamp + op
-            txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
-            txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
-            txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
-
-            // AE stores the current value — overwritten on each Assert.
-            // AV is atemporal and purely additive.
-            if datom.op == DatomOp::Assert {
-                txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &value)?;
-                txn.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[])?;
-            }
-        }
+        write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
 
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };

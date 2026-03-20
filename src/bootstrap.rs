@@ -1,11 +1,10 @@
 use std::sync::Arc;
-use slatedb::Db;
+use slatedb::{Db, IsolationLevel};
 use crate::clock::{self, st_from_unix_epoch};
 use crate::codec;
-use crate::indexer::build_index_write_batch;
+use crate::indexer::write_index_entries;
 use crate::ops::tx_ops_to_datoms;
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, SchemaCache};
-use crate::slate::DEFAULT_WRITE_OPTIONS;
 use crate::util::concat_bytes;
 
 const META_KEY_VERSION: &[u8] = b"version";
@@ -29,12 +28,13 @@ pub async fn init_db(slatedb: Arc<Db>) -> SchemaCache {
             let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
             let mut cache = SchemaCache::new();
             cache.process_tx(SchemaCache::validate_schema_attrs(&datoms).unwrap());
-            let write_batch = build_index_write_batch(&datoms, &cache, clock::st_from_unix_epoch(0)).unwrap();
-            slatedb.write_with_options(write_batch, &DEFAULT_WRITE_OPTIONS).await.unwrap();
 
+            let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
+            write_index_entries(&txn, &datoms, &cache, clock::st_from_unix_epoch(0)).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
-            slatedb.put(&key, version.as_bytes()).await.expect("Failed to write version to META_INDEX");
+            txn.put(&key, version.as_bytes()).unwrap();
+            txn.commit().await.unwrap();
 
             cache
         }
