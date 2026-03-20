@@ -141,6 +141,8 @@ impl Indexer {
         // For each Assert datom, look up the current value via AE index.
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
+        // TODO: attribute_id lookup + serialization happens twice per Assert datom
+        // (once here, once in the write loop below). Cache and reuse.
         let mut resolved_datoms = Vec::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
