@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -515,8 +516,8 @@ pub fn execute_aggregation(
         }
 
         let (_, accumulators) = match groups.entry(group_key) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
                 let group_values: Vec<DataType> = plan
                     .group_indices
                     .iter()
