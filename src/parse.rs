@@ -5,8 +5,8 @@ use edn::query as eq;
 use edn::Keyword;
 
 use crate::datalog::{
-    FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, Variable,
-    WhereClause,
+    AggregateFunc, FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern,
+    Variable, WhereClause,
 };
 use crate::expr::{BinaryExpr, BinaryOp, Expr};
 use crate::ops::DataType;
@@ -47,17 +47,36 @@ fn convert_find_spec(spec: eq::FindSpec) -> Result<FindSpec> {
     }
 }
 
+fn parse_aggregate_func(name: &str) -> Result<AggregateFunc> {
+    match name {
+        "count" => Ok(AggregateFunc::Count),
+        "count-distinct" => Ok(AggregateFunc::CountDistinct),
+        "sum" => Ok(AggregateFunc::Sum),
+        "avg" => Ok(AggregateFunc::Avg),
+        "min" => Ok(AggregateFunc::Min),
+        "max" => Ok(AggregateFunc::Max),
+        _ => Err(anyhow!("unknown aggregate function: {}", name)),
+    }
+}
+
 fn convert_element(elem: eq::Element) -> Result<FindElement> {
     match elem {
         eq::Element::Variable(v) => Ok(FindElement::Variable(var_to_string(&v))),
         eq::Element::Aggregate(agg) => {
             let func_name = agg.func.0.to_string();
-            let arg_str = agg
-                .args
-                .first()
-                .map(|a| format!("{}", a))
-                .unwrap_or_default();
-            Ok(FindElement::Aggregate(func_name, arg_str))
+            let func = parse_aggregate_func(&func_name)?;
+            if agg.args.len() != 1 {
+                return Err(anyhow!(
+                    "aggregate function '{}' requires exactly 1 argument, got {}",
+                    func_name,
+                    agg.args.len()
+                ));
+            }
+            let var = match &agg.args[0] {
+                eq::FnArg::Variable(v) => var_to_string(v),
+                other => return Err(anyhow!("aggregate argument must be a variable, got {:?}", other)),
+            };
+            Ok(FindElement::Aggregate(func, var))
         }
         eq::Element::Corresponding(_) | eq::Element::Pull(_) => {
             Err(anyhow!("pull and corresponding elements are not yet supported"))
