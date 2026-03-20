@@ -498,20 +498,29 @@ pub fn execute_aggregation(
         .collect();
 
     for tuple in &results {
-        // Build group key
-        let group_values: Vec<DataType> = plan
-            .group_indices
-            .iter()
-            .map(|&idx| bincode::deserialize::<DataType>(&tuple[idx]))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Build group key from raw bytes (length-prefixed to avoid ambiguity).
+        // This avoids deserializing group columns on every tuple — we only
+        // deserialize once per distinct group when inserting into the map.
+        let mut group_key = Vec::new();
+        for &idx in &plan.group_indices {
+            let bytes = &tuple[idx];
+            group_key.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            group_key.extend_from_slice(bytes);
+        }
 
-        let group_key = bincode::serialize(&group_values)?;
-
-        let (_, accumulators) = groups.entry(group_key).or_insert_with(|| {
-            let accs: Vec<Box<dyn Accumulator>> =
-                agg_funcs.iter().map(|f| make_accumulator(f)).collect();
-            (group_values.clone(), accs)
-        });
+        let (_, accumulators) = match groups.entry(group_key) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let group_values: Vec<DataType> = plan
+                    .group_indices
+                    .iter()
+                    .map(|&idx| bincode::deserialize::<DataType>(&tuple[idx]))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let accs: Vec<Box<dyn Accumulator>> =
+                    agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+                e.insert((group_values, accs))
+            }
+        };
 
         // Feed values to accumulators
         let mut agg_idx = 0;
