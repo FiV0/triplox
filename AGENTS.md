@@ -14,6 +14,10 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Style
+
+Keep comments to one line where possible. Multi-line is fine for complex logic.
+
 ## Git
 
 Only commit and push when explicitly asked to by the user.
