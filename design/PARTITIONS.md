@@ -38,32 +38,9 @@ An entity ID is a 64-bit signed integer with three fields:
 | Partition | 61–42 | 20    | 0 to 1,048,575             |
 | Counter   | 41–0  | 42    | 0 to 4,398,046,511,103     |
 
-### 1.1 Construction and Extraction
+Because partition 0 places no bits above the counter, entities in `:db.part/db` have small, readable entity IDs (the raw counter value).
 
-```rust
-const COUNTER_BITS: u32 = 42;
-const COUNTER_MASK: i64 = (1i64 << COUNTER_BITS) - 1;      // 0x3FF_FFFF_FFFF
-const PARTITION_MASK: i64 = 0xFFFFF;                         // 20 bits
-
-/// Extract the partition number from an entity ID.
-pub fn partition(entity_id: i64) -> i64 {
-    (entity_id >> COUNTER_BITS) & PARTITION_MASK
-}
-
-/// Extract the counter value from an entity ID.
-pub fn counter(entity_id: i64) -> i64 {
-    entity_id & COUNTER_MASK
-}
-
-/// Construct an entity ID from a partition number and counter.
-pub fn make_entity_id(partition: i64, counter: i64) -> i64 {
-    (partition << COUNTER_BITS) | counter
-}
-```
-
-Note that `make_entity_id(0, n) == n` for any non-negative `n` that fits in 42 bits. This means entities in partition 0 have small, readable entity IDs.
-
-### 1.2 Tempids
+### 1.1 Tempids
 
 A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices. See Section 4.
 
