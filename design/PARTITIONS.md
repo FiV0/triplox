@@ -60,7 +60,7 @@ Three partitions are installed at bootstrap:
 
 Schema attributes, value type enums, cardinality enums, and partition entities live here. See `SCHEMA.md` for the bootstrap entity definitions.
 
-Because `make_entity_id(0, n) == n`, entity IDs in this partition are small integers.
+Because partition 0 places no bits above the counter, entity IDs in this partition are small integers.
 
 ### 2.2 :db.part/tx (partition 1)
 
@@ -70,7 +70,7 @@ Each committed transaction is reified as an entity in this partition. The transa
 |----------------|------------|-------------------------------|
 | `db/txInstant`  | instant    | Wall-clock time of the commit |
 
-A transaction with counter value `t` has entity ID `make_entity_id(1, t)`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
+A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
 
 ### 2.3 :db.part/user (partition 2)
 
@@ -82,7 +82,7 @@ The default partition for application data. When a tempid does not specify a par
 
 Entity IDs are allocated from a single, monotonically increasing counter called **T**. Every allocation — whether for a schema entity in `:db.part/db`, a transaction entity in `:db.part/tx`, or a user entity in `:db.part/user` — advances the same counter.
 
-When an entity is allocated in partition P, its entity ID is `make_entity_id(P, T)`, and T advances to `T + 1`.
+When an entity is allocated in partition P, its entity ID is `(P << 42) | T`, and T advances to `T + 1`.
 
 ### 3.1 Counter Semantics
 
@@ -153,7 +153,7 @@ Tempid resolution runs inside the transactor before datoms are written to the in
 
 1. Scan all datoms in the transaction for negative entity values. Collect the set of unique tempids.
 2. For each unique tempid, determine the target partition (see 4.2).
-3. Allocate a permanent entity ID: `make_entity_id(partition, T)`, then `T += 1`.
+3. Allocate a permanent entity ID: `(partition << 42) | T`, then `T += 1`.
 4. Replace every occurrence of the tempid in the datom vector with its permanent ID.
 5. Return the tempid → permanent ID mapping as part of the transaction result.
 
