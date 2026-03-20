@@ -141,10 +141,10 @@ impl Indexer {
         // For each Assert datom, look up the current value via AE index.
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
-        let mut filtered_datoms = Vec::with_capacity(datoms.len());
+        let mut resolved_datoms = Vec::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
-                filtered_datoms.push(datom);
+                resolved_datoms.push(datom);
                 continue;
             }
             let attribute_id = self.schema_cache
@@ -160,7 +160,7 @@ impl Indexer {
                 if old_value == datom.value {
                     continue; // same value, drop the datom
                 }
-                filtered_datoms.push(Datom {
+                resolved_datoms.push(Datom {
                     entity: datom.entity,
                     attribute: datom.attribute.clone(),
                     value: old_value,
@@ -168,9 +168,9 @@ impl Indexer {
                     op: DatomOp::Retract,
                 });
             }
-            filtered_datoms.push(datom);
+            resolved_datoms.push(datom);
         }
-        let datoms = filtered_datoms;
+        let datoms = resolved_datoms;
 
         // Write all index entries within the transaction
         let timestamp = codec::encode_timestamp(tx_key.system_time);
