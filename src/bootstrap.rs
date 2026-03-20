@@ -5,6 +5,7 @@ use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::ops::tx_ops_to_datoms;
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, SchemaCache};
+use crate::slate::DEFAULT_WRITE_OPTIONS;
 use crate::util::concat_bytes;
 
 const META_KEY_VERSION: &[u8] = b"version";
@@ -34,7 +35,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> SchemaCache {
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             txn.put(&key, version.as_bytes()).unwrap();
-            txn.commit().await.unwrap();
+            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await.unwrap();
 
             cache
         }

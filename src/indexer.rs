@@ -18,7 +18,7 @@ use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
-use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
@@ -206,7 +206,7 @@ impl Indexer {
         let meta = TxMeta { system_time: tx_key.system_time };
         txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
 
-        txn.commit().await?;
+        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
         // Update schema cache after commit so new attributes are only visible
         // in subsequent transactions.
