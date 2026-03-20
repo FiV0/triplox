@@ -82,6 +82,16 @@ Reserved entity ID ranges:
 | 1–3   | Bootstrap schema attributes  |
 | 10–23 | Value type enum entities     |
 | 30–31 | Cardinality enum entities    |
+| 40–41 | Transaction result enum entities |
+
+### 2.1 Transaction Result Enums
+
+The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db/txResult` attribute on transaction entities (see `PARTITIONS.md`):
+
+| Entity ID | Ident               |
+|-----------|---------------------|
+| 40        | `:db.tx/committed`  |
+| 41        | `:db.tx/aborted`    |
 
 ---
 

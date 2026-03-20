@@ -64,13 +64,18 @@ Because partition 0 places no bits above the counter, entity IDs in this partiti
 
 ### 2.2 :db.part/tx (partition 1)
 
-Each committed transaction is reified as an entity in this partition. The transaction entity carries at least one attribute:
+Each transaction is reified as an entity in this partition. The transaction entity carries the following attributes:
 
-| Attribute      | Value Type | Description                   |
-|----------------|------------|-------------------------------|
-| `db/txInstant`  | instant    | Wall-clock time of the commit |
+| Attribute      | Value Type | Description                                                    |
+|----------------|------------|----------------------------------------------------------------|
+| `db/txInstant` | instant    | Wall-clock time of the transaction                             |
+| `db/txResult`  | keyword    | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)      |
+| `db/txId`      | long       | The sequential tx_id assigned by the log                       |
+| `db.tx/error`  | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
 
 A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
+
+Note: the relationship between `db/txId` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. A future phase may align these so that the log tx_id and the entity ID counter share the same value.
 
 ### 2.3 :db.part/user (partition 2)
 
