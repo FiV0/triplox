@@ -379,24 +379,6 @@ pub fn compile_pattern(
     ))
 }
 
-/// Create indices for projecting find variables from join results.
-pub fn compile_find(find: &FindSpec, var_index: &HashMap<&Variable, usize>) -> Result<Vec<usize>, Error> {
-    match find {
-        FindSpec::FindRel(elements) => elements
-            .iter()
-            .map(|elem| match elem {
-                FindElement::Variable(var) => var_index
-                    .get(var)
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var)),
-                _ => Err(anyhow::anyhow!(
-                    "Only Variable find elements supported in MVP"
-                )),
-            })
-            .collect(),
-    }
-}
-
 /// How to produce one column of the output row.
 pub enum Projection {
     /// A non-aggregate variable: take from group key at `group_indices[idx]`.
@@ -826,29 +808,7 @@ mod tests {
         assert_eq!(order, vec!["?e"]);
     }
 
-    #[test]
-    fn test_compile_find() {
-        let find = FindSpec::FindRel(vec![
-            FindElement::Variable("?name".to_string()),
-            FindElement::Variable("?e".to_string()),
-        ]);
-        let join_order = vec!["?e".to_string(), "?name".to_string()];
-        let var_index = build_var_index(&join_order);
 
-        let indices = compile_find(&find, &var_index).unwrap();
-        // ?name is at index 1, ?e is at index 0
-        assert_eq!(indices, vec![1, 0]);
-    }
-
-    #[test]
-    fn test_compile_find_missing_variable() {
-        let find = FindSpec::FindRel(vec![FindElement::Variable("?missing".to_string())]);
-        let join_order = vec!["?e".to_string(), "?name".to_string()];
-        let var_index = build_var_index(&join_order);
-
-        let result = compile_find(&find, &var_index);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
