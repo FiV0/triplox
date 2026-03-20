@@ -175,12 +175,8 @@ impl Indexer {
                         break;
                     }
                     Some(_) => {
-                        // Extract value from EAV key: [prefix(1) | entity | attr | value | ts | op]
-                        let data = &key[1..temporal_filter_iterator::logical_key(key).len() + 1];
-                        let mut cursor = Cursor::new(data);
-                        let _entity: DataType = bincode::deserialize_from(&mut cursor)?;
-                        let _attr: i64 = bincode::deserialize_from(&mut cursor)?;
-                        let value: DataType = bincode::deserialize_from(&mut cursor)?;
+                        let value_bytes = &key[eav_prefix.len()..key.len() - codec::TIMESTAMP_OP_SUFFIX];
+                        let value: DataType = bincode::deserialize(value_bytes)?;
                         old_value = Some(value);
                         break;
                     }
