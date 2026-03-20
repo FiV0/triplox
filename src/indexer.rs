@@ -224,70 +224,84 @@ impl Indexer {
         Ok(tx_key)
     }
 
-    /// Wait until the specified transaction has been indexed.
-    /// Returns immediately if the transaction is already indexed (based on TxKey ordering).
+    /// Subscribe to transaction completion notifications.
     ///
-    /// This method returns a future that does NOT borrow `self`, so it's safe to use
-    /// with RwLock - the lock can be dropped before awaiting the returned future.
-    ///
-    /// # Arguments
-    /// * `tx_key` - The transaction to wait for
-    ///
-    /// # Returns
-    /// * A future that resolves to `Ok(())` when the transaction is indexed
+    /// Returns a `TxWaiter` that can later be used to wait for a specific transaction.
+    /// Call this **before** appending to the log to avoid a race where the indexer
+    /// broadcasts the result before the caller subscribes.
     ///
     /// # Example
     /// ```ignore
-    /// // With RwLock - lock is dropped before waiting
-    /// let future = indexer.read().await.await_tx(tx_key);
-    /// future.await?;
-    ///
-    /// // With timeout
-    /// let future = indexer.read().await.await_tx(tx_key);
-    /// tokio::time::timeout(Duration::from_millis(500), future).await??;
+    /// let waiter = indexer.read().await.tx_waiter();
+    /// // drop the lock, append to log, then wait:
+    /// let tx_key = log.write().await.append_tx(data).await;
+    /// waiter.await_tx(tx_key).await?;
     /// ```
+    pub fn tx_waiter(&self) -> TxWaiter {
+        TxWaiter {
+            latest_tx: self.latest_indexed_tx,
+            rx: self.tx_completion_sender.subscribe(),
+        }
+    }
+
+    /// Wait until the specified transaction has been indexed.
+    ///
+    /// Convenience method that subscribes and waits in one call. Only safe when
+    /// the transaction has already been submitted and cannot complete before this
+    /// call (e.g. waiting for a tx that was indexed before this Indexer was created).
+    /// For the general case, prefer `tx_waiter()` + `TxWaiter::await_tx()`.
     pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
-        // Capture everything we need from self (clone/copy)
-        let latest_tx = self.latest_indexed_tx;
-        let mut rx = self.tx_completion_sender.subscribe();
+        self.tx_waiter().await_tx(tx_key)
+    }
+}
 
-        // Return a future that doesn't borrow self
-        async move {
-            // Fast path: Check if already indexed
-            if let Some(latest_key) = latest_tx {
-                if tx_key <= latest_key {
-                    return Ok(());
-                }
+
+/// A pre-subscribed handle for waiting on transaction completion.
+///
+/// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
+/// no messages are missed between subscription and the actual wait.
+pub struct TxWaiter {
+    latest_tx: Option<TxKey>,
+    rx: broadcast::Receiver<(TxKey, Result<(), Arc<anyhow::Error>>)>,
+}
+
+impl TxWaiter {
+    /// Wait until `tx_key` has been indexed. Returns `Ok(())` on commit,
+    /// `Err` on abort or if the indexer shuts down.
+    pub async fn await_tx(mut self, tx_key: TxKey) -> Result<(), Error> {
+        // Fast path: already indexed at subscription time
+        if let Some(latest_key) = self.latest_tx {
+            if tx_key <= latest_key {
+                return Ok(());
             }
+        }
 
-            // TODO(triplox-j7t): The >= check can return a different tx's result if the
-            // broadcast channel lags. Will be revisited when the log is removed and we
-            // ingest directly into Slate.
-            loop {
-                match rx.recv().await {
-                    Ok((completed_tx_key, result)) => {
-                        if completed_tx_key >= tx_key {
-                            return result.map_err(|e| anyhow::anyhow!("{:#}", e));
-                        }
-                        // Keep waiting for higher tx_id
-                    },
-                    Err(broadcast::error::RecvError::Lagged(_count)) => {
-                        // Channel overflowed. Just continue waiting - we'll eventually
-                        // get the notification or the channel will close.
-                        continue;
-                    },
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(anyhow::anyhow!(
-                            "Indexer shutdown while waiting for tx {}",
-                            tx_key.tx_id
-                        ));
+        // TODO(triplox-j7t): The >= check can return a different tx's result if the
+        // broadcast channel lags. Will be revisited when the log is removed and we
+        // ingest directly into Slate.
+        loop {
+            match self.rx.recv().await {
+                Ok((completed_tx_key, result)) => {
+                    if completed_tx_key >= tx_key {
+                        return result.map_err(|e| anyhow::anyhow!("{:#}", e));
                     }
+                    // Keep waiting for higher tx_id
+                },
+                Err(broadcast::error::RecvError::Lagged(_count)) => {
+                    // Channel overflowed. Just continue waiting - we'll eventually
+                    // get the notification or the channel will close.
+                    continue;
+                },
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "Indexer shutdown while waiting for tx {}",
+                        tx_key.tx_id
+                    ));
                 }
             }
         }
     }
 }
-
 
 impl Subscriber for Indexer {
     async fn accept(&mut self, record: Record) {
