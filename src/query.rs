@@ -497,6 +497,15 @@ pub fn execute_aggregation(
         })
         .collect();
 
+    // When there are no group-by variables, all rows collapse into a single
+    // group. Seed it so that empty input still produces one output row
+    // (e.g. (count ?e) on no matches → [[0]]).
+    if plan.group_indices.is_empty() {
+        let accs: Vec<Box<dyn Accumulator>> =
+            agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+        groups.insert(Vec::new(), (Vec::new(), accs));
+    }
+
     for tuple in &results {
         // Build group key from raw bytes (length-prefixed to avoid ambiguity).
         // This avoids deserializing group columns on every tuple — we only
@@ -1100,5 +1109,37 @@ mod tests {
 
         let order = query_variable_order(&where_clauses);
         assert_eq!(order, vec!["?e", "?name", "?age"]);
+    }
+
+    #[test]
+    fn test_execute_aggregation_all_aggs_empty_input() {
+        // [:find (count ?e)] with no results → single row [[0]]
+        use crate::datalog::AggregateFunc;
+        let plan = FindPlan {
+            group_indices: vec![],
+            projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
+            has_aggregates: true,
+        };
+        let results: Vec<ResultTuple> = vec![];
+        let output = execute_aggregation(results, &plan).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], vec![DataType::Long(0)]);
+    }
+
+    #[test]
+    fn test_execute_aggregation_with_group_keys_empty_input() {
+        // [:find ?dept (count ?e)] with no results → empty (no groups formed)
+        use crate::datalog::AggregateFunc;
+        let plan = FindPlan {
+            group_indices: vec![0],
+            projections: vec![
+                Projection::GroupVar(0),
+                Projection::Aggregate(AggregateFunc::Count, 1),
+            ],
+            has_aggregates: true,
+        };
+        let results: Vec<ResultTuple> = vec![];
+        let output = execute_aggregation(results, &plan).unwrap();
+        assert!(output.is_empty());
     }
 }

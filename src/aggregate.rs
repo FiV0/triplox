@@ -116,7 +116,7 @@ impl Accumulator for SumAccumulator {
         match &self.accum {
             Some(NumericAccum::Long(n)) => Ok(DataType::Long(*n)),
             Some(NumericAccum::Double(n)) => Ok(DataType::Double(*n)),
-            None => Err(anyhow!("sum: no values accumulated")),
+            None => Ok(DataType::Long(0)),
         }
     }
 }
@@ -310,5 +310,41 @@ mod tests {
         acc.accumulate(&DataType::Double(3.5)).unwrap();
         acc.accumulate(&DataType::Double(2.5)).unwrap();
         assert_eq!(acc.finalize().unwrap(), DataType::Double(3.5));
+    }
+
+    #[test]
+    fn test_count_empty() {
+        let acc = make_accumulator(&AggregateFunc::Count);
+        assert_eq!(acc.finalize().unwrap(), DataType::Long(0));
+    }
+
+    #[test]
+    fn test_count_distinct_empty() {
+        let acc = make_accumulator(&AggregateFunc::CountDistinct);
+        assert_eq!(acc.finalize().unwrap(), DataType::Long(0));
+    }
+
+    #[test]
+    fn test_sum_empty() {
+        let acc = make_accumulator(&AggregateFunc::Sum);
+        assert_eq!(acc.finalize().unwrap(), DataType::Long(0));
+    }
+
+    #[test]
+    fn test_avg_empty_errors() {
+        let acc = make_accumulator(&AggregateFunc::Avg);
+        assert!(acc.finalize().is_err());
+    }
+
+    #[test]
+    fn test_min_empty_errors() {
+        let acc = make_accumulator(&AggregateFunc::Min);
+        assert!(acc.finalize().is_err());
+    }
+
+    #[test]
+    fn test_max_empty_errors() {
+        let acc = make_accumulator(&AggregateFunc::Max);
+        assert!(acc.finalize().is_err());
     }
 }
