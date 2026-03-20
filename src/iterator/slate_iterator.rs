@@ -3,8 +3,6 @@ use bytes::Bytes;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
-use slatedb::DbRead;
-
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 
 pub(crate) trait Index {
@@ -29,7 +27,7 @@ pub(crate) struct SlateIterator {
 impl SlateIterator {
     pub fn new(
         prefix: &[u8],
-        slate: &(impl DbRead + Sync),
+        slate: &slatedb::DbSnapshot,
         handle: Handle,
         extractor: Extractor,
     ) -> Result<Self, Error> {
@@ -259,7 +257,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &*snapshot, handle, extractor).unwrap();
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -284,7 +282,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &*snapshot, handle, extractor).unwrap();
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -304,7 +302,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &*snapshot, handle, extractor).unwrap();
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         }).await.unwrap();
@@ -323,7 +321,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &*snapshot, handle, extractor).unwrap();
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
             let count = iter.count().unwrap();
             // TODO: count() currently returns 100 as estimate_key_count is not on DbSnapshot
             assert_eq!(count, 100);

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
 use crate::codec;
+use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
@@ -154,8 +155,9 @@ impl Indexer {
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
             // Scan EAV prefix on the transaction to find the current value.
-            // Resolves temporal versions inline: finds the newest entry <= tx time
-            // and checks whether it's an assert or retract.
+            // Uses async scan directly because TemporalFilterIterator is sync-only.
+            // TODO(triplox-vbc): switch to TemporalFilterIterator once the iterator
+            // layer becomes fully async.
             let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
             let mut iter = txn.scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS).await?;
             let mut old_value: Option<DataType> = None;
@@ -164,24 +166,25 @@ impl Indexer {
                 if key.len() < codec::TIMESTAMP_OP_SUFFIX {
                     continue;
                 }
-                let ts = &key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH];
-                // Inverted encoding: encoded_T >= as_of_encoded means real_T <= as_of
-                if ts >= &as_of_encoded[..] {
-                    let op = key[key.len() - 1];
-                    if op == codec::RETRACT {
+                match temporal_filter_iterator::resolve_temporal_key(key, &as_of_encoded) {
+                    Some(op) if op == codec::RETRACT => {
                         old_value = None;
-                    } else {
+                        break;
+                    }
+                    Some(_) => {
                         // Extract value from EAV key: [prefix(1) | entity | attr | value | ts | op]
-                        let data = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
+                        let data = &key[1..temporal_filter_iterator::logical_key(key).len() + 1];
                         let mut cursor = Cursor::new(data);
                         let _entity: DataType = bincode::deserialize_from(&mut cursor)?;
                         let _attr: i64 = bincode::deserialize_from(&mut cursor)?;
                         let value: DataType = bincode::deserialize_from(&mut cursor)?;
                         old_value = Some(value);
+                        break;
                     }
-                    break; // Newest valid entry found, stop scanning
+                    None => {
+                        // Entry is newer than as_of — skip it
+                    }
                 }
-                // ts < as_of_encoded means this entry is newer than as_of — skip it
             }
 
             if let Some(old_value) = old_value {
