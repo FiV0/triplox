@@ -156,8 +156,9 @@ impl Indexer {
 
             // Scan EAV prefix on the transaction to find the current value.
             // Uses async scan directly because TemporalFilterIterator is sync-only.
-            // TODO(triplox-vbc): switch to TemporalFilterIterator once the iterator
-            // layer becomes fully async.
+            // This duplicates the temporal resolution logic from advance_to_next_valid().
+            // TODO(triplox-vbc): unify with TemporalFilterIterator once the iterator
+            // layer becomes fully async, eliminating this duplication.
             let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
             let mut iter = txn.scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS).await?;
             let mut old_value: Option<DataType> = None;
