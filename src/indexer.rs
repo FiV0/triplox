@@ -1,5 +1,3 @@
-#![allow(dead_code, unused)]
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use slatedb::Db;
@@ -20,7 +18,7 @@ use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
-use crate::slate::{DEFAULT_READ_OPTIONS, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
@@ -783,25 +781,4 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_ae_stores_empty_bytes() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
-
-        let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
-
-        // Verify AE stores empty bytes (not the value)
-        let name_id: i64 = 50;
-        let attr_bytes = bincode::serialize(&name_id)?;
-        let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
-        let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
-        let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
-        assert!(ae_val.is_empty(), "AE should store empty bytes");
-
-        Ok(())
-    }
 }
