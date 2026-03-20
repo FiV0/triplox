@@ -42,6 +42,7 @@ impl std::fmt::Display for AggregateFunc {
 pub enum FindElement {
     Variable(Variable),
     PullExpr(PullExpr),
+    /// Only bare variables supported — no expression args, bypasses the expression engine.
     Aggregate(AggregateFunc, Variable),
 }
 
