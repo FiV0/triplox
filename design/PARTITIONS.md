@@ -41,7 +41,8 @@ Because partition 0 places no bits above the counter, entities in `:db.part/db` 
 
 ### 1.1 Tempids
 
-A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices.
+A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices. Although Triplox should support negative tempids in transactions at some point, we should
+push people to use string identifiers, as this seems to be the common convention.
 
 ---
 
@@ -74,7 +75,7 @@ Each transaction is reified as an entity in this partition. The transaction enti
 
 A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
 
-Note: the relationship between `db/txId` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. A future phase may align these so that the log tx_id and the entity ID counter share the same value.
+Note: the relationship between `db/txId` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. In the future we may align these so that the log tx_id and the entity ID counter share the same value.
 
 ### 2.3 :db.part/user (partition 2)
 
@@ -107,41 +108,13 @@ T is stored durably as part of the **database root** — a small metadata record
 The commit path is:
 
 1. Allocate counter values for all new entities in the transaction.
-2. Write index entries to the storage layer.
-3. Atomically update the root to reflect the new `next_t`.
-4. Acknowledge the transaction.
-
-If the system crashes before step 3 completes, the root still holds the old `next_t`. The failed transaction's counter values are lost (creating a small gap), and the next transaction resumes from the persisted `next_t`. No entity ID is ever reused.
+2. Write index entries to the storage layer and update the root to reflect the new `next_t`
 
 ---
 
 ## 4. Index Locality
 
-Because entity IDs encode the partition in their upper bits, and because entity IDs are encoded with an order-preserving scheme (see `ENCODING.md`), all entities in the same partition are adjacent in the E-leading indices.
-
-### 4.1 E-leading Indices (EAVT, AEVT)
-
-Within EAVT, keys are sorted by entity ID first. The partition bits dominate the sort order, producing three contiguous regions:
-
-```
-[EAV prefix] [partition 0, counter 0] ...   ← schema entity
-[EAV prefix] [partition 0, counter 1] ...   ← schema entity
-...
-[EAV prefix] [partition 1, counter 50] ...  ← tx entity (counter 50)
-[EAV prefix] [partition 1, counter 53] ...  ← tx entity (counter 53, gap is fine)
-...
-[EAV prefix] [partition 2, counter 51] ...  ← user entity (counter 51)
-[EAV prefix] [partition 2, counter 52] ...  ← user entity (counter 52)
-...
-```
-
-### 4.2 Prefix Scans
-
-A storage-layer prefix scan with the encoded entity ID prefix can efficiently enumerate all entities in a single partition. For example, scanning all user entities means scanning EAVT keys whose entity ID bytes fall in the partition-2 range. No full index scan is required.
-
-### 4.3 Attribute-Leading Indices
-
-The AVE, AEV, AE, and AV indices sort by attribute first. Partition encoding has no effect on their layout. Partitions benefit entity-centric access patterns (EAVT lookups, entity-range scans), not attribute-centric patterns.
+Because entity IDs encode the partition in their upper bits, and because entity IDs are encoded with an order-preserving scheme (see `ENCODING.md`), all entities in the same partition are adjacent in the E-leading indices EAVT, and AEVT.
 
 ---
 
@@ -149,7 +122,7 @@ The AVE, AEV, AE, and AV indices sort by attribute first. Partition encoding has
 
 _This section covers a future phase. The details of partition creation and assignment are TBD._
 
-The 20-bit partition field supports up to 1,048,575 partitions beyond the three built-in ones. A future version will allow users to create named partitions and assign entities to them. This enables domain-specific locality — for example, grouping all entities related to a particular tenant or dataset so they cluster together in the E-leading indices.
+The 20-bit partition field supports up to 1,048,575 partitions beyond the three built-in ones. In the the future we will allow users to create named partitions and assign entities to them. This enables domain-specific locality. It allows for grouping all entities related to a particular tenant or dataset so they cluster together in the E-leading indices.
 
 Topics to be addressed:
 
