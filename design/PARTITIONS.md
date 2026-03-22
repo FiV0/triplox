@@ -110,6 +110,13 @@ The commit path is:
 1. Allocate counter values for all new entities in the transaction.
 2. Write index entries to the storage layer and update the root to reflect the new `next_t`
 
+
+### Alternatives
+
+One could also not store any counter as a metadata record, but rather have a counter per partition that gets updated in memory.
+On initialization one simply reads the highest entity id per partition and extracts the counter part.
+This should be a simple reverse scan of every partition.
+
 ---
 
 ## 4. Index Locality
