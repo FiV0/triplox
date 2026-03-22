@@ -113,9 +113,9 @@ The commit path is:
 
 ### Alternatives
 
-One could also not store any counter as a metadata record, but rather have a counter per partition that gets updated in memory.
-On initialization one simply reads the highest entity id per partition and extracts the counter part.
-This should be a simple reverse scan of every partition.
+Another option is to have a counter per partition and just have these counters in memory. On initialization one
+reads the highest entity id of every partition and extracts the counter part. A simple reverse scan of the EAV index
+plus the partition bytes should be sufficient. Maybe 40 bits per partition makes more sense here.
 
 ---
 
