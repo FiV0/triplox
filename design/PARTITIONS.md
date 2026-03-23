@@ -41,8 +41,9 @@ Because partition 0 places no bits above the counter, entities in `:db.part/db` 
 
 ### 1.1 Tempids
 
-A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices. Although Triplox should support negative tempids in transactions at some point, we should
-push people to use string identifiers, as this seems to be the common convention.
+A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices.
+
+**Design note:** The primary tempid mechanism will be string identifiers (e.g. `"my-new-entity"`), following the common convention in Datomic-style systems. Negative integer tempids may be supported as an alternative in a later phase.
 
 ---
 
