@@ -125,12 +125,17 @@ impl Node<FileLog> {
             records.last().map(|r| r.tx_key)
         };
 
+        // Create a waiter for catch-up completion
+        let waiter = match last_tx_key {
+            Some(_) => Some(indexer.read().await.tx_waiter()),
+            None => None,
+        };
+
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
         // Wait for catch-up to complete if there are existing transactions
-        if let Some(tx_key) = last_tx_key {
-            let wait = indexer.read().await.await_tx(tx_key);
-            wait.await.unwrap();
+        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+            waiter.await_tx(tx_key).await.unwrap();
         }
 
         Node { log, indexer, slatedb, subscription }
@@ -153,10 +158,11 @@ impl<L: TxLog> SubmitNode for Node<L> {
     async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error> {
         let serialized = bincode::serialize(&ops)?;
 
+        let waiter = self.indexer.read().await.tx_waiter();
+
         let tx_key = self.log.write().await.append_tx(serialized).await;
 
-        let wait_future = self.indexer.read().await.await_tx(tx_key);
-        match wait_future.await {
+        match waiter.await_tx(tx_key).await {
             Ok(()) => Ok(TransactionResult::TxCommited(tx_key)),
             Err(e) => Ok(TransactionResult::TxAborted(tx_key, e.into())),
         }
@@ -308,6 +314,8 @@ mod tests {
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
 
+        let waiter = node.indexer.read().await.tx_waiter();
+
         // submit_tx returns immediately with a TxKey
         // bootstrap goes directly through transact_tx (not log), so:
         // tx_id=0 is test schema, tx_id=1 is first data tx
@@ -315,8 +323,7 @@ mod tests {
         assert_eq!(tx_key.tx_id, 1);
 
         // Wait for indexer to process the transaction
-        let wait_future = node.indexer.read().await.await_tx(tx_key);
-        wait_future.await.expect("Transaction should be indexed");
+        waiter.await_tx(tx_key).await.expect("Transaction should be indexed");
 
         // Verify indices are updated
         let slate = node.slatedb.clone();

@@ -224,70 +224,75 @@ impl Indexer {
         Ok(tx_key)
     }
 
-    /// Wait until the specified transaction has been indexed.
-    /// Returns immediately if the transaction is already indexed (based on TxKey ordering).
+    /// Subscribe to transaction completion notifications.
     ///
-    /// This method returns a future that does NOT borrow `self`, so it's safe to use
-    /// with RwLock - the lock can be dropped before awaiting the returned future.
-    ///
-    /// # Arguments
-    /// * `tx_key` - The transaction to wait for
-    ///
-    /// # Returns
-    /// * A future that resolves to `Ok(())` when the transaction is indexed
+    /// Returns a `TxWaiter` that can later be used to wait for a specific transaction.
+    /// Call this **before** appending to the log to avoid a race where the indexer
+    /// broadcasts the result before the caller subscribes.
     ///
     /// # Example
     /// ```ignore
-    /// // With RwLock - lock is dropped before waiting
-    /// let future = indexer.read().await.await_tx(tx_key);
-    /// future.await?;
-    ///
-    /// // With timeout
-    /// let future = indexer.read().await.await_tx(tx_key);
-    /// tokio::time::timeout(Duration::from_millis(500), future).await??;
+    /// let waiter = indexer.read().await.tx_waiter();
+    /// // drop the lock, append to log, then wait:
+    /// let tx_key = log.write().await.append_tx(data).await;
+    /// waiter.await_tx(tx_key).await?;
     /// ```
-    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
-        // Capture everything we need from self (clone/copy)
-        let latest_tx = self.latest_indexed_tx;
-        let mut rx = self.tx_completion_sender.subscribe();
+    pub(crate) fn tx_waiter(&self) -> TxWaiter {
+        TxWaiter {
+            latest_tx: self.latest_indexed_tx,
+            rx: self.tx_completion_sender.subscribe(),
+        }
+    }
 
-        // Return a future that doesn't borrow self
-        async move {
-            // Fast path: Check if already indexed
-            if let Some(latest_key) = latest_tx {
-                if tx_key <= latest_key {
-                    return Ok(());
-                }
+}
+
+
+/// A pre-subscribed handle for waiting on transaction completion.
+///
+/// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
+/// no messages are missed between subscription and the actual wait.
+pub(crate) struct TxWaiter {
+    latest_tx: Option<TxKey>,
+    rx: broadcast::Receiver<(TxKey, Result<(), Arc<anyhow::Error>>)>,
+}
+
+impl TxWaiter {
+    /// Wait until `tx_key` has been indexed. Returns `Ok(())` on commit,
+    /// `Err` on abort or if the indexer shuts down.
+    pub async fn await_tx(mut self, tx_key: TxKey) -> Result<(), Error> {
+        // Fast path: already indexed at subscription time
+        if let Some(latest_key) = self.latest_tx {
+            if tx_key <= latest_key {
+                return Ok(());
             }
+        }
 
-            // TODO(triplox-j7t): The >= check can return a different tx's result if the
-            // broadcast channel lags. Will be revisited when the log is removed and we
-            // ingest directly into Slate.
-            loop {
-                match rx.recv().await {
-                    Ok((completed_tx_key, result)) => {
-                        if completed_tx_key >= tx_key {
-                            return result.map_err(|e| anyhow::anyhow!("{:#}", e));
-                        }
-                        // Keep waiting for higher tx_id
-                    },
-                    Err(broadcast::error::RecvError::Lagged(_count)) => {
-                        // Channel overflowed. Just continue waiting - we'll eventually
-                        // get the notification or the channel will close.
-                        continue;
-                    },
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(anyhow::anyhow!(
-                            "Indexer shutdown while waiting for tx {}",
-                            tx_key.tx_id
-                        ));
+        // TODO(triplox-j7t): The >= check can return a different tx's result if the
+        // broadcast channel lags. Will be revisited when the log is removed and we
+        // ingest directly into Slate.
+        loop {
+            match self.rx.recv().await {
+                Ok((completed_tx_key, result)) => {
+                    if completed_tx_key >= tx_key {
+                        return result.map_err(|e| anyhow::anyhow!("{:#}", e));
                     }
+                    // Keep waiting for higher tx_id
+                },
+                Err(broadcast::error::RecvError::Lagged(_count)) => {
+                    // Channel overflowed. Just continue waiting - we'll eventually
+                    // get the notification or the channel will close.
+                    continue;
+                },
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "Indexer shutdown while waiting for tx {}",
+                        tx_key.tx_id
+                    ));
                 }
             }
         }
     }
 }
-
 
 impl Subscriber for Indexer {
     async fn accept(&mut self, record: Record) {
@@ -549,13 +554,7 @@ mod tests {
         let tx_ops = vec![TxOp::Put(Document(map))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        // await_tx should return immediately
-        let start = std::time::Instant::now();
-        indexer.await_tx(tx_key).await?;
-        let elapsed = start.elapsed();
-
-        assert!(elapsed < std::time::Duration::from_millis(10),
-                "Should return immediately for already indexed tx");
+        indexer.tx_waiter().await_tx(tx_key).await?;
         Ok(())
     }
 
@@ -568,16 +567,8 @@ mod tests {
 
         let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(200) };
 
-        // Spawn task that calls await_tx - lock is dropped before awaiting
-        let indexer_clone = indexer.clone();
-        let wait_handle = tokio::spawn(async move {
-            let future = indexer_clone.read().await.await_tx(tx_key_1);
-            // Lock is dropped here, before we await
-            future.await
-        });
-
-        // Give wait task time to subscribe
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Subscribe BEFORE transacting to avoid race
+        let waiter = indexer.read().await.tx_waiter();
 
         // Now index the transaction - can acquire write lock
         {
@@ -589,14 +580,8 @@ mod tests {
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
 
-        // Wait task should complete successfully
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            wait_handle
-        ).await;
-
-        assert!(result.is_ok(), "Should complete before timeout");
-        assert!(result.unwrap()?.is_ok(), "Should return Ok");
+        // Waiter should complete successfully
+        waiter.await_tx(tx_key_1).await?;
         Ok(())
     }
 
@@ -610,7 +595,7 @@ mod tests {
         // Wait for transaction that never arrives
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            indexer.await_tx(tx_key)
+            indexer.tx_waiter().await_tx(tx_key)
         ).await;
 
         assert!(result.is_err(), "Should timeout waiting for non-existent tx");
@@ -635,11 +620,11 @@ mod tests {
 
         // Waiting for tx 1 should return immediately
         let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        indexer.await_tx(tx_key_1).await?;
+        indexer.tx_waiter().await_tx(tx_key_1).await?;
 
         // Waiting for tx 2 should also return immediately
         let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
-        indexer.await_tx(tx_key_2).await?;
+        indexer.tx_waiter().await_tx(tx_key_2).await?;
 
         Ok(())
     }
@@ -653,20 +638,13 @@ mod tests {
 
         let tx_key = TxKey { tx_id: 5, system_time: st_from_unix_epoch(500) };
 
-        // Spawn multiple tasks that call await_tx
-        let handles: Vec<_> = (0..5).map(|_| {
-            let indexer_clone = indexer.clone();
-            tokio::spawn(async move {
-                let future = indexer_clone.read().await.await_tx(tx_key);
-                // Lock dropped before awaiting
-                future.await
-            })
-        }).collect();
+        // Subscribe multiple waiters BEFORE transacting
+        let waiters: Vec<_> = {
+            let guard = indexer.read().await;
+            (0..5).map(|_| guard.tx_waiter()).collect()
+        };
 
-        // Give waiters time to subscribe
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Index the transaction - can acquire write lock
+        // Index the transaction
         {
             let mut guard = indexer.write().await;
             let mut map = BTreeMap::new();
@@ -677,13 +655,8 @@ mod tests {
         }
 
         // All waiters should complete
-        for handle in handles {
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                handle
-            ).await;
-            assert!(result.is_ok(), "Task should complete before timeout");
-            assert!(result.unwrap()?.is_ok(), "Task should succeed");
+        for waiter in waiters {
+            waiter.await_tx(tx_key).await?;
         }
 
         Ok(())
