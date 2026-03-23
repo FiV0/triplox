@@ -100,7 +100,7 @@ The bootstrap transaction installs two enum entities representing transaction ou
 
 ### 2.2 Enums and References
 
-Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future we intend to support first-class enum entities and ref-typed attributes, at which point these attributes would become `ref`-typed and their values would be entity IDs rather than keywords. The enum entities (IDs 10–23, 30–31, 40–41) are already installed with `db/ident` in anticipation of this transition.
+Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future we intend to support first-class enum entities and ref-typed attributes, at which point these attributes would become `ref`-typed and their values would be entity IDs rather than keywords.
 
 ---
 
