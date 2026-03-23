@@ -148,13 +148,14 @@ impl Indexer {
             let attr_schema = self.schema_cache
                 .get(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-            let attribute_id = attr_schema.entity_id;
 
             // Cardinality-many attributes accumulate values without retraction.
             if attr_schema.cardinality == crate::schema::Cardinality::Many {
                 resolved_datoms.insert(datom);
                 continue;
             }
+
+            let attribute_id = attr_schema.entity_id;
             let entity_id_bytes = bincode::serialize(&DataType::Long(datom.entity))?;
             let attr_id_bytes = bincode::serialize(&attribute_id)?;
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
