@@ -21,7 +21,7 @@ fn datatype_to_f64(dt: &DataType) -> Result<f64> {
 // eager f64 conversion — e.g. avg over integers should accumulate as (i64 sum, i64 count).
 
 /// Trait for aggregate accumulators.
-pub trait Accumulator {
+pub(crate) trait Accumulator {
     fn accumulate(&mut self, value: &DataType) -> Result<()>;
     fn finalize(&self) -> Result<DataType>;
 }
@@ -203,7 +203,7 @@ impl Accumulator for MaxAccumulator {
     }
 }
 
-pub fn make_accumulator(func: &AggregateFunc) -> Box<dyn Accumulator> {
+pub(crate) fn make_accumulator(func: &AggregateFunc) -> Box<dyn Accumulator> {
     match func {
         AggregateFunc::Count => Box::new(CountAccumulator { count: 0 }),
         AggregateFunc::CountDistinct => Box::new(CountDistinctAccumulator {
