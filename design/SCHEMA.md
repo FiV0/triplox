@@ -70,8 +70,12 @@ A fresh database is initialized with a bootstrap transaction (tx_id=0) that inst
 | 1         | `db/ident`         | keyword    | one         |
 | 2         | `db/valueType`     | keyword    | one         |
 | 3         | `db/cardinality`   | long       | one         |
+| 32        | `db.tx/instant`    | instant    | one         |
+| 33        | `db.tx/result`     | keyword    | one         |
+| 34        | `db.tx/id`         | long       | one         |
+| 35        | `db.tx/error`      | string     | one         |
 
-These three attributes are self-referential: they describe themselves. They are the minimal set needed to define any further schema attributes.
+The first three attributes are self-referential: they describe themselves. They are the minimal set needed to define any further schema attributes. Attributes 32–35 are used on transaction entities (see `PARTITIONS.md`).
 
 The bootstrap transaction also installs enum entities for value types (IDs 10–23) and cardinalities (IDs 30–31). These are regular entities with `db/ident` but no `db/valueType` — they are **not** schema attributes.
 
@@ -79,19 +83,24 @@ Reserved entity ID ranges:
 
 | Range | Purpose                      |
 |-------|------------------------------|
-| 1–3   | Bootstrap schema attributes  |
+| 1–3   | Core schema attributes (db/) |
+| 32–35 | Transaction schema attributes (db.tx/) |
 | 10–23 | Value type enum entities     |
 | 30–31 | Cardinality enum entities    |
 | 40–41 | Transaction result enum entities |
 
 ### 2.1 Transaction Result Enums
 
-The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db/txResult` attribute on transaction entities (see `PARTITIONS.md`):
+The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db.tx/result` attribute on transaction entities (see `PARTITIONS.md`):
 
 | Entity ID | Ident               |
 |-----------|---------------------|
 | 40        | `:db.tx/committed`  |
 | 41        | `:db.tx/aborted`    |
+
+### 2.2 Enums and References
+
+Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future we intend to support first-class enum entities and ref-typed attributes, at which point these attributes would become `ref`-typed and their values would be entity IDs rather than keywords. The enum entities (IDs 10–23, 30–31, 40–41) are already installed with `db/ident` in anticipation of this transition.
 
 ---
 
@@ -108,7 +117,7 @@ The bootstrap transaction installs two enum entities representing transaction ou
 
 1. **Fresh database**: `SchemaCache` is populated by processing the bootstrap transaction through `process_tx()`.
 2. **Existing database**: `SchemaCache` is rebuilt from stored data by running a query against the indices.
-3. **During operation**: Each transaction may define new schema attributes. After the triples have been written to the indices. The `SchemaCache` updates if the new data contains schema attributes.
+3. **During operation**: Each transaction may define new schema attributes. After the triples have been written to the indices, the `SchemaCache` updates if the new data contains schema attributes.
 
 ### 3.2 Validation Flow
 
