@@ -244,15 +244,6 @@ impl Indexer {
         }
     }
 
-    /// Wait until the specified transaction has been indexed.
-    ///
-    /// Convenience method that subscribes and waits in one call. Only safe when
-    /// the caller does not need to perform work between subscribing and waiting
-    /// (e.g. the transaction is already submitted). For cases where you need to
-    /// subscribe before triggering the transaction, use `tx_waiter()` + `TxWaiter::await_tx()`.
-    pub(crate) fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
-        self.tx_waiter().await_tx(tx_key)
-    }
 }
 
 
@@ -563,7 +554,7 @@ mod tests {
         let tx_ops = vec![TxOp::Put(Document(map))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        indexer.await_tx(tx_key).await?;
+        indexer.tx_waiter().await_tx(tx_key).await?;
         Ok(())
     }
 
@@ -604,7 +595,7 @@ mod tests {
         // Wait for transaction that never arrives
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            indexer.await_tx(tx_key)
+            indexer.tx_waiter().await_tx(tx_key)
         ).await;
 
         assert!(result.is_err(), "Should timeout waiting for non-existent tx");
@@ -629,11 +620,11 @@ mod tests {
 
         // Waiting for tx 1 should return immediately
         let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        indexer.await_tx(tx_key_1).await?;
+        indexer.tx_waiter().await_tx(tx_key_1).await?;
 
         // Waiting for tx 2 should also return immediately
         let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
-        indexer.await_tx(tx_key_2).await?;
+        indexer.tx_waiter().await_tx(tx_key_2).await?;
 
         Ok(())
     }
