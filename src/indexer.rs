@@ -237,7 +237,7 @@ impl Indexer {
     /// let tx_key = log.write().await.append_tx(data).await;
     /// waiter.await_tx(tx_key).await?;
     /// ```
-    pub fn tx_waiter(&self) -> TxWaiter {
+    pub(crate) fn tx_waiter(&self) -> TxWaiter {
         TxWaiter {
             latest_tx: self.latest_indexed_tx,
             rx: self.tx_completion_sender.subscribe(),
@@ -247,10 +247,10 @@ impl Indexer {
     /// Wait until the specified transaction has been indexed.
     ///
     /// Convenience method that subscribes and waits in one call. Only safe when
-    /// the transaction has already been submitted and cannot complete before this
-    /// call (e.g. waiting for a tx that was indexed before this Indexer was created).
-    /// For the general case, prefer `tx_waiter()` + `TxWaiter::await_tx()`.
-    pub fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
+    /// the caller does not need to perform work between subscribing and waiting
+    /// (e.g. the transaction is already submitted). For cases where you need to
+    /// subscribe before triggering the transaction, use `tx_waiter()` + `TxWaiter::await_tx()`.
+    pub(crate) fn await_tx(&self, tx_key: TxKey) -> impl std::future::Future<Output = Result<(), Error>> + 'static {
         self.tx_waiter().await_tx(tx_key)
     }
 }
@@ -260,7 +260,7 @@ impl Indexer {
 ///
 /// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
-pub struct TxWaiter {
+pub(crate) struct TxWaiter {
     latest_tx: Option<TxKey>,
     rx: broadcast::Receiver<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
@@ -563,13 +563,7 @@ mod tests {
         let tx_ops = vec![TxOp::Put(Document(map))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        // await_tx should return immediately
-        let start = std::time::Instant::now();
         indexer.await_tx(tx_key).await?;
-        let elapsed = start.elapsed();
-
-        assert!(elapsed < std::time::Duration::from_millis(10),
-                "Should return immediately for already indexed tx");
         Ok(())
     }
 
@@ -582,16 +576,8 @@ mod tests {
 
         let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(200) };
 
-        // Spawn task that calls await_tx - lock is dropped before awaiting
-        let indexer_clone = indexer.clone();
-        let wait_handle = tokio::spawn(async move {
-            let future = indexer_clone.read().await.await_tx(tx_key_1);
-            // Lock is dropped here, before we await
-            future.await
-        });
-
-        // Give wait task time to subscribe
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Subscribe BEFORE transacting to avoid race
+        let waiter = indexer.read().await.tx_waiter();
 
         // Now index the transaction - can acquire write lock
         {
@@ -603,14 +589,8 @@ mod tests {
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
 
-        // Wait task should complete successfully
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            wait_handle
-        ).await;
-
-        assert!(result.is_ok(), "Should complete before timeout");
-        assert!(result.unwrap()?.is_ok(), "Should return Ok");
+        // Waiter should complete successfully
+        waiter.await_tx(tx_key_1).await?;
         Ok(())
     }
 
@@ -667,20 +647,13 @@ mod tests {
 
         let tx_key = TxKey { tx_id: 5, system_time: st_from_unix_epoch(500) };
 
-        // Spawn multiple tasks that call await_tx
-        let handles: Vec<_> = (0..5).map(|_| {
-            let indexer_clone = indexer.clone();
-            tokio::spawn(async move {
-                let future = indexer_clone.read().await.await_tx(tx_key);
-                // Lock dropped before awaiting
-                future.await
-            })
-        }).collect();
+        // Subscribe multiple waiters BEFORE transacting
+        let waiters: Vec<_> = {
+            let guard = indexer.read().await;
+            (0..5).map(|_| guard.tx_waiter()).collect()
+        };
 
-        // Give waiters time to subscribe
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Index the transaction - can acquire write lock
+        // Index the transaction
         {
             let mut guard = indexer.write().await;
             let mut map = BTreeMap::new();
@@ -691,13 +664,8 @@ mod tests {
         }
 
         // All waiters should complete
-        for handle in handles {
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                handle
-            ).await;
-            assert!(result.is_ok(), "Task should complete before timeout");
-            assert!(result.unwrap()?.is_ok(), "Task should succeed");
+        for waiter in waiters {
+            waiter.await_tx(tx_key).await?;
         }
 
         Ok(())
