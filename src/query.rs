@@ -380,7 +380,7 @@ pub fn compile_pattern(
 }
 
 /// How to produce one column of the output row.
-pub enum Projection {
+pub(crate) enum Projection {
     /// A non-aggregate variable: take from group key at `group_indices[idx]`.
     GroupVar(usize),
     /// An aggregate: func + join-order index of the aggregate variable.
@@ -388,7 +388,7 @@ pub enum Projection {
 }
 
 /// Compiled find plan that describes how to project + aggregate results.
-pub struct FindPlan {
+pub(crate) struct FindPlan {
     /// Join-order indices of the non-aggregate find variables (group-by keys).
     pub group_indices: Vec<usize>,
     /// One projection per find element.
@@ -398,7 +398,7 @@ pub struct FindPlan {
 }
 
 /// Compile a find spec into a FindPlan.
-pub fn compile_find_plan(
+fn compile_find_plan(
     find: &FindSpec,
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<FindPlan, Error> {
@@ -441,7 +441,7 @@ pub fn compile_find_plan(
 }
 
 /// Execute aggregation over join results according to the find plan.
-pub fn execute_aggregation(
+fn execute_aggregation(
     results: Vec<ResultTuple>,
     plan: &FindPlan,
 ) -> Result<QueryResult, Error> {
@@ -511,7 +511,7 @@ pub fn execute_aggregation(
             }
         };
 
-        // Feed values to accumulators
+        // TODO: skip deserialization for Count (value is ignored)
         let mut agg_idx = 0;
         for proj in &plan.projections {
             if let Projection::Aggregate(_, join_idx) = proj {

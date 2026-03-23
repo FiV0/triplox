@@ -535,6 +535,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_aggregate_find() {
+        let q = parse_both(
+            "[:find ?dept (count ?e) (avg ?salary) :where [?e :dept ?dept] [?e :salary ?salary]]",
+            "{:find [?dept (count ?e) (avg ?salary)] :where [[?e :dept ?dept] [?e :salary ?salary]]}",
+        );
+        assert_eq!(
+            q.find,
+            FindSpec::FindRel(vec![
+                FindElement::Variable("?dept".into()),
+                FindElement::Aggregate(AggregateFunc::Count, "?e".into()),
+                FindElement::Aggregate(AggregateFunc::Avg, "?salary".into()),
+            ])
+        );
+        assert_eq!(q.where_clauses.len(), 2);
+    }
+
+    #[test]
+    fn parse_unknown_aggregate_errors() {
+        let result = parse_query("[:find (foobar ?x) :where [?x :a _]]");
+        assert!(result.unwrap_err().to_string().contains("unknown aggregate function"));
+    }
+
+    #[test]
     fn parse_negative_integer_in_value() {
         let q = parse_both(
             "[:find ?x :where [?x :foo/bar -5]]",

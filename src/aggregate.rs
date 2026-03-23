@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use crate::datalog::AggregateFunc;
 use crate::ops::DataType;
 
+// TODO: loses precision for i64 values > 2^53
 /// Convert a DataType to an f64 for numeric aggregation.
 fn datatype_to_f64(dt: &DataType) -> Result<f64> {
     match dt {
