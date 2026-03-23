@@ -1136,7 +1136,7 @@ mod tests {
         sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Long(30));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
 
         let people = vec![
@@ -1190,7 +1190,7 @@ mod tests {
         sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Long(30));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
 
         let people = vec![
@@ -1240,7 +1240,7 @@ mod tests {
         attr.insert("db/id".to_string(), DataType::Long(55));
         attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
         attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
-        attr.insert("db/cardinality".to_string(), DataType::Long(30));
+        attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(Document(attr))]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names

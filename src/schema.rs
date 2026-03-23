@@ -136,6 +136,17 @@ impl Cardinality {
             _ => Err(anyhow::anyhow!("Unknown cardinality entity ID: {}", id)),
         }
     }
+
+    /// Map a cardinality keyword (e.g. :db.cardinality/one) to a Cardinality.
+    pub fn from_keyword(kw: &Keyword) -> Result<Self> {
+        let s = kw.to_string();
+        let s = s.strip_prefix(':').unwrap_or(&s);
+        match s {
+            "db.cardinality/one" => Ok(Cardinality::One),
+            "db.cardinality/many" => Ok(Cardinality::Many),
+            _ => Err(anyhow::anyhow!("Unknown cardinality keyword: {}", kw)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -209,8 +220,8 @@ impl SchemaCache {
                 None => continue, // enum entity
             };
             let cardinality = match f.get("db/cardinality") {
-                Some(DataType::Long(id)) => Cardinality::from_entity_id(*id)?,
-                Some(_) => return Err(anyhow::anyhow!("db/cardinality must be a Long")),
+                Some(DataType::Keyword(kw)) => Cardinality::from_keyword(kw)?,
+                Some(_) => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
                 None => return Err(anyhow::anyhow!(
                     "db/cardinality is required for schema attribute '{}'", ident
                 )),
@@ -264,7 +275,7 @@ impl SchemaCache {
 
 // --- Bootstrap transaction builders ---
 
-fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, cardinality: i64) -> TxOp {
+fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert("db/ident".to_string(), DataType::Keyword(ident));
@@ -272,12 +283,15 @@ fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, 
         "db/valueType".to_string(),
         DataType::Keyword(Keyword::namespaced("db.type", value_type)),
     );
-    doc.insert("db/cardinality".to_string(), DataType::Long(cardinality));
+    doc.insert(
+        "db/cardinality".to_string(),
+        DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
+    );
     TxOp::Put(Document(doc))
 }
 
 fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
-    schema_attribute_with_cardinality(id, ident, value_type, DB_CARDINALITY_ONE)
+    schema_attribute_with_cardinality(id, ident, value_type, "one")
 }
 
 /// Build a Put operation for an enum entity (value type or cardinality).
@@ -297,9 +311,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         // Schema attribute entities (IDs 1-3)
         schema_attribute(DB_IDENT, Keyword::namespaced("db", "ident"), "keyword"),
         schema_attribute(DB_VALUE_TYPE, Keyword::namespaced("db", "valueType"), "keyword"),
-        // TODO: db/cardinality still uses Long (entity ref) values. Consider switching to
-        // keywords (like db/valueType) for consistency.
-        schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "long"),
+        schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "keyword"),
         // Value type enum entities (IDs 10-23)
         enum_entity(DB_TYPE_KEYWORD, "db.type", "keyword"),
         enum_entity(DB_TYPE_STRING, "db.type", "string"),
@@ -400,9 +412,9 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
             other => panic!("Expected Keyword for valueType, got {:?}", other),
         };
         let cardinality = match &row[3] {
-            DataType::Long(id) => Cardinality::from_entity_id(*id)
+            DataType::Keyword(kw) => Cardinality::from_keyword(kw)
                 .unwrap_or_else(|e| panic!("Invalid cardinality: {}", e)),
-            other => panic!("Expected Long for cardinality, got {:?}", other),
+            other => panic!("Expected Keyword for cardinality, got {:?}", other),
         };
 
         cache.insert(SchemaAttribute {
@@ -426,7 +438,7 @@ pub fn test_schema_tx() -> Vec<TxOp> {
         schema_attribute(52, Keyword::plain("email"), "string"),
         // TODO: update this to ref once we support DataType::Ref
         schema_attribute(53, Keyword::plain("follows"), "long"),
-        schema_attribute_with_cardinality(54, Keyword::plain("tags"), "string", DB_CARDINALITY_MANY),
+        schema_attribute_with_cardinality(54, Keyword::plain("tags"), "string", "many"),
     ]
 }
 
@@ -498,7 +510,7 @@ mod tests {
 
         let db_card = cache.get("db/cardinality").unwrap();
         assert_eq!(db_card.entity_id, DB_CARDINALITY);
-        assert_eq!(db_card.value_type, ValueType::Long);
+        assert_eq!(db_card.value_type, ValueType::Keyword);
     }
 
     #[test]
@@ -564,7 +576,7 @@ mod tests {
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
-        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
+        doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
@@ -579,7 +591,7 @@ mod tests {
     #[test]
     fn test_validate_schema_attrs_parses_cardinality_many() {
         let ops = [schema_attribute_with_cardinality(
-            100, Keyword::plain("tags"), "string", DB_CARDINALITY_MANY,
+            100, Keyword::plain("tags"), "string", "many",
         )];
         let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
         assert_eq!(attrs.len(), 1);

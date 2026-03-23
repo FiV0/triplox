@@ -10,12 +10,12 @@
 (def ^:dynamic *conn* nil)
 
 (def people-schema
-  [{:db/id 200 :db/ident :name :db/valueType :db.type/string :db/cardinality 30}
-   {:db/id 201 :db/ident :last-name :db/valueType :db.type/string :db/cardinality 30}
-   {:db/id 202 :db/ident :sex :db/valueType :db.type/keyword :db/cardinality 30}
-   {:db/id 203 :db/ident :age :db/valueType :db.type/long :db/cardinality 30}
-   {:db/id 204 :db/ident :salary :db/valueType :db.type/long :db/cardinality 30}
-   {:db/id 205 :db/ident :city :db/valueType :db.type/string :db/cardinality 30}])
+  [{:db/id 200 :db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/id 201 :db/ident :last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/id 202 :db/ident :sex :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/id 203 :db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/id 204 :db/ident :salary :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/id 205 :db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
 
 (defn connect []
   (let [host (System/getProperty "triplox.host" "localhost")
