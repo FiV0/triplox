@@ -11,7 +11,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
-use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
+use crate::ops::{Datom, DatomOp, Document, TxOp, assign_entity_ids, tx_ops_to_datoms};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
@@ -24,6 +24,7 @@ use crate::clock::Instant;
 pub struct Indexer {
     slatedb: Arc<Db>,
     schema_cache: SchemaCache,
+    next_t: i64,
     latest_indexed_tx: Option<TxKey>,
     tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
@@ -111,11 +112,12 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache) -> Self {
+    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache, next_t: i64) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
             schema_cache,
+            next_t,
             latest_indexed_tx: None,
             tx_completion_sender,
         }
@@ -131,7 +133,8 @@ impl Indexer {
     /// Uses a SlateDB transaction for atomic read-then-write: the EAV index scan
     /// and all index writes happen in a single transaction.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let datoms = tx_ops_to_datoms(&tx_ops, tx_key.system_time)?;
+        let resolved_ops = assign_entity_ids(&tx_ops, &mut self.next_t)?;
+        let datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
@@ -216,6 +219,10 @@ impl Indexer {
         // Persist tx_id -> system_time mapping
         let meta = TxMeta { system_time: tx_key.system_time };
         txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
+
+        // Persist updated entity counter
+        let next_t_key = concat_bytes(&[&[codec::META_INDEX], crate::bootstrap::META_KEY_NEXT_T]);
+        txn.put(&next_t_key, &self.next_t.to_le_bytes())?;
 
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
@@ -405,8 +412,8 @@ mod tests {
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
-        let cache = crate::bootstrap::init_db(slate.clone()).await;
-        let mut indexer = Indexer::new(slate, cache);
+        let (cache, next_t) = crate::bootstrap::init_db(slate.clone()).await;
+        let mut indexer = Indexer::new(slate, cache, next_t);
         let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
         indexer.transact_tx(tx_key_0, test_schema_tx()).await.unwrap();
         indexer
@@ -416,33 +423,44 @@ mod tests {
     async fn test_indexer() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
-        // name has entity_id 50 from test_schema_tx
-        let name_id: i64 = 50;
+        // The entity was auto-assigned an ID in USER_PARTITION
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
 
-        // Find the EAV entry for entity 100 (skip bootstrap entries)
+        // Find the EAV entry for the user entity (skip bootstrap/schema entries)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await? {
             let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                assert_eq!(value, DataType::String("alan".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                found = true;
-                break;
+            if let DataType::Long(eid) = &entity_id {
+                if *eid >= user_base {
+                    assert_eq!(attribute, name_id);
+                    assert_eq!(value, DataType::String("alan".to_string()));
+                    assert_eq!(suffix, codec::ADD);
+                    found = true;
+                    break;
+                }
             }
         }
-        assert!(found, "Expected EAV entry for entity 100");
+        assert!(found, "Expected EAV entry for user entity");
 
         Ok(())
+    }
+
+    /// Helper: create a user data document without db/id (auto-assigned to USER_PARTITION).
+    fn user_doc(attrs: Vec<(&str, DataType)>) -> Document {
+        let mut map = BTreeMap::new();
+        for (k, v) in attrs {
+            map.insert(k.to_string(), v);
+        }
+        Document(map)
     }
 
     #[tokio::test]
@@ -451,21 +469,17 @@ mod tests {
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alan".to_string()));
-        let doc = Document(map);
-        let tx_ops = vec![TxOp::Put(doc)];
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alan".into()))]))];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
-        // Verify EAV entry for entity 100 exists
+        // Verify an EAV entry in USER_PARTITION exists
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await? {
             let (entity_id, _, _, _, _) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                found = true;
-                break;
+            if let DataType::Long(eid) = entity_id {
+                if eid >= user_base { found = true; break; }
             }
         }
         assert!(found, "Expected EAV entry to be written to the database");
@@ -479,24 +493,23 @@ mod tests {
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alan".to_string()));
-        map.insert("age".to_string(), DataType::Long(30));
-        let doc = Document(map);
-        let tx_ops = vec![TxOp::Put(doc)];
+        let tx_ops = vec![TxOp::Put(user_doc(vec![
+            ("name", DataType::String("alan".into())),
+            ("age", DataType::Long(30)),
+        ]))];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
-        // Count EAV entries for entity 100 (should be 2: name + age)
+        // Count EAV entries in USER_PARTITION (should be 2: name + age)
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut eav_count = 0;
         while let Some(kv) = iter.next().await? {
             let (entity_id, _, _, _, _) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                eav_count += 1;
+            if let DataType::Long(eid) = entity_id {
+                if eid >= user_base { eav_count += 1; }
             }
         }
-        assert_eq!(eav_count, 2, "Expected 2 EAV entries for entity 100");
+        assert_eq!(eav_count, 2, "Expected 2 EAV entries for user entity");
 
         Ok(())
     }
@@ -507,10 +520,7 @@ mod tests {
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let tx_ops = vec![TxOp::Put(Document(map))];
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -534,14 +544,12 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // tx_id -1=bootstrap, 0=test schema, so data starts at 1
         for i in 0..3 {
             let tx_id = i + 1;
             let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
-            let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(100 + i));
-            map.insert("name".to_string(), DataType::String(format!("user{}", i)));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(user_doc(vec![
+                ("name", DataType::String(format!("user{}", i))),
+            ]))];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -557,12 +565,8 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // Index a data transaction
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let tx_ops = vec![TxOp::Put(Document(map))];
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         indexer.tx_waiter().await_tx(tx_key).await?;
@@ -581,13 +585,9 @@ mod tests {
         // Subscribe BEFORE transacting to avoid race
         let waiter = indexer.read().await.tx_waiter();
 
-        // Now index the transaction - can acquire write lock
         {
             let mut guard = indexer.write().await;
-            let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(100));
-            map.insert("name".to_string(), DataType::String("bob".to_string()));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("bob".into()))]))];
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
 
@@ -599,11 +599,10 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_timeout() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Indexer::new(slate.clone(), SchemaCache::new());
+        let indexer = Indexer::new(slate.clone(), SchemaCache::new(), 0);
 
         let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(999) };
 
-        // Wait for transaction that never arrives
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
             indexer.tx_waiter().await_tx(tx_key)
@@ -618,22 +617,17 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // Index tx 1 and tx 2 (-1=bootstrap, 0=test schema)
         for i in 0..2 {
             let tx_id = i + 1;
             let tx_key = TxKey { tx_id, system_time: st_from_unix_epoch(tx_id as u64 * 100) };
-            let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(100 + i));
-            map.insert("name".to_string(), DataType::String(format!("user{}", i)));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(user_doc(vec![
+                ("name", DataType::String(format!("user{}", i))),
+            ]))];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        // Waiting for tx 1 should return immediately
         let tx_key_1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         indexer.tx_waiter().await_tx(tx_key_1).await?;
-
-        // Waiting for tx 2 should also return immediately
         let tx_key_2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         indexer.tx_waiter().await_tx(tx_key_2).await?;
 
@@ -658,10 +652,7 @@ mod tests {
         // Index the transaction
         {
             let mut guard = indexer.write().await;
-            let mut map = BTreeMap::new();
-            map.insert("db/id".to_string(), DataType::Long(100));
-            map.insert("name".to_string(), DataType::String("shared".to_string()));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("shared".into()))]))];
             guard.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -677,30 +668,40 @@ mod tests {
     async fn test_retract_on_overwrite() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
 
-        // First tx: assert name="alice" for entity 100
+        // First tx: assert name="alice" for a new entity (auto-assigned)
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
+        indexer.transact_tx(tx1, tx_ops).await?;
+
+        // Find the auto-assigned entity ID
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut entity_id: i64 = 0;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base { entity_id = id; break; }
+            }
+        }
+        assert!(entity_id >= user_base, "Should have found user entity");
 
         // Second tx: assert name="bob" for same entity — should auto-retract "alice"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("db/id".to_string(), DataType::Long(entity_id));
         map.insert("name".to_string(), DataType::String("bob".to_string()));
         indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
 
-        // Scan EAV for entity 100 — expect: alice ADD, alice RETRACT, bob ADD
-        let name_id: i64 = 50;
+        // Scan EAV for entity — expect: alice ADD, alice RETRACT, bob ADD
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut alice_add = false;
         let mut alice_retract = false;
         let mut bob_add = false;
         while let Some(kv) = iter.next().await? {
-            let (entity_id, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(100) || attribute != name_id {
+            let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != name_id {
                 continue;
             }
             match (&value, op) {
@@ -714,9 +715,9 @@ mod tests {
         assert!(alice_retract, "Expected RETRACT for alice");
         assert!(bob_add, "Expected ADD for bob");
 
-        // Verify AE entry exists (stores empty bytes, not the value)
+        // Verify AE entry exists
         let attr_bytes = encode_i64_bytes(name_id);
-        let entity_bytes = DataType::Long(100i64).encode();
+        let entity_bytes = DataType::Long(entity_id).encode();
         let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
         assert!(ae_val.is_empty(), "AE should store empty bytes");
@@ -728,29 +729,38 @@ mod tests {
     async fn test_same_value_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
 
-        // First tx: assert name="alice"
+        // First tx: assert name="alice" for a new entity
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
+        indexer.transact_tx(tx1, tx_ops).await?;
+
+        // Find auto-assigned entity ID
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut entity_id: i64 = 0;
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base { entity_id = id; break; }
+            }
+        }
 
         // Second tx: assert same name="alice" — datom should be dropped entirely
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
+        map.insert("db/id".to_string(), DataType::Long(entity_id));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
 
-        // Count EAV entries for entity 100, name attr — should be 1 ADD, 0 RETRACTs
-        let name_id: i64 = 50;
+        // Count EAV entries for entity, name attr — should be 1 ADD, 0 RETRACTs
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         let mut retract_count = 0;
         while let Some(kv) = iter.next().await? {
-            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(100) || attribute != name_id {
+            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != name_id {
                 continue;
             }
             match op {
@@ -770,10 +780,10 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // First tx: assert tags="rust" for entity 100
+        // First tx: assert tags="rust" for entity 1000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(1000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];
@@ -782,20 +792,20 @@ mod tests {
         // Second tx: assert tags="database" for same entity — should NOT retract "rust"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(1000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("database".to_string()),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
-        // Scan EAV for entity 100, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
-        let tags_id: i64 = 1000;
+        // Scan EAV for entity 1000, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
+        let tags_id = indexer.schema_cache().get("tags").unwrap().entity_id;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         let mut retract_count = 0;
         while let Some(kv) = iter.next().await? {
             let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(100) || attribute != tags_id {
+            if entity_id != DataType::Long(1000) || attribute != tags_id {
                 continue;
             }
             match op {
@@ -818,10 +828,10 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // First tx: assert tags="rust" for entity 100
+        // First tx: assert tags="rust" for entity 1000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(1000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];
@@ -830,19 +840,19 @@ mod tests {
         // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(1000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
-        // Scan EAV for entity 100, tags attr — expect 2 ADDs (both written)
-        let tags_id: i64 = 1000;
+        // Scan EAV for entity 1000, tags attr — expect 2 ADDs (both written)
+        let tags_id = indexer.schema_cache().get("tags").unwrap().entity_id;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         while let Some(kv) = iter.next().await? {
             let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(100) || attribute != tags_id {
+            if entity_id != DataType::Long(1000) || attribute != tags_id {
                 continue;
             }
             if op == codec::ADD {
