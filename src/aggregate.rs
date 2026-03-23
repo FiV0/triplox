@@ -17,6 +17,9 @@ fn datatype_to_f64(dt: &DataType) -> Result<f64> {
     }
 }
 
+// TODO: use schema type info and type promotion rules (like Postgres) instead of
+// eager f64 conversion — e.g. avg over integers should accumulate as (i64 sum, i64 count).
+
 /// Trait for aggregate accumulators.
 pub trait Accumulator {
     fn accumulate(&mut self, value: &DataType) -> Result<()>;
