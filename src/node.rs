@@ -314,7 +314,6 @@ mod tests {
         let doc = Document(map);
         let tx_ops = vec![TxOp::Put(doc)];
 
-        // Subscribe before submitting to avoid race condition
         let waiter = node.indexer.read().await.tx_waiter();
 
         // submit_tx returns immediately with a TxKey
