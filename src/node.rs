@@ -125,8 +125,7 @@ impl Node<FileLog> {
             records.last().map(|r| r.tx_key)
         };
 
-        // Subscribe to completions BEFORE starting the subscriber to avoid
-        // a race where catch-up completes before we start listening.
+        // Create a waiter for catch-up completion
         let waiter = match last_tx_key {
             Some(_) => Some(indexer.read().await.tx_waiter()),
             None => None,
@@ -159,8 +158,6 @@ impl<L: TxLog> SubmitNode for Node<L> {
     async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error> {
         let serialized = bincode::serialize(&ops)?;
 
-        // Subscribe BEFORE appending to the log to avoid a race where the
-        // indexer processes and broadcasts the result before we subscribe.
         let waiter = self.indexer.read().await.tx_waiter();
 
         let tx_key = self.log.write().await.append_tx(serialized).await;
