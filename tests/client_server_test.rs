@@ -551,3 +551,29 @@ async fn test_aggregate_empty_result() {
     client.close().await.unwrap();
     token.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregate_min_incompatible_types() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    // Insert entity with both name (string) and age (long)
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(100));
+    doc.insert("name".to_string(), DataType::String("Alice".to_string()));
+    doc.insert("age".to_string(), DataType::Long(30));
+    client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+
+    let db = client.db().await.unwrap();
+
+    // OR binds ?v to both string and long values → min should error on incomparable types
+    let result = db
+        .query_edn("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
+        .await;
+    assert!(result.is_err(), "min over incompatible types should error");
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}

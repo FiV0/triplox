@@ -380,18 +380,26 @@ pub fn compile_pattern(
 }
 
 /// How to produce one column of the output row.
+///
+/// Two index spaces are in play:
+/// - **join-order index**: position in the raw result tuple from the join
+/// - **group position**: position in `FindPlan::group_key_indices`
+///
+/// `GroupVar` uses a group position (indirect) so that `group_key_indices` can
+/// be iterated directly in the hot loop without filtering. `Aggregate` uses a
+/// join-order index (direct) since aggregates are only read once per row.
 pub(crate) enum Projection {
-    /// A non-aggregate variable: take from group key at `group_indices[idx]`.
+    /// Index into `group_key_indices`, which itself holds a join-order index.
     GroupVar(usize),
-    /// An aggregate: func + join-order index of the aggregate variable.
+    /// Aggregate function + join-order index of the input variable.
     Aggregate(AggregateFunc, usize),
 }
 
 /// Compiled find plan that describes how to project + aggregate results.
 pub(crate) struct FindPlan {
-    /// Join-order indices of the non-aggregate find variables (group-by keys).
-    pub group_indices: Vec<usize>,
-    /// One projection per find element.
+    /// Join-order indices of the group-by variables, iterated directly to build group keys.
+    pub group_key_indices: Vec<usize>,
+    /// One projection per find element, in find-clause order.
     pub projections: Vec<Projection>,
     /// Whether any aggregation is needed.
     pub has_aggregates: bool,
@@ -406,7 +414,7 @@ fn compile_find_plan(
         FindSpec::FindRel(elements) => elements,
     };
 
-    let mut group_indices = Vec::new();
+    let mut group_key_indices = Vec::new();
     let mut projections = Vec::new();
     let mut has_aggregates = false;
 
@@ -416,8 +424,8 @@ fn compile_find_plan(
                 let idx = *var_index
                     .get(var)
                     .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var))?;
-                let group_pos = group_indices.len();
-                group_indices.push(idx);
+                let group_pos = group_key_indices.len();
+                group_key_indices.push(idx);
                 projections.push(Projection::GroupVar(group_pos));
             }
             FindElement::Aggregate(func, var) => {
@@ -434,7 +442,7 @@ fn compile_find_plan(
     }
 
     Ok(FindPlan {
-        group_indices,
+        group_key_indices,
         projections,
         has_aggregates,
     })
@@ -454,7 +462,7 @@ fn execute_aggregation(
                     .iter()
                     .map(|proj| match proj {
                         Projection::GroupVar(group_pos) => {
-                            let join_idx = plan.group_indices[*group_pos];
+                            let join_idx = plan.group_key_indices[*group_pos];
                             bincode::deserialize::<DataType>(&tuple[join_idx])
                                 .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
                         }
@@ -483,7 +491,7 @@ fn execute_aggregation(
     // When there are no group-by variables (all-aggregate query), all rows
     // collapse into a single group. Seed it so that empty input still
     // produces one output row.
-    if plan.group_indices.is_empty() {
+    if plan.group_key_indices.is_empty() {
         let accs: Vec<Box<dyn Accumulator>> =
             agg_funcs.iter().map(|f| make_accumulator(f)).collect();
         groups.insert(Vec::new(), (Vec::new(), accs));
@@ -493,7 +501,7 @@ fn execute_aggregation(
         // Build group key by concatenating raw serialized bytes of group
         // columns.
         let mut group_key = Vec::new();
-        for &idx in &plan.group_indices {
+        for &idx in &plan.group_key_indices {
             group_key.extend_from_slice(&tuple[idx]);
         }
 
@@ -501,7 +509,7 @@ fn execute_aggregation(
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let group_values: Vec<DataType> = plan
-                    .group_indices
+                    .group_key_indices
                     .iter()
                     .map(|&idx| bincode::deserialize::<DataType>(&tuple[idx]))
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1074,7 +1082,7 @@ mod tests {
         // [:find (count ?e)] with no results → single row [[0]]
         use crate::datalog::AggregateFunc;
         let plan = FindPlan {
-            group_indices: vec![],
+            group_key_indices: vec![],
             projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
             has_aggregates: true,
         };
@@ -1089,7 +1097,7 @@ mod tests {
         // [:find ?dept (count ?e)] with no results → empty (no groups formed)
         use crate::datalog::AggregateFunc;
         let plan = FindPlan {
-            group_indices: vec![0],
+            group_key_indices: vec![0],
             projections: vec![
                 Projection::GroupVar(0),
                 Projection::Aggregate(AggregateFunc::Count, 1),
