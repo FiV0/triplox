@@ -448,32 +448,34 @@ fn compile_find_plan(
     })
 }
 
+/// Project join results without aggregation.
+fn project_results(
+    results: Vec<ResultTuple>,
+    plan: &FindPlan,
+) -> Result<QueryResult, Error> {
+    results
+        .into_iter()
+        .map(|tuple| {
+            plan.projections
+                .iter()
+                .map(|proj| match proj {
+                    Projection::GroupVar(group_pos) => {
+                        let join_idx = plan.group_key_indices[*group_pos];
+                        bincode::deserialize::<DataType>(&tuple[join_idx])
+                            .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
+                    }
+                    Projection::Aggregate(_, _) => unreachable!(),
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()
+}
+
 /// Execute aggregation over join results according to the find plan.
 fn execute_aggregation(
     results: Vec<ResultTuple>,
     plan: &FindPlan,
 ) -> Result<QueryResult, Error> {
-    if !plan.has_aggregates {
-        // Simple projection — backward compatible path
-        let rows: QueryResult = results
-            .into_iter()
-            .map(|tuple| {
-                plan.projections
-                    .iter()
-                    .map(|proj| match proj {
-                        Projection::GroupVar(group_pos) => {
-                            let join_idx = plan.group_key_indices[*group_pos];
-                            bincode::deserialize::<DataType>(&tuple[join_idx])
-                                .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
-                        }
-                        Projection::Aggregate(_, _) => unreachable!(),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        return Ok(rows);
-    }
-
     // Aggregation path: group by non-aggregate columns, accumulate aggregates.
     // Key: serialized group columns; Value: (group_values, accumulators)
     let mut groups: HashMap<Vec<u8>, (Vec<DataType>, Vec<Box<dyn Accumulator>>)> = HashMap::new();
@@ -760,7 +762,11 @@ pub fn execute_query(
 
     // 4. Project and aggregate results based on find clause
     let plan = compile_find_plan(&query.find, &var_index)?;
-    execute_aggregation(results, &plan)
+    if plan.has_aggregates {
+        execute_aggregation(results, &plan)
+    } else {
+        project_results(results, &plan)
+    }
 }
 
 #[cfg(test)]
