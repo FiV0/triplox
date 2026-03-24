@@ -293,6 +293,7 @@ async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &st
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
     doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
+    doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
     client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
 }
 

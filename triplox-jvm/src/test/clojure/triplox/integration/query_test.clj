@@ -10,12 +10,12 @@
 (def ^:dynamic *conn* nil)
 
 (def people-schema
-  [{:db/id 200 :db/ident :name :db/valueType :db.type/string}
-   {:db/id 201 :db/ident :last-name :db/valueType :db.type/string}
-   {:db/id 202 :db/ident :sex :db/valueType :db.type/keyword}
-   {:db/id 203 :db/ident :age :db/valueType :db.type/long}
-   {:db/id 204 :db/ident :salary :db/valueType :db.type/long}
-   {:db/id 205 :db/ident :city :db/valueType :db.type/string}])
+  [{:db/id 200 :db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/id 201 :db/ident :last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/id 202 :db/ident :sex :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+   {:db/id 203 :db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/id 204 :db/ident :salary :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/id 205 :db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
 
 (defn connect []
   (let [host (System/getProperty "triplox.host" "localhost")
@@ -474,7 +474,8 @@
 
 (deftest test-datascript-aggregates
   (tc/transact *conn* [{:db/id 2000 :db/ident :heads
-                        :db/valueType :db.type/long}])
+                        :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
   (tc/transact *conn* [{:db/id 1000 :heads 3}
                        {:db/id 1001 :heads 1}
                        {:db/id 1002 :heads 1}
