@@ -12,7 +12,7 @@ use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
 
-async fn define_test_schema(client: &ClientNode) {
+async fn define_base_schema(client: &ClientNode) {
     let result = client.execute_tx(test_schema_tx()).await.unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
 }
@@ -48,7 +48,7 @@ async fn test_client_connect_and_close() {
 async fn test_execute_tx_and_query() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     // Insert a document
     let mut doc = BTreeMap::new();
@@ -76,7 +76,7 @@ async fn test_execute_tx_and_query() {
 async fn test_submit_tx() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(100));
@@ -92,7 +92,7 @@ async fn test_submit_tx() {
 async fn test_multiple_transactions_and_query() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     // Insert two documents in separate transactions
     let mut doc1 = BTreeMap::new();
@@ -124,7 +124,7 @@ async fn test_multiple_transactions_and_query() {
 async fn test_open_close_multiple_dbs() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     // Insert data
     let mut doc = BTreeMap::new();
@@ -154,7 +154,7 @@ async fn test_two_connections() {
 
     // Connection 1 inserts data
     let client1 = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client1).await;
+    define_base_schema(&client1).await;
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(100));
     doc.insert("name".to_string(), DataType::String("alice".to_string()));
@@ -176,7 +176,7 @@ async fn test_two_connections() {
 async fn test_execute_tx_returns_tx_key() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(100));
@@ -198,7 +198,7 @@ async fn test_execute_tx_returns_tx_key() {
 async fn test_db_as_of() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     // First transaction
     let mut doc1 = BTreeMap::new();
@@ -256,7 +256,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     // Connection 1: define schema and insert data
     let client1 = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client1).await;
+    define_base_schema(&client1).await;
 
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(100));
@@ -272,7 +272,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     // Connection 2: gets a fresh node, should see nothing
     let client2 = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client2).await;
+    define_base_schema(&client2).await;
 
     let db2 = client2.db().await.unwrap();
     let result2 = db2
@@ -313,7 +313,7 @@ async fn define_heads_schema(client: &ClientNode) {
 async fn test_query_keyword_value_comparison_via_wire() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
     define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
@@ -351,7 +351,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
 async fn test_aggregates_and_or() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
     define_people_schema(&client).await;
 
     // Insert Ada, Alan, Adam
@@ -418,7 +418,7 @@ async fn test_aggregates_and_or() {
 async fn test_aggregate_set_semantics() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
     define_people_schema(&client).await;
 
     for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
@@ -447,7 +447,7 @@ async fn test_aggregate_set_semantics() {
 async fn test_datascript_aggregates() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
     define_heads_schema(&client).await;
 
     // Insert monsters with heads
@@ -482,7 +482,7 @@ async fn test_datascript_aggregates() {
 async fn test_aggregate_avg() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     for (id, age) in [(100, 21), (101, 22), (102, 23)] {
         let mut doc = BTreeMap::new();
@@ -508,7 +508,7 @@ async fn test_aggregate_avg() {
 async fn test_aggregate_min_max_strings() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
         let mut doc = BTreeMap::new();
@@ -536,7 +536,7 @@ async fn test_aggregate_min_max_strings() {
 async fn test_aggregate_empty_result() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
-    define_test_schema(&client).await;
+    define_base_schema(&client).await;
 
     // No data inserted — count over empty result should return [[0]]
     let db = client.db().await.unwrap();
