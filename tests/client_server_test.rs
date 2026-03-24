@@ -288,22 +288,23 @@ async fn test_dev_server_connections_are_isolated() {
     token.cancel();
 }
 
-/// Define extra schema attributes beyond the base test_schema_tx.
-async fn define_extra_schema(client: &ClientNode) {
-    let attrs = vec![
-        (54, "last-name", "string"),
-        (55, "sex", "keyword"),
-        (56, "salary", "long"),
-        (57, "city", "string"),
-        (58, "heads", "long"),
-    ];
-    for (id, name, vtype) in attrs {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
-        doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
-        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
-    }
+async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(id));
+    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
+    doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
+    client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+}
+
+async fn define_people_schema(client: &ClientNode) {
+    define_schema_attr(client, 54, "last-name", "string").await;
+    define_schema_attr(client, 55, "sex", "keyword").await;
+    define_schema_attr(client, 56, "salary", "long").await;
+    define_schema_attr(client, 57, "city", "string").await;
+}
+
+async fn define_heads_schema(client: &ClientNode) {
+    define_schema_attr(client, 58, "heads", "long").await;
 }
 
 /// Mirror of Clojure test-query-using-keywords, exercised through the full
@@ -313,7 +314,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
-    define_extra_schema(&client).await;
+    define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
     for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
@@ -351,7 +352,7 @@ async fn test_aggregates_and_or() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
-    define_extra_schema(&client).await;
+    define_people_schema(&client).await;
 
     // Insert Ada, Alan, Adam
     for (id, name, last, sex, age) in [
@@ -418,7 +419,7 @@ async fn test_aggregate_set_semantics() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
-    define_extra_schema(&client).await;
+    define_people_schema(&client).await;
 
     for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
         let mut doc = BTreeMap::new();
@@ -447,7 +448,7 @@ async fn test_datascript_aggregates() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
-    define_extra_schema(&client).await;
+    define_heads_schema(&client).await;
 
     // Insert monsters with heads
     for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
