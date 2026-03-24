@@ -288,6 +288,24 @@ async fn test_dev_server_connections_are_isolated() {
     token.cancel();
 }
 
+/// Define extra schema attributes beyond the base test_schema_tx.
+async fn define_extra_schema(client: &ClientNode) {
+    let attrs = vec![
+        (54, "last-name", "string"),
+        (55, "sex", "keyword"),
+        (56, "salary", "long"),
+        (57, "city", "string"),
+        (58, "heads", "long"),
+    ];
+    for (id, name, vtype) in attrs {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
+        doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+}
+
 /// Mirror of Clojure test-query-using-keywords, exercised through the full
 /// client-server wire protocol via query_edn.
 #[tokio::test(flavor = "multi_thread")]
@@ -295,13 +313,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_test_schema(&client).await;
-
-    // Add sex attribute (keyword type) at ID 54
-    let mut sex_attr = BTreeMap::new();
-    sex_attr.insert("db/id".to_string(), DataType::Long(54));
-    sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
-    sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-    client.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+    define_extra_schema(&client).await;
 
     // Insert 4 people with keyword sex values
     for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
@@ -324,6 +336,215 @@ async fn test_query_keyword_value_comparison_via_wire() {
     assert_eq!(result.len(), 2, "expected only Ivan and Petr, got {:?}", result);
     assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
     assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregates_and_or() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+    define_extra_schema(&client).await;
+
+    // Insert Ada, Alan, Adam
+    for (id, name, last, sex, age) in [
+        (100, "Ada", "Lovelace", "female", 21),
+        (101, "Alan", "Turing", "male", 22),
+        (102, "Adam", "Smith", "male", 23),
+    ] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("name".to_string(), DataType::String(name.to_string()));
+        doc.insert("last-name".to_string(), DataType::String(last.to_string()));
+        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
+        doc.insert("age".to_string(), DataType::Long(age));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    // count with OR: Lovelace AND (name=Ada OR sex=male) → 1 (only Ada)
+    let result = db
+        .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :male])]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Long(1)]]);
+
+    // count with OR: Lovelace AND (name=Ada OR sex=female) → 1
+    let result = db
+        .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :female])]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Long(1)]]);
+
+    // count with top-level OR: Lovelace OR male → 3
+    let result = db
+        .query_edn("{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Long(3)]]);
+
+    // Grouped: gender, count, sum
+    let result = db
+        .query_edn("{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2, "expected 2 groups, got {:?}", result);
+    assert!(result.contains(&vec![
+        DataType::Keyword(Keyword::plain("male")),
+        DataType::Long(2),
+        DataType::Long(45),
+    ]));
+    assert!(result.contains(&vec![
+        DataType::Keyword(Keyword::plain("female")),
+        DataType::Long(1),
+        DataType::Long(21),
+    ]));
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregate_set_semantics() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+    define_extra_schema(&client).await;
+
+    for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("name".to_string(), DataType::String(name.to_string()));
+        doc.insert("city".to_string(), DataType::String(city.to_string()));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    // TODO: do we want Datomic (set → 2) or XTDB (bag → 3) semantics here?
+    let result = db
+        .query_edn("{:find [(count ?city)] :where [[?p :city ?city]]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Long(3)]]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_datascript_aggregates() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+    define_extra_schema(&client).await;
+
+    // Insert monsters with heads
+    for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("heads".to_string(), DataType::Long(heads));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    // All aggregate functions at once
+    let result = db
+        .query_edn("{:find [(sum ?heads) (min ?heads) (max ?heads) (count ?heads) (count-distinct ?heads)] :where [[?monster :heads ?heads]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1, "expected single row, got {:?}", result);
+    let row = &result[0];
+    assert_eq!(row[0], DataType::Long(6), "sum");
+    assert_eq!(row[1], DataType::Long(1), "min");
+    assert_eq!(row[2], DataType::Long(3), "max");
+    assert_eq!(row[3], DataType::Long(4), "count");
+    assert_eq!(row[4], DataType::Long(2), "count-distinct");
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregate_avg() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+
+    for (id, age) in [(100, 21), (101, 22), (102, 23)] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("age".to_string(), DataType::Long(age));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    let result = db
+        .query_edn("{:find [(avg ?age)] :where [[?e :age ?age]]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Double(22.0)]]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregate_min_max_strings() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+
+    for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("name".to_string(), DataType::String(name.to_string()));
+        client.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    let result = db
+        .query_edn("{:find [(min ?name) (max ?name)] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0][0], DataType::String("Alice".to_string()));
+    assert_eq!(result[0][1], DataType::String("Charlie".to_string()));
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aggregate_empty_result() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_test_schema(&client).await;
+
+    // No data inserted — count over empty result should return [[0]]
+    let db = client.db().await.unwrap();
+
+    let result = db
+        .query_edn("{:find [(count ?e)] :where [[?e :name \"nobody\"]]}")
+        .await
+        .unwrap();
+    assert_eq!(result, vec![vec![DataType::Long(0)]]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();

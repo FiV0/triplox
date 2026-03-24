@@ -433,3 +433,75 @@
   (is (= #{["Alice" "NYC"]} (q '{:find [?name ?city]
                                  :where [[?p :name ?name]
                                          [?p :city ?city]]}))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — aggregates
+;; ---------------------------------------------------------------------------
+
+(deftest test-aggregates-and-or
+  (tc/transact *conn* [{:db/id 1000 :name "Ada" :last-name "Lovelace" :sex :female :age 21}
+                       {:db/id 1001 :name "Alan" :last-name "Turing" :sex :male :age 22}
+                       {:db/id 1002 :name "Adam" :last-name "Smith" :sex :male :age 23}])
+
+  (is (= #{[1]} (q '{:find [(count ?p)]
+                     :where [[?p :last-name "Lovelace"]
+                             (or [?p :name "Ada"]
+                                 [?p :sex :male])]})))
+
+  (is (= #{[1]} (q '{:find [(count ?p)]
+                     :where [[?p :last-name "Lovelace"]
+                             (or [?p :name "Ada"]
+                                 [?p :sex :female])]})))
+
+  (is (= #{[3]} (q '{:find [(count ?p)]
+                     :where [(or [?p :last-name "Lovelace"]
+                                 [?p :sex :male])]})))
+
+  (is (= #{[:male 2 45] [:female 1 21]}
+         (q '{:find [?gender (count ?p) (sum ?age)]
+              :where [[?p :sex ?gender]
+                      [?p :age ?age]]}))
+      "implicit grouping"))
+
+(deftest test-aggregate-set-semantics
+  (tc/transact *conn* [{:db/id 1000 :name "Alice" :city "NYC"}
+                       {:db/id 1001 :name "Bob" :city "NYC"}
+                       {:db/id 1002 :name "Carol" :city "LA"}])
+
+  ;; TODO: do we want Datomic or XTDB semantics here?
+  (is (= #{[3]} (q '{:find [(count ?city)]
+                     :where [[?p :city ?city]]}))))
+
+(deftest test-datascript-aggregates
+  (tc/transact *conn* [{:db/id 2000 :db/ident :heads
+                        :db/valueType :db.type/long}])
+  (tc/transact *conn* [{:db/id 1000 :heads 3}
+                       {:db/id 1001 :heads 1}
+                       {:db/id 1002 :heads 1}
+                       {:db/id 1003 :heads 1}])
+
+  (testing "Multiple aggregates, correct grouping"
+    (is (= #{[6 1 3 4 2]}
+           (q '{:find [(sum ?heads) (min ?heads) (max ?heads) (count ?heads) (count-distinct ?heads)]
+                :where [[?monster :heads ?heads]]})))))
+
+(deftest test-aggregate-avg
+  (tc/transact *conn* [{:db/id 1000 :age 21}
+                       {:db/id 1001 :age 22}
+                       {:db/id 1002 :age 23}])
+
+  (is (= #{[22.0]} (q '{:find [(avg ?age)]
+                        :where [[?e :age ?age]]}))))
+
+(deftest test-aggregate-min-max-strings
+  (tc/transact *conn* [{:db/id 1000 :name "Charlie"}
+                       {:db/id 1001 :name "Alice"}
+                       {:db/id 1002 :name "Bob"}])
+
+  (is (= #{["Alice" "Charlie"]}
+         (q '{:find [(min ?name) (max ?name)]
+              :where [[?e :name ?name]]}))))
+
+(deftest test-aggregate-empty-result
+  (is (= #{[0]} (q '{:find [(count ?e)]
+                     :where [[?e :name "nobody"]]}))))
