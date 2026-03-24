@@ -16,10 +16,34 @@ pub enum PullExpr {}
 pub type Variable = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AggregateFunc {
+    Count,
+    CountDistinct,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl std::fmt::Display for AggregateFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Count => write!(f, "count"),
+            Self::CountDistinct => write!(f, "count-distinct"),
+            Self::Sum => write!(f, "sum"),
+            Self::Avg => write!(f, "avg"),
+            Self::Min => write!(f, "min"),
+            Self::Max => write!(f, "max"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FindElement {
     Variable(Variable),
     PullExpr(PullExpr),
-    Aggregate(String, String),
+    /// Only bare variables supported — no expression args, bypasses the expression engine.
+    Aggregate(AggregateFunc, Variable),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

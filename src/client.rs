@@ -363,7 +363,7 @@ fn find_element_to_edn(elem: &FindElement, s: &mut String) -> Result<()> {
         FindElement::Variable(v) => s.push_str(v),
         FindElement::Aggregate(func, arg) => {
             s.push('(');
-            s.push_str(func);
+            s.push_str(&func.to_string());
             s.push(' ');
             s.push_str(arg);
             s.push(')');

@@ -1,3 +1,4 @@
+mod aggregate;
 mod algo;
 mod bootstrap;
 mod clock;

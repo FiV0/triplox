@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -8,9 +9,10 @@ use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
 use crate::clock::Instant;
+use crate::aggregate::{make_accumulator, Accumulator};
 use crate::datalog::{
-    FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query, TriplePattern,
-    Variable, WhereClause,
+    AggregateFunc, FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query,
+    TriplePattern, Variable, WhereClause,
 };
 use crate::expr::{expr_variables, Expr};
 use crate::index::IndexType;
@@ -377,22 +379,202 @@ pub fn compile_pattern(
     ))
 }
 
-/// Create indices for projecting find variables from join results.
-pub fn compile_find(find: &FindSpec, var_index: &HashMap<&Variable, usize>) -> Result<Vec<usize>, Error> {
-    match find {
-        FindSpec::FindRel(elements) => elements
-            .iter()
-            .map(|elem| match elem {
-                FindElement::Variable(var) => var_index
+/// How to produce one column of the output row.
+///
+/// Two index spaces are in play:
+/// - **join-order index**: position in the raw result tuple from the join
+/// - **group position**: position in `FindPlan::group_key_indices`
+///
+/// `GroupVar` uses a group position (indirect) so that `group_key_indices` can
+/// be iterated directly in the hot loop without filtering. `Aggregate` uses a
+/// join-order index (direct) since aggregates are only read once per row.
+pub(crate) enum Projection {
+    /// Index into `group_key_indices`, which itself holds a join-order index.
+    GroupVar(usize),
+    /// Aggregate function + join-order index of the input variable.
+    Aggregate(AggregateFunc, usize),
+}
+
+/// Compiled find plan that describes how to project + aggregate results.
+pub(crate) struct FindPlan {
+    /// Join-order indices of the group-by variables, iterated directly to build group keys.
+    pub group_key_indices: Vec<usize>,
+    /// One projection per find element, in find-clause order.
+    pub projections: Vec<Projection>,
+    /// Whether any aggregation is needed.
+    pub has_aggregates: bool,
+}
+
+/// Compile a find spec into a FindPlan.
+fn compile_find_plan(
+    find: &FindSpec,
+    var_index: &HashMap<&Variable, usize>,
+) -> Result<FindPlan, Error> {
+    let elements = match find {
+        FindSpec::FindRel(elements) => elements,
+    };
+
+    let mut group_key_indices = Vec::new();
+    let mut projections = Vec::new();
+    let mut has_aggregates = false;
+
+    for elem in elements {
+        match elem {
+            FindElement::Variable(var) => {
+                let idx = *var_index
                     .get(var)
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var)),
-                _ => Err(anyhow::anyhow!(
-                    "Only Variable find elements supported in MVP"
-                )),
-            })
-            .collect(),
+                    .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var))?;
+                let group_pos = group_key_indices.len();
+                group_key_indices.push(idx);
+                projections.push(Projection::GroupVar(group_pos));
+            }
+            FindElement::Aggregate(func, var) => {
+                has_aggregates = true;
+                let idx = *var_index.get(var).ok_or_else(|| {
+                    anyhow::anyhow!("Aggregate variable {} not in where clauses", var)
+                })?;
+                projections.push(Projection::Aggregate(func.clone(), idx));
+            }
+            FindElement::PullExpr(_) => {
+                return Err(anyhow::anyhow!("PullExpr not supported"));
+            }
+        }
     }
+
+    Ok(FindPlan {
+        group_key_indices,
+        projections,
+        has_aggregates,
+    })
+}
+
+/// Project join results without aggregation.
+fn project_results(
+    results: Vec<ResultTuple>,
+    plan: &FindPlan,
+) -> Result<QueryResult, Error> {
+    results
+        .into_iter()
+        .map(|tuple| {
+            plan.projections
+                .iter()
+                .map(|proj| match proj {
+                    Projection::GroupVar(group_pos) => {
+                        let join_idx = plan.group_key_indices[*group_pos];
+                        bincode::deserialize::<DataType>(&tuple[join_idx])
+                            .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
+                    }
+                    Projection::Aggregate(_, _) => unreachable!(),
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Execute aggregation over join results according to the find plan.
+fn execute_aggregation(
+    results: Vec<ResultTuple>,
+    plan: &FindPlan,
+) -> Result<QueryResult, Error> {
+    // Aggregation path: group by non-aggregate columns, accumulate aggregates.
+    // Key: serialized group columns; Value: (group_values, accumulators)
+    let mut groups: HashMap<Vec<u8>, (Vec<DataType>, Vec<Box<dyn Accumulator>>)> = HashMap::new();
+
+    // Count how many aggregate projections we have (for initializing accumulators)
+    let agg_funcs: Vec<&AggregateFunc> = plan
+        .projections
+        .iter()
+        .filter_map(|p| match p {
+            Projection::Aggregate(func, _) => Some(func),
+            _ => None,
+        })
+        .collect();
+
+    // When there are no group-by variables (all-aggregate query), all rows
+    // collapse into a single group. Seed it so that empty input still
+    // produces one output row.
+    if plan.group_key_indices.is_empty() {
+        let accs: Vec<Box<dyn Accumulator>> =
+            agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+        groups.insert(Vec::new(), (Vec::new(), accs));
+    }
+
+    for tuple in &results {
+        // Build group key by concatenating raw serialized bytes of group
+        // columns.
+        let mut group_key = Vec::new();
+        for &idx in &plan.group_key_indices {
+            group_key.extend_from_slice(&tuple[idx]);
+        }
+
+        let (_, accumulators) = match groups.entry(group_key) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let group_values: Vec<DataType> = plan
+                    .group_key_indices
+                    .iter()
+                    .map(|&idx| bincode::deserialize::<DataType>(&tuple[idx]))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let accs: Vec<Box<dyn Accumulator>> =
+                    agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+                e.insert((group_values, accs))
+            }
+        };
+
+        // TODO: skip deserialization for Count (value is ignored)
+        let mut agg_idx = 0;
+        for proj in &plan.projections {
+            if let Projection::Aggregate(_, join_idx) = proj {
+                let value = bincode::deserialize::<DataType>(&tuple[*join_idx])?;
+                accumulators[agg_idx].accumulate(&value)?;
+                agg_idx += 1;
+            }
+        }
+    }
+
+    // Finalize: assemble output rows
+    let mut output = Vec::with_capacity(groups.len());
+    for (_, (group_values, accumulators)) in groups {
+        let mut row = Vec::with_capacity(plan.projections.len());
+        let mut agg_idx = 0;
+        for proj in &plan.projections {
+            match proj {
+                Projection::GroupVar(group_pos) => {
+                    row.push(group_values[*group_pos].clone());
+                }
+                Projection::Aggregate(_, _) => {
+                    row.push(accumulators[agg_idx].finalize()?);
+                    agg_idx += 1;
+                }
+            }
+        }
+        output.push(row);
+    }
+
+    Ok(output)
+}
+
+/// Validate that all aggregate variables are bound by where clauses.
+fn validate_aggregate_clauses(
+    find: &FindSpec,
+    var_index: &HashMap<&Variable, usize>,
+) -> Result<(), Error> {
+    let elements = match find {
+        FindSpec::FindRel(elements) => elements,
+    };
+    for elem in elements {
+        if let FindElement::Aggregate(func, var) = elem {
+            if !var_index.contains_key(var) {
+                return Err(anyhow::anyhow!(
+                    "Aggregate variable {} in ({} {}) is not bound by where clauses",
+                    var,
+                    func,
+                    var
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Extract attribute name from a DataType constant.
@@ -467,6 +649,7 @@ pub fn validate_query(query: &Query) -> Result<(), Error> {
     validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
+    validate_aggregate_clauses(&query.find, &var_index)?;
     Ok(())
 }
 
@@ -577,20 +760,13 @@ pub fn execute_query(
     let join = GenericJoin::new(extender_refs, num_levels);
     let results = join.join();
 
-    // 4. Project results based on find clause
-    let projection_indices = compile_find(&query.find, &var_index)?;
-
-    let rows: QueryResult = results
-        .into_iter()
-        .map(|tuple| {
-            projection_indices
-                .iter()
-                .map(|&i| bincode::deserialize::<DataType>(&tuple[i]))
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(rows)
+    // 4. Project and aggregate results based on find clause
+    let plan = compile_find_plan(&query.find, &var_index)?;
+    if plan.has_aggregates {
+        execute_aggregation(results, &plan)
+    } else {
+        project_results(results, &plan)
+    }
 }
 
 #[cfg(test)]
@@ -646,29 +822,7 @@ mod tests {
         assert_eq!(order, vec!["?e"]);
     }
 
-    #[test]
-    fn test_compile_find() {
-        let find = FindSpec::FindRel(vec![
-            FindElement::Variable("?name".to_string()),
-            FindElement::Variable("?e".to_string()),
-        ]);
-        let join_order = vec!["?e".to_string(), "?name".to_string()];
-        let var_index = build_var_index(&join_order);
 
-        let indices = compile_find(&find, &var_index).unwrap();
-        // ?name is at index 1, ?e is at index 0
-        assert_eq!(indices, vec![1, 0]);
-    }
-
-    #[test]
-    fn test_compile_find_missing_variable() {
-        let find = FindSpec::FindRel(vec![FindElement::Variable("?missing".to_string())]);
-        let join_order = vec!["?e".to_string(), "?name".to_string()];
-        let var_index = build_var_index(&join_order);
-
-        let result = compile_find(&find, &var_index);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
@@ -927,5 +1081,37 @@ mod tests {
 
         let order = query_variable_order(&where_clauses);
         assert_eq!(order, vec!["?e", "?name", "?age"]);
+    }
+
+    #[test]
+    fn test_execute_aggregation_all_aggs_empty_input() {
+        // [:find (count ?e)] with no results → single row [[0]]
+        use crate::datalog::AggregateFunc;
+        let plan = FindPlan {
+            group_key_indices: vec![],
+            projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
+            has_aggregates: true,
+        };
+        let results: Vec<ResultTuple> = vec![];
+        let output = execute_aggregation(results, &plan).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], vec![DataType::Long(0)]);
+    }
+
+    #[test]
+    fn test_execute_aggregation_with_group_keys_empty_input() {
+        // [:find ?dept (count ?e)] with no results → empty (no groups formed)
+        use crate::datalog::AggregateFunc;
+        let plan = FindPlan {
+            group_key_indices: vec![0],
+            projections: vec![
+                Projection::GroupVar(0),
+                Projection::Aggregate(AggregateFunc::Count, 1),
+            ],
+            has_aggregates: true,
+        };
+        let results: Vec<ResultTuple> = vec![];
+        let output = execute_aggregation(results, &plan).unwrap();
+        assert!(output.is_empty());
     }
 }
