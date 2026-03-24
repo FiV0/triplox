@@ -1,5 +1,7 @@
 #![allow(dead_code, unused)]
 
+pub mod cdc;
+
 use slatedb::Db;
 use slatedb::object_store::{ObjectStore, memory::InMemory};
 use slatedb::object_store::local::LocalFileSystem;
