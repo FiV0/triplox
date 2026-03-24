@@ -94,11 +94,6 @@ impl CdcStream {
         Ok(Some(CdcTransaction { seq, entries }))
     }
 
-    /// Return the current cursor position.
-    pub fn cursor(&self) -> &CdcCursor {
-        &self.cursor
-    }
-
     /// Get the next entry, either from the buffer or by reading from WAL files.
     /// Skips entries with seq <= cursor.last_seq (already processed).
     /// Blocks (polls) when no data is available. Returns None if cancelled.
@@ -223,15 +218,22 @@ mod tests {
         .await
         .unwrap();
 
-        // Collect all transactions.
-        let mut txs = Vec::new();
+        // Collect all entries across transactions.
+        let mut all_entries = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
-            txs.push(tx);
+            all_entries.extend(tx.entries);
         }
-        assert!(!txs.is_empty());
-        // All entries across transactions should include our keys.
-        let total_entries: usize = txs.iter().map(|t| t.entries.len()).sum();
-        assert!(total_entries >= 2);
+
+        // Verify the entries contain our keys and values.
+        let kv_pairs: Vec<(&[u8], &[u8])> = all_entries
+            .iter()
+            .filter_map(|e| match &e.value {
+                ValueDeletable::Value(v) => Some((e.key.as_ref(), v.as_ref())),
+                _ => None,
+            })
+            .collect();
+        assert!(kv_pairs.contains(&(b"k1".as_ref(), b"v1".as_ref())));
+        assert!(kv_pairs.contains(&(b"k2".as_ref(), b"v2".as_ref())));
         db.close().await.unwrap();
     }
 
@@ -301,15 +303,14 @@ mod tests {
         .unwrap();
 
         let tx1 = stream.next_transaction().await.unwrap().unwrap();
-        let cursor_after_tx1 = stream.cursor().clone();
 
-        // Now create a new stream starting after tx1.
+        // Now create a new stream starting after tx1's seq.
         let wal_reader2 = WalReader::new("/test_filter", object_store);
         let cancel2 = CancellationToken::new();
         cancel2.cancel();
         let mut stream2 = CdcStream::new(
             wal_reader2,
-            cursor_after_tx1,
+            CdcCursor { wal_id: 0, last_seq: tx1.seq },
             Duration::from_millis(10),
             cancel2,
         )
