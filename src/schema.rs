@@ -33,7 +33,9 @@ pub const DB_TYPE_VECTOR: i64 = 22;
 pub const DB_TYPE_MAP: i64 = 23;
 
 // Cardinality enum entities
+#[allow(dead_code)]
 pub const DB_CARDINALITY_ONE: i64 = 30;
+#[allow(dead_code)]
 pub const DB_CARDINALITY_MANY: i64 = 31;
 
 // --- Schema types ---
@@ -128,15 +130,6 @@ impl std::fmt::Display for Cardinality {
 }
 
 impl Cardinality {
-    /// Map a cardinality enum entity ID to a Cardinality.
-    pub fn from_entity_id(id: i64) -> Result<Self> {
-        match id {
-            DB_CARDINALITY_ONE => Ok(Cardinality::One),
-            DB_CARDINALITY_MANY => Ok(Cardinality::Many),
-            _ => Err(anyhow::anyhow!("Unknown cardinality entity ID: {}", id)),
-        }
-    }
-
     /// Map a cardinality keyword (e.g. :db.cardinality/one) to a Cardinality.
     pub fn from_keyword(kw: &Keyword) -> Result<Self> {
         let s = kw.to_string();

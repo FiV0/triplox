@@ -806,6 +806,9 @@ mod tests {
         Ok(())
     }
 
+    // NOTE: Currently cardinality-many has bag semantics (duplicate values are stored).
+    // Datomic uses set semantics where asserting the same value twice is a no-op.
+    // We may want to switch to set semantics in the future.
     #[tokio::test]
     async fn test_cardinality_many_same_value() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
