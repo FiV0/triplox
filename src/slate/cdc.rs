@@ -385,4 +385,202 @@ mod tests {
         assert!(result.is_none());
         db.close().await.unwrap();
     }
+
+    // --- Snapshot + CdcStream integration tests ---
+
+    #[tokio::test]
+    async fn test_cdc_after_snapshot_all_caught_up() {
+        let (db, object_store) = setup_db("/test_snap_caught_up").await;
+
+        db.put(b"k1", b"v1").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+        db.put(b"k2", b"v2").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+        db.put(b"k3", b"v3").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let snapshot = db.snapshot().await.unwrap();
+        let snap_seq = snapshot.seq();
+
+        // CdcStream starting from snapshot seq — nothing new after snapshot.
+        let wal_reader = WalReader::new("/test_snap_caught_up", object_store);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            Duration::from_millis(10),
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        let result = stream.next_transaction().await.unwrap();
+        assert!(result.is_none(), "expected no transactions after snapshot");
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cdc_after_snapshot_some_new() {
+        let (db, object_store) = setup_db("/test_snap_some_new").await;
+
+        // Before snapshot.
+        db.put(b"k1", b"v1").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+        db.put(b"k2", b"v2").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let snapshot = db.snapshot().await.unwrap();
+        let snap_seq = snapshot.seq();
+
+        // After snapshot.
+        db.put(b"k3", b"v3").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+        db.put(b"k4", b"v4").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let wal_reader = WalReader::new("/test_snap_some_new", object_store);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            Duration::from_millis(10),
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        let mut txs = Vec::new();
+        while let Some(tx) = stream.next_transaction().await.unwrap() {
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            txs.push(tx);
+        }
+        assert!(txs.len() >= 2, "expected at least 2 post-snapshot transactions, got {}", txs.len());
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cdc_after_snapshot_all_after() {
+        let (db, object_store) = setup_db("/test_snap_all_after").await;
+
+        // Snapshot on empty-ish DB.
+        let snapshot = db.snapshot().await.unwrap();
+        let snap_seq = snapshot.seq();
+
+        // All transactions after snapshot.
+        db.put(b"k1", b"v1").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+        db.put(b"k2", b"v2").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let wal_reader = WalReader::new("/test_snap_all_after", object_store);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            Duration::from_millis(10),
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        let mut txs = Vec::new();
+        while let Some(tx) = stream.next_transaction().await.unwrap() {
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            txs.push(tx);
+        }
+        assert!(txs.len() >= 2, "expected at least 2 transactions, got {}", txs.len());
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cdc_after_snapshot_live_streaming() {
+        let (db, object_store) = setup_db("/test_snap_live").await;
+
+        db.put(b"k1", b"v1").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let snapshot = db.snapshot().await.unwrap();
+        let snap_seq = snapshot.seq();
+
+        // Create stream BEFORE new transactions exist.
+        let wal_reader = WalReader::new("/test_snap_live", object_store);
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            Duration::from_millis(10),
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        // Spawn background task to write new transactions then cancel.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            db.put(b"k2", b"v2").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            db.put(b"k3", b"v3").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let mut txs = Vec::new();
+        while let Some(tx) = stream.next_transaction().await.unwrap() {
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            txs.push(tx);
+        }
+        assert!(txs.len() >= 2, "expected at least 2 live transactions, got {}", txs.len());
+    }
+
+    #[tokio::test]
+    async fn test_cdc_after_snapshot_mixed_timing() {
+        let (db, object_store) = setup_db("/test_snap_mixed").await;
+
+        // Before snapshot.
+        db.put(b"k1", b"v1").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let snapshot = db.snapshot().await.unwrap();
+        let snap_seq = snapshot.seq();
+
+        // After snapshot but before stream creation.
+        db.put(b"k2", b"v2").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        // Create stream — k2 is already in WAL.
+        let wal_reader = WalReader::new("/test_snap_mixed", object_store);
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            Duration::from_millis(10),
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        // Spawn background task to write more then cancel.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            db.put(b"k3", b"v3").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+        });
+
+        let mut txs = Vec::new();
+        while let Some(tx) = stream.next_transaction().await.unwrap() {
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            txs.push(tx);
+        }
+        // Should see both k2 (already there) and k3 (arrived live).
+        assert!(txs.len() >= 2, "expected at least 2 transactions (pre-stream + live), got {}", txs.len());
+    }
 }
