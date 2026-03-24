@@ -2377,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "slatedb"
 version = "0.11.1"
-source = "git+https://github.com/slatedb/slatedb.git?branch=main#398b42454c0a21cdd88da6000ebef22992831157"
+source = "git+https://github.com/slatedb/slatedb.git?rev=398b424#398b42454c0a21cdd88da6000ebef22992831157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2423,7 +2423,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.11.1"
-source = "git+https://github.com/slatedb/slatedb.git?branch=main#398b42454c0a21cdd88da6000ebef22992831157"
+source = "git+https://github.com/slatedb/slatedb.git?rev=398b424#398b42454c0a21cdd88da6000ebef22992831157"
 dependencies = [
  "chrono",
  "tokio",
@@ -2432,7 +2432,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.11.1"
-source = "git+https://github.com/slatedb/slatedb.git?branch=main#398b42454c0a21cdd88da6000ebef22992831157"
+source = "git+https://github.com/slatedb/slatedb.git?rev=398b424#398b42454c0a21cdd88da6000ebef22992831157"
 dependencies = [
  "async-trait",
  "bytes",
