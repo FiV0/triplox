@@ -784,8 +784,8 @@ mod tests {
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
-        // Scan EAV for entity 100, tags attr (entity_id 54) — expect 2 ADDs, 0 RETRACTs
-        let tags_id: i64 = 54;
+        // Scan EAV for entity 100, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
+        let tags_id: i64 = 1000;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         let mut retract_count = 0;
@@ -833,7 +833,7 @@ mod tests {
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity 100, tags attr — expect 2 ADDs (both written)
-        let tags_id: i64 = 54;
+        let tags_id: i64 = 1000;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         while let Some(kv) = iter.next().await? {

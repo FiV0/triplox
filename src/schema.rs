@@ -431,7 +431,7 @@ pub fn test_schema_tx() -> Vec<TxOp> {
         schema_attribute(52, Keyword::plain("email"), "string"),
         // TODO: update this to ref once we support DataType::Ref
         schema_attribute(53, Keyword::plain("follows"), "long"),
-        schema_attribute_with_cardinality(54, Keyword::plain("tags"), "string", "many"),
+        schema_attribute_with_cardinality(1000, Keyword::plain("tags"), "string", "many"),
     ]
 }
 
