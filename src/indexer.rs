@@ -188,7 +188,7 @@ impl Indexer {
                     Some(_) => {
                         let value_bytes = &key[eav_prefix.len()..key.len() - codec::TIMESTAMP_OP_SUFFIX];
                         let mut cursor = value_bytes;
-                        let value: DataType = decode_datatype(&mut cursor).map_err(|e| anyhow::anyhow!("{}", e))?;
+                        let value: DataType = decode_datatype(&mut cursor)?;
                         old_value = Some(value);
                         break;
                     }

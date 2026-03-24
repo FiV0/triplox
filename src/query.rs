@@ -462,8 +462,7 @@ fn project_results(
                 .map(|proj| match proj {
                     Projection::GroupVar(group_pos) => {
                         let join_idx = plan.group_key_indices[*group_pos];
-                        DataType::decode(&tuple[join_idx])
-                            .map_err(|e| anyhow::anyhow!("deserialization error: {}", e))
+                        Ok::<_, Error>(DataType::decode(&tuple[join_idx])?)
                     }
                     Projection::Aggregate(_, _) => unreachable!(),
                 })
@@ -514,7 +513,7 @@ fn execute_aggregation(
                 let group_values: Vec<DataType> = plan
                     .group_key_indices
                     .iter()
-                    .map(|&idx| DataType::decode(&tuple[idx]).map_err(|e| anyhow::anyhow!("{}", e)))
+                    .map(|&idx| Ok::<_, Error>(DataType::decode(&tuple[idx])?))
                     .collect::<Result<Vec<_>, _>>()?;
                 let accs: Vec<Box<dyn Accumulator>> =
                     agg_funcs.iter().map(|f| make_accumulator(f)).collect();
@@ -526,7 +525,7 @@ fn execute_aggregation(
         let mut agg_idx = 0;
         for proj in &plan.projections {
             if let Projection::Aggregate(_, join_idx) = proj {
-                let value = DataType::decode(&tuple[*join_idx]).map_err(|e| anyhow::anyhow!("{}", e))?;
+                let value = DataType::decode(&tuple[*join_idx])?;
                 accumulators[agg_idx].accumulate(&value)?;
                 agg_idx += 1;
             }

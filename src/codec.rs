@@ -17,7 +17,7 @@ use crate::protocol::{
 };
 
 // ---------------------------------------------------------------------------
-// Existing constants
+// Index key constants
 // ---------------------------------------------------------------------------
 
 // TODO should this become 2 bytes?
@@ -46,8 +46,6 @@ pub const META_INDEX: u8 = 129;
 pub const ADD: u8 = 0;
 pub const DELETE: u8 = 1;
 pub const RETRACT: u8 = 2;
-
-
 
 /// Suffix length: timestamp (8 bytes) + op (1 byte), used for end-of-key extraction.
 pub const TIMESTAMP_OP_SUFFIX: usize = TIMESTAMP_LENGTH + OP_LENGTH;
@@ -125,7 +123,7 @@ pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError> {
 }
 
 pub fn encode_i128(value: i128, buf: &mut Vec<u8>) {
-    let encoded = (value ^ (1_i128 << 127)).to_be_bytes();
+    let encoded = (value ^ i128::MIN).to_be_bytes();
     buf.extend_from_slice(&encoded);
 }
 
@@ -135,7 +133,7 @@ pub fn decode_i128(cursor: &mut &[u8]) -> Result<i128, DecodeError> {
     }
     let bytes: [u8; 16] = cursor[..16].try_into().unwrap();
     *cursor = &cursor[16..];
-    Ok(i128::from_be_bytes(bytes) ^ (1_i128 << 127))
+    Ok(i128::from_be_bytes(bytes) ^ i128::MIN)
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,8 +1052,10 @@ mod tests {
     }
 }
 
-/// Encode a timestamp as inverted big-endian i64 microseconds.
+/// Encode a timestamp as inverted big-endian i64 microseconds for index keys.
 /// Inverted so that newer timestamps sort first in ascending byte order.
+/// Note: this differs from `encode_instant` which uses standard (non-inverted)
+/// order-preserving encoding for DataType::Instant values.
 pub fn encode_timestamp(t: Instant) -> [u8; 8] {
     let micros = t.timestamp_micros();
     (!micros).to_be_bytes()
