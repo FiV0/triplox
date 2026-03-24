@@ -474,7 +474,8 @@
 
 (deftest test-datascript-aggregates
   (tc/transact *conn* [{:db/id 2000 :db/ident :heads
-                        :db/valueType :db.type/long}])
+                        :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
   (tc/transact *conn* [{:db/id 1000 :heads 3}
                        {:db/id 1001 :heads 1}
                        {:db/id 1002 :heads 1}
