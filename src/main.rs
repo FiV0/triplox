@@ -60,7 +60,7 @@ async fn run_server(config: Config) -> Result<()> {
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Local { path } => {
-            let node = Arc::new(Node::local_node(&path).await);
+            let node = Arc::new(Node::local_node(&path).await?);
             let server = Server::new(node, max_open_dbs);
             server.listen(&bind_addr, token).await
         }
