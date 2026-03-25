@@ -109,8 +109,11 @@ pub trait Decode: Sized {
 // ---------------------------------------------------------------------------
 
 pub fn encode_i64(value: i64, buf: &mut Vec<u8>) {
-    let encoded = (value ^ i64::MIN).to_be_bytes();
-    buf.extend_from_slice(&encoded);
+    buf.extend_from_slice(&encode_i64_bytes(value));
+}
+
+pub fn encode_i64_bytes(value: i64) -> [u8; 8] {
+    (value ^ i64::MIN).to_be_bytes()
 }
 
 pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError> {
