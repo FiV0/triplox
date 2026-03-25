@@ -93,7 +93,6 @@ Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 | 12  | Vector  | `Vec<DataType>`                |
 | 13  | Map     | `BTreeMap<String, DataType>`   |
 | 14  | Keyword | `Keyword`                      |
-| 15  | Nil     | *(reserved)*                   |
 
 ---
 
