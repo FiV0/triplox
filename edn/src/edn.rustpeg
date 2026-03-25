@@ -145,7 +145,7 @@ namespace_separator = "/"
 // TODO: Be more picky here
 // Keywords follow the rules of symbols, except they can (and must) begin with :
 // e.g. :fred or :my/fred. See https://github.com/edn-format/edn#keywords
-symbol_char_initial = [a-zA-Z0-9*!_?$%&=<>]
+symbol_char_initial = [a-zA-Z0-9*!_?$%&=<>+-]
 symbol_char_subsequent = [+a-zA-Z0-9*!_?$%&=<>-]
 
 symbol_namespace = symbol_char_initial symbol_char_subsequent* (namespace_divider symbol_char_subsequent+)*
@@ -295,7 +295,7 @@ pub entities -> Vec<Entity<ValueAndSpan>>
 // whitespace-eating rule or an explicit whitespace eating `__`.
 
 query_function -> query::QueryFunction
-    = __ n:$(symbol_name) __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
+    = __ n:$(symbol_name / "/") __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
 fn_arg -> query::FnArg
     = v:value {? query::FnArg::from_value(&v).ok_or("expected query function argument") }
@@ -316,8 +316,8 @@ find_spec -> query::FindSpec
 pull_attribute -> query::PullAttributeSpec
     = __ "*" __ { query::PullAttributeSpec::Wildcard }
     / __ k:raw_forward_namespaced_keyword __ alias:(":as" __ alias:raw_forward_keyword __ { alias })? {
-        let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
-        let alias = alias.map(|alias| ::std::rc::Rc::new(alias));
+        let attribute = query::PullConcreteAttribute::Ident(::std::sync::Arc::new(k));
+        let alias = alias.map(|alias| ::std::sync::Arc::new(alias));
         query::PullAttributeSpec::Attribute(
             query::NamedPullAttribute {
                 attribute,

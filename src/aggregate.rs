@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 
-use crate::datalog::AggregateFunc;
+use crate::query::AggregateFunc;
 use crate::ops::DataType;
 
 // TODO: loses precision for i64 values > 2^53

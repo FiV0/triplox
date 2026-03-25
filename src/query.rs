@@ -7,14 +7,16 @@ use std::sync::Arc;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
-use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
-
-use crate::aggregate::{make_accumulator, Accumulator};
-use crate::datalog::{
-    AggregateFunc, FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query,
-    TriplePattern, Variable, WhereClause,
+use edn::query::{
+    Element, FindSpec, NonIntegerConstant, NotJoin, OrJoin, OrWhereClause, Pattern,
+    PatternNonValuePlace, PatternValuePlace, ParsedQuery, Predicate as EdnPredicate, UnifyVars,
+    Variable, WhereClause, WhereFn as EdnWhereFn,
 };
-use crate::expr::{expr_variables, Expr};
+
+use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
+use crate::aggregate::{make_accumulator, Accumulator};
+use crate::codec::{Encode, Decode};
+use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr};
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
@@ -22,17 +24,270 @@ use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
 use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
-use crate::codec::{Encode, Decode};
 use crate::ops::DataType;
 
 /// Each inner Vec is a projected row of decoded DataType values.
 pub type QueryResult = Vec<Vec<DataType>>;
 
-/// Extract variables from an OrBranch.
-fn collect_variables_from_or_branch(branch: &OrBranch) -> Vec<Variable> {
+// ---------------------------------------------------------------------------
+// AggregateFunc (moved from datalog.rs)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AggregateFunc {
+    Count,
+    CountDistinct,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl std::fmt::Display for AggregateFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Count => write!(f, "count"),
+            Self::CountDistinct => write!(f, "count-distinct"),
+            Self::Sum => write!(f, "sum"),
+            Self::Avg => write!(f, "avg"),
+            Self::Min => write!(f, "min"),
+            Self::Max => write!(f, "max"),
+        }
+    }
+}
+
+fn parse_aggregate_func(name: &str) -> Result<AggregateFunc, Error> {
+    match name {
+        "count" => Ok(AggregateFunc::Count),
+        "count-distinct" => Ok(AggregateFunc::CountDistinct),
+        "sum" => Ok(AggregateFunc::Sum),
+        "avg" => Ok(AggregateFunc::Avg),
+        "min" => Ok(AggregateFunc::Min),
+        "max" => Ok(AggregateFunc::Max),
+        _ => Err(anyhow::anyhow!("Unknown aggregate function: {}", name)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FnExpr (moved from datalog.rs)
+// ---------------------------------------------------------------------------
+
+/// A function expression that computes a value and binds it to an output variable.
+/// Example: `[(+ ?age 1) ?next_age]`
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnExpr {
+    pub expr: Expr,
+    pub output: Variable,
+}
+
+impl FnExpr {
+    /// Variables referenced in the expression (inputs).
+    pub fn input_variables(&self) -> Vec<Variable> {
+        expr_variables(&self.expr)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pattern helpers (replacing PatternClause methods)
+// ---------------------------------------------------------------------------
+
+/// Extract variables from a Pattern's e/a/v positions.
+fn pattern_variables(pattern: &Pattern) -> Vec<Variable> {
+    let mut vars = vec![];
+    if let PatternNonValuePlace::Variable(ref v) = pattern.entity {
+        vars.push(v.clone());
+    }
+    if let PatternNonValuePlace::Variable(ref v) = pattern.attribute {
+        vars.push(v.clone());
+    }
+    if let PatternValuePlace::Variable(ref v) = pattern.value {
+        vars.push(v.clone());
+    }
+    vars
+}
+
+/// Resolve attribute from a PatternNonValuePlace to an attribute ID.
+fn resolve_attribute_from_pattern(
+    attr: &PatternNonValuePlace,
+    attribute_map: &HashMap<String, i64>,
+) -> Result<i64, Error> {
+    match attr {
+        PatternNonValuePlace::Ident(ref kw) => {
+            let name = match kw.namespace() {
+                Some(ns) => format!("{}/{}", ns, kw.name()),
+                None => kw.name().to_string(),
+            };
+            attribute_map
+                .get(&name)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", name))
+        }
+        PatternNonValuePlace::Entid(id) => Ok(*id),
+        _ => Err(anyhow::anyhow!("Attribute must be a keyword or entid")),
+    }
+}
+
+/// Convert a PatternNonValuePlace to a DataType (for constant positions).
+fn non_value_place_to_datatype(place: &PatternNonValuePlace) -> Option<DataType> {
+    match place {
+        PatternNonValuePlace::Entid(id) => Some(DataType::Long(*id)),
+        PatternNonValuePlace::Ident(ref kw) => Some(DataType::Keyword((**kw).clone())),
+        _ => None,
+    }
+}
+
+/// Convert a PatternValuePlace to a DataType (for constant positions).
+fn value_place_to_datatype(place: &PatternValuePlace) -> Option<DataType> {
+    match place {
+        PatternValuePlace::EntidOrInteger(i) => Some(DataType::Long(*i)),
+        PatternValuePlace::IdentOrKeyword(ref kw) => Some(DataType::Keyword((**kw).clone())),
+        PatternValuePlace::Constant(ref c) => non_integer_constant_to_datatype(c),
+        _ => None,
+    }
+}
+
+/// Convert a NonIntegerConstant to a DataType.
+fn non_integer_constant_to_datatype(c: &NonIntegerConstant) -> Option<DataType> {
+    match c {
+        NonIntegerConstant::Boolean(b) => Some(DataType::Boolean(*b)),
+        NonIntegerConstant::BigInteger(ref bi) => {
+            // Try to convert to i128
+            let val: i128 = bi.clone().try_into().ok()?;
+            Some(DataType::BigInt(val))
+        }
+        NonIntegerConstant::Float(f) => Some(DataType::Double(f.into_inner())),
+        NonIntegerConstant::Text(ref s) => Some(DataType::String((**s).clone())),
+        NonIntegerConstant::Instant(dt) => Some(DataType::Instant(*dt)),
+        NonIntegerConstant::Uuid(u) => Some(DataType::Uuid(*u)),
+    }
+}
+
+/// Check if a PatternNonValuePlace is a variable.
+fn is_non_value_variable(place: &PatternNonValuePlace) -> bool {
+    matches!(place, PatternNonValuePlace::Variable(_))
+}
+
+/// Check if a PatternValuePlace is a variable.
+fn is_value_variable(place: &PatternValuePlace) -> bool {
+    matches!(place, PatternValuePlace::Variable(_))
+}
+
+/// Check if a PatternNonValuePlace is a constant (Entid or Ident).
+fn is_non_value_constant(place: &PatternNonValuePlace) -> bool {
+    matches!(
+        place,
+        PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_)
+    )
+}
+
+/// Check if a PatternValuePlace is a constant.
+fn is_value_constant(place: &PatternValuePlace) -> bool {
+    matches!(
+        place,
+        PatternValuePlace::EntidOrInteger(_)
+            | PatternValuePlace::IdentOrKeyword(_)
+            | PatternValuePlace::Constant(_)
+    )
+}
+
+/// Check if a PatternNonValuePlace is a placeholder.
+fn is_non_value_placeholder(place: &PatternNonValuePlace) -> bool {
+    matches!(place, PatternNonValuePlace::Placeholder)
+}
+
+/// Check if a PatternValuePlace is a placeholder.
+fn is_value_placeholder(place: &PatternValuePlace) -> bool {
+    matches!(place, PatternValuePlace::Placeholder)
+}
+
+// ---------------------------------------------------------------------------
+// Predicate/WhereFn conversion (edn types -> Expr/FnExpr)
+// ---------------------------------------------------------------------------
+
+fn convert_binary_op(name: &str) -> Result<BinaryOp, Error> {
+    match name {
+        "<" => Ok(BinaryOp::Lt),
+        "<=" => Ok(BinaryOp::LtEq),
+        ">" => Ok(BinaryOp::Gt),
+        ">=" => Ok(BinaryOp::GtEq),
+        "=" => Ok(BinaryOp::Eq),
+        "not=" | "!=" => Ok(BinaryOp::NotEq),
+        "+" => Ok(BinaryOp::Add),
+        "-" => Ok(BinaryOp::Sub),
+        "*" => Ok(BinaryOp::Mul),
+        "/" | "quot" => Ok(BinaryOp::Div),
+        "mod" => Ok(BinaryOp::Mod),
+        "concat" => Ok(BinaryOp::Concat),
+        _ => Err(anyhow::anyhow!("Unsupported operator: {}", name)),
+    }
+}
+
+fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
+    match arg {
+        edn::query::FnArg::Variable(v) => Ok(Expr::Variable(v.clone())),
+        edn::query::FnArg::EntidOrInteger(i) => Ok(Expr::Literal(DataType::Long(*i))),
+        edn::query::FnArg::IdentOrKeyword(ref kw) => {
+            Ok(Expr::Literal(DataType::Keyword((*kw).clone())))
+        }
+        edn::query::FnArg::Constant(ref c) => non_integer_constant_to_datatype(c)
+            .map(Expr::Literal)
+            .ok_or_else(|| anyhow::anyhow!("Cannot convert constant to DataType")),
+        _ => Err(anyhow::anyhow!("Unsupported fn arg type")),
+    }
+}
+
+fn convert_predicate(pred: &EdnPredicate) -> Result<Expr, Error> {
+    let op_name = pred.operator.0.as_str();
+    let op = convert_binary_op(op_name)?;
+    if pred.args.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "Predicate '{}' expects 2 args, got {}",
+            op_name,
+            pred.args.len()
+        ));
+    }
+    let left = convert_fn_arg(&pred.args[0])?;
+    let right = convert_fn_arg(&pred.args[1])?;
+    Ok(Expr::BinaryExpr(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    }))
+}
+
+fn convert_where_fn(wf: &EdnWhereFn) -> Result<FnExpr, Error> {
+    let op_name = wf.operator.0.as_str();
+    let op = convert_binary_op(op_name)?;
+    if wf.args.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "WhereFn '{}' expects 2 args, got {}",
+            op_name,
+            wf.args.len()
+        ));
+    }
+    let left = convert_fn_arg(&wf.args[0])?;
+    let right = convert_fn_arg(&wf.args[1])?;
+    let expr = Expr::BinaryExpr(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    });
+    let output = match &wf.binding {
+        edn::query::Binding::BindScalar(v) => v.clone(),
+        _ => return Err(anyhow::anyhow!("Only scalar binding supported")),
+    };
+    Ok(FnExpr { expr, output })
+}
+
+// ---------------------------------------------------------------------------
+// Variable collection from clauses
+// ---------------------------------------------------------------------------
+
+/// Extract variables from an OrWhereClause.
+fn collect_variables_from_or_branch(branch: &OrWhereClause) -> Vec<Variable> {
     match branch {
-        OrBranch::Clause(clause) => collect_variables_from_clause(clause),
-        OrBranch::And(children) => children
+        OrWhereClause::Clause(clause) => collect_variables_from_clause(clause),
+        OrWhereClause::And(children) => children
             .iter()
             .flat_map(collect_variables_from_clause)
             .collect(),
@@ -40,42 +295,52 @@ fn collect_variables_from_or_branch(branch: &OrBranch) -> Vec<Variable> {
 }
 
 /// Recursively extract variables from a single WhereClause.
-/// Only positive (Triple/Or/FnExpr) clauses contribute variables. NOT and Predicate
+/// Only positive (Pattern/OrJoin/WhereFn) clauses contribute variables. NotJoin and Pred
 /// clauses do not introduce new variables.
 fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
     match clause {
-        WhereClause::Triple(triple) => PatternClause::from(triple.clone()).variables(),
-        WhereClause::Or(branches) => {
+        WhereClause::Pattern(pattern) => pattern_variables(pattern),
+        WhereClause::OrJoin(oj) => {
             // All branches must have the same free variables (validated in execute_query).
             // Extract from the first branch only.
-            branches
+            oj.clauses
                 .first()
                 .map(collect_variables_from_or_branch)
                 .unwrap_or_default()
         }
-        WhereClause::FnExpr(fn_expr) => vec![fn_expr.output.clone()],
-        WhereClause::Not(_) | WhereClause::Predicate(_) => vec![],
+        WhereClause::WhereFn(wf) => {
+            // The output variable is the one contributed.
+            match &wf.binding {
+                edn::query::Binding::BindScalar(v) => vec![v.clone()],
+                _ => vec![],
+            }
+        }
+        WhereClause::NotJoin(_) | WhereClause::Pred(_) => vec![],
         _ => vec![],
     }
 }
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
-/// Only positive (Triple/Or/FnExpr) clauses contribute to the variable order. NOT and Predicate
+/// Only positive (Pattern/OrJoin/WhereFn) clauses contribute to the variable order. NotJoin and Pred
 /// clauses do not introduce new variables.
 ///
-/// FnExpr clauses are moved to the back so their output variables appear after all
-/// Triple/Or variables in the join order.
-/// TODO: refine to only require the clauses that bind a FnExpr's input variables
-/// to appear before that FnExpr (topological sort).
+/// WhereFn clauses are moved to the back so their output variables appear after all
+/// Pattern/OrJoin variables in the join order.
+/// TODO: refine to only require the clauses that bind a WhereFn's input variables
+/// to appear before that WhereFn (topological sort).
 pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
 
-    // Non-FnExpr clauses first, then FnExpr clauses, preserving relative order within each group.
+    // Non-WhereFn clauses first, then WhereFn clauses, preserving relative order within each group.
     let reordered: Vec<&WhereClause> = where_clauses
         .iter()
-        .filter(|c| !matches!(c, WhereClause::FnExpr(_)))
-        .chain(where_clauses.iter().filter(|c| matches!(c, WhereClause::FnExpr(_))))
+        .filter(|c| !matches!(c, WhereClause::WhereFn(_)))
+        .chain(
+            where_clauses
+                .iter()
+                .filter(|c| matches!(c, WhereClause::WhereFn(_))),
+        )
         .collect();
 
     for clause in reordered {
@@ -88,7 +353,7 @@ pub fn query_variable_order(where_clauses: &[WhereClause]) -> Vec<Variable> {
     order
 }
 
-/// Build a variable → position index from the join order for O(1) lookups.
+/// Build a variable -> position index from the join order for O(1) lookups.
 fn build_var_index(join_order: &[Variable]) -> HashMap<&Variable, usize> {
     join_order.iter().enumerate().map(|(i, v)| (v, i)).collect()
 }
@@ -98,9 +363,8 @@ fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut vars = Vec::new();
     let mut seen = HashSet::new();
     for clause in inner_clauses {
-        if let WhereClause::Triple(triple) = clause {
-            let pattern = PatternClause::from(triple.clone());
-            for var in pattern.variables() {
+        if let WhereClause::Pattern(pattern) = clause {
+            for var in pattern_variables(pattern) {
                 if seen.insert(var.clone()) {
                     vars.push(var);
                 }
@@ -116,8 +380,8 @@ fn validate_not_clauses(
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
     for clause in where_clauses {
-        if let WhereClause::Not(inner) = clause {
-            for var in not_clause_variables(inner) {
+        if let WhereClause::NotJoin(nj) = clause {
+            for var in not_clause_variables(&nj.clauses) {
                 if !var_index.contains_key(&var) {
                     return Err(anyhow::anyhow!(
                         "Variable {} in NOT clause is not bound by positive clauses",
@@ -137,8 +401,9 @@ fn validate_predicate_clauses(
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
     for clause in where_clauses {
-        if let WhereClause::Predicate(expr) = clause {
-            let vars = expr_variables(expr);
+        if let WhereClause::Pred(pred) = clause {
+            let expr = convert_predicate(pred)?;
+            let vars = expr_variables(&expr);
             if vars.is_empty() {
                 return Err(anyhow::anyhow!(
                     "Predicate expression must reference at least one variable"
@@ -157,13 +422,14 @@ fn validate_predicate_clauses(
     Ok(())
 }
 
-/// Validate that all FnExpr input variables precede the output variable in the join order.
+/// Validate that all WhereFn input variables precede the output variable in the join order.
 fn validate_fn_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
     for clause in where_clauses {
-        if let WhereClause::FnExpr(fn_expr) = clause {
+        if let WhereClause::WhereFn(wf) = clause {
+            let fn_expr = convert_where_fn(wf)?;
             let output_pos = var_index.get(&fn_expr.output).ok_or_else(|| {
                 anyhow::anyhow!(
                     "Function output variable {} not in join order",
@@ -262,6 +528,45 @@ fn compile_fn_expr(
     )))
 }
 
+/// Determine the index type for a single-variable pattern using Pattern directly.
+fn pattern_index_type(pattern: &Pattern, join_order: &[Variable]) -> Result<IndexType, Error> {
+    let entity = &pattern.entity;
+    let attribute = &pattern.attribute;
+    let value = &pattern.value;
+
+    // Attribute must be constant (Ident or Entid)
+    if matches!(
+        attribute,
+        PatternNonValuePlace::Placeholder | PatternNonValuePlace::Variable(_)
+    ) {
+        return Err(anyhow::anyhow!(
+            "Attribute position must be a keyword or entid"
+        ));
+    }
+
+    match (entity, value) {
+        (PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_), _) => Ok(IndexType::AEV),
+        (PatternNonValuePlace::Placeholder, _) => Ok(IndexType::AV),
+        (PatternNonValuePlace::Variable(_), PatternValuePlace::Placeholder) => Ok(IndexType::AE),
+        (PatternNonValuePlace::Variable(ref v1), PatternValuePlace::Variable(ref v2)) => {
+            let entity_pos = join_order.iter().position(|v| v == v1);
+            let value_pos = join_order.iter().position(|v| v == v2);
+            match (entity_pos, value_pos) {
+                (Some(e_pos), Some(v_pos)) => {
+                    if e_pos < v_pos {
+                        Ok(IndexType::AEV)
+                    } else {
+                        Ok(IndexType::AVE)
+                    }
+                }
+                _ => Err(anyhow::anyhow!("Variables not found in join order")),
+            }
+        }
+        // Variable entity + constant value (EntidOrInteger, IdentOrKeyword, Constant)
+        (PatternNonValuePlace::Variable(_), _) => Ok(IndexType::AVE),
+    }
+}
+
 /// Determine index types for each participating level.
 ///
 /// For single-variable patterns: use the appropriate index based on what's constant.
@@ -269,26 +574,22 @@ fn compile_fn_expr(
 ///   - Level 0: use AE or AV (just attribute + one component) to propose first variable
 ///   - Level 1: use AEV or AVE (attribute + both components) to verify/propose second variable
 fn determine_index_types(
-    pattern: &PatternClause,
+    pattern: &Pattern,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
     participating_levels: &[usize],
 ) -> Result<Vec<IndexType>, Error> {
-    let pattern_vars = pattern.variables();
+    let pat_vars = pattern_variables(pattern);
 
-    if pattern_vars.len() == 1 {
-        // Single variable pattern - use the standard index_type
-        let index_type = pattern.index_type(join_order.to_vec())?;
+    if pat_vars.len() == 1 {
+        let index_type = pattern_index_type(pattern, join_order)?;
         Ok(vec![index_type])
-    } else if pattern_vars.len() == 2 {
-        // Two variable pattern - need different indices for each level
-        // Determine which variable comes first in join order
-        let first_var_pos = var_index.get(&pattern_vars[0]).copied();
-        let second_var_pos = var_index.get(&pattern_vars[1]).copied();
+    } else if pat_vars.len() == 2 {
+        let first_var_pos = var_index.get(&pat_vars[0]).copied();
+        let second_var_pos = var_index.get(&pat_vars[1]).copied();
 
         match (first_var_pos, second_var_pos) {
             (Some(e_pos), Some(v_pos)) => {
-                // Both vars are entity and value (attribute is always constant for now)
                 if e_pos < v_pos {
                     // Entity comes first: AE for level 0, AEV for level 1
                     Ok(vec![IndexType::AE, IndexType::AEV])
@@ -299,24 +600,23 @@ fn determine_index_types(
             }
             _ => Err(anyhow::anyhow!("Variables not found in join order")),
         }
-    } else if pattern_vars.is_empty() {
-        // No variables - pattern is fully constant (existence check)
+    } else if pat_vars.is_empty() {
         Ok(vec![])
     } else {
-        Err(anyhow::anyhow!("Patterns with more than 2 variables not supported"))
+        Err(anyhow::anyhow!(
+            "Patterns with more than 2 variables not supported"
+        ))
     }
 }
 
 /// Compute the constant prefix bytes for a pattern based on index type.
-/// For AVE index with constant value: include serialized value.
-/// For AEV index with constant entity: include serialized entity.
-fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Result<Vec<u8>, Error> {
+fn compute_constant_prefix(pattern: &Pattern, index_type: IndexType) -> Result<Vec<u8>, Error> {
     match index_type {
         IndexType::AVE => {
             // AVE key order: [attr, value, entity]
             // If value is constant, include it in prefix
-            if let PatternElement::Constant(value) = &pattern.value {
-                Ok(value.encode())
+            if let Some(dt) = value_place_to_datatype(&pattern.value) {
+                Ok(dt.encode())
             } else {
                 Ok(vec![])
             }
@@ -324,24 +624,23 @@ fn compute_constant_prefix(pattern: &PatternClause, index_type: IndexType) -> Re
         IndexType::AEV => {
             // AEV key order: [attr, entity, value]
             // If entity is constant, include it in prefix
-            if let PatternElement::Constant(entity) = &pattern.entity {
-                Ok(entity.encode())
+            if let Some(dt) = non_value_place_to_datatype(&pattern.entity) {
+                Ok(dt.encode())
             } else {
                 Ok(vec![])
             }
         }
         IndexType::AE | IndexType::AV => {
             // These are used for two-variable patterns at level 0
-            // No constants to add (we just scan all entities or values for an attribute)
             Ok(vec![])
         }
         _ => Ok(vec![]),
     }
 }
 
-/// Compile a TriplePattern into a PrefixExtender.
+/// Compile a Pattern into a PrefixExtender.
 pub fn compile_pattern(
-    pattern: &TriplePattern,
+    pattern: &Pattern,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
     attribute_id: i64,
@@ -349,22 +648,21 @@ pub fn compile_pattern(
     handle: Handle,
     as_of: i64,
 ) -> Result<GenericPrefixExtender, Error> {
-    let pattern_clause = PatternClause::from(pattern.clone());
-    let pattern_vars = pattern_clause.variables();
+    let pat_vars = pattern_variables(pattern);
 
     // Determine participating levels
-    let participating_levels: Vec<usize> = pattern_vars
+    let participating_levels: Vec<usize> = pat_vars
         .iter()
         .filter_map(|v| var_index.get(v).copied())
         .collect();
 
     // Determine index types for each level
     let index_types =
-        determine_index_types(&pattern_clause, join_order, var_index, &participating_levels)?;
+        determine_index_types(pattern, join_order, var_index, &participating_levels)?;
 
     // Compute constant prefix (for patterns with constant entity or value)
     let constant_prefix = if !index_types.is_empty() {
-        compute_constant_prefix(&pattern_clause, index_types[0])?
+        compute_constant_prefix(pattern, index_types[0])?
     } else {
         vec![]
     };
@@ -380,15 +678,11 @@ pub fn compile_pattern(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Find plan (projection + aggregation)
+// ---------------------------------------------------------------------------
+
 /// How to produce one column of the output row.
-///
-/// Two index spaces are in play:
-/// - **join-order index**: position in the raw result tuple from the join
-/// - **group position**: position in `FindPlan::group_key_indices`
-///
-/// `GroupVar` uses a group position (indirect) so that `group_key_indices` can
-/// be iterated directly in the hot loop without filtering. `Aggregate` uses a
-/// join-order index (direct) since aggregates are only read once per row.
 pub(crate) enum Projection {
     /// Index into `group_key_indices`, which itself holds a join-order index.
     GroupVar(usize),
@@ -413,6 +707,7 @@ fn compile_find_plan(
 ) -> Result<FindPlan, Error> {
     let elements = match find {
         FindSpec::FindRel(elements) => elements,
+        _ => return Err(anyhow::anyhow!("Only FindRel is currently supported")),
     };
 
     let mut group_key_indices = Vec::new();
@@ -421,7 +716,7 @@ fn compile_find_plan(
 
     for elem in elements {
         match elem {
-            FindElement::Variable(var) => {
+            Element::Variable(var) => {
                 let idx = *var_index
                     .get(var)
                     .ok_or_else(|| anyhow::anyhow!("Find variable {} not in where clauses", var))?;
@@ -429,15 +724,35 @@ fn compile_find_plan(
                 group_key_indices.push(idx);
                 projections.push(Projection::GroupVar(group_pos));
             }
-            FindElement::Aggregate(func, var) => {
+            Element::Aggregate(agg) => {
                 has_aggregates = true;
+                let func_name = agg.func.0.to_string();
+                let func = parse_aggregate_func(&func_name)?;
+                if agg.args.len() != 1 {
+                    return Err(anyhow::anyhow!(
+                        "Aggregate function '{}' requires exactly 1 argument, got {}",
+                        func_name,
+                        agg.args.len()
+                    ));
+                }
+                let var = match &agg.args[0] {
+                    edn::query::FnArg::Variable(v) => v,
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "Aggregate argument must be a variable, got {:?}",
+                            other
+                        ))
+                    }
+                };
                 let idx = *var_index.get(var).ok_or_else(|| {
                     anyhow::anyhow!("Aggregate variable {} not in where clauses", var)
                 })?;
-                projections.push(Projection::Aggregate(func.clone(), idx));
+                projections.push(Projection::Aggregate(func, idx));
             }
-            FindElement::PullExpr(_) => {
-                return Err(anyhow::anyhow!("PullExpr not supported"));
+            Element::Corresponding(_) | Element::Pull(_) => {
+                return Err(anyhow::anyhow!(
+                    "Pull and corresponding elements are not yet supported"
+                ));
             }
         }
     }
@@ -450,10 +765,7 @@ fn compile_find_plan(
 }
 
 /// Project join results without aggregation.
-fn project_results(
-    results: Vec<ResultTuple>,
-    plan: &FindPlan,
-) -> Result<QueryResult, Error> {
+fn project_results(results: Vec<ResultTuple>, plan: &FindPlan) -> Result<QueryResult, Error> {
     results
         .into_iter()
         .map(|tuple| {
@@ -472,15 +784,9 @@ fn project_results(
 }
 
 /// Execute aggregation over join results according to the find plan.
-fn execute_aggregation(
-    results: Vec<ResultTuple>,
-    plan: &FindPlan,
-) -> Result<QueryResult, Error> {
-    // Aggregation path: group by non-aggregate columns, accumulate aggregates.
-    // Key: serialized group columns; Value: (group_values, accumulators)
+fn execute_aggregation(results: Vec<ResultTuple>, plan: &FindPlan) -> Result<QueryResult, Error> {
     let mut groups: HashMap<Vec<u8>, (Vec<DataType>, Vec<Box<dyn Accumulator>>)> = HashMap::new();
 
-    // Count how many aggregate projections we have (for initializing accumulators)
     let agg_funcs: Vec<&AggregateFunc> = plan
         .projections
         .iter()
@@ -495,13 +801,11 @@ fn execute_aggregation(
     // produces one output row.
     if plan.group_key_indices.is_empty() {
         let accs: Vec<Box<dyn Accumulator>> =
-            agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+            agg_funcs.iter().map(|f| make_accumulator(*f)).collect();
         groups.insert(Vec::new(), (Vec::new(), accs));
     }
 
     for tuple in &results {
-        // Build group key by concatenating raw serialized bytes of group
-        // columns.
         let mut group_key = Vec::new();
         for &idx in &plan.group_key_indices {
             group_key.extend_from_slice(&tuple[idx]);
@@ -516,12 +820,11 @@ fn execute_aggregation(
                     .map(|&idx| Ok::<_, Error>(DataType::decode(&tuple[idx])?))
                     .collect::<Result<Vec<_>, _>>()?;
                 let accs: Vec<Box<dyn Accumulator>> =
-                    agg_funcs.iter().map(|f| make_accumulator(f)).collect();
+                    agg_funcs.iter().map(|f| make_accumulator(*f)).collect();
                 e.insert((group_values, accs))
             }
         };
 
-        // TODO: skip deserialization for Count (value is ignored)
         let mut agg_idx = 0;
         for proj in &plan.projections {
             if let Projection::Aggregate(_, join_idx) = proj {
@@ -532,7 +835,6 @@ fn execute_aggregation(
         }
     }
 
-    // Finalize: assemble output rows
     let mut output = Vec::with_capacity(groups.len());
     for (_, (group_values, accumulators)) in groups {
         let mut row = Vec::with_capacity(plan.projections.len());
@@ -561,52 +863,30 @@ fn validate_aggregate_clauses(
 ) -> Result<(), Error> {
     let elements = match find {
         FindSpec::FindRel(elements) => elements,
+        _ => return Ok(()),
     };
     for elem in elements {
-        if let FindElement::Aggregate(func, var) = elem {
-            if !var_index.contains_key(var) {
-                return Err(anyhow::anyhow!(
-                    "Aggregate variable {} in ({} {}) is not bound by where clauses",
-                    var,
-                    func,
-                    var
-                ));
+        if let Element::Aggregate(agg) = elem {
+            let func_name = agg.func.0.to_string();
+            if agg.args.len() == 1 {
+                if let edn::query::FnArg::Variable(ref var) = agg.args[0] {
+                    if !var_index.contains_key(var) {
+                        return Err(anyhow::anyhow!(
+                            "Aggregate variable {} in ({} {}) is not bound by where clauses",
+                            var,
+                            func_name,
+                            var
+                        ));
+                    }
+                }
             }
         }
     }
     Ok(())
 }
 
-/// Extract attribute name from a DataType constant.
-fn extract_attribute_name(data: &DataType) -> Result<String, Error> {
-    match data {
-        DataType::Keyword(kw) => match kw.namespace() {
-            Some(ns) => Ok(format!("{}/{}", ns, kw.name())),
-            None => Ok(kw.name().to_string()),
-        },
-        _ => Err(anyhow::anyhow!("Attribute must be a keyword, got {:?}", data)),
-    }
-}
-
-/// Resolve attribute PatternElement to attribute ID.
-fn resolve_attribute(
-    elem: &PatternElement,
-    attribute_map: &HashMap<String, i64>,
-) -> Result<i64, Error> {
-    match elem {
-        PatternElement::Constant(data) => {
-            let name = extract_attribute_name(data)?;
-            attribute_map
-                .get(&name)
-                .copied()
-                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", name))
-        }
-        _ => Err(anyhow::anyhow!("Attribute must be a constant")),
-    }
-}
-
 /// Validate that all OR branches have the same free variables.
-fn validate_or_branches(branches: &[OrBranch]) -> Result<(), Error> {
+fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
     if branches.is_empty() {
         return Err(anyhow::anyhow!("OR clause must have at least one branch"));
     }
@@ -631,31 +911,28 @@ fn validate_or_branches(branches: &[OrBranch]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validate a query before execution. Checks:
-/// - The query has at least one variable
-/// - All OR branches have the same free variables
-/// - All variables in NOT clauses are bound by positive clauses
-pub fn validate_query(query: &Query) -> Result<(), Error> {
+/// Validate a query before execution.
+pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
     let join_order = query_variable_order(&query.where_clauses);
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no variables"));
     }
     let var_index = build_var_index(&join_order);
     for clause in &query.where_clauses {
-        if let WhereClause::Or(branches) = clause {
-            validate_or_branches(branches)?;
+        if let WhereClause::OrJoin(oj) = clause {
+            validate_or_branches(&oj.clauses)?;
         }
     }
     validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
-    validate_aggregate_clauses(&query.find, &var_index)?;
+    validate_aggregate_clauses(&query.find_spec, &var_index)?;
     Ok(())
 }
 
-/// Compile an OrBranch into a PrefixExtender.
+/// Compile an OrWhereClause into a PrefixExtender.
 fn compile_or_branch(
-    branch: &OrBranch,
+    branch: &OrWhereClause,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
@@ -664,13 +941,23 @@ fn compile_or_branch(
     as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
-        OrBranch::Clause(clause) => {
+        OrWhereClause::Clause(clause) => {
             compile_where_clause(clause, join_order, var_index, slate, handle, attribute_map, as_of)
         }
-        OrBranch::And(children) => {
+        OrWhereClause::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
                 .iter()
-                .map(|c| compile_where_clause(c, join_order, var_index, slate, handle, attribute_map, as_of))
+                .map(|c| {
+                    compile_where_clause(
+                        c,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        attribute_map,
+                        as_of,
+                    )
+                })
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericAndPrefixExtender::new(extenders)))
         }
@@ -688,8 +975,8 @@ fn compile_where_clause(
     as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
-        WhereClause::Triple(pattern) => {
-            let attr_id = resolve_attribute(&pattern.attribute, attribute_map)?;
+        WhereClause::Pattern(pattern) => {
+            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, attribute_map)?;
             let extender = compile_pattern(
                 pattern,
                 join_order,
@@ -701,25 +988,53 @@ fn compile_where_clause(
             )?;
             Ok(Box::new(extender))
         }
-        WhereClause::Or(branches) => {
-            let children: Vec<Box<dyn PrefixExtender>> = branches
+        WhereClause::OrJoin(oj) => {
+            let children: Vec<Box<dyn PrefixExtender>> = oj
+                .clauses
                 .iter()
-                .map(|b| compile_or_branch(b, join_order, var_index, slate, handle, attribute_map, as_of))
+                .map(|b| {
+                    compile_or_branch(
+                        b,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        attribute_map,
+                        as_of,
+                    )
+                })
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericOrPrefixExtender::new(children)))
         }
-        WhereClause::Not(inner_clauses) => {
-            let children: Vec<Box<dyn PrefixExtender>> = inner_clauses
+        WhereClause::NotJoin(nj) => {
+            let children: Vec<Box<dyn PrefixExtender>> = nj
+                .clauses
                 .iter()
                 .map(|c| {
-                    compile_where_clause(c, join_order, var_index, slate, handle, attribute_map, as_of)
+                    compile_where_clause(
+                        c,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        attribute_map,
+                        as_of,
+                    )
                 })
                 .collect::<Result<_, _>>()?;
             let not_level = var_index.len() - 1;
-            Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
+            Ok(Box::new(GenericNotPrefixExtender::new(
+                children, not_level,
+            )))
         }
-        WhereClause::Predicate(expr) => compile_predicate(expr, var_index),
-        WhereClause::FnExpr(fn_expr) => compile_fn_expr(fn_expr, var_index),
+        WhereClause::Pred(pred) => {
+            let expr = convert_predicate(pred)?;
+            compile_predicate(&expr, var_index)
+        }
+        WhereClause::WhereFn(wf) => {
+            let fn_expr = convert_where_fn(wf)?;
+            compile_fn_expr(&fn_expr, var_index)
+        }
         _ => Err(anyhow::anyhow!(
             "Unsupported where clause type: {:?}",
             clause
@@ -729,7 +1044,7 @@ fn compile_where_clause(
 
 /// Execute a query against the database.
 pub fn execute_query(
-    query: &Query,
+    query: &ParsedQuery,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
     attribute_map: &HashMap<String, i64>,
@@ -761,7 +1076,7 @@ pub fn execute_query(
     let results = join.join();
 
     // 4. Project and aggregate results based on find clause
-    let plan = compile_find_plan(&query.find, &var_index)?;
+    let plan = compile_find_plan(&query.find_spec, &var_index)?;
     if plan.has_aggregates {
         execute_aggregation(results, &plan)
     } else {
@@ -772,163 +1087,99 @@ pub fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edn::Keyword;
 
-    fn kw(name: &str) -> DataType {
-        DataType::Keyword(Keyword::plain(name))
+    /// Parse an EDN query string into a ParsedQuery.
+    fn parse_query(input: &str) -> ParsedQuery {
+        edn::parse::parse_query(input).expect("failed to parse query")
     }
 
     #[test]
     fn test_query_variable_order_single_pattern() {
-        let where_clauses = vec![WhereClause::Triple(TriplePattern {
-            entity: PatternElement::Variable("?e".to_string()),
-            attribute: PatternElement::Constant(kw("name")),
-            value: PatternElement::Variable("?name".to_string()),
-        })];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e", "?name"]);
+        let parsed = parse_query("[:find ?e ?name :where [?e :name ?name]]");
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?name")
+            ]
+        );
     }
 
     #[test]
     fn test_query_variable_order_multiple_patterns() {
-        let where_clauses = vec![
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("name")),
-                value: PatternElement::Variable("?name".to_string()),
-            }),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("age")),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-        ];
-
-        let order = query_variable_order(&where_clauses);
-        // ?e appears first in pattern 1, ?name second in pattern 1, ?age in pattern 2
-        assert_eq!(order, vec!["?e", "?name", "?age"]);
+        let parsed =
+            parse_query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?name"),
+                Variable::from_valid_name("?age"),
+            ]
+        );
     }
 
     #[test]
     fn test_query_variable_order_with_constants() {
-        let where_clauses = vec![WhereClause::Triple(TriplePattern {
-            entity: PatternElement::Variable("?e".to_string()),
-            attribute: PatternElement::Constant(kw("name")),
-            value: PatternElement::Constant(DataType::String("Alice".to_string())),
-        })];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e"]);
+        let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"]]"#);
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(order, vec![Variable::from_valid_name("?e")]);
     }
-
-
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
-        let where_clauses = vec![WhereClause::Or(vec![
-            OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("name")),
-                value: PatternElement::Constant(DataType::String("alice".to_string())),
-            })),
-            OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("name")),
-                value: PatternElement::Constant(DataType::String("bob".to_string())),
-            })),
-        ])];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e"]);
+        let parsed = parse_query("[:find ?e :where (or [?e _ 10] [?e _ 15])]");
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(order, vec![Variable::from_valid_name("?e")]);
     }
 
     #[test]
     fn test_query_variable_order_or_and_triple() {
-        let where_clauses = vec![
-            WhereClause::Or(vec![
-                OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("alice".to_string())),
-                })),
-                OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("bob".to_string())),
-                })),
-            ]),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("age")),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-        ];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e", "?age"]);
+        let parsed = parse_query(
+            r#"[:find ?e ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :age ?age]]"#,
+        );
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?age"),
+            ]
+        );
     }
 
     #[test]
     fn test_query_variable_order_ignores_predicates() {
-        // Predicate clauses should NOT contribute variables to join order
-        let where_clauses = vec![
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("age")),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-            WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
-                op: crate::expr::BinaryOp::Lt,
-                right: Box::new(crate::expr::Expr::Literal(DataType::Long(30))),
-            })),
-        ];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e", "?age"]);
+        let parsed =
+            parse_query("[:find ?e ?age :where [?e :age ?age] [(< ?age 30)]]");
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?age"),
+            ]
+        );
     }
 
     #[test]
     fn test_validate_predicate_unbound_variable() {
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
-                }),
-                WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                    left: Box::new(crate::expr::Expr::Variable("?unbound".to_string())),
-                    op: crate::expr::BinaryOp::Lt,
-                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(30))),
-                })),
-            ],
-        };
-        let result = validate_query(&query);
+        let parsed = parse_query(
+            r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#,
+        );
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
 
     #[test]
     fn test_validate_predicate_no_variables() {
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
-                }),
-                WhereClause::Predicate(crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                    left: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                    op: crate::expr::BinaryOp::Lt,
-                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(2))),
-                })),
-            ],
-        };
-        let result = validate_query(&query);
+        let parsed = parse_query(
+            r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
+        );
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -938,49 +1189,26 @@ mod tests {
 
     #[test]
     fn test_query_variable_order_with_fn_expr() {
-        // FnExpr should contribute the output variable to the join order
-        let where_clauses = vec![
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-            WhereClause::FnExpr(FnExpr {
-                expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                    left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
-                    op: crate::expr::BinaryOp::Add,
-                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                }),
-                output: "?next_age".to_string(),
-            }),
-        ];
-
-        let order = query_variable_order(&where_clauses);
-        // ?e, ?age from Triple; ?next_age from FnExpr (input ?age already seen)
-        assert_eq!(order, vec!["?e", "?age", "?next_age"]);
+        let parsed = parse_query(
+            "[:find ?e ?next_age :where [?e :age ?age] [(+ ?age 1) ?next_age]]",
+        );
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?age"),
+                Variable::from_valid_name("?next_age"),
+            ]
+        );
     }
 
     #[test]
     fn test_validate_fn_unbound_input() {
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("name".to_string())),
-                    value: PatternElement::Constant(DataType::String("Alice".to_string())),
-                }),
-                WhereClause::FnExpr(FnExpr {
-                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                        left: Box::new(crate::expr::Expr::Variable("?unbound".to_string())),
-                        op: crate::expr::BinaryOp::Add,
-                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                    }),
-                    output: "?result".to_string(),
-                }),
-            ],
-        };
-        let result = validate_query(&query);
+        let parsed = parse_query(
+            r#"[:find ?e :where [?e :name "Alice"] [(+ ?unbound 1) ?result]]"#,
+        );
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
@@ -988,25 +1216,10 @@ mod tests {
     #[test]
     fn test_validate_fn_input_must_precede_output() {
         // Output ?e is at level 0 (from Triple), input ?age is at level 1 — input doesn't precede output
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
-                    value: PatternElement::Variable("?age".to_string()),
-                }),
-                WhereClause::FnExpr(FnExpr {
-                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                        left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
-                        op: crate::expr::BinaryOp::Add,
-                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                    }),
-                    output: "?e".to_string(),
-                }),
-            ],
-        };
-        let result = validate_query(&query);
+        let parsed = parse_query(
+            "[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]",
+        );
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must precede"));
     }
@@ -1014,79 +1227,50 @@ mod tests {
     #[test]
     fn test_fn_expr_before_input_triple_is_valid() {
         // FnExpr appears before the Triple that binds its input — should be valid
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
-                FindElement::Variable("?next_age".to_string()),
-            ]),
-            where_clauses: vec![
-                WhereClause::FnExpr(FnExpr {
-                    expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                        left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
-                        op: crate::expr::BinaryOp::Add,
-                        right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                    }),
-                    output: "?next_age".to_string(),
-                }),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::String("age".to_string())),
-                    value: PatternElement::Variable("?age".to_string()),
-                }),
-            ],
-        };
-        let result = validate_query(&query);
+        // because query_variable_order reorders FnExpr clauses after Triples
+        let parsed = parse_query(
+            "[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]",
+        );
+        let result = validate_query(&parsed);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_query_variable_order_fn_expr_before_triple() {
         // FnExpr appears first, but its output should still come after Triple vars
-        let where_clauses = vec![
-            WhereClause::FnExpr(FnExpr {
-                expr: crate::expr::Expr::BinaryExpr(crate::expr::BinaryExpr {
-                    left: Box::new(crate::expr::Expr::Variable("?age".to_string())),
-                    op: crate::expr::BinaryOp::Add,
-                    right: Box::new(crate::expr::Expr::Literal(DataType::Long(1))),
-                }),
-                output: "?next_age".to_string(),
-            }),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::String("age".to_string())),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-        ];
-
-        let order = query_variable_order(&where_clauses);
-        // Triple vars first, then FnExpr output
-        assert_eq!(order, vec!["?e", "?age", "?next_age"]);
+        let parsed = parse_query(
+            "[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]",
+        );
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?age"),
+                Variable::from_valid_name("?next_age"),
+            ]
+        );
     }
 
     #[test]
     fn test_query_variable_order_with_and_inside_or() {
-        // And inside Or should collect variables from all And children
-        let where_clauses = vec![WhereClause::Or(vec![OrBranch::And(vec![
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("name")),
-                value: PatternElement::Variable("?name".to_string()),
-            }),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(kw("age")),
-                value: PatternElement::Variable("?age".to_string()),
-            }),
-        ])])];
-
-        let order = query_variable_order(&where_clauses);
-        assert_eq!(order, vec!["?e", "?name", "?age"]);
+        let parsed = parse_query(
+            "[:find ?e ?name ?age :where (or (and [?e :name ?name] [?e :age ?age]))]",
+        );
+        let order = query_variable_order(&parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                Variable::from_valid_name("?e"),
+                Variable::from_valid_name("?name"),
+                Variable::from_valid_name("?age"),
+            ]
+        );
     }
 
     #[test]
     fn test_execute_aggregation_all_aggs_empty_input() {
-        // [:find (count ?e)] with no results → single row [[0]]
-        use crate::datalog::AggregateFunc;
+        // [:find (count ?e)] with no results -> single row [[0]]
         let plan = FindPlan {
             group_key_indices: vec![],
             projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
@@ -1100,8 +1284,7 @@ mod tests {
 
     #[test]
     fn test_execute_aggregation_with_group_keys_empty_input() {
-        // [:find ?dept (count ?e)] with no results → empty (no groups formed)
-        use crate::datalog::AggregateFunc;
+        // [:find ?dept (count ?e)] with no results -> empty (no groups formed)
         let plan = FindPlan {
             group_key_indices: vec![0],
             projections: vec![

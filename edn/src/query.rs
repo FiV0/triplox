@@ -37,9 +37,8 @@ use std::collections::{
 
 use std;
 use std::fmt;
-use std::rc::{
-    Rc,
-};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use ::{
     BigInt,
@@ -62,7 +61,7 @@ pub use ::{
 pub type SrcVarName = String;          // Do not include the required syntactic '$'.
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Variable(pub Rc<PlainSymbol>);
+pub struct Variable(pub Arc<PlainSymbol>);
 
 impl Variable {
     pub fn as_str(&self) -> &str {
@@ -81,7 +80,7 @@ impl Variable {
     pub fn from_valid_name(name: &str) -> Variable {
         let s = PlainSymbol::plain(name);
         assert!(s.is_var_symbol());
-        Variable(Rc::new(s))
+        Variable(Arc::new(s))
     }
 }
 
@@ -103,7 +102,7 @@ impl FromValue<Variable> for Variable {
 }
 
 impl Variable {
-    pub fn from_rc(sym: Rc<PlainSymbol>) -> Option<Variable> {
+    pub fn from_arc(sym: Arc<PlainSymbol>) -> Option<Variable> {
         if sym.is_var_symbol() {
             Some(Variable(sym.clone()))
         } else {
@@ -114,7 +113,7 @@ impl Variable {
     /// TODO: intern strings. #398.
     pub fn from_symbol(sym: &PlainSymbol) -> Option<Variable> {
         if sym.is_var_symbol() {
-            Some(Variable(Rc::new(sym.clone())))
+            Some(Variable(Arc::new(sym.clone())))
         } else {
             None
         }
@@ -279,13 +278,20 @@ impl std::fmt::Display for FnArg {
                 if var == &SrcVar::DefaultSrc {
                     write!(f, "$")
                 } else {
-                    write!(f, "{:?}", var)
+                    write!(f, "${}", match var { SrcVar::NamedSrc(ref n) => n, _ => "" })
                 }
             },
             &FnArg::EntidOrInteger(entid) => write!(f, "{}", entid),
             &FnArg::IdentOrKeyword(ref kw) => write!(f, "{}", kw),
-            &FnArg::Constant(ref constant) => write!(f, "{:?}", constant),
-            &FnArg::Vector(ref vec) => write!(f, "{:?}", vec),
+            &FnArg::Constant(ref constant) => write!(f, "{}", constant),
+            &FnArg::Vector(ref vec) => {
+                write!(f, "[")?;
+                for (i, arg) in vec.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, "]")
+            },
         }
     }
 }
@@ -480,14 +486,14 @@ impl PatternValuePlace {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PullConcreteAttribute {
-    Ident(Rc<Keyword>),
+    Ident(Arc<Keyword>),
     Entid(i64),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamedPullAttribute {
     pub attribute: PullConcreteAttribute,
-    pub alias: Option<Rc<Keyword>>,
+    pub alias: Option<Arc<Keyword>>,
 }
 
 impl From<PullConcreteAttribute> for NamedPullAttribute {
@@ -978,7 +984,7 @@ pub enum WhereClause {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedQuery {
     pub find_spec: FindSpec,
     pub default_source: SrcVar,
@@ -1236,5 +1242,270 @@ impl ContainsVariables for Pattern {
         if let PatternNonValuePlace::Variable(ref v) = self.tx {
             acc_ref(acc, v)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Display implementations for EDN round-tripping
+// ---------------------------------------------------------------------------
+
+impl std::fmt::Display for NonIntegerConstant {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        use chrono::SecondsFormat;
+        match self {
+            NonIntegerConstant::Boolean(v) => write!(f, "{}", v),
+            NonIntegerConstant::BigInteger(ref v) => write!(f, "{}N", v),
+            NonIntegerConstant::Float(ref v) => {
+                if *v == OrderedFloat(f64::INFINITY) {
+                    write!(f, "#f +Infinity")
+                } else if *v == OrderedFloat(f64::NEG_INFINITY) {
+                    write!(f, "#f -Infinity")
+                } else if v.is_nan() {
+                    write!(f, "#f NaN")
+                } else {
+                    write!(f, "{}", v)
+                }
+            },
+            NonIntegerConstant::Text(ref v) => write!(f, "\"{}\"", v),
+            NonIntegerConstant::Instant(v) => write!(f, "#inst \"{}\"", v.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+            NonIntegerConstant::Uuid(ref u) => write!(f, "#uuid \"{}\"", u.hyphenated()),
+        }
+    }
+}
+
+impl std::fmt::Display for PatternNonValuePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PatternNonValuePlace::Placeholder => write!(f, "_"),
+            PatternNonValuePlace::Variable(ref v) => write!(f, "{}", v),
+            PatternNonValuePlace::Entid(e) => write!(f, "{}", e),
+            PatternNonValuePlace::Ident(ref k) => write!(f, "{}", k),
+        }
+    }
+}
+
+impl std::fmt::Display for PatternValuePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PatternValuePlace::Placeholder => write!(f, "_"),
+            PatternValuePlace::Variable(ref v) => write!(f, "{}", v),
+            PatternValuePlace::EntidOrInteger(i) => write!(f, "{}", i),
+            PatternValuePlace::IdentOrKeyword(ref k) => write!(f, "{}", k),
+            PatternValuePlace::Constant(ref c) => write!(f, "{}", c),
+        }
+    }
+}
+
+impl std::fmt::Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[{} {} {}", self.entity, self.attribute, self.value)?;
+        if !matches!(self.tx, PatternNonValuePlace::Placeholder) {
+            write!(f, " {}", self.tx)?;
+        }
+        write!(f, "]")
+    }
+}
+
+impl std::fmt::Display for Predicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "({}", self.operator)?;
+        for arg in &self.args {
+            write!(f, " {}", arg)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl std::fmt::Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Binding::BindScalar(ref v) => write!(f, "{}", v),
+            Binding::BindColl(ref v) => write!(f, "[{} ...]", v),
+            Binding::BindTuple(ref vs) => {
+                write!(f, "[")?;
+                for (i, v) in vs.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    match v {
+                        VariableOrPlaceholder::Variable(ref var) => write!(f, "{}", var)?,
+                        VariableOrPlaceholder::Placeholder => write!(f, "_")?,
+                    }
+                }
+                write!(f, "]")
+            },
+            Binding::BindRel(ref vs) => {
+                write!(f, "[[")?;
+                for (i, v) in vs.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    match v {
+                        VariableOrPlaceholder::Variable(ref var) => write!(f, "{}", var)?,
+                        VariableOrPlaceholder::Placeholder => write!(f, "_")?,
+                    }
+                }
+                write!(f, "]]")
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for WhereFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[({}", self.operator)?;
+        for arg in &self.args {
+            write!(f, " {}", arg)?;
+        }
+        write!(f, ") {}", self.binding)?;
+        write!(f, "]")
+    }
+}
+
+impl std::fmt::Display for WhereClause {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            WhereClause::Pattern(ref p) => write!(f, "{}", p),
+            WhereClause::Pred(ref p) => write!(f, "{}", p),
+            WhereClause::WhereFn(ref wf) => write!(f, "{}", wf),
+            WhereClause::NotJoin(ref nj) => write!(f, "{}", nj),
+            WhereClause::OrJoin(ref oj) => write!(f, "{}", oj),
+            WhereClause::TypeAnnotation(ref ta) => write!(f, "[(type {} {})]", ta.variable, ta.value_type),
+            WhereClause::RuleExpr => write!(f, "(rule-expr)"),
+        }
+    }
+}
+
+impl std::fmt::Display for NotJoin {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.unify_vars {
+            UnifyVars::Implicit => write!(f, "(not")?,
+            UnifyVars::Explicit(ref vars) => {
+                write!(f, "(not-join [")?;
+                for (i, v) in vars.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")?;
+            },
+        }
+        for clause in &self.clauses {
+            write!(f, " {}", clause)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl std::fmt::Display for OrWhereClause {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            OrWhereClause::Clause(ref c) => write!(f, "{}", c),
+            OrWhereClause::And(ref clauses) => {
+                write!(f, "(and")?;
+                for c in clauses {
+                    write!(f, " {}", c)?;
+                }
+                write!(f, ")")
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for OrJoin {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.unify_vars {
+            UnifyVars::Implicit => write!(f, "(or")?,
+            UnifyVars::Explicit(ref vars) => {
+                write!(f, "(or-join [")?;
+                for (i, v) in vars.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")?;
+            },
+        }
+        for clause in &self.clauses {
+            write!(f, " {}", clause)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl std::fmt::Display for FindSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            FindSpec::FindRel(ref elems) => {
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{}", e)?;
+                }
+                Ok(())
+            },
+            FindSpec::FindColl(ref e) => write!(f, "[{} ...]", e),
+            FindSpec::FindTuple(ref elems) => {
+                write!(f, "[")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { write!(f, " ")?; }
+                    write!(f, "{}", e)?;
+                }
+                write!(f, "]")
+            },
+            FindSpec::FindScalar(ref e) => write!(f, "{} .", e),
+        }
+    }
+}
+
+impl std::fmt::Display for Order {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.0 {
+            Direction::Ascending => write!(f, "(asc {})", self.1),
+            Direction::Descending => write!(f, "(desc {})", self.1),
+        }
+    }
+}
+
+impl std::fmt::Display for Limit {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Limit::None => Ok(()),
+            Limit::Fixed(n) => write!(f, "{}", n),
+            Limit::Variable(ref v) => write!(f, "{}", v),
+        }
+    }
+}
+
+impl std::fmt::Display for ParsedQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{{:find [{}]", self.find_spec)?;
+        if !self.with.is_empty() {
+            write!(f, " :with [")?;
+            for (i, v) in self.with.iter().enumerate() {
+                if i > 0 { write!(f, " ")?; }
+                write!(f, "{}", v)?;
+            }
+            write!(f, "]")?;
+        }
+        if !self.in_vars.is_empty() {
+            write!(f, " :in [")?;
+            for (i, v) in self.in_vars.iter().enumerate() {
+                if i > 0 { write!(f, " ")?; }
+                write!(f, "{}", v)?;
+            }
+            write!(f, "]")?;
+        }
+        write!(f, " :where [")?;
+        for (i, c) in self.where_clauses.iter().enumerate() {
+            if i > 0 { write!(f, " ")?; }
+            write!(f, "{}", c)?;
+        }
+        write!(f, "]")?;
+        if let Some(ref orders) = self.order {
+            write!(f, " :order [")?;
+            for (i, o) in orders.iter().enumerate() {
+                if i > 0 { write!(f, " ")?; }
+                write!(f, "{}", o)?;
+            }
+            write!(f, "]")?;
+        }
+        if let Limit::Fixed(_) | Limit::Variable(_) = self.limit {
+            write!(f, " :limit {}", self.limit)?;
+        }
+        write!(f, "}}")
     }
 }

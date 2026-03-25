@@ -6,7 +6,7 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::clock;
-use crate::datalog::Query;
+use edn::query::ParsedQuery;
 use crate::file_log::FileLog;
 use crate::indexer::{Indexer, latest_tx_key_from_snapshot};
 use crate::log::{subscribe, TxLog, TxLogReader};
@@ -26,7 +26,7 @@ pub trait SubmitNode {
 
 #[allow(async_fn_in_trait)]
 pub trait Database {
-    async fn query(&self, query: &Query) -> Result<QueryResult, Error>;
+    async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -68,7 +68,7 @@ impl DB {
 impl Database for DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    async fn query(&self, query: &Query) -> Result<QueryResult, Error> {
+    async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error> {
         validate_query(query)?;
 
         let snapshot = self.snapshot.clone();
@@ -208,13 +208,11 @@ mod tests {
     use slatedb::config::ScanOptions;
 
     use crate::codec;
-    use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
-    use crate::expr::{BinaryExpr, BinaryOp, Expr};
-    use crate::indexer::eav_key_to_parts;
-    use crate::ops::{Attribute, DataType, TxOp};
+    use crate::parse::parse_query;
+    use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
+    use crate::ops::{Attribute, DataType, Entid, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
-    use edn::kw;
     use edn::Keyword;
     use super::*;
 
@@ -244,10 +242,8 @@ mod tests {
 
         // Verify data is queryable after async indexing
         let db = node.db().await.unwrap();
-        let result = db.query(&Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![triple("?e", kw!(:name), "?name")],
-        }).await.unwrap();
+        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let result = db.query(&query).await.unwrap();
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
 
@@ -302,16 +298,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-            ]),
-            where_clauses: vec![WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                value: PatternElement::Variable("?name".to_string()),
-            })],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -335,14 +322,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                value: PatternElement::Constant(DataType::String("alice".to_string())),
-            })],
-        };
+        let query = parse_query(r#"[:find ?e :where [?e :name "alice"]]"#).unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -365,24 +345,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-                FindElement::Variable("?age".to_string()),
-            ]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:age))),
-                    value: PatternElement::Variable("?age".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -410,21 +373,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         // ?friend is in value position of :follows and entity position of :name
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:follows))),
-                    value: PatternElement::Variable("?friend".to_string()),
-                }),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?friend".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -451,28 +400,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
-            where_clauses: vec![
-                WhereClause::Or(vec![
-                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                        value: PatternElement::Constant(DataType::String("alice".to_string())),
-                    })),
-                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                        value: PatternElement::Constant(DataType::String("bob".to_string())),
-                    })),
-                ]),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query(r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#).unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -504,36 +432,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-                FindElement::Variable("?age".to_string()),
-            ]),
-            where_clauses: vec![
-                WhereClause::Or(vec![
-                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                        value: PatternElement::Constant(DataType::String("alice".to_string())),
-                    })),
-                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                        value: PatternElement::Constant(DataType::String("bob".to_string())),
-                    })),
-                ]),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:age))),
-                    value: PatternElement::Variable("?age".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -564,42 +463,7 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
         node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
-            where_clauses: vec![
-                WhereClause::Or(vec![
-                    OrBranch::And(vec![
-                        WhereClause::Triple(TriplePattern {
-                            entity: PatternElement::Variable("?e".to_string()),
-                            attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                            value: PatternElement::Constant(DataType::String("alice".to_string())),
-                        }),
-                        WhereClause::Triple(TriplePattern {
-                            entity: PatternElement::Variable("?e".to_string()),
-                            attribute: PatternElement::Constant(DataType::Keyword(kw!(:age))),
-                            value: PatternElement::Constant(DataType::Long(30)),
-                        }),
-                    ]),
-                    OrBranch::And(vec![
-                        WhereClause::Triple(TriplePattern {
-                            entity: PatternElement::Variable("?e".to_string()),
-                            attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                            value: PatternElement::Constant(DataType::String("charlie".to_string())),
-                        }),
-                        WhereClause::Triple(TriplePattern {
-                            entity: PatternElement::Variable("?e".to_string()),
-                            attribute: PatternElement::Constant(DataType::Keyword(kw!(:age))),
-                            value: PatternElement::Constant(DataType::Long(35)),
-                        }),
-                    ]),
-                ]),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query(r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#).unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -633,16 +497,7 @@ mod tests {
             _ => panic!("Tx2 should commit"),
         };
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-            ]),
-            where_clauses: vec![WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                value: PatternElement::Variable("?name".to_string()),
-            })],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
 
         // db_as_of(tx_key1): should only see alice
         let db1 = node.db_as_of(tx_key1).await.unwrap();
@@ -663,16 +518,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
 
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-            ]),
-            where_clauses: vec![WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                value: PatternElement::Variable("?name".to_string()),
-            })],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
 
         // First node: insert data
         let node = Node::local_node(&root_path).await.unwrap();
@@ -777,16 +623,7 @@ mod tests {
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
-        let query = Query {
-            find: FindSpec::FindRel(vec![
-                FindElement::Variable("?name".to_string()),
-            ]),
-            where_clauses: vec![WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                value: PatternElement::Variable("?name".to_string()),
-            })],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
@@ -825,63 +662,13 @@ mod tests {
         }
     }
 
-    fn predicate(left: Expr, op: BinaryOp, right: Expr) -> WhereClause {
-        WhereClause::Predicate(Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(left),
-            op,
-            right: Box::new(right),
-        }))
-    }
-
-    fn fn_expr(left: Expr, op: BinaryOp, right: Expr, output: &str) -> WhereClause {
-        WhereClause::FnExpr(FnExpr {
-            expr: Expr::BinaryExpr(BinaryExpr {
-                left: Box::new(left),
-                op,
-                right: Box::new(right),
-            }),
-            output: output.to_string(),
-        })
-    }
-
-    fn var(name: &str) -> Expr {
-        Expr::Variable(name.to_string())
-    }
-
-    fn lit_long(n: i64) -> Expr {
-        Expr::Literal(DataType::Long(n))
-    }
-
-    fn lit_string(s: &str) -> Expr {
-        Expr::Literal(DataType::String(s.to_string()))
-    }
-
-    fn find_vars(names: &[&str]) -> FindSpec {
-        FindSpec::FindRel(names.iter().map(|n| FindElement::Variable(n.to_string())).collect())
-    }
-
-    fn triple(entity: &str, attr: Keyword, value: &str) -> WhereClause {
-        WhereClause::Triple(TriplePattern {
-            entity: PatternElement::Variable(entity.to_string()),
-            attribute: PatternElement::Constant(DataType::Keyword(attr)),
-            value: PatternElement::Variable(value.to_string()),
-        })
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_predicate_lt() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                predicate(var("?age"), BinaryOp::Lt, lit_long(50)),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(< ?age 50)]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -896,14 +683,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                predicate(var("?age"), BinaryOp::GtEq, lit_long(50)),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(>= ?age 50)]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -917,15 +697,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        // Find name where age == 30 (Ivan)
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                predicate(lit_long(30), BinaryOp::Eq, var("?age")),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(= 30 ?age)]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -939,13 +711,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?e"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                predicate(lit_string("Ivan"), BinaryOp::Eq, var("?name")),
-            ],
-        };
+        let query = parse_query(r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#).unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -958,16 +724,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name1", "?name2"]),
-            where_clauses: vec![
-                triple("?e1", kw!(:name), "?name1"),
-                triple("?e1", kw!(:age), "?age1"),
-                triple("?e2", kw!(:name), "?name2"),
-                triple("?e2", kw!(:age), "?age2"),
-                predicate(var("?age1"), BinaryOp::LtEq, var("?age2")),
-            ],
-        };
+        let query = parse_query("[:find ?name1 ?name2 :where [?e1 :name ?name1] [?e1 :age ?age1] [?e2 :name ?name2] [?e2 :age ?age2] [(<= ?age1 ?age2)]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -982,14 +739,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name", "?half"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                fn_expr(var("?age"), BinaryOp::Div, lit_long(2), "?half"),
-            ],
-        };
+        let query = parse_query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1005,15 +755,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name", "?half"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                fn_expr(var("?age"), BinaryOp::Div, lit_long(2), "?half"),
-                predicate(var("?half"), BinaryOp::Gt, lit_long(20)),
-            ],
-        };
+        let query = parse_query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1027,14 +769,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name", "?result"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                triple("?e", kw!(:age), "?age"),
-                fn_expr(var("?age"), BinaryOp::Sub, lit_long(15), "?result"),
-            ],
-        };
+        let query = parse_query("[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1050,17 +785,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                WhereClause::Not(vec![WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:age))),
-                    value: PatternElement::Constant(DataType::Long(50)),
-                })]),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name] (not [?e :age 50])]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1076,9 +801,9 @@ mod tests {
 
         // Define "sex" attribute with keyword value type
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -1095,21 +820,7 @@ mod tests {
         }
 
         // find ?name where [?e :sex :male] [?e :name ?name]
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:sex))),
-                    value: PatternElement::Constant(DataType::Keyword(kw!(:male))),
-                }),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
-                    value: PatternElement::Variable("?name".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :sex :male] [?e :name ?name]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1128,9 +839,9 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -1147,17 +858,7 @@ mod tests {
         }
 
         // Same clause order as Clojure: name first (binds ?e), sex filter second
-        let query = Query {
-            find: find_vars(&["?name"]),
-            where_clauses: vec![
-                triple("?e", kw!(:name), "?name"),
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:sex))),
-                    value: PatternElement::Constant(DataType::Keyword(kw!(:male))),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?name :where [?e :name ?name] [?e :sex :male]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1176,9 +877,9 @@ mod tests {
 
         // Define "last-name" attribute
         let mut attr = BTreeMap::new();
-        attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:last-name)));
-        attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
-        attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
+        attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
+        attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names
@@ -1194,16 +895,7 @@ mod tests {
         ]).await.unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
-        let query = Query {
-            find: find_vars(&["?ln"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Constant(DataType::Long(2200)),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:last-name))),
-                    value: PatternElement::Variable("?ln".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?ln :where [2200 :last-name ?ln]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1274,16 +966,7 @@ mod tests {
         }]).await.unwrap();
 
         // Query: find all tags for entity 2000
-        let query = Query {
-            find: find_vars(&["?tag"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Constant(DataType::Long(2000)),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:tags))),
-                    value: PatternElement::Variable("?tag".to_string()),
-                }),
-            ],
-        };
+        let query = parse_query("[:find ?tag :where [2000 :tags ?tag]]").unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1318,10 +1001,8 @@ mod tests {
 
         // Query all (entity, name) pairs and verify contiguous counter values
         let db = node.db().await.unwrap();
-        let result = db.query(&Query {
-            find: find_vars(&["?e", "?name"]),
-            where_clauses: vec![triple("?e", kw!(:name), "?name")],
-        }).await.unwrap();
+        let query = parse_query("[:find ?e ?name :where [?e :name ?name]]").unwrap();
+        let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
         let mut eids: Vec<i64> = result.iter().map(|row| match &row[0] {
@@ -1352,20 +1033,12 @@ mod tests {
 
         // Query for the tx entity matching this tx_id
         let db = node.db().await.unwrap();
-        let result = db.query(&Query {
-            find: find_vars(&["?result"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/txId))),
-                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
-                }),
-                triple("?tx", kw!(:db/txResult), "?result"),
-            ],
-        }).await.unwrap();
+        let query_str = format!("[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]", tx_key.tx_id);
+        let query = parse_query(&query_str).unwrap();
+        let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
+        assert_eq!(result[0][0], DataType::Keyword(Keyword::namespaced("db.tx", "committed")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1384,21 +1057,12 @@ mod tests {
 
         // Query for the aborted tx entity
         let db = node.db().await.unwrap();
-        let result = db.query(&Query {
-            find: find_vars(&["?result", "?error"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/txId))),
-                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
-                }),
-                triple("?tx", kw!(:db/txResult), "?result"),
-                triple("?tx", kw!(:db.tx/error), "?error"),
-            ],
-        }).await.unwrap();
+        let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
+        let query = parse_query(&query_str).unwrap();
+        let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
+        assert_eq!(result[0][0], DataType::Keyword(Keyword::namespaced("db.tx", "aborted")));
         if let DataType::String(s) = &result[0][1] {
             assert!(s.contains("nonexistent"), "Error should mention the unknown attribute, got: {}", s);
         } else {
