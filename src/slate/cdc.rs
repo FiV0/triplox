@@ -1,8 +1,13 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use slatedb::{RowEntry, WalFile, WalFileIterator, WalReader};
+use slatedb::{RowEntry, ValueDeletable, WalFile, WalFileIterator, WalReader};
 use tokio_util::sync::CancellationToken;
+
+use crate::codec;
+use crate::indexer::eav_key_to_parts;
+use crate::ops::{Datom, DatomOp, DataType};
+use crate::schema::Schema;
 
 /// Tracks position in the WAL stream for resumability.
 #[derive(Debug, Default, Clone)]
@@ -156,6 +161,48 @@ impl CdcStream {
     }
 }
 
+/// Extract Datoms from a CDC transaction by decoding EAV-prefix index keys.
+/// Skips non-EAV keys and tombstone entries.
+pub fn datoms_from_cdc_transaction(
+    tx: &CdcTransaction,
+    schema: &Schema,
+) -> Result<Vec<Datom>, anyhow::Error> {
+    let mut datoms = Vec::new();
+    for entry in &tx.entries {
+        if entry.key.first() != Some(&codec::EAV) {
+            continue;
+        }
+        if matches!(entry.value, ValueDeletable::Tombstone) {
+            continue;
+        }
+
+        let (entity_dt, attribute_id, value, _tx_eid, op_byte) =
+            eav_key_to_parts(entry.key.clone())?;
+
+        let entity = match entity_dt {
+            DataType::Long(id) => id,
+            other => return Err(anyhow::anyhow!(
+                "Expected Long entity in EAV key, got {:?}", other
+            )),
+        };
+
+        let attribute = schema.get_ident(attribute_id)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Unknown attribute entity_id {} in EAV key", attribute_id
+            ))?
+            .clone();
+
+        let op = match op_byte {
+            codec::ADD => DatomOp::Assert,
+            codec::RETRACT => DatomOp::Retract,
+            other => return Err(anyhow::anyhow!("Unknown op byte: {}", other)),
+        };
+
+        datoms.push(Datom { entity, attribute, value, op });
+    }
+    Ok(datoms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +213,10 @@ mod tests {
 
     async fn setup_db(path: &str) -> (Db, Arc<dyn slatedb::object_store::ObjectStore>) {
         let object_store: Arc<dyn slatedb::object_store::ObjectStore> = Arc::new(InMemory::new());
-        let db = Db::open(path, object_store.clone()).await.unwrap();
+        let db = Db::builder(path, object_store.clone())
+            .build()
+            .await
+            .unwrap();
         (db, object_store)
     }
 
@@ -637,5 +687,144 @@ mod tests {
         })
         .await
         .expect("test_cdc_cursor_reads_existing_and_live_transactions timed out");
+    }
+
+    // --- datoms_from_cdc_transaction tests (Node-based) ---
+
+    use std::collections::BTreeMap;
+    use crate::memory_log::MemoryLog;
+    use crate::node::{Node, SubmitNode};
+    use crate::ops::TxOp;
+    use crate::schema::{load_schema_from_indices, test_schema_tx};
+    use crate::transaction::TransactionResult;
+    use edn::kw;
+
+    async fn setup_node_with_schema() -> Node<MemoryLog> {
+        let node = Node::memory_node().await;
+        let result = node.execute_tx(test_schema_tx()).await.unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        node
+    }
+
+    async fn collect_cdc_datoms(node: &Node<MemoryLog>) -> Vec<Vec<Datom>> {
+        // Flush WAL to object store so CdcStream can read it.
+        node.slatedb().flush_with_options(FlushOptions {
+            flush_type: FlushType::Wal,
+        }).await.unwrap();
+
+        let wal_reader = WalReader::new(node.db_path(), node.object_store());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let schema = load_schema_from_indices(node.slatedb()).await;
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor::default(),
+            Duration::from_millis(10),
+            cancel,
+        ).await.unwrap();
+
+        let mut all_tx_datoms = Vec::new();
+        while let Some(tx) = stream.next_transaction().await.unwrap() {
+            let datoms = datoms_from_cdc_transaction(&tx, &schema).unwrap();
+            if !datoms.is_empty() {
+                all_tx_datoms.push(datoms);
+            }
+        }
+        all_tx_datoms
+    }
+
+    #[tokio::test]
+    async fn test_datoms_from_cdc_happy_path() {
+        let node = setup_node_with_schema().await;
+
+        let mut doc = BTreeMap::new();
+        doc.insert(kw!(:db/id), DataType::Long(100));
+        doc.insert(kw!(:name), DataType::String("alice".to_string()));
+        doc.insert(kw!(:age), DataType::Long(30));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let all_tx_datoms = collect_cdc_datoms(&node).await;
+
+        // Find the transaction containing our entity 100 datoms.
+        let entity_datoms: Vec<&Datom> = all_tx_datoms.iter()
+            .flatten()
+            .filter(|d| d.entity == 100)
+            .collect();
+
+        assert_eq!(entity_datoms.len(), 2);
+        assert!(entity_datoms.iter().any(|d|
+            d.attribute == kw!(:name) && d.value == DataType::String("alice".to_string())
+            && d.op == DatomOp::Assert
+        ));
+        assert!(entity_datoms.iter().any(|d|
+            d.attribute == kw!(:age) && d.value == DataType::Long(30)
+            && d.op == DatomOp::Assert
+        ));
+
+        node.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_datoms_from_cdc_retract() {
+        let node = setup_node_with_schema().await;
+
+        // First put.
+        let mut doc = BTreeMap::new();
+        doc.insert(kw!(:db/id), DataType::Long(100));
+        doc.insert(kw!(:name), DataType::String("alice".to_string()));
+        node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+
+        // Second put with different name triggers retract of old value.
+        let mut doc2 = BTreeMap::new();
+        doc2.insert(kw!(:db/id), DataType::Long(100));
+        doc2.insert(kw!(:name), DataType::String("bob".to_string()));
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+
+        let all_tx_datoms = collect_cdc_datoms(&node).await;
+
+        // Find all datoms for entity 100, attribute :name.
+        let name_datoms: Vec<&Datom> = all_tx_datoms.iter()
+            .flatten()
+            .filter(|d| d.entity == 100 && d.attribute == kw!(:name))
+            .collect();
+
+        assert!(name_datoms.iter().any(|d|
+            d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Assert
+        ), "Expected assert for alice");
+        assert!(name_datoms.iter().any(|d|
+            d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Retract
+        ), "Expected retract for alice");
+        assert!(name_datoms.iter().any(|d|
+            d.value == DataType::String("bob".to_string()) && d.op == DatomOp::Assert
+        ), "Expected assert for bob");
+
+        node.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_datoms_from_cdc_mixed_entities() {
+        let node = setup_node_with_schema().await;
+
+        let mut doc1 = BTreeMap::new();
+        doc1.insert(kw!(:db/id), DataType::Long(100));
+        doc1.insert(kw!(:name), DataType::String("alice".to_string()));
+        let mut doc2 = BTreeMap::new();
+        doc2.insert(kw!(:db/id), DataType::Long(200));
+        doc2.insert(kw!(:name), DataType::String("bob".to_string()));
+        doc2.insert(kw!(:age), DataType::Long(25));
+        node.execute_tx(vec![TxOp::Put(doc1), TxOp::Put(doc2)]).await.unwrap();
+
+        let all_tx_datoms = collect_cdc_datoms(&node).await;
+
+        let entity_100: Vec<&Datom> = all_tx_datoms.iter().flatten()
+            .filter(|d| d.entity == 100).collect();
+        let entity_200: Vec<&Datom> = all_tx_datoms.iter().flatten()
+            .filter(|d| d.entity == 200).collect();
+
+        assert_eq!(entity_100.len(), 1); // name only
+        assert_eq!(entity_200.len(), 2); // name + age
+
+        node.close().await;
     }
 }

@@ -457,6 +457,11 @@ impl Schema {
         Some((*eid, attr))
     }
 
+    /// Look up the keyword/ident for a given entity ID.
+    pub fn get_ident(&self, entity_id: Entid) -> Option<&Keyword> {
+        self.entid_map.get(&entity_id)
+    }
+
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
     pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
