@@ -21,12 +21,6 @@ use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
 use crate::clock::Instant;
 
-fn encode_i64_vec(value: i64) -> Vec<u8> {
-    let mut buf = Vec::new();
-    encode_i64(value, &mut buf);
-    buf
-}
-
 pub struct Indexer {
     slatedb: Arc<Db>,
     schema_cache: SchemaCache,
@@ -50,7 +44,7 @@ pub(crate) fn write_index_entries(
             .get(&datom.attribute)
             .map(|a| a.entity_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-        let attribute = encode_i64_vec(attribute_id);
+        let attribute = (attribute_id ^ i64::MIN).to_be_bytes();
         let mut value = Vec::new();
         encode_datatype(&datom.value, &mut value);
         let op_byte = match datom.op {
@@ -163,7 +157,7 @@ impl Indexer {
 
             let attribute_id = attr_schema.entity_id;
             let entity_id_bytes = DataType::Long(datom.entity).encode();
-            let attr_id_bytes = encode_i64_vec(attribute_id);
+            let attr_id_bytes = (attribute_id ^ i64::MIN).to_be_bytes();
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
             // Scan EAV prefix on the transaction to find the current value.
@@ -718,7 +712,7 @@ mod tests {
         assert!(bob_add, "Expected ADD for bob");
 
         // Verify AE entry exists (stores empty bytes, not the value)
-        let attr_bytes = encode_i64_vec(name_id);
+        let attr_bytes = (name_id ^ i64::MIN).to_be_bytes();
         let entity_bytes = DataType::Long(100i64).encode();
         let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
