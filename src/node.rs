@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::datalog::Query;
 use crate::file_log::FileLog;
-use crate::indexer::Indexer;
+use crate::indexer::{Indexer, latest_tx_key_from_snapshot};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
@@ -109,19 +109,31 @@ impl Node<MemoryLog> {
 }
 
 impl Node<FileLog> {
-    pub async fn local_node(root_path: &Path) -> Self {
-        std::fs::create_dir_all(root_path.join("db")).unwrap();
-        let slatedb = Arc::new(local_slate(root_path.join("db").to_str().unwrap()).await);
+    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
+        std::fs::create_dir_all(root_path.join("db"))?;
+        let db_path = root_path.join("db");
+        let db_path_str = db_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
+        let slatedb = Arc::new(local_slate(db_path_str).await);
         let cache = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache)));
         let log = Arc::new(RwLock::new(
-            FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap(),
+            FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock))?,
         ));
+
+        // Determine the latest already-indexed tx_id so we skip replaying it
+        let snapshot = Arc::new(slatedb.snapshot().await?);
+        let latest_indexed = latest_tx_key_from_snapshot(&snapshot).await?;
+        let after_tx_id = if latest_indexed.tx_id > 0 {
+            Some(latest_indexed.tx_id)
+        } else {
+            None
+        };
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
             let log_reader = log.read().await;
-            let records = log_reader.read_txs_after(None, u16::MAX).unwrap();
+            let records = log_reader.read_txs_after(after_tx_id, u16::MAX)?;
             records.last().map(|r| r.tx_key)
         };
 
@@ -131,14 +143,14 @@ impl Node<FileLog> {
             None => None,
         };
 
-        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
 
         // Wait for catch-up to complete if there are existing transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            waiter.await_tx(tx_key).await.unwrap();
+            waiter.await_tx(tx_key).await?;
         }
 
-        Node { log, indexer, slatedb, subscription }
+        Ok(Node { log, indexer, slatedb, subscription })
     }
 }
 
@@ -751,6 +763,11 @@ mod tests {
         assert!(result2.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
     }
 
+    // TODO: once auto entity ID allocation (tempids) is implemented, this test
+    // should be updated to use auto-allocated IDs instead of explicit db/id values.
+    // Without the fix to skip already-indexed transactions on restart, auto-allocated
+    // IDs would diverge because replaying transactions with an advanced next_t counter
+    // produces different entity IDs, corrupting the index.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -769,7 +786,7 @@ mod tests {
         };
 
         // First node: insert data
-        let node = Node::local_node(&root_path).await;
+        let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
@@ -787,7 +804,7 @@ mod tests {
         node.close().await;
 
         // Second node: reopen at same path, verify data persisted, add more
-        let node = Node::local_node(&root_path).await;
+        let node = Node::local_node(&root_path).await.unwrap();
 
         let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
