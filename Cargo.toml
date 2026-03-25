@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "edn"]
+exclude = [".claude"]
 
 [workspace.dependencies]
 chrono = "0.4.38"
