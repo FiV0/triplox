@@ -47,7 +47,8 @@ pub(crate) fn write_index_entries(
         };
 
         // Build key components into a reusable buffer.
-        // Entity IDs are tagged as DataType::Long (1-byte tag + 8-byte order-preserving i64).
+        // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
+        // Revisit with schema/custom encoding.
         // Attributes are untagged i64 (8 bytes).
         let mut buf = Vec::new();
 
