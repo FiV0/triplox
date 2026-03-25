@@ -863,6 +863,9 @@ mod tests {
 
     #[test]
     fn order_f64() {
+        // Uses <= because -0.0 and 0.0 encode to the same bytes (IEEE 754 sortable
+        // encoding collapses them). Round-trip preserves the sign bit, but byte
+        // ordering treats them as equal.
         let values = vec![f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
