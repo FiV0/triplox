@@ -4,7 +4,6 @@ use slatedb::Db;
 use slatedb::IsolationLevel;
 use anyhow::{Error, Result};
 use bincode;
-use std::io::Cursor;
 use bytes::Bytes;
 use tokio::sync::broadcast;
 use log::warn;
@@ -13,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
-use crate::codec;
+use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
@@ -41,19 +40,22 @@ pub(crate) fn write_index_entries(
     for datom in datoms {
         // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
         // Revisit with schema/custom encoding.
-        let entity_id = bincode::serialize(&DataType::Long(datom.entity))?;
+        let entity_id = DataType::Long(datom.entity).encode();
         let attribute_id = schema_cache
             .get(&datom.attribute)
             .map(|a| a.entity_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-        let attribute = bincode::serialize(&attribute_id)?;
-        let value = bincode::serialize(&datom.value)?;
+        let attribute = encode_i64_bytes(attribute_id);
+        let mut value = Vec::new();
+        encode_datatype(&datom.value, &mut value);
         let op_byte = match datom.op {
             DatomOp::Assert => codec::ADD,
             DatomOp::Retract => codec::RETRACT,
         };
 
         // Temporal indices include timestamp + op
+        // TODO(triplox-7fl): concat_bytes allocates intermediate Vecs per component;
+        // encoding directly into a single buffer would be faster.
         txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
         txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
         txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
@@ -76,7 +78,9 @@ struct TxMeta {
 }
 
 fn tx_meta_key(tx_id: i64) -> Vec<u8> {
-    concat_bytes(&[&[codec::TX_TO_META], &bincode::serialize(&tx_id).unwrap()])
+    let mut buf = vec![codec::TX_TO_META];
+    encode_i64(tx_id, &mut buf);
+    buf
 }
 
 /// Scan all TX_TO_META keys in a snapshot and return the TxKey for the highest tx_id.
@@ -85,14 +89,13 @@ fn tx_meta_key(tx_id: i64) -> Vec<u8> {
 ///
 /// TODO: return a real "empty database" TxKey once we have one.
 ///
-/// TODO(triplox-1vr): Switch tx_meta_key() to big-endian encoding (tx_id.to_be_bytes())
-/// so byte order matches numeric order, enabling a reverse iterator for O(1) lookup
-/// instead of this full scan. Breaking change — requires migration or flag day.
+/// TX_TO_META keys are now big-endian encoded, so byte order matches numeric order.
+/// A reverse iterator could be used for O(1) lookup instead of this full scan.
 pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
     let mut iter = snapshot.scan_prefix_with_options(&[codec::TX_TO_META], &DEFAULT_SCAN_OPTIONS).await?;
     let mut latest: Option<(i64, TxMeta)> = None;
     while let Some(kv) = iter.next().await? {
-        let tx_id: i64 = bincode::deserialize(&kv.key[1..])?;
+        let tx_id: i64 = decode_i64(&mut &kv.key[1..])?;
         let meta: TxMeta = bincode::deserialize(&kv.value)?;
         if latest.as_ref().map_or(true, |(best_id, _)| tx_id > *best_id) {
             latest = Some((tx_id, meta));
@@ -156,8 +159,8 @@ impl Indexer {
             }
 
             let attribute_id = attr_schema.entity_id;
-            let entity_id_bytes = bincode::serialize(&DataType::Long(datom.entity))?;
-            let attr_id_bytes = bincode::serialize(&attribute_id)?;
+            let entity_id_bytes = DataType::Long(datom.entity).encode();
+            let attr_id_bytes = encode_i64_bytes(attribute_id);
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
             // Scan EAV prefix on the transaction to find the current value.
@@ -181,7 +184,8 @@ impl Indexer {
                     }
                     Some(_) => {
                         let value_bytes = &key[eav_prefix.len()..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-                        let value: DataType = bincode::deserialize(value_bytes)?;
+                        let mut cursor = value_bytes;
+                        let value: DataType = decode_datatype(&mut cursor)?;
                         old_value = Some(value);
                         break;
                     }
@@ -346,44 +350,44 @@ fn strip_atemporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Re
 
 pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, Instant, u8), Error> {
     let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::EAV, "EAV")?;
-    let mut cursor = Cursor::new(data);
-    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
-    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
-    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = data;
+    let entity_id = decode_datatype(&mut cursor)?;
+    let attribute = decode_i64(&mut cursor)?;
+    let value = decode_datatype(&mut cursor)?;
     Ok((entity_id, attribute, value, timestamp, op))
 }
 
 pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
     let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AVE, "AVE")?;
-    let mut cursor = Cursor::new(data);
-    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
-    let value: DataType = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = data;
+    let attribute = decode_i64(&mut cursor)?;
+    let value = decode_datatype(&mut cursor)?;
+    let entity_id = decode_datatype(&mut cursor)?;
     Ok((attribute, value, entity_id, timestamp, op))
 }
 
 pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
     let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AEV, "AEV")?;
-    let mut cursor = Cursor::new(data);
-    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
-    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = data;
+    let attribute = decode_i64(&mut cursor)?;
+    let entity_id = decode_datatype(&mut cursor)?;
+    let value = decode_datatype(&mut cursor)?;
     Ok((attribute, entity_id, value, timestamp, op))
 }
 
 pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
     let data = strip_atemporal_key(key.as_ref(), codec::AE, "AE")?;
-    let mut cursor = Cursor::new(data);
-    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
-    let entity_id: DataType = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = data;
+    let attribute = decode_i64(&mut cursor)?;
+    let entity_id = decode_datatype(&mut cursor)?;
     Ok((attribute, entity_id))
 }
 
 pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
     let data = strip_atemporal_key(key.as_ref(), codec::AV, "AV")?;
-    let mut cursor = Cursor::new(data);
-    let attribute: i64 = bincode::deserialize_from(&mut cursor)?;
-    let value: DataType = bincode::deserialize_from(&mut cursor)?;
+    let mut cursor = data;
+    let attribute = decode_i64(&mut cursor)?;
+    let value = decode_datatype(&mut cursor)?;
     Ok((attribute, value))
 }
 
@@ -711,8 +715,8 @@ mod tests {
         assert!(bob_add, "Expected ADD for bob");
 
         // Verify AE entry exists (stores empty bytes, not the value)
-        let attr_bytes = bincode::serialize(&name_id)?;
-        let entity_bytes = bincode::serialize(&DataType::Long(100i64))?;
+        let attr_bytes = encode_i64_bytes(name_id);
+        let entity_bytes = DataType::Long(100i64).encode();
         let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
         assert!(ae_val.is_empty(), "AE should store empty bytes");
