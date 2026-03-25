@@ -12,13 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
-use crate::codec::{self, Encode, encode_i64, encode_datatype, decode_i64, decode_datatype};
+use crate::codec::{self, encode_i64, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
-use crate::util::concat_bytes;
 use crate::clock::Instant;
 
 pub struct Indexer {
@@ -38,30 +37,63 @@ pub(crate) fn write_index_entries(
     let timestamp = codec::encode_timestamp(system_time);
 
     for datom in datoms {
-        // Entity IDs encoded as DataType::Long (1-byte type tag + 8-byte order-preserving i64).
-        let entity_id = DataType::Long(datom.entity).encode();
         let attribute_id = schema_cache
             .get(&datom.attribute)
             .map(|a| a.entity_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-        let attribute = (attribute_id ^ i64::MIN).to_be_bytes();
-        let mut value = Vec::new();
-        encode_datatype(&datom.value, &mut value);
         let op_byte = match datom.op {
             DatomOp::Assert => codec::ADD,
             DatomOp::Retract => codec::RETRACT,
         };
 
-        // Temporal indices include timestamp + op
-        txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
-        txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
-        txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
+        // Build key components into a reusable buffer.
+        // Entity IDs are tagged as DataType::Long (1-byte tag + 8-byte order-preserving i64).
+        // Attributes are untagged i64 (8 bytes).
+        let mut buf = Vec::new();
+
+        // EAV: [prefix, entity, attribute, value, timestamp, op]
+        buf.push(codec::EAV);
+        encode_datatype(&DataType::Long(datom.entity), &mut buf);
+        encode_i64(attribute_id, &mut buf);
+        encode_datatype(&datom.value, &mut buf);
+        buf.extend_from_slice(&timestamp);
+        buf.push(op_byte);
+        txn.put(&buf, &[])?;
+
+        // AVE: [prefix, attribute, value, entity, timestamp, op]
+        buf.clear();
+        buf.push(codec::AVE);
+        encode_i64(attribute_id, &mut buf);
+        encode_datatype(&datom.value, &mut buf);
+        encode_datatype(&DataType::Long(datom.entity), &mut buf);
+        buf.extend_from_slice(&timestamp);
+        buf.push(op_byte);
+        txn.put(&buf, &[])?;
+
+        // AEV: [prefix, attribute, entity, value, timestamp, op]
+        buf.clear();
+        buf.push(codec::AEV);
+        encode_i64(attribute_id, &mut buf);
+        encode_datatype(&DataType::Long(datom.entity), &mut buf);
+        encode_datatype(&datom.value, &mut buf);
+        buf.extend_from_slice(&timestamp);
+        buf.push(op_byte);
+        txn.put(&buf, &[])?;
 
         // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
         if datom.op == DatomOp::Assert {
-            txn.put(&concat_bytes(&[&[codec::AE], &attribute, &entity_id]), &[])?;
-            txn.put(&concat_bytes(&[&[codec::AV], &attribute, &value]), &[])?;
+            buf.clear();
+            buf.push(codec::AE);
+            encode_i64(attribute_id, &mut buf);
+            encode_datatype(&DataType::Long(datom.entity), &mut buf);
+            txn.put(&buf, &[])?;
+
+            buf.clear();
+            buf.push(codec::AV);
+            encode_i64(attribute_id, &mut buf);
+            encode_datatype(&datom.value, &mut buf);
+            txn.put(&buf, &[])?;
         }
     }
 
@@ -156,9 +188,10 @@ impl Indexer {
             }
 
             let attribute_id = attr_schema.entity_id;
-            let entity_id_bytes = DataType::Long(datom.entity).encode();
-            let attr_id_bytes = (attribute_id ^ i64::MIN).to_be_bytes();
-            let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
+            let mut eav_prefix = Vec::new();
+            eav_prefix.push(codec::EAV);
+            encode_datatype(&DataType::Long(datom.entity), &mut eav_prefix);
+            encode_i64(attribute_id, &mut eav_prefix);
 
             // Scan EAV prefix on the transaction to find the current value.
             // Uses async scan directly because TemporalFilterIterator is sync-only.
@@ -712,9 +745,10 @@ mod tests {
         assert!(bob_add, "Expected ADD for bob");
 
         // Verify AE entry exists (stores empty bytes, not the value)
-        let attr_bytes = (name_id ^ i64::MIN).to_be_bytes();
-        let entity_bytes = DataType::Long(100i64).encode();
-        let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
+        let mut ae_key = Vec::new();
+        ae_key.push(codec::AE);
+        encode_i64(name_id, &mut ae_key);
+        encode_datatype(&DataType::Long(100i64), &mut ae_key);
         let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
         assert!(ae_val.is_empty(), "AE should store empty bytes");
 
