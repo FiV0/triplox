@@ -6,7 +6,7 @@ use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
 use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
-use crate::ops::{Attribute, DataType, Datom, DatomOp, Document, EntityId, TxOp};
+use crate::ops::{Attribute, DataType, Datom, DatomOp, EntityId, TxOp};
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---
@@ -280,7 +280,7 @@ fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, 
         "db/cardinality".to_string(),
         DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
     );
-    TxOp::Put(Document(doc))
+    TxOp::Put(doc)
 }
 
 fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(tx.len(), 19); // 3 attrs + 14 type enums + 2 cardinality enums
 
         let mut ids: Vec<i64> = tx.iter().map(|op| match op {
-            TxOp::Put(Document(doc)) => match doc.get("db/id") {
+            TxOp::Put(doc) => match doc.get("db/id") {
                 Some(DataType::Long(id)) => *id,
                 _ => panic!("Expected db/id Long"),
             },
@@ -530,7 +530,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("name".to_string(), DataType::String("Alice".to_string()));
-        assert!(cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).is_ok());
+        assert!(cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).is_ok());
     }
 
     #[test]
@@ -539,7 +539,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("person/age".to_string(), DataType::Long(30));
-        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
+        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: person/age"));
     }
 
@@ -549,7 +549,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("name".to_string(), DataType::Long(42));
-        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
+        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
 
@@ -570,7 +570,7 @@ mod tests {
         doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
         doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
-        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
+        let err = cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
 
@@ -607,7 +607,7 @@ mod tests {
         doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "string"));
         // No db/cardinality
-        let err = SchemaCache::validate_schema_attrs(&to_datoms(&[TxOp::Put(Document(doc))])).unwrap_err();
+        let err = SchemaCache::validate_schema_attrs(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));
     }
 }
