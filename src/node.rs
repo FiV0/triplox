@@ -99,7 +99,7 @@ impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
         let cache = crate::bootstrap::init_db(slatedb.clone()).await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache)));
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, None)));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
@@ -116,19 +116,23 @@ impl Node<FileLog> {
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
         let slatedb = Arc::new(local_slate(db_path_str).await);
         let cache = crate::bootstrap::init_db(slatedb.clone()).await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache)));
+
+        // Determine the latest already-indexed tx_id so we skip replaying it
+        // and restore the indexer's in-memory state for TxWaiter fast-path.
+        let snapshot = Arc::new(slatedb.snapshot().await?);
+        let latest_indexed = latest_tx_key_from_snapshot(&snapshot).await?;
+        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
+            Some(latest_indexed)
+        } else {
+            None
+        };
+
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, latest_indexed_tx)));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock))?,
         ));
 
-        // Determine the latest already-indexed tx_id so we skip replaying it
-        let snapshot = Arc::new(slatedb.snapshot().await?);
-        let latest_indexed = latest_tx_key_from_snapshot(&snapshot).await?;
-        let after_tx_id = if latest_indexed.tx_id > 0 {
-            Some(latest_indexed.tx_id)
-        } else {
-            None
-        };
+        let after_tx_id = latest_indexed_tx.map(|k| k.tx_id);
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
@@ -823,6 +827,48 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
         assert!(results.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
+
+        node.close().await;
+    }
+
+    // The indexer's `latest_indexed_tx` field must be restored on restart so that
+    // a TxWaiter for an already-indexed transaction returns immediately. Without
+    // the fix, `await_tx` falls into the broadcast loop and hangs forever because
+    // no new completions will be broadcast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_restart_tx_waiter_for_already_indexed_tx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        // First node: bootstrap schema + insert data
+        let node = Node::local_node(&root_path).await.unwrap();
+        define_test_schema(&node).await;
+
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+
+        let result = node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+        let tx_key = match result {
+            TransactionResult::TxCommited(k) => k,
+            _ => panic!("expected commit"),
+        };
+
+        node.close().await;
+
+        // Second node: reopen — no new transactions
+        let node = Node::local_node(&root_path).await.unwrap();
+
+        // A waiter obtained after restart should resolve immediately for the
+        // already-indexed tx_key. Without the fix this hangs forever.
+        let waiter = node.indexer.read().await.tx_waiter();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            waiter.await_tx(tx_key),
+        ).await;
+
+        assert!(result.is_ok(), "tx_waiter should not timeout for an already-indexed tx");
+        result.unwrap().expect("await_tx should succeed");
 
         node.close().await;
     }

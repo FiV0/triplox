@@ -87,7 +87,8 @@ fn tx_meta_key(tx_id: i64) -> Vec<u8> {
 /// If the snapshot contains no TX_TO_META entries, returns a sentinel TxKey
 /// (tx_id=0, system_time=epoch).
 ///
-/// TODO: return a real "empty database" TxKey once we have one.
+/// TODO(triplox-8mc): Return Option<TxKey> (None for empty DB) instead of a
+/// sentinel. Needs coordination with the bootstrap transaction (tx_id=0).
 ///
 /// TX_TO_META keys are now big-endian encoded, so byte order matches numeric order.
 /// A reverse iterator could be used for O(1) lookup instead of this full scan.
@@ -111,12 +112,12 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache) -> Self {
+    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache, latest_indexed_tx: Option<TxKey>) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
             schema_cache,
-            latest_indexed_tx: None,
+            latest_indexed_tx,
             tx_completion_sender,
         }
     }
@@ -406,7 +407,7 @@ mod tests {
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
         let cache = crate::bootstrap::init_db(slate.clone()).await;
-        let mut indexer = Indexer::new(slate, cache);
+        let mut indexer = Indexer::new(slate, cache, None);
         let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
         indexer.transact_tx(tx_key_0, test_schema_tx()).await.unwrap();
         indexer
@@ -599,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_timeout() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Indexer::new(slate.clone(), SchemaCache::new());
+        let indexer = Indexer::new(slate.clone(), SchemaCache::new(), None);
 
         let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(999) };
 
