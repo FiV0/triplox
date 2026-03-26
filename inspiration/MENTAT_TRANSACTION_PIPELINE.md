@@ -750,6 +750,236 @@ TxReport {
 
 ---
 
+## Bootstrap: How the Schema Defines Itself
+
+The bootstrap process faces a fundamental chicken-and-egg problem: `:db/ident` needs `:db/ident` to exist in order to be defined, `:db/valueType` needs `:db/valueType`, and so on. Mentat solves this by **hardcoding everything as Rust constants** and pre-building the schema in memory before running a real transaction.
+
+### Hardcoded Constants
+
+Everything starts as `lazy_static` data in `db/src/bootstrap.rs` and `db/src/entids.rs`.
+
+**Entid constants** (`db/src/entids.rs`) — every system attribute gets a fixed integer:
+
+```rust
+pub const DB_IDENT: Entid = 1;
+pub const DB_PART_DB: Entid = 2;
+pub const DB_TX_INSTANT: Entid = 3;
+pub const DB_INSTALL_ATTRIBUTE: Entid = 6;
+pub const DB_VALUE_TYPE: Entid = 7;
+pub const DB_CARDINALITY: Entid = 8;
+pub const DB_UNIQUE: Entid = 9;
+pub const DB_INDEX: Entid = 11;
+// ... through to ...
+pub const DB_SCHEMA_CORE: Entid = 40;
+```
+
+**V1_IDENTS** (`bootstrap.rs`) — 40 keyword-to-entid pairs:
+
+```rust
+lazy_static! {
+    static ref V1_IDENTS: [(symbols::Keyword, i64); 40] = [
+        (kw!(:db/ident),             entids::DB_IDENT),              // 1
+        (kw!(:db.part/db),           entids::DB_PART_DB),            // 2
+        (kw!(:db/txInstant),         entids::DB_TX_INSTANT),         // 3
+        // ...
+        (kw!(:db/valueType),         entids::DB_VALUE_TYPE),         // 7
+        (kw!(:db/cardinality),       entids::DB_CARDINALITY),        // 8
+        (kw!(:db.type/keyword),      24),
+        (kw!(:db.type/ref),          25),
+        (kw!(:db.cardinality/one),   33),
+        (kw!(:db.cardinality/many),  34),
+        // ...
+    ];
+}
+```
+
+**V1_PARTS** (`bootstrap.rs`) — three partition boundaries:
+
+```
+:db.part/db    [0,          0x10000)       next_to_allocate = 41
+:db.part/user  [0x10000,    0x10000000)    next_to_allocate = 0x10000
+:db.part/tx    [0x10000000, i64::MAX)      next_to_allocate = 0x10000000
+```
+
+System attributes occupy entids 1-40. User entities start at 65536. Transactions start at 268435456 (`TX0`).
+
+**V1_SYMBOLIC_SCHEMA** (`bootstrap.rs`) — attribute definitions in EDN form:
+
+```rust
+lazy_static! {
+    static ref V1_SYMBOLIC_SCHEMA: Value = {
+        let s = r#"
+        {:db/ident       {:db/valueType   :db.type/keyword
+                          :db/cardinality :db.cardinality/one
+                          :db/index       true
+                          :db/unique      :db.unique/identity}
+         :db/valueType   {:db/valueType   :db.type/ref
+                          :db/cardinality :db.cardinality/one
+                          :db/index       true}
+         :db/cardinality {:db/valueType   :db.type/ref
+                          :db/cardinality :db.cardinality/one
+                          :db/index       true}
+         ...}
+        "#;
+        edn::parse::value(s).unwrap()
+    };
+}
+```
+
+### Building the In-Memory Schema (no database yet)
+
+`bootstrap_schema()` constructs a complete `Schema` object purely from the hardcoded constants:
+
+```rust
+pub(crate) fn bootstrap_schema() -> Schema {
+    let ident_map = bootstrap_ident_map();    // From V1_IDENTS
+    let bootstrap_triples = symbolic_schema_to_triples(&ident_map, &V1_SYMBOLIC_SCHEMA);
+    Schema::from_ident_map_and_triples(ident_map, bootstrap_triples).unwrap()
+}
+```
+
+The critical trick is in `symbolic_schema_to_triples` and `Schema::from_ident_map_and_triples` (`db/src/schema.rs`). Symbolic keywords are resolved to entid references using the hardcoded ident map:
+
+```rust
+// In schema.rs — SchemaBuilding::from_ident_map_and_triples
+let typed_value = match TypedValue::from_edn_value(value) {
+    Some(TypedValue::Keyword(ref k)) => {
+        ident_map.get(k)                    // :db.type/keyword -> entid 24
+            .map(|entid| TypedValue::Ref(*entid))
+    },
+    Some(v) => v,
+    ...
+};
+```
+
+This is how the circularity is broken: `:db/ident`'s `:db/valueType` is `:db.type/keyword`, which is just `TypedValue::Ref(24)` because we **already know** entid 24 from `V1_IDENTS`. No database lookup needed.
+
+### Database Creation & Bootstrap Transaction
+
+`create_current_version()` in `db/src/db.rs` orchestrates the full bootstrap:
+
+```rust
+pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
+    // Step 1: DDL + in-memory schema
+    let (tx, mut db) = create_empty_current_version(conn)?;
+    //   Runs V1_STATEMENTS DDL (CREATE TABLE datoms, transactions, etc.)
+    //   Calls bootstrap_schema() and bootstrap_partition_map()
+    //   Returns DB { partition_map, schema } — NO rows in SQLite yet
+
+    // Step 2: Insert partition metadata
+    for (part, partition) in db.partition_map.iter() {
+        tx.execute("INSERT INTO known_parts ...", &[...])?;
+    }
+
+    // Step 3: Run bootstrap entities through the NORMAL transactor
+    let bootstrap_schema_for_mutation = Schema::default();  // Empty!
+    let (_report, next_partition_map, next_schema, _watcher) =
+        transact(&tx,
+                 db.partition_map,
+                 &bootstrap_schema_for_mutation,   // empty — collects mutations
+                 &db.schema,                       // pre-built bootstrap schema — for reading
+                 NullWatcher(),
+                 bootstrap::bootstrap_entities())?;
+
+    // Step 4: Verify consistency
+    if let Some(next_schema) = next_schema {
+        if next_schema != db.schema {
+            bail!("Initial bootstrap transaction did not produce expected bootstrap schema");
+        }
+    }
+
+    tx.commit()?;
+    db.partition_map = next_partition_map;
+    Ok(db)
+}
+```
+
+### The Two-Schema Trick
+
+The `transact()` call takes **two** schema parameters:
+
+- **`schema`** (the pre-built `bootstrap_schema()`): Used by Stage 1 of the transaction pipeline for attribute lookups, value type coercion, uniqueness checks. This is the "reader" schema — it already knows all 16 bootstrap attributes.
+- **`schema_for_mutation`** (an empty `Schema::default()`): Collects schema-altering assertions from the transaction. Since the bootstrap transaction defines `:db/ident`, `:db/valueType`, etc., this empty schema gets populated by Stage 7 (metadata update).
+
+The bootstrap goes through the **normal** transaction pipeline (Stages 0-8). The transactor doesn't know or care that it's bootstrapping — it just sees entities and a schema to validate against.
+
+### What `bootstrap_entities()` Generates
+
+```rust
+pub(crate) fn bootstrap_entities() -> Vec<Entity<edn::ValueAndSpan>> {
+    let bootstrap_assertions: Value = Value::Vector([
+        symbolic_schema_to_assertions(&V1_SYMBOLIC_SCHEMA),
+        idents_to_assertions(&V1_IDENTS[..]),
+        schema_attrs_to_assertions(CORE_SCHEMA_VERSION, V1_CORE_SCHEMA.as_ref()),
+    ].concat());
+
+    edn::parse::entities(&bootstrap_assertions.to_string()).unwrap()
+}
+```
+
+This produces EDN assertions like:
+```edn
+[:db/add :db/ident   :db/valueType   :db.type/keyword]
+[:db/add :db/ident   :db/cardinality :db.cardinality/one]
+[:db/add :db/ident   :db/index       true]
+[:db/add :db/ident   :db/unique      :db.unique/identity]
+[:db/add 1           :db/ident       :db/ident]
+[:db/add 2           :db/ident       :db.part/db]
+[:db/add 7           :db/ident       :db/valueType]
+...
+```
+
+These flow through Stages 0-8 normally. Stage 1 resolves `:db/ident` to entid 1 and `:db.type/keyword` to entid 24 using the pre-built bootstrap schema. Stage 7 detects that schema attributes were modified and rebuilds the schema from the newly-inserted datoms.
+
+### Consistency Verification
+
+After the transaction, `next_schema` (built from database rows by Stage 7) is compared against `db.schema` (built from hardcoded constants by `bootstrap_schema()`). They **must** be identical — this is a sanity check that the hardcoded data and the transaction pipeline agree. If they diverge, the bootstrap fails.
+
+### Bootstrap Flow Summary
+
+```
+Hardcoded Rust Constants (compile time / lazy_static)
+├── entids.rs:           DB_IDENT=1, DB_VALUE_TYPE=7, ...
+├── V1_IDENTS:           :db/ident -> 1, :db.type/keyword -> 24, ...
+├── V1_PARTS:            :db.part/db [0..65536), :db.part/user [65536..), ...
+└── V1_SYMBOLIC_SCHEMA:  {:db/ident {:db/valueType :db.type/keyword ...} ...}
+         |
+         |
+         ├──> bootstrap_schema()           -> Schema object (in memory, no DB)
+         |    Resolves :db.type/keyword -> TypedValue::Ref(24) via V1_IDENTS
+         |
+         ├──> bootstrap_partition_map()    -> PartitionMap (in memory)
+         |
+         └──> bootstrap_entities()         -> Vec<Entity> (EDN assertions)
+                    |
+                    v
+create_empty_current_version()
+├── Execute V1_STATEMENTS DDL (CREATE TABLE datoms, idents, schema, ...)
+├── Set user_version = CURRENT_VERSION
+└── Return DB { partition_map, schema }    (tables exist but are empty)
+                    |
+                    v
+         transact(partition_map,
+                  schema_for_mutation = EMPTY,      <-- collects mutations
+                  schema = BOOTSTRAP_SCHEMA,         <-- used for reading
+                  bootstrap_entities)
+                    |
+                    v  (normal Stages 0-8)
+                    |
+              Datoms inserted into SQLite
+              timelined_transactions populated
+              idents + schema materialized views populated
+              Schema rebuilt from DB rows (Stage 7)
+                    |
+                    v
+              VERIFY: schema-from-DB == schema-from-hardcoded-constants
+                    |
+                    v
+              Working Mentat Store
+```
+
+---
+
 ## Key Files
 
 | File | Purpose |
@@ -762,5 +992,7 @@ TxReport {
 | `db/src/upsert_resolution.rs` | `Generation`, `FinalPopulations`, evolution loop, union-find |
 | `db/src/tx_checking.rs` | `type_disagreements()`, `cardinality_conflicts()` |
 | `db/src/db.rs` | SQL operations: `resolve_avs()`, search, `update_datoms()`, `insert_transaction()` |
-| `db/src/schema.rs` | Schema validation (`AttributeValidation` trait), schema building |
+| `db/src/schema.rs` | Schema validation (`AttributeValidation` trait), schema building (`SchemaBuilding` trait) |
+| `db/src/bootstrap.rs` | `V1_IDENTS`, `V1_PARTS`, `V1_SYMBOLIC_SCHEMA`, `bootstrap_schema()`, `bootstrap_entities()` |
+| `db/src/entids.rs` | Hardcoded entid constants: `DB_IDENT=1`, `DB_VALUE_TYPE=7`, etc. |
 | `db/src/cache.rs` | Copy-on-write attribute caching for in-memory lookups |
