@@ -11,7 +11,18 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
-bd sync               # Sync with git
+```
+
+## Syncing Beads
+
+Beads issues are synced to git via JSONL export to the `beads-sync` branch:
+
+```bash
+bd export > /path/to/beads-sync-worktree/.beads/issues.jsonl
+cd /path/to/beads-sync-worktree
+git add .beads/issues.jsonl
+git commit -m "beads: sync issues"
+git push origin beads-sync
 ```
 
 ## Style
