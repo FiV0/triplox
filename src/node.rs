@@ -212,7 +212,7 @@ mod tests {
     use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::expr::{BinaryExpr, BinaryOp, Expr};
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{Attribute, DataType, Document, EntityId, TxOp};
+    use crate::ops::{Attribute, DataType, EntityId, TxOp};
     use crate::schema::test_schema_tx;
     // "name" has entity_id 50, "age" 51, "email" 52, "follows" 53 from test_schema_tx
     use crate::transaction::TransactionResult;
@@ -238,7 +238,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let doc = Document(map);
+        let doc = map;
         let tx_ops = vec![TxOp::Put(doc)];
 
         let result = node.execute_tx(tx_ops).await.unwrap();
@@ -327,7 +327,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("bob".to_string()));
-        let doc = Document(map);
+        let doc = map;
         let tx_ops = vec![TxOp::Put(doc)];
 
         let waiter = node.indexer.read().await.tx_waiter();
@@ -410,8 +410,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![
@@ -446,8 +446,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
@@ -479,8 +479,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![
@@ -522,8 +522,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         // ?friend is in value position of :follows and entity position of :name
         let query = Query {
@@ -566,9 +566,9 @@ mod tests {
         doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
@@ -615,9 +615,9 @@ mod tests {
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![
@@ -673,9 +673,9 @@ mod tests {
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
-        node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(Document(doc3))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
         let query = Query {
             find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
@@ -727,7 +727,7 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let tx_key1 = match node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap() {
+        let tx_key1 = match node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap() {
             TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx1 should commit"),
         };
@@ -736,7 +736,7 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        let tx_key2 = match node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap() {
+        let tx_key2 = match node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap() {
             TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx2 should commit"),
         };
@@ -797,7 +797,7 @@ mod tests {
         doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let result = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        let result = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
@@ -819,7 +819,7 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
-        let result = node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        let result = node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
@@ -848,7 +848,7 @@ mod tests {
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
 
-        let result = node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
         let tx_key = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("expected commit"),
@@ -882,7 +882,7 @@ mod tests {
         let mut doc1 = BTreeMap::new();
         doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result1 = node.execute_tx(vec![TxOp::Put(Document(doc1))]).await.unwrap();
+        let result1 = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         let tx_key1 = match result1 {
             TransactionResult::TxCommited(tk) => tk,
             _ => panic!("Expected TxCommited"),
@@ -892,7 +892,7 @@ mod tests {
         let mut doc2 = BTreeMap::new();
         doc2.insert("db/id".to_string(), DataType::Long(200));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-        node.execute_tx(vec![TxOp::Put(Document(doc2))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
@@ -942,7 +942,7 @@ mod tests {
             doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("age".to_string(), DataType::Long(age));
-            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
         }
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
         sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
-        node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
             (100, "Ivan", "male"),
@@ -1213,7 +1213,7 @@ mod tests {
             doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
         }
 
         // find ?name where [?e :sex :male] [?e :name ?name]
@@ -1254,7 +1254,7 @@ mod tests {
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
         sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
-        node.execute_tx(vec![TxOp::Put(Document(sex_attr))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
             (100, "Ivan", "male"),
@@ -1267,7 +1267,7 @@ mod tests {
             doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-            node.execute_tx(vec![TxOp::Put(Document(doc))]).await.unwrap();
+            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
         }
 
         // Same clause order as Clojure: name first (binds ?e), sex filter second
@@ -1304,7 +1304,7 @@ mod tests {
         attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
         attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
         attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
-        node.execute_tx(vec![TxOp::Put(Document(attr))]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names
         let mut doc1 = BTreeMap::new();
@@ -1314,8 +1314,8 @@ mod tests {
         doc2.insert("db/id".to_string(), DataType::Long(201));
         doc2.insert("last-name".to_string(), DataType::String("Bobnev".to_string()));
         node.execute_tx(vec![
-            TxOp::Put(Document(doc1)),
-            TxOp::Put(Document(doc2)),
+            TxOp::Put(doc1),
+            TxOp::Put(doc2),
         ]).await.unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
@@ -1350,7 +1350,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::Put(Document(bad_doc))]),
+            node.execute_tx(vec![TxOp::Put(bad_doc)]),
         ).await.expect("Should not hang").expect("execute_tx should not return Err");
 
         match &result {
@@ -1372,7 +1372,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::Put(Document(good_doc))]),
+            node.execute_tx(vec![TxOp::Put(good_doc)]),
         ).await.expect("Should not hang").expect("execute_tx should not return Err");
 
         assert!(matches!(result, TransactionResult::TxCommited(_)),

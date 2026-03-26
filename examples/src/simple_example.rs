@@ -13,7 +13,7 @@ use anyhow::Result;
 use edn::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{QueryNode, SubmitNode, TransactionResult};
-use triplox::ops::{DataType, Document, TxOp};
+use triplox::ops::{DataType, TxOp};
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
@@ -32,7 +32,7 @@ fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
         "db/cardinality".to_string(),
         DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
     );
-    TxOp::Put(Document(doc))
+    TxOp::Put(doc)
 }
 
 #[tokio::main]
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
     bob.insert("name".to_string(), DataType::String("bob".to_string()));
     bob.insert("age".to_string(), DataType::Long(25));
 
-    let data_ops = vec![TxOp::Put(Document(alice)), TxOp::Put(Document(bob))];
+    let data_ops = vec![TxOp::Put(alice), TxOp::Put(bob)];
     let result = node.execute_tx(data_ops).await?;
     match &result {
         TransactionResult::TxCommited(tx_key) => {

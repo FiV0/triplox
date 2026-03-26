@@ -153,11 +153,8 @@ impl_from_for_enum!(
 );
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Document(pub BTreeMap<String, DataType>);
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
-    Put(Document),
+    Put(BTreeMap<String, DataType>),
     Add { entity_id: EntityId, attribute: Attribute, value: DataType },
     Retract { entity_id: EntityId, attribute: Attribute, value: DataType },
     Delete(EntityId),
@@ -190,7 +187,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
     let mut datoms = Vec::new();
     for op in ops {
         match op {
-            TxOp::Put(Document(doc)) => {
+            TxOp::Put(doc) => {
                 let entity = match doc.get("db/id") {
                     Some(DataType::Long(id)) => *id,
                     Some(_) => return Err(anyhow::anyhow!("Document db/id must be a Long")),
@@ -283,7 +280,7 @@ mod tests {
         let mut document: BTreeMap<String, DataType> = BTreeMap::new();
         document.insert("string".to_string(), "string_value".to_string().into());
         document.insert("int".to_string(), 1i64.into());
-        let op = TxOp::Put(Document(document));
+        let op = TxOp::Put(document);
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -336,7 +333,7 @@ mod tests {
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
         doc.insert("age".to_string(), DataType::Long(30));
-        let ops = vec![TxOp::Put(Document(doc))];
+        let ops = vec![TxOp::Put(doc)];
 
         let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
         assert_eq!(datoms.len(), 2);
@@ -395,7 +392,7 @@ mod tests {
         let tx = crate::clock::st_from_unix_epoch(1000);
         let mut doc = BTreeMap::new();
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let ops = vec![TxOp::Put(Document(doc))];
+        let ops = vec![TxOp::Put(doc)];
 
         let result = tx_ops_to_datoms(&ops, tx);
         assert!(result.is_err());
@@ -408,7 +405,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::String("not-a-long".to_string()));
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let ops = vec![TxOp::Put(Document(doc))];
+        let ops = vec![TxOp::Put(doc)];
 
         let result = tx_ops_to_datoms(&ops, tx);
         assert!(result.is_err());

@@ -11,7 +11,7 @@ use edn::symbols::Keyword;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::ops::{Attribute, DataType, Document, EntityId, TxOp};
+use crate::ops::{Attribute, DataType, EntityId, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -416,7 +416,7 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
     match op {
         TxOp::Put(doc) => {
             encode_u8(buf, TXOP_PUT);
-            encode_data_type_map(buf, &doc.0);
+            encode_data_type_map(buf, doc);
         }
         TxOp::Add { entity_id, attribute, value } => {
             encode_u8(buf, TXOP_ADD);
@@ -662,7 +662,7 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
     match tag {
         TXOP_PUT => {
             let map = decode_data_type_map(cursor)?;
-            Ok(TxOp::Put(Document(map)))
+            Ok(TxOp::Put(map))
         }
         TXOP_ADD => {
             let (entity_id, attribute, value) = decode_eav(cursor)?;
@@ -1217,7 +1217,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(1));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let op = TxOp::Put(Document(map));
+        let op = TxOp::Put(map);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 
@@ -1304,7 +1304,7 @@ mod tests {
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let msg = FrontendMessage::Execute {
             ops: vec![
-                TxOp::Put(Document(map)),
+                TxOp::Put(map),
                 TxOp::Delete(EntityId(99)),
             ],
             await_indexing: true,

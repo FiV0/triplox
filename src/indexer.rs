@@ -11,7 +11,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
-use crate::ops::{Datom, DatomOp, Document, TxOp, tx_ops_to_datoms};
+use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::schema::SchemaCache;
@@ -421,7 +421,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
-        let doc = Document(map);
+        let doc = map;
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -455,7 +455,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
-        let doc = Document(map);
+        let doc = map;
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -484,7 +484,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alan".to_string()));
         map.insert("age".to_string(), DataType::Long(30));
-        let doc = Document(map);
+        let doc = map;
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -511,7 +511,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let tx_ops = vec![TxOp::Put(Document(map))];
+        let tx_ops = vec![TxOp::Put(map)];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -542,7 +542,7 @@ mod tests {
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(map)];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -563,7 +563,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let tx_ops = vec![TxOp::Put(Document(map))];
+        let tx_ops = vec![TxOp::Put(map)];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         indexer.tx_waiter().await_tx(tx_key).await?;
@@ -588,7 +588,7 @@ mod tests {
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("bob".to_string()));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(map)];
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
 
@@ -626,7 +626,7 @@ mod tests {
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100 + i));
             map.insert("name".to_string(), DataType::String(format!("user{}", i)));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(map)];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -662,7 +662,7 @@ mod tests {
             let mut map = BTreeMap::new();
             map.insert("db/id".to_string(), DataType::Long(100));
             map.insert("name".to_string(), DataType::String("shared".to_string()));
-            let tx_ops = vec![TxOp::Put(Document(map))];
+            let tx_ops = vec![TxOp::Put(map)];
             guard.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -684,14 +684,14 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+        indexer.transact_tx(tx1, vec![TxOp::Put(map)]).await?;
 
         // Second tx: assert name="bob" for same entity — should auto-retract "alice"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("bob".to_string()));
-        indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
+        indexer.transact_tx(tx2, vec![TxOp::Put(map)]).await?;
 
         // Scan EAV for entity 100 — expect: alice ADD, alice RETRACT, bob ADD
         let name_id: i64 = 50;
@@ -735,14 +735,14 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx1, vec![TxOp::Put(Document(map))]).await?;
+        indexer.transact_tx(tx1, vec![TxOp::Put(map)]).await?;
 
         // Second tx: assert same name="alice" — datom should be dropped entirely
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let mut map = BTreeMap::new();
         map.insert("db/id".to_string(), DataType::Long(100));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx2, vec![TxOp::Put(Document(map))]).await?;
+        indexer.transact_tx(tx2, vec![TxOp::Put(map)]).await?;
 
         // Count EAV entries for entity 100, name attr — should be 1 ADD, 0 RETRACTs
         let name_id: i64 = 50;
