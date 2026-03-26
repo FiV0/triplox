@@ -235,10 +235,9 @@ mod tests {
         define_test_schema(&node).await;
 
         // Use entity ID 100 to avoid reserved bootstrap range (1-31)
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        let doc = map;
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
         let tx_ops = vec![TxOp::Put(doc)];
 
         let result = node.execute_tx(tx_ops).await.unwrap();
@@ -324,10 +323,9 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("bob".to_string()));
-        let doc = map;
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("bob".to_string()));
         let tx_ops = vec![TxOp::Put(doc)];
 
         let waiter = node.indexer.read().await.tx_waiter();

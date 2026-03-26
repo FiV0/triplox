@@ -418,10 +418,9 @@ mod tests {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alan".to_string()));
-        let doc = map;
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alan".to_string()));
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -452,10 +451,9 @@ mod tests {
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alan".to_string()));
-        let doc = map;
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alan".to_string()));
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -480,11 +478,10 @@ mod tests {
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
 
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(100));
-        map.insert("name".to_string(), DataType::String("alan".to_string()));
-        map.insert("age".to_string(), DataType::Long(30));
-        let doc = map;
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("name".to_string(), DataType::String("alan".to_string()));
+        doc.insert("age".to_string(), DataType::Long(30));
         let tx_ops = vec![TxOp::Put(doc)];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
