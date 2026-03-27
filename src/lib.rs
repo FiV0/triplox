@@ -14,6 +14,7 @@ mod log;
 pub mod logging;
 mod memory_log;
 pub mod ops;
+pub mod partition;
 mod parse;
 mod query;
 #[cfg(any(test, feature = "test-helpers"))]

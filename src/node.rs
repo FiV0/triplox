@@ -98,8 +98,8 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        let cache = crate::bootstrap::init_db(slatedb.clone()).await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, None)));
+        let (cache, counters) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, counters, None)));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
@@ -115,7 +115,7 @@ impl Node<FileLog> {
         let db_path_str = db_path.to_str()
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
         let slatedb = Arc::new(local_slate(db_path_str).await);
-        let cache = crate::bootstrap::init_db(slatedb.clone()).await;
+        let (cache, counters) = crate::bootstrap::init_db(slatedb.clone()).await;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
@@ -127,7 +127,7 @@ impl Node<FileLog> {
             None
         };
 
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, latest_indexed_tx)));
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, counters, latest_indexed_tx)));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock))?,
         ));
@@ -149,7 +149,7 @@ impl Node<FileLog> {
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
 
-        // Wait for catch-up to complete if there are existing transactions
+        // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
             waiter.await_tx(tx_key).await?;
         }
@@ -205,16 +205,14 @@ impl<L: TxLog> QueryNode for Node<L> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use bytes::Bytes;
     use slatedb::config::ScanOptions;
 
     use crate::codec;
     use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::expr::{BinaryExpr, BinaryOp, Expr};
-    use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
+    use crate::indexer::eav_key_to_parts;
     use crate::ops::{Attribute, DataType, EntityId, TxOp};
     use crate::schema::test_schema_tx;
-    // "name" has entity_id 50, "age" 51, "email" 52, "follows" 53 from test_schema_tx
     use crate::transaction::TransactionResult;
     use edn::Keyword;
     use super::*;
@@ -230,143 +228,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_tx_updates_indices() {
+    async fn test_submit_tx_async_indexing() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Use entity ID 100 to avoid reserved bootstrap range (1-31)
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let tx_ops = vec![TxOp::Put(doc)];
-
-        let result = node.execute_tx(tx_ops).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-
-        let slate = node.slatedb.clone();
-        let name_id: i64 = 50; // from test_schema_tx
-
-        // Check EAV index — find entry for entity 100
-        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                assert_eq!(value, DataType::String("alice".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                assert_eq!(kv.value, Bytes::from(""));
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected EAV entry for entity 100");
-
-        // Check AVE index — find entry for name attribute
-        let mut iter = slate.scan_prefix_with_options(&[codec::AVE], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, value, entity_id, _timestamp, suffix) = ave_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                assert_eq!(value, DataType::String("alice".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected AVE entry for entity 100");
-
-        // Check AEV index
-        let mut iter = slate.scan_prefix_with_options(&[codec::AEV], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, entity_id, value, _timestamp, suffix) = aev_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                assert_eq!(value, DataType::String("alice".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected AEV entry for entity 100");
-
-        // Check AE index
-        let mut iter = slate.scan_prefix_with_options(&[codec::AE], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, entity_id) = ae_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected AE entry for entity 100");
-
-        // Check AV index
-        let mut iter = slate.scan_prefix_with_options(&[codec::AV], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (attribute, value) = av_key_to_parts(kv.key).unwrap();
-            if attribute == name_id && value == DataType::String("alice".to_string()) {
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected AV entry for name=alice");
-    }
-
-    #[tokio::test]
-    async fn test_submit_tx_returns_tx_key_and_indices_updated_async() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("name".to_string(), DataType::String("bob".to_string()));
-        let tx_ops = vec![TxOp::Put(doc)];
+        let mut map = BTreeMap::new();
+        map.insert("name".to_string(), DataType::String("bob".to_string()));
+        let tx_ops = vec![TxOp::Put(map)];
 
         let waiter = node.indexer.read().await.tx_waiter();
 
         // submit_tx returns immediately with a TxKey
-        // bootstrap goes directly through transact_tx (not log), so:
-        // tx_id=0 is test schema, tx_id=1 is first data tx
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
         assert_eq!(tx_key.tx_id, 1);
 
         // Wait for indexer to process the transaction
         waiter.await_tx(tx_key).await.expect("Transaction should be indexed");
 
-        // Verify indices are updated
-        let slate = node.slatedb.clone();
-        let name_id: i64 = 50;
-
-        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
-                assert_eq!(attribute, name_id);
-                assert_eq!(value, DataType::String("bob".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                assert_eq!(kv.value, Bytes::from(""));
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected EAV entry for entity 100");
+        // Verify data is queryable after async indexing
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![triple("?e", "name", "?name")],
+        }).await.unwrap();
+        assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
 
+    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     #[tokio::test]
     async fn test_execute_tx_with_add_triple() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Use entity ID 100 to avoid reserved bootstrap range (1-31)
+        // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
-            entity_id: EntityId::new(100),
+            entity_id: EntityId::new(2000),
             attribute: Attribute("email".to_string()),
             value: DataType::String("test@example.com".to_string()),
         }];
@@ -375,14 +271,14 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
-        let email_id: i64 = 52; // from test_schema_tx
+        let email_id = node.indexer.read().await.schema_cache().get("email").unwrap().entity_id;
 
-        // Check EAV index — find entry for entity 100
+        // Check EAV index — find entry for entity 2000
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await.unwrap() {
             let (entity_id, attribute, value, _timestamp, suffix) = eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(100) {
+            if entity_id == DataType::Long(2000) {
                 assert_eq!(attribute, email_id);
                 assert_eq!(value, DataType::String("test@example.com".to_string()));
                 assert_eq!(suffix, codec::ADD);
@@ -390,7 +286,7 @@ mod tests {
                 break;
             }
         }
-        assert!(found, "Expected EAV entry for entity 100");
+        assert!(found, "Expected EAV entry for entity 2000");
     }
 
     // End-to-end query tests
@@ -401,11 +297,9 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -413,7 +307,6 @@ mod tests {
 
         let query = Query {
             find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
                 FindElement::Variable("?name".to_string()),
             ]),
             where_clauses: vec![WhereClause::Triple(TriplePattern {
@@ -427,8 +320,8 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
-        assert!(result.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
+        assert!(result.contains(&vec![DataType::String("alice".to_string())]));
+        assert!(result.contains(&vec![DataType::String("bob".to_string())]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -437,11 +330,9 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -460,7 +351,6 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![DataType::Long(100)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -469,12 +359,10 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -506,18 +394,19 @@ mod tests {
         assert_eq!(result[0], vec![DataType::String("alice".to_string()), DataType::Long(30)]);
     }
 
+    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
+        doc1.insert("db/id".to_string(), DataType::Long(2000));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("follows".to_string(), DataType::Long(101));
+        doc1.insert("follows".to_string(), DataType::Long(2001));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
+        doc2.insert("db/id".to_string(), DataType::Long(2001));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -553,15 +442,12 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
 
         node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -569,28 +455,35 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
         let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![WhereClause::Or(vec![
-                OrBranch::Clause(WhereClause::Triple(TriplePattern {
+            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
+            where_clauses: vec![
+                WhereClause::Or(vec![
+                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(kw("name")),
+                        value: PatternElement::Constant(DataType::String("alice".to_string())),
+                    })),
+                    OrBranch::Clause(WhereClause::Triple(TriplePattern {
+                        entity: PatternElement::Variable("?e".to_string()),
+                        attribute: PatternElement::Constant(kw("name")),
+                        value: PatternElement::Constant(DataType::String("bob".to_string())),
+                    })),
+                ]),
+                WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("alice".to_string())),
-                })),
-                OrBranch::Clause(WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?e".to_string()),
-                    attribute: PatternElement::Constant(kw("name")),
-                    value: PatternElement::Constant(DataType::String("bob".to_string())),
-                })),
-            ])],
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+            ],
         };
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(100)]));
-        assert!(result.contains(&vec![DataType::Long(101)]));
-        assert!(!result.contains(&vec![DataType::Long(102)]));
+        assert!(result.contains(&vec![DataType::String("alice".to_string())]));
+        assert!(result.contains(&vec![DataType::String("bob".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("charlie".to_string())]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -599,17 +492,14 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         doc2.insert("age".to_string(), DataType::Long(25));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
@@ -619,7 +509,7 @@ mod tests {
 
         let query = Query {
             find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
+                FindElement::Variable("?name".to_string()),
                 FindElement::Variable("?age".to_string()),
             ]),
             where_clauses: vec![
@@ -637,6 +527,11 @@ mod tests {
                 ]),
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("name")),
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(kw("age")),
                     value: PatternElement::Variable("?age".to_string()),
                 }),
@@ -647,8 +542,8 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(100), DataType::Long(30)]));
-        assert!(result.contains(&vec![DataType::Long(101), DataType::Long(25)]));
+        assert!(result.contains(&vec![DataType::String("alice".to_string()), DataType::Long(30)]));
+        assert!(result.contains(&vec![DataType::String("bob".to_string()), DataType::Long(25)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -657,17 +552,14 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         doc1.insert("age".to_string(), DataType::Long(30));
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         doc2.insert("age".to_string(), DataType::Long(25));
 
         let mut doc3 = BTreeMap::new();
-        doc3.insert("db/id".to_string(), DataType::Long(102));
         doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
         doc3.insert("age".to_string(), DataType::Long(35));
 
@@ -676,42 +568,49 @@ mod tests {
         node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
 
         let query = Query {
-            find: FindSpec::FindRel(vec![FindElement::Variable("?e".to_string())]),
-            where_clauses: vec![WhereClause::Or(vec![
-                OrBranch::And(vec![
-                    WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(kw("name")),
-                        value: PatternElement::Constant(DataType::String("alice".to_string())),
-                    }),
-                    WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(kw("age")),
-                        value: PatternElement::Constant(DataType::Long(30)),
-                    }),
+            find: FindSpec::FindRel(vec![FindElement::Variable("?name".to_string())]),
+            where_clauses: vec![
+                WhereClause::Or(vec![
+                    OrBranch::And(vec![
+                        WhereClause::Triple(TriplePattern {
+                            entity: PatternElement::Variable("?e".to_string()),
+                            attribute: PatternElement::Constant(kw("name")),
+                            value: PatternElement::Constant(DataType::String("alice".to_string())),
+                        }),
+                        WhereClause::Triple(TriplePattern {
+                            entity: PatternElement::Variable("?e".to_string()),
+                            attribute: PatternElement::Constant(kw("age")),
+                            value: PatternElement::Constant(DataType::Long(30)),
+                        }),
+                    ]),
+                    OrBranch::And(vec![
+                        WhereClause::Triple(TriplePattern {
+                            entity: PatternElement::Variable("?e".to_string()),
+                            attribute: PatternElement::Constant(kw("name")),
+                            value: PatternElement::Constant(DataType::String("charlie".to_string())),
+                        }),
+                        WhereClause::Triple(TriplePattern {
+                            entity: PatternElement::Variable("?e".to_string()),
+                            attribute: PatternElement::Constant(kw("age")),
+                            value: PatternElement::Constant(DataType::Long(35)),
+                        }),
+                    ]),
                 ]),
-                OrBranch::And(vec![
-                    WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(kw("name")),
-                        value: PatternElement::Constant(DataType::String("charlie".to_string())),
-                    }),
-                    WhereClause::Triple(TriplePattern {
-                        entity: PatternElement::Variable("?e".to_string()),
-                        attribute: PatternElement::Constant(kw("age")),
-                        value: PatternElement::Constant(DataType::Long(35)),
-                    }),
-                ]),
-            ])],
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?e".to_string()),
+                    attribute: PatternElement::Constant(kw("name")),
+                    value: PatternElement::Variable("?name".to_string()),
+                }),
+            ],
         };
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![DataType::Long(100)]));
-        assert!(result.contains(&vec![DataType::Long(102)]));
-        assert!(!result.contains(&vec![DataType::Long(101)]));
+        assert!(result.contains(&vec![DataType::String("alice".to_string())]));
+        assert!(result.contains(&vec![DataType::String("charlie".to_string())]));
+        assert!(!result.contains(&vec![DataType::String("bob".to_string())]));
     }
 
     // TODO(triplox-5ox): Once cardinality/one override is implemented, update this test to use
@@ -722,7 +621,6 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let tx_key1 = match node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap() {
@@ -731,7 +629,6 @@ mod tests {
         };
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let tx_key2 = match node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap() {
@@ -741,7 +638,6 @@ mod tests {
 
         let query = Query {
             find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
                 FindElement::Variable("?name".to_string()),
             ]),
             where_clauses: vec![WhereClause::Triple(TriplePattern {
@@ -751,25 +647,20 @@ mod tests {
             })],
         };
 
-        // db_as_of(tx_key1): should only see entity 100
+        // db_as_of(tx_key1): should only see alice
         let db1 = node.db_as_of(tx_key1).await.unwrap();
         let result1 = db1.query(&query).await.unwrap();
         assert_eq!(result1.len(), 1);
-        assert_eq!(result1[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+        assert_eq!(result1[0], vec![DataType::String("alice".to_string())]);
 
-        // db_as_of(tx_key2): should see both entities
+        // db_as_of(tx_key2): should see both
         let db2 = node.db_as_of(tx_key2).await.unwrap();
         let result2 = db2.query(&query).await.unwrap();
         assert_eq!(result2.len(), 2);
-        assert!(result2.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
-        assert!(result2.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
+        assert!(result2.contains(&vec![DataType::String("alice".to_string())]));
+        assert!(result2.contains(&vec![DataType::String("bob".to_string())]));
     }
 
-    // TODO: once auto entity ID allocation (tempids) is implemented, this test
-    // should be updated to use auto-allocated IDs instead of explicit db/id values.
-    // Without the fix to skip already-indexed transactions on restart, auto-allocated
-    // IDs would diverge because replaying transactions with an advanced next_t counter
-    // produces different entity IDs, corrupting the index.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -777,7 +668,6 @@ mod tests {
 
         let query = Query {
             find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
                 FindElement::Variable("?name".to_string()),
             ]),
             where_clauses: vec![WhereClause::Triple(TriplePattern {
@@ -792,7 +682,6 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let result = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
@@ -801,7 +690,7 @@ mod tests {
         let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+        assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
         node.close().await;
 
@@ -811,10 +700,9 @@ mod tests {
         let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+        assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(101));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
 
         let result = node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
@@ -823,8 +711,8 @@ mod tests {
         let db = node.db().await.unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 2);
-        assert!(results.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
-        assert!(results.contains(&vec![DataType::Long(101), DataType::String("bob".to_string())]));
+        assert!(results.contains(&vec![DataType::String("alice".to_string())]));
+        assert!(results.contains(&vec![DataType::String("bob".to_string())]));
 
         node.close().await;
     }
@@ -878,7 +766,6 @@ mod tests {
 
         // First transaction: insert alice
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(100));
         doc1.insert("name".to_string(), DataType::String("alice".to_string()));
         let result1 = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
         let tx_key1 = match result1 {
@@ -888,7 +775,6 @@ mod tests {
 
         // Second transaction: insert bob
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(200));
         doc2.insert("name".to_string(), DataType::String("bob".to_string()));
         node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
 
@@ -896,7 +782,6 @@ mod tests {
         let db = node.db_as_of(tx_key1).await.unwrap();
         let query = Query {
             find: FindSpec::FindRel(vec![
-                FindElement::Variable("?e".to_string()),
                 FindElement::Variable("?name".to_string()),
             ]),
             where_clauses: vec![WhereClause::Triple(TriplePattern {
@@ -907,7 +792,7 @@ mod tests {
         };
         let results = db.query(&query).await.unwrap();
         assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
-        assert_eq!(results[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+        assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
         // latest db should see both
         let db_latest = node.db().await.unwrap();
@@ -928,16 +813,15 @@ mod tests {
         node.close().await;
     }
 
-    /// Insert 3 people: Ivan (100, age=30), Bob (101, age=40), Dominic (102, age=50).
+    /// Insert 3 people: Ivan (age=30), Bob (age=40), Dominic (age=50) with auto-assigned IDs.
     async fn insert_three_people(node: &impl SubmitNode) {
         let people = vec![
-            (100, "Ivan", 30),
-            (101, "Bob", 40),
-            (102, "Dominic", 50),
+            ("Ivan", 30),
+            ("Bob", 40),
+            ("Dominic", 50),
         ];
-        for (id, name, age) in people {
+        for (name, age) in people {
             let mut doc = BTreeMap::new();
-            doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("age".to_string(), DataType::Long(age));
             node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
@@ -1036,11 +920,13 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
+        // Find name where age == 30 (Ivan)
         let query = Query {
             find: find_vars(&["?name"]),
             where_clauses: vec![
                 triple("?e", "name", "?name"),
-                predicate(lit_long(100), BinaryOp::Eq, var("?e")),
+                triple("?e", "age", "?age"),
+                predicate(lit_long(30), BinaryOp::Eq, var("?age")),
             ],
         };
 
@@ -1067,7 +953,6 @@ mod tests {
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![DataType::Long(100)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1192,23 +1077,21 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Define "sex" attribute (ID 55) with keyword value type
+        // Define "sex" attribute with keyword value type
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
         sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
-            (100, "Ivan", "male"),
-            (101, "Ivana", "female"),
-            (102, "Petr", "male"),
-            (103, "Doris", "female"),
+            ("Ivan", "male"),
+            ("Ivana", "female"),
+            ("Petr", "male"),
+            ("Doris", "female"),
         ];
-        for (id, name, sex) in people {
+        for (name, sex) in people {
             let mut doc = BTreeMap::new();
-            doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
             node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
@@ -1248,21 +1131,19 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/id".to_string(), DataType::Long(55));
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
         sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
         sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
-            (100, "Ivan", "male"),
-            (101, "Petr", "male"),
-            (102, "Doris", "female"),
-            (103, "Jane", "female"),
+            ("Ivan", "male"),
+            ("Petr", "male"),
+            ("Doris", "female"),
+            ("Jane", "female"),
         ];
-        for (id, name, sex) in people {
+        for (name, sex) in people {
             let mut doc = BTreeMap::new();
-            doc.insert("db/id".to_string(), DataType::Long(id));
             doc.insert("name".to_string(), DataType::String(name.to_string()));
             doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
             node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
@@ -1296,9 +1177,8 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Define "last-name" attribute (ID 55)
+        // Define "last-name" attribute
         let mut attr = BTreeMap::new();
-        attr.insert("db/id".to_string(), DataType::Long(55));
         attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
         attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
         attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
@@ -1306,10 +1186,10 @@ mod tests {
 
         // Insert entity 200 and entity 201 with last-names
         let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(200));
+        doc1.insert("db/id".to_string(), DataType::Long(2200));
         doc1.insert("last-name".to_string(), DataType::String("Ivannotov".to_string()));
         let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(201));
+        doc2.insert("db/id".to_string(), DataType::Long(1201));
         doc2.insert("last-name".to_string(), DataType::String("Bobnev".to_string()));
         node.execute_tx(vec![
             TxOp::Put(doc1),
@@ -1321,7 +1201,7 @@ mod tests {
             find: find_vars(&["?ln"]),
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Constant(DataType::Long(200)),
+                    entity: PatternElement::Constant(DataType::Long(2200)),
                     attribute: PatternElement::Constant(kw("last-name")),
                     value: PatternElement::Variable("?ln".to_string()),
                 }),
@@ -1343,7 +1223,6 @@ mod tests {
 
         // Submit a tx with unknown attribute — should fail with TxAborted
         let mut bad_doc = BTreeMap::new();
-        bad_doc.insert("db/id".to_string(), DataType::Long(100));
         bad_doc.insert("nonexistent/attr".to_string(), DataType::String("x".to_string()));
 
         let result = tokio::time::timeout(
@@ -1365,7 +1244,6 @@ mod tests {
                 "Expected TxCommited for schema tx, got: {:?}", result);
 
         let mut good_doc = BTreeMap::new();
-        good_doc.insert("db/id".to_string(), DataType::Long(200));
         good_doc.insert("name".to_string(), DataType::String("alice".to_string()));
 
         let result = tokio::time::timeout(
@@ -1377,32 +1255,33 @@ mod tests {
                 "Expected TxCommited for valid tx, got: {:?}", result);
     }
 
+    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     /// Cardinality-many attributes accumulate values without retracting old ones.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_cardinality_many_attribute() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Insert entity 100 with tags="rust"
+        // Insert entity 2000 with tags="rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(2000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }]).await.unwrap();
 
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(100),
+            entity_id: crate::ops::EntityId::new(2000),
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("database".to_string()),
         }]).await.unwrap();
 
-        // Query: find all tags for entity 100
+        // Query: find all tags for entity 2000
         let query = Query {
             find: find_vars(&["?tag"]),
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Constant(DataType::Long(100)),
+                    entity: PatternElement::Constant(DataType::Long(2000)),
                     attribute: PatternElement::Constant(kw("tags")),
                     value: PatternElement::Variable("?tag".to_string()),
                 }),
