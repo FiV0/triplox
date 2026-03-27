@@ -217,12 +217,11 @@ mod tests {
     use edn::Keyword;
     use super::*;
 
-    fn kw(name: &str) -> DataType {
-        DataType::Keyword(Keyword::plain(name))
-    }
-
-    fn kw_ns(ns: &str, name: &str) -> DataType {
-        DataType::Keyword(Keyword::namespaced(ns, name))
+    fn kw(s: &str) -> DataType {
+        DataType::Keyword(match s.rsplit_once('/') {
+            Some((ns, name)) => Keyword::namespaced(ns, name),
+            None => Keyword::plain(s),
+        })
     }
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
@@ -875,13 +874,6 @@ mod tests {
         })
     }
 
-    fn triple_ns(entity: &str, attr_ns: &str, attr_name: &str, value: &str) -> WhereClause {
-        WhereClause::Triple(TriplePattern {
-            entity: PatternElement::Variable(entity.to_string()),
-            attribute: PatternElement::Constant(kw_ns(attr_ns, attr_name)),
-            value: PatternElement::Variable(value.to_string()),
-        })
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_predicate_lt() {
@@ -1372,15 +1364,15 @@ mod tests {
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    attribute: PatternElement::Constant(kw("db/txId")),
                     value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
                 }),
-                triple_ns("?tx", "db", "txResult", "?result"),
+                triple("?tx", "db/txResult", "?result"),
             ],
         }).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![kw_ns("db.tx", "committed")]);
+        assert_eq!(result[0], vec![kw("db.tx/committed")]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1403,10 +1395,10 @@ mod tests {
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    attribute: PatternElement::Constant(kw("db/txId")),
                     value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
                 }),
-                triple_ns("?tx", "db", "txInstant", "?instant"),
+                triple("?tx", "db/txInstant", "?instant"),
             ],
         }).await.unwrap();
 
@@ -1436,16 +1428,16 @@ mod tests {
             where_clauses: vec![
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    attribute: PatternElement::Constant(kw("db/txId")),
                     value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
                 }),
-                triple_ns("?tx", "db", "txResult", "?result"),
-                triple_ns("?tx", "db.tx", "error", "?error"),
+                triple("?tx", "db/txResult", "?result"),
+                triple("?tx", "db.tx/error", "?error"),
             ],
         }).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], kw_ns("db.tx", "aborted"));
+        assert_eq!(result[0][0], kw("db.tx/aborted"));
         if let DataType::String(s) = &result[0][1] {
             assert!(s.contains("nonexistent"), "Error should mention the unknown attribute, got: {}", s);
         } else {
@@ -1470,11 +1462,11 @@ mod tests {
         let result = db.query(&Query {
             find: find_vars(&["?id"]),
             where_clauses: vec![
-                triple_ns("?tx", "db", "txId", "?id"),
+                triple("?tx", "db/txId", "?id"),
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(kw_ns("db", "txResult")),
-                    value: PatternElement::Constant(kw_ns("db.tx", "committed")),
+                    attribute: PatternElement::Constant(kw("db/txResult")),
+                    value: PatternElement::Constant(kw("db.tx/committed")),
                 }),
             ],
         }).await.unwrap();
