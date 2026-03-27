@@ -221,6 +221,10 @@ mod tests {
         DataType::Keyword(Keyword::plain(name))
     }
 
+    fn kw_ns(ns: &str, name: &str) -> DataType {
+        DataType::Keyword(Keyword::namespaced(ns, name))
+    }
+
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
     async fn define_test_schema(node: &impl SubmitNode) {
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
@@ -871,6 +875,14 @@ mod tests {
         })
     }
 
+    fn triple_ns(entity: &str, attr_ns: &str, attr_name: &str, value: &str) -> WhereClause {
+        WhereClause::Triple(TriplePattern {
+            entity: PatternElement::Variable(entity.to_string()),
+            attribute: PatternElement::Constant(kw_ns(attr_ns, attr_name)),
+            value: PatternElement::Variable(value.to_string()),
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_predicate_lt() {
         let node = Node::memory_node().await;
@@ -1336,5 +1348,158 @@ mod tests {
         // Counters 0 and 1 — no gap from the failed tx
         assert_eq!(crate::partition::extract_counter(eids[0]), 0);
         assert_eq!(crate::partition::extract_counter(eids[1]), 1);
+    }
+
+    // --- First-class transaction entity tests ---
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_committed_tx_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut doc = BTreeMap::new();
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let tx_key = match result {
+            TransactionResult::TxCommited(k) => k,
+            _ => panic!("Expected committed"),
+        };
+
+        // Query for the tx entity matching this tx_id
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?result"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
+                }),
+                triple_ns("?tx", "db", "txResult", "?result"),
+            ],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![kw_ns("db.tx", "committed")]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_committed_tx_entity_has_instant() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut doc = BTreeMap::new();
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let tx_key = match result {
+            TransactionResult::TxCommited(k) => k,
+            _ => panic!("Expected committed"),
+        };
+
+        // Query for db/txInstant of this transaction
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?instant"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
+                }),
+                triple_ns("?tx", "db", "txInstant", "?instant"),
+            ],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        // Instant encoding may lose sub-microsecond precision, just verify it's an Instant
+        assert!(matches!(&result[0][0], DataType::Instant(_)), "Expected Instant, got {:?}", result[0][0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_aborted_tx_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Submit a transaction with an unknown attribute to trigger abort
+        let mut doc = BTreeMap::new();
+        doc.insert("nonexistent".to_string(), DataType::String("x".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let tx_key = match &result {
+            TransactionResult::TxAborted(k, _) => *k,
+            _ => panic!("Expected aborted, got {:?}", result),
+        };
+
+        // Query for the aborted tx entity
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?result", "?error"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw_ns("db", "txId")),
+                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
+                }),
+                triple_ns("?tx", "db", "txResult", "?result"),
+                triple_ns("?tx", "db.tx", "error", "?error"),
+            ],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], kw_ns("db.tx", "aborted"));
+        if let DataType::String(s) = &result[0][1] {
+            assert!(s.contains("nonexistent"), "Error should mention the unknown attribute, got: {}", s);
+        } else {
+            panic!("Expected String for error, got {:?}", result[0][1]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_multiple_tx_entities() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Execute two user transactions
+        for name in &["alice", "bob"] {
+            let mut doc = BTreeMap::new();
+            doc.insert("name".to_string(), DataType::String(name.to_string()));
+            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        }
+
+        // Query all committed tx entities (including the schema tx)
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?id"]),
+            where_clauses: vec![
+                triple_ns("?tx", "db", "txId", "?id"),
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw_ns("db", "txResult")),
+                    value: PatternElement::Constant(kw_ns("db.tx", "committed")),
+                }),
+            ],
+        }).await.unwrap();
+
+        // 3 committed transactions: schema definition + alice + bob
+        assert_eq!(result.len(), 3, "Expected 3 committed tx entities, got {:?}", result);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_aborted_tx_no_user_data() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Submit a failing transaction
+        let mut doc = BTreeMap::new();
+        doc.insert("nonexistent".to_string(), DataType::String("x".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        assert!(matches!(result, TransactionResult::TxAborted(_, _)));
+
+        // Query for user data with attribute "nonexistent" — should find nothing
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?name"]),
+            where_clauses: vec![triple("?e", "name", "?name")],
+        }).await.unwrap();
+        assert!(result.is_empty(), "Aborted tx should not write user data");
     }
 }
