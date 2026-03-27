@@ -1295,4 +1295,46 @@ mod tests {
         assert!(result.contains(&vec![DataType::String("rust".to_string())]));
         assert!(result.contains(&vec![DataType::String("database".to_string())]));
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_failed_tx_does_not_advance_counters() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // tx1: valid insert — allocates first user entity
+        let mut doc1 = BTreeMap::new();
+        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
+        let result1 = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        assert!(matches!(result1, TransactionResult::TxCommited(_)));
+
+        // tx2: insert with unknown attribute — should fail
+        let mut bad_doc = BTreeMap::new();
+        bad_doc.insert("nonexistent_attr".to_string(), DataType::String("oops".to_string()));
+        let result2 = node.execute_tx(vec![TxOp::Put(bad_doc)]).await.unwrap();
+        assert!(matches!(result2, TransactionResult::TxAborted(_, _)));
+
+        // tx3: valid insert — should get the next contiguous entity ID
+        let mut doc3 = BTreeMap::new();
+        doc3.insert("name".to_string(), DataType::String("bob".to_string()));
+        let result3 = node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
+        assert!(matches!(result3, TransactionResult::TxCommited(_)));
+
+        // Query all (entity, name) pairs and verify contiguous counter values
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?e", "?name"]),
+            where_clauses: vec![triple("?e", "name", "?name")],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        let mut eids: Vec<i64> = result.iter().map(|row| match &row[0] {
+            DataType::Long(id) => *id,
+            _ => panic!("Expected Long entity ID"),
+        }).collect();
+        eids.sort();
+
+        // Counters 0 and 1 — no gap from the failed tx
+        assert_eq!(crate::partition::extract_counter(eids[0]), 0);
+        assert_eq!(crate::partition::extract_counter(eids[1]), 1);
+    }
 }

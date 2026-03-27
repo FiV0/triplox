@@ -137,7 +137,9 @@ impl Indexer {
     /// and all index writes happen in a single transaction.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         // TODO: resolve_entity_ids + tx_ops_to_datoms should be unified into a single pass
-        let resolved_ops = resolve_entity_ids(&tx_ops, &mut self.counters)?;
+        // Use a temporary copy of counters; only persist advances after successful commit.
+        let mut pending_counters = self.counters.clone();
+        let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_counters)?;
         let datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
@@ -225,6 +227,9 @@ impl Indexer {
         txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
 
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+
+        // Commit succeeded — advance partition counters.
+        self.counters = pending_counters;
 
         // Update schema cache after commit so new attributes are only visible
         // in subsequent transactions.
