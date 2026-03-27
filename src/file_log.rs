@@ -36,7 +36,7 @@ impl FileLog {
 }
 
 impl TxLogReader for FileLog {
-    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
+    async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
         let mut file = self.file.get_ref().try_clone().unwrap();
         let mut records = Vec::new();
 
@@ -64,7 +64,7 @@ impl TxLogReader for FileLog {
         Ok(records)
     }
 
-    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
+    async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
         let end_of_file = self.file.get_ref()
             .seek(SeekFrom::End(0))
             .unwrap_or(0) as TxId;

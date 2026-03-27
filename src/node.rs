@@ -137,7 +137,7 @@ impl Node<FileLog> {
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
             let log_reader = log.read().await;
-            let records = log_reader.read_txs_after(after_tx_id, u16::MAX)?;
+            let records = log_reader.read_txs_after(after_tx_id, u16::MAX).await?;
             records.last().map(|r| r.tx_key)
         };
 
@@ -150,6 +150,49 @@ impl Node<FileLog> {
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
 
         // Wait for catch-up to complete if there are existing transactions
+        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+            waiter.await_tx(tx_key).await?;
+        }
+
+        Ok(Node { log, indexer, slatedb, subscription })
+    }
+}
+
+#[cfg(feature = "s2")]
+impl Node<crate::s2_log::S2Log> {
+    pub async fn remote_node(
+        stream: s2_sdk::S2Stream,
+        db_path: &str,
+    ) -> Result<Self, Error> {
+        let slatedb = Arc::new(local_slate(db_path).await);
+        let cache = crate::bootstrap::init_db(slatedb.clone()).await;
+
+        let snapshot = Arc::new(slatedb.snapshot().await?);
+        let latest_indexed = latest_tx_key_from_snapshot(&snapshot).await?;
+        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
+            Some(latest_indexed)
+        } else {
+            None
+        };
+
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, latest_indexed_tx)));
+        let log = Arc::new(RwLock::new(crate::s2_log::S2Log::new(stream)));
+
+        let after_tx_id = latest_indexed_tx.map(|k| k.tx_id);
+
+        let last_tx_key = {
+            let log_reader = log.read().await;
+            let records = log_reader.read_txs_after(after_tx_id, u16::MAX).await?;
+            records.last().map(|r| r.tx_key)
+        };
+
+        let waiter = match last_tx_key {
+            Some(_) => Some(indexer.read().await.tx_waiter()),
+            None => None,
+        };
+
+        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
             waiter.await_tx(tx_key).await?;
         }

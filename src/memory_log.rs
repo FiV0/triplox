@@ -25,7 +25,7 @@ impl MemoryLog {
 }
 
 impl TxLogReader for MemoryLog {
-    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
+    async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
         let start = match after_tx_id {
             None => 0,
             Some(id) => id as usize + 1,
@@ -37,7 +37,7 @@ impl TxLogReader for MemoryLog {
         Ok(self.txs[start..end].to_vec())
     }
 
-    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
+    async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
         (self.txs.len() as TxId, self.tx_sender.subscribe())
     }
 }

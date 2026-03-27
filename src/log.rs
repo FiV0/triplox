@@ -26,12 +26,12 @@ pub(crate) trait Subscriber: Send + Sync {
 
 pub type TxId = i64;
 
-pub(crate) async fn subscribe<S: Subscriber + 'static>(
-    log: Arc<RwLock<dyn TxLogReader>>,
+pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
+    log: Arc<RwLock<L>>,
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
 ) -> CancellationToken {
-    let (_next_tx_id, mut tx_receiver) = log.read().await.subscribe_txs();
+    let (_next_tx_id, mut tx_receiver) = log.read().await.subscribe_txs().await;
 
     let token = CancellationToken::new();
     let task_token = token.clone();
@@ -43,7 +43,7 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
         // Catch-up phase: read historical transactions after last_tx_id
         loop {
             if task_token.is_cancelled() { break; }
-            let txs = log.read().await.read_txs_after(last_tx_id, 100);
+            let txs = log.read().await.read_txs_after(last_tx_id, 100).await;
             match txs {
                 Ok(txs) if txs.is_empty() => break,
                 Ok(txs) => {
@@ -76,7 +76,7 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
-                            let txs = log.read().await.read_txs_after(last_tx_id, missed.try_into().unwrap());
+                            let txs = log.read().await.read_txs_after(last_tx_id, missed.try_into().unwrap()).await;
                             match txs {
                                 Ok(txs) => {
                                     if !txs.is_empty() {
@@ -111,9 +111,9 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
 pub trait TxLogReader: Send + Sync + 'static {
     /// Read up to `limit` records written after `after_tx_id`.
     /// `None` means from the beginning. `Some(id)` means records strictly after `id`.
-    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>>;
+    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> impl Future<Output = Result<Vec<Record>>> + Send;
     /// Returns (next_tx_id, receiver). next_tx_id is where the next write will go (0 for empty log).
-    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
+    fn subscribe_txs(&self) -> impl Future<Output = (TxId, broadcast::Receiver<Record>)> + Send;
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {

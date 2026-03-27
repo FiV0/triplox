@@ -13,6 +13,8 @@ mod iterator;
 mod log;
 pub mod logging;
 mod memory_log;
+#[cfg(feature = "s2")]
+pub mod s2_log;
 pub mod ops;
 mod parse;
 mod query;
