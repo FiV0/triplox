@@ -10,6 +10,7 @@ use crate::ops::{Attribute, DataType, Datom, DatomOp, EntityId, TxOp};
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---
+// Used as explicit db/id values in bootstrap_schema_tx().
 
 // Schema attribute entities
 pub const DB_IDENT: i64 = 1;
@@ -268,9 +269,9 @@ impl SchemaCache {
 
 // --- Bootstrap transaction builders ---
 
-fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
+/// Build a Put for a schema attribute without explicit db/id.
+fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
     let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert("db/ident".to_string(), DataType::Keyword(ident));
     doc.insert(
         "db/valueType".to_string(),
@@ -283,46 +284,61 @@ fn schema_attribute_with_cardinality(id: i64, ident: Keyword, value_type: &str, 
     TxOp::Put(doc)
 }
 
-fn schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
-    schema_attribute_with_cardinality(id, ident, value_type, "one")
+fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality(ident, value_type, "one")
 }
 
-/// Build a Put operation for an enum entity (value type or cardinality).
-/// Enum entities only have db/ident.
-fn enum_entity(id: i64, ns: &str, name: &str) -> TxOp {
-    TxOp::Add {
-        entity_id: EntityId(id),
-        attribute: Attribute("db/ident".to_string()),
-        value: DataType::Keyword(Keyword::namespaced(ns, name)),
-    }
+/// Build a bootstrap Put with an explicit entity ID.
+fn bootstrap_put(id: i64, ident: Keyword) -> TxOp {
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(id));
+    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
+    TxOp::Put(doc)
+}
+
+/// Build a bootstrap Put for a schema attribute with an explicit entity ID.
+fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
+    let mut doc = BTreeMap::new();
+    doc.insert("db/id".to_string(), DataType::Long(id));
+    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
+    doc.insert(
+        "db/valueType".to_string(),
+        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+    );
+    doc.insert(
+        "db/cardinality".to_string(),
+        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
+    );
+    TxOp::Put(doc)
 }
 
 /// Build the bootstrap schema transaction.
-/// This is the first transaction on a fresh database (tx_id=0).
+/// This is the first transaction on a fresh database.
+/// Each entity has an explicit db/id matching the constants above.
 pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     vec![
-        // Schema attribute entities (IDs 1-3)
-        schema_attribute(DB_IDENT, Keyword::namespaced("db", "ident"), "keyword"),
-        schema_attribute(DB_VALUE_TYPE, Keyword::namespaced("db", "valueType"), "keyword"),
-        schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "keyword"),
-        // Value type enum entities (IDs 10-23)
-        enum_entity(DB_TYPE_KEYWORD, "db.type", "keyword"),
-        enum_entity(DB_TYPE_STRING, "db.type", "string"),
-        enum_entity(DB_TYPE_LONG, "db.type", "long"),
-        enum_entity(DB_TYPE_REF, "db.type", "ref"),
-        enum_entity(DB_TYPE_BOOLEAN, "db.type", "boolean"),
-        enum_entity(DB_TYPE_DOUBLE, "db.type", "double"),
-        enum_entity(DB_TYPE_FLOAT, "db.type", "float"),
-        enum_entity(DB_TYPE_INSTANT, "db.type", "instant"),
-        enum_entity(DB_TYPE_UUID, "db.type", "uuid"),
-        enum_entity(DB_TYPE_BYTES, "db.type", "bytes"),
-        enum_entity(DB_TYPE_BIGINT, "db.type", "bigint"),
-        enum_entity(DB_TYPE_TUPLE, "db.type", "tuple"),
-        enum_entity(DB_TYPE_VECTOR, "db.type", "vector"),
-        enum_entity(DB_TYPE_MAP, "db.type", "map"),
-        // Cardinality enum entities (IDs 30-31)
-        enum_entity(DB_CARDINALITY_ONE, "db.cardinality", "one"),
-        enum_entity(DB_CARDINALITY_MANY, "db.cardinality", "many"),
+        // Schema attribute entities
+        bootstrap_schema_attribute(DB_IDENT, Keyword::namespaced("db", "ident"), "keyword"),
+        bootstrap_schema_attribute(DB_VALUE_TYPE, Keyword::namespaced("db", "valueType"), "keyword"),
+        bootstrap_schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "keyword"),
+        // Value type enum entities
+        bootstrap_put(DB_TYPE_KEYWORD, Keyword::namespaced("db.type", "keyword")),
+        bootstrap_put(DB_TYPE_STRING, Keyword::namespaced("db.type", "string")),
+        bootstrap_put(DB_TYPE_LONG, Keyword::namespaced("db.type", "long")),
+        bootstrap_put(DB_TYPE_REF, Keyword::namespaced("db.type", "ref")),
+        bootstrap_put(DB_TYPE_BOOLEAN, Keyword::namespaced("db.type", "boolean")),
+        bootstrap_put(DB_TYPE_DOUBLE, Keyword::namespaced("db.type", "double")),
+        bootstrap_put(DB_TYPE_FLOAT, Keyword::namespaced("db.type", "float")),
+        bootstrap_put(DB_TYPE_INSTANT, Keyword::namespaced("db.type", "instant")),
+        bootstrap_put(DB_TYPE_UUID, Keyword::namespaced("db.type", "uuid")),
+        bootstrap_put(DB_TYPE_BYTES, Keyword::namespaced("db.type", "bytes")),
+        bootstrap_put(DB_TYPE_BIGINT, Keyword::namespaced("db.type", "bigint")),
+        bootstrap_put(DB_TYPE_TUPLE, Keyword::namespaced("db.type", "tuple")),
+        bootstrap_put(DB_TYPE_VECTOR, Keyword::namespaced("db.type", "vector")),
+        bootstrap_put(DB_TYPE_MAP, Keyword::namespaced("db.type", "map")),
+        // Cardinality enum entities
+        bootstrap_put(DB_CARDINALITY_ONE, Keyword::namespaced("db.cardinality", "one")),
+        bootstrap_put(DB_CARDINALITY_MANY, Keyword::namespaced("db.cardinality", "many")),
     ]
 }
 
@@ -422,16 +438,16 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
 }
 
 /// Build a transaction that defines common test attributes.
-/// Use entity IDs 50-59 (between bootstrap schema 1-31 and test data 100+).
+/// Entity IDs are auto-assigned by resolve_entity_ids at transaction time.
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn test_schema_tx() -> Vec<TxOp> {
     vec![
-        schema_attribute(50, Keyword::plain("name"), "string"),
-        schema_attribute(51, Keyword::plain("age"), "long"),
-        schema_attribute(52, Keyword::plain("email"), "string"),
+        schema_attribute(Keyword::plain("name"), "string"),
+        schema_attribute(Keyword::plain("age"), "long"),
+        schema_attribute(Keyword::plain("email"), "string"),
         // TODO: update this to ref once we support DataType::Ref
-        schema_attribute(53, Keyword::plain("follows"), "long"),
-        schema_attribute_with_cardinality(1000, Keyword::plain("tags"), "string", "many"),
+        schema_attribute(Keyword::plain("follows"), "long"),
+        schema_attribute_with_cardinality(Keyword::plain("tags"), "string", "many"),
     ]
 }
 
@@ -446,7 +462,9 @@ mod tests {
     }
 
     fn to_datoms(ops: &[TxOp]) -> Vec<Datom> {
-        tx_ops_to_datoms(ops, st_from_unix_epoch(0)).unwrap()
+        let mut counters = crate::partition::PartitionCounters::new();
+        let resolved = crate::partition::resolve_entity_ids(ops, &mut counters).unwrap();
+        tx_ops_to_datoms(&resolved, st_from_unix_epoch(0)).unwrap()
     }
 
     fn extract_and_process(cache: &mut SchemaCache, datoms: &[Datom]) {
@@ -455,36 +473,17 @@ mod tests {
 
     fn bootstrapped_cache() -> SchemaCache {
         let mut cache = SchemaCache::new();
-        extract_and_process(&mut cache, &to_datoms(&bootstrap_schema_tx()));
+        let tx_ops = bootstrap_schema_tx();
+        let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
+        extract_and_process(&mut cache, &datoms);
         cache
     }
 
     fn bootstrapped_cache_with_person_name() -> SchemaCache {
         let mut cache = bootstrapped_cache();
-        extract_and_process(&mut cache, &to_datoms(&[schema_attribute(100, Keyword::plain("name"), "string")]));
+        let ops = [schema_attribute(Keyword::plain("name"), "string")];
+        extract_and_process(&mut cache, &to_datoms(&ops));
         cache
-    }
-
-    #[test]
-    fn test_bootstrap_schema_tx() {
-        let tx = bootstrap_schema_tx();
-        assert_eq!(tx.len(), 19); // 3 attrs + 14 type enums + 2 cardinality enums
-
-        let mut ids: Vec<i64> = tx.iter().map(|op| match op {
-            TxOp::Put(doc) => match doc.get("db/id") {
-                Some(DataType::Long(id)) => *id,
-                _ => panic!("Expected db/id Long"),
-            },
-            TxOp::Add { entity_id, .. } => entity_id.0,
-            _ => panic!("Expected Put or Add"),
-        }).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), tx.len(), "All bootstrap entity IDs must be unique");
-
-        let serialized = bincode::serialize(&tx).unwrap();
-        let deserialized: Vec<TxOp> = bincode::deserialize(&serialized).unwrap();
-        assert_eq!(tx.len(), deserialized.len());
     }
 
     #[test]
@@ -508,12 +507,10 @@ mod tests {
 
     #[test]
     fn test_process_tx_user_attribute() {
-        let mut cache = bootstrapped_cache();
-        extract_and_process(&mut cache, &to_datoms(&[schema_attribute(100, Keyword::plain("name"), "string")]));
+        let cache = bootstrapped_cache_with_person_name();
         assert_eq!(cache.len(), 4);
 
         let attr = cache.get("name").unwrap();
-        assert_eq!(attr.entity_id, 100);
         assert_eq!(attr.value_type, ValueType::String);
     }
 
@@ -556,17 +553,18 @@ mod tests {
     #[test]
     fn test_validate_tx_schema_defining_tx() {
         let cache = bootstrapped_cache();
-        let ops = [schema_attribute(100, Keyword::plain("name"), "string")];
+        let ops = [schema_attribute(Keyword::plain("name"), "string")];
         assert!(cache.validate_tx(&to_datoms(&ops)).is_ok());
     }
 
     #[test]
     fn test_schema_immutability() {
         let cache = bootstrapped_cache_with_person_name();
+        let name_id = cache.get("name").unwrap().entity_id;
 
         // Cannot redefine existing schema entity
         let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
+        doc.insert("db/id".to_string(), DataType::Long(name_id));
         doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
         doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
@@ -584,7 +582,7 @@ mod tests {
     #[test]
     fn test_validate_schema_attrs_parses_cardinality_many() {
         let ops = [schema_attribute_with_cardinality(
-            100, Keyword::plain("tags"), "string", "many",
+            Keyword::plain("tags"), "string", "many",
         )];
         let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
         assert_eq!(attrs.len(), 1);
@@ -594,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_validate_schema_attrs_parses_cardinality_one() {
-        let ops = [schema_attribute(100, Keyword::plain("name"), "string")];
+        let ops = [schema_attribute(Keyword::plain("name"), "string")];
         let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
         assert_eq!(attrs.len(), 1);
         assert_eq!(attrs[0].cardinality, Cardinality::One);
