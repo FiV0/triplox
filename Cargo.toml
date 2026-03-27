@@ -40,8 +40,10 @@ fallible-iterator = "0.3.0"
 [features]
 test-helpers = []
 s2 = ["dep:s2-sdk"]
+s2-integration-test = ["s2"]
 
 [dev-dependencies]
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 tempfile = "3.14.0"
 triplox = { path = ".", features = ["test-helpers"] }
 

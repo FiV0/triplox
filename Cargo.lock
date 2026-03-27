@@ -3414,6 +3414,7 @@ dependencies = [
  "log",
  "object_store 0.11.1",
  "rand 0.8.5",
+ "rustls",
  "s2-sdk",
  "serde",
  "slatedb",
