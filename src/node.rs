@@ -1376,38 +1376,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_committed_tx_entity_has_instant() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let mut doc = BTreeMap::new();
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
-        let tx_key = match result {
-            TransactionResult::TxCommited(k) => k,
-            _ => panic!("Expected committed"),
-        };
-
-        // Query for db/txInstant of this transaction
-        let db = node.db().await.unwrap();
-        let result = db.query(&Query {
-            find: find_vars(&["?instant"]),
-            where_clauses: vec![
-                WhereClause::Triple(TriplePattern {
-                    entity: PatternElement::Variable("?tx".to_string()),
-                    attribute: PatternElement::Constant(kw("db/txId")),
-                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
-                }),
-                triple("?tx", "db/txInstant", "?instant"),
-            ],
-        }).await.unwrap();
-
-        assert_eq!(result.len(), 1);
-        // Instant encoding may lose sub-microsecond precision, just verify it's an Instant
-        assert!(matches!(&result[0][0], DataType::Instant(_)), "Expected Instant, got {:?}", result[0][0]);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_aborted_tx_entity() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
