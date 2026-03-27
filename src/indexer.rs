@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
-use crate::partition::resolve_entity_ids;
+use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, TX_PARTITION};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::partition::PartitionCounters;
+use edn::symbols::Keyword;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
@@ -114,6 +115,31 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
     }))
 }
 
+/// Build datoms for a first-class transaction entity in TX_PARTITION.
+fn build_tx_entity_datoms(
+    counters: &mut PartitionCounters,
+    tx_key: TxKey,
+    committed: bool,
+    error: Option<String>,
+) -> Vec<Datom> {
+    let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(counters, TX_PARTITION));
+    let st = tx_key.system_time;
+    let result_kw = if committed {
+        Keyword::namespaced("db.tx", "committed")
+    } else {
+        Keyword::namespaced("db.tx", "aborted")
+    };
+    let mut datoms = vec![
+        Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: st, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txId".into(), value: DataType::Long(tx_key.tx_id), tx: st, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txResult".into(), value: DataType::Keyword(result_kw), tx: st, op: DatomOp::Assert },
+    ];
+    if let Some(err) = error {
+        datoms.push(Datom { entity: tx_eid, attribute: "db.tx/error".into(), value: DataType::String(err), tx: st, op: DatomOp::Assert });
+    }
+    datoms
+}
+
 impl Indexer {
     pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache, counters: PartitionCounters, latest_indexed_tx: Option<TxKey>) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
@@ -140,7 +166,11 @@ impl Indexer {
         // Use a temporary copy of counters; only persist advances after successful commit.
         let mut pending_counters = self.counters.clone();
         let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_counters)?;
-        let datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
+        let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
+
+        // Build first-class transaction entity in TX_PARTITION
+        let tx_entity_datoms = build_tx_entity_datoms(&mut pending_counters, tx_key, true, None);
+        datoms.extend(tx_entity_datoms);
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
@@ -267,6 +297,17 @@ impl Indexer {
         }
     }
 
+    /// Write an aborted transaction entity (no user data) when transact_tx fails.
+    async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
+        let datoms = build_tx_entity_datoms(&mut self.counters, tx_key, false, Some(error));
+        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
+        write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
+        let meta = TxMeta { system_time: tx_key.system_time };
+        txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
+        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        self.latest_indexed_tx = Some(tx_key);
+        Ok(())
+    }
 }
 
 
@@ -330,6 +371,9 @@ impl Subscriber for Indexer {
         };
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+            if let Err(abort_err) = self.write_aborted_tx(record.tx_key, e.to_string()).await {
+                warn!("Failed to write aborted tx entity for {}: {}", record.tx_key.tx_id, abort_err);
+            }
             let _ = self.tx_completion_sender.send((record.tx_key, Err(Arc::new(e))));
         }
     }
@@ -871,6 +915,151 @@ mod tests {
             }
         }
         assert_eq!(add_count, 2, "Expected 2 ADD entries for same value on cardinality-many");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_committed_tx_entity() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_instant_id = indexer.schema_cache().get("db/txInstant").unwrap().entity_id;
+        let tx_id_attr = indexer.schema_cache().get("db/txId").unwrap().entity_id;
+        let tx_result_id = indexer.schema_cache().get("db/txResult").unwrap().entity_id;
+
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
+        indexer.transact_tx(tx_key, tx_ops).await?;
+
+        // Collect all TX_PARTITION entity datoms, grouped by entity
+        let tx_base = TX_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut tx_entities: std::collections::HashMap<i64, Vec<(i64, DataType)>> = std::collections::HashMap::new();
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, value, _ts, _op) = eav_key_to_parts(kv.key)?;
+            if let DataType::Long(eid) = entity_id {
+                if eid >= tx_base {
+                    tx_entities.entry(eid).or_default().push((attribute, value));
+                }
+            }
+        }
+
+        // Find the tx entity whose db/txId = 1
+        let target_entity = tx_entities.iter().find(|(_, attrs)| {
+            attrs.iter().any(|(a, v)| *a == tx_id_attr && *v == DataType::Long(1))
+        });
+        let (_, attrs) = target_entity.expect("Expected tx entity with db/txId=1");
+        assert!(attrs.iter().any(|(a, v)| *a == tx_instant_id && *v == DataType::Instant(st_from_unix_epoch(100))));
+        assert!(attrs.iter().any(|(a, v)| *a == tx_result_id && *v == DataType::Keyword(Keyword::namespaced("db.tx", "committed"))));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_aborted_tx_entity() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_id_attr = indexer.schema_cache().get("db/txId").unwrap().entity_id;
+        let tx_result_id = indexer.schema_cache().get("db/txResult").unwrap().entity_id;
+        let tx_error_id = indexer.schema_cache().get("db.tx/error").unwrap().entity_id;
+
+        // Submit a transaction with an unknown attribute to trigger a failure
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("nonexistent", DataType::String("x".into()))]))];
+        let err = indexer.transact_tx(tx_key, tx_ops).await.unwrap_err();
+
+        // Write the aborted tx entity
+        indexer.write_aborted_tx(tx_key, err.to_string()).await?;
+
+        // Collect TX_PARTITION entity datoms grouped by entity
+        let tx_base = TX_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut tx_entities: std::collections::HashMap<i64, Vec<(i64, DataType)>> = std::collections::HashMap::new();
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, value, _ts, _op) = eav_key_to_parts(kv.key)?;
+            if let DataType::Long(eid) = entity_id {
+                if eid >= tx_base {
+                    tx_entities.entry(eid).or_default().push((attribute, value));
+                }
+            }
+        }
+
+        // Find the aborted tx entity (db/txId=1, written by write_aborted_tx)
+        let target_entity = tx_entities.iter().find(|(_, attrs)| {
+            attrs.iter().any(|(a, v)| *a == tx_id_attr && *v == DataType::Long(1))
+        });
+        let (_, attrs) = target_entity.expect("Expected tx entity with db/txId=1");
+        assert!(attrs.iter().any(|(a, v)| *a == tx_result_id && *v == DataType::Keyword(Keyword::namespaced("db.tx", "aborted"))));
+        let error_val = attrs.iter().find(|(a, _)| *a == tx_error_id).expect("Expected db.tx/error datom");
+        if let DataType::String(s) = &error_val.1 {
+            assert!(s.contains("nonexistent"), "Error should mention the unknown attribute");
+        } else {
+            panic!("Expected String for db.tx/error");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_partition_counter_increments() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_id_attr = indexer.schema_cache().get("db/txId").unwrap().entity_id;
+
+        // The bootstrapped_indexer already transacted tx_id=0 (test schema),
+        // so TX_PARTITION counter should be at 1. Transact two more.
+        for i in 1..=2 {
+            let tx_key = TxKey { tx_id: i, system_time: st_from_unix_epoch(i as u64 * 100) };
+            let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String(format!("user{}", i)))]))];
+            indexer.transact_tx(tx_key, tx_ops).await?;
+        }
+
+        // Count distinct TX_PARTITION entities with db/txId
+        let tx_base = TX_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
+        let mut tx_entities = std::collections::HashSet::new();
+        while let Some(kv) = iter.next().await? {
+            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if let DataType::Long(eid) = entity_id {
+                if eid >= tx_base && attribute == tx_id_attr && op == codec::ADD {
+                    tx_entities.insert(eid);
+                }
+            }
+        }
+        // 3 transactions total: tx_id=0 (test schema) + tx_id=1 + tx_id=2
+        assert_eq!(tx_entities.len(), 3, "Expected 3 distinct tx entities");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_aborted_tx_writes_no_user_data() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+
+        // Count user-partition EAV entries before
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        async fn count_user_entries(slate: &Db, user_base: i64) -> usize {
+            let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
+            let mut count = 0;
+            while let Some(kv) = iter.next().await.unwrap() {
+                let (eid, _, _, _, _) = eav_key_to_parts(kv.key).unwrap();
+                if let DataType::Long(id) = eid {
+                    if id >= user_base { count += 1; }
+                }
+            }
+            count
+        }
+        let before = count_user_entries(&slate, user_base).await;
+
+        // Trigger a failed transaction
+        let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("nonexistent", DataType::String("x".into()))]))];
+        let err = indexer.transact_tx(tx_key, tx_ops).await.unwrap_err();
+        indexer.write_aborted_tx(tx_key, err.to_string()).await?;
+
+        let after = count_user_entries(&slate, user_base).await;
+        assert_eq!(before, after, "Aborted tx should not write user data");
 
         Ok(())
     }

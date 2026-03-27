@@ -39,6 +39,16 @@ pub const DB_CARDINALITY_ONE: i64 = 30;
 #[allow(dead_code)]
 pub const DB_CARDINALITY_MANY: i64 = 31;
 
+// Transaction schema attribute entities
+pub const DB_TX_INSTANT: i64 = 40;
+pub const DB_TX_ID: i64 = 41;
+pub const DB_TX_RESULT: i64 = 42;
+pub const DB_TX_ERROR: i64 = 43;
+
+// Transaction result enum entities
+pub const DB_TX_COMMITTED: i64 = 50;
+pub const DB_TX_ABORTED: i64 = 51;
+
 // --- Schema types ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +349,14 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         // Cardinality enum entities
         bootstrap_put(DB_CARDINALITY_ONE, Keyword::namespaced("db.cardinality", "one")),
         bootstrap_put(DB_CARDINALITY_MANY, Keyword::namespaced("db.cardinality", "many")),
+        // Transaction schema attributes
+        bootstrap_schema_attribute(DB_TX_INSTANT, Keyword::namespaced("db", "txInstant"), "instant"),
+        bootstrap_schema_attribute(DB_TX_ID, Keyword::namespaced("db", "txId"), "long"),
+        bootstrap_schema_attribute(DB_TX_RESULT, Keyword::namespaced("db", "txResult"), "keyword"),
+        bootstrap_schema_attribute(DB_TX_ERROR, Keyword::namespaced("db.tx", "error"), "string"),
+        // Transaction result enum entities
+        bootstrap_put(DB_TX_COMMITTED, Keyword::namespaced("db.tx", "committed")),
+        bootstrap_put(DB_TX_ABORTED, Keyword::namespaced("db.tx", "aborted")),
     ]
 }
 
@@ -489,8 +507,8 @@ mod tests {
     #[test]
     fn test_schema_cache_from_bootstrap() {
         let cache = bootstrapped_cache();
-        // 3 schema attrs; enum entities (db/ident only, no db/valueType) are skipped
-        assert_eq!(cache.len(), 3);
+        // 7 schema attrs (3 core + 4 tx); enum entities (db/ident only, no db/valueType) are skipped
+        assert_eq!(cache.len(), 7);
 
         let db_ident = cache.get("db/ident").unwrap();
         assert_eq!(db_ident.entity_id, DB_IDENT);
@@ -508,7 +526,7 @@ mod tests {
     #[test]
     fn test_process_tx_user_attribute() {
         let cache = bootstrapped_cache_with_person_name();
-        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.len(), 8);
 
         let attr = cache.get("name").unwrap();
         assert_eq!(attr.value_type, ValueType::String);
