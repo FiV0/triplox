@@ -300,10 +300,12 @@ impl Indexer {
 
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
     async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
-        let datoms = build_tx_entity_datoms(&mut self.counters, tx_key, false, Some(error));
+        let mut pending_counters = self.counters.clone();
+        let datoms = build_tx_entity_datoms(&mut pending_counters, tx_key, false, Some(error));
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
         write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        self.counters = pending_counters;
         self.latest_indexed_tx = Some(tx_key);
         Ok(())
     }
