@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use crate::codec;
+use crate::protocol;
+
 /// Entity ID bit layout (from PARTITIONS.md):
 ///
 /// ```text
@@ -16,6 +19,26 @@ pub const PARTITION_MASK: i64 = ((1i64 << 20) - 1) << 42;
 pub const DB_PARTITION: u32 = 0;
 pub const TX_PARTITION: u32 = 1;
 pub const USER_PARTITION: u32 = 2;
+
+/// Return the encoded byte prefix shared by all entity IDs in the given partition.
+///
+/// The prefix is `TAG_LONG` followed by the high bytes of the order-preserving
+/// encoding of the partition's base entity ID (`make_entity_id(partition, 0)`),
+/// truncated to the 3 bytes that carry the partition bits.
+///
+/// For TX_PARTITION this produces `[7, 0x80, 0x00, 0x04]`.
+///
+/// **Note**: the partition/counter boundary (bit 42) is not byte-aligned, so
+/// byte 2 contains both partition bits (47–42) and counter bits (41–40). The
+/// 3-byte prefix fixes those counter bits to zero, limiting coverage to
+/// counter < 2^40 (~1 trillion) — sufficient for all practical use.
+pub fn partition_entity_prefix(partition: u32) -> Vec<u8> {
+    let base = make_entity_id(partition, 0);
+    let encoded = codec::encode_i64_bytes(base);
+    let mut prefix = vec![protocol::TAG_LONG];
+    prefix.extend_from_slice(&encoded[..3]);
+    prefix
+}
 
 /// Construct an entity ID from a partition number and counter value.
 ///

@@ -8,11 +8,9 @@ use bytes::Bytes;
 use tokio::sync::broadcast;
 use log::{error, trace, warn};
 
-use serde::{Deserialize, Serialize};
-
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
-use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, TX_PARTITION};
+use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, partition_entity_prefix, TX_PARTITION};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::partition::PartitionCounters;
@@ -75,40 +73,37 @@ pub(crate) fn write_index_entries(
     Ok(())
 }
 
-/// Metadata stored per transaction in SlateDB (keyed by tx_id under TX_TO_META prefix).
-#[derive(Serialize, Deserialize)]
-struct TxMeta {
-    system_time: Instant,
-}
-
-fn tx_meta_key(tx_id: i64) -> Vec<u8> {
-    let mut buf = vec![codec::TX_TO_META];
-    encode_i64(tx_id, &mut buf);
-    buf
-}
-
-/// Scan all TX_TO_META keys in a snapshot and return the TxKey for the highest tx_id.
-/// If the snapshot contains no TX_TO_META entries, returns a sentinel TxKey
-/// (tx_id=0, system_time=epoch).
+/// Scan EAV entries for TX_PARTITION entities and return the TxKey for the highest tx_id.
+/// If no transaction entities exist, returns a sentinel TxKey (tx_id=0, system_time=epoch).
+///
+/// Uses the high bits of TX_PARTITION entity IDs to build a targeted EAV prefix,
+/// restricting the scan to TX_PARTITION entities. For each entry with attribute
+/// `db/txId`, the tx_id is extracted from the value and system_time from the key's
+/// timestamp suffix.
 ///
 /// TODO(triplox-8mc): Return Option<TxKey> (None for empty DB) instead of a
 /// sentinel. Needs coordination with the bootstrap transaction (tx_id=0).
 ///
-/// TX_TO_META keys are now big-endian encoded, so byte order matches numeric order.
-/// A reverse iterator could be used for O(1) lookup instead of this full scan.
+/// TODO: Use a reverse iterator for O(1) lookup once SlateDB supports reverse scanning.
 pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
-    let mut iter = snapshot.scan_prefix_with_options(&[codec::TX_TO_META], &DEFAULT_SCAN_OPTIONS).await?;
-    let mut latest: Option<(i64, TxMeta)> = None;
+    let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
+    let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
+    let mut latest: Option<(i64, Instant)> = None;
+    // TODO This should scan for the largest entity id and then extract the db/txId attribute
     while let Some(kv) = iter.next().await? {
-        let tx_id: i64 = decode_i64(&mut &kv.key[1..])?;
-        let meta: TxMeta = bincode::deserialize(&kv.value)?;
-        if latest.as_ref().map_or(true, |(best_id, _)| tx_id > *best_id) {
-            latest = Some((tx_id, meta));
+        let (_entity_id, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
+        if attribute != crate::schema::DB_TX_ID {
+            continue;
+        }
+        if let DataType::Long(tx_id) = value {
+            if latest.as_ref().map_or(true, |(best_id, _)| tx_id > *best_id) {
+                latest = Some((tx_id, timestamp));
+            }
         }
     }
-    Ok(latest.map(|(tx_id, meta)| TxKey {
+    Ok(latest.map(|(tx_id, system_time)| TxKey {
         tx_id,
-        system_time: meta.system_time,
+        system_time,
     }).unwrap_or_else(|| TxKey {
         tx_id: 0,
         system_time: crate::clock::st_from_unix_epoch(0),
@@ -264,10 +259,6 @@ impl Indexer {
 
         write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
 
-        // Persist tx_id -> system_time mapping
-        let meta = TxMeta { system_time: tx_key.system_time };
-        txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
-
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
         // Commit succeeded — advance partition counters.
@@ -312,8 +303,6 @@ impl Indexer {
         let datoms = build_tx_entity_datoms(&mut self.counters, tx_key, false, Some(error));
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
         write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
-        let meta = TxMeta { system_time: tx_key.system_time };
-        txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
         self.latest_indexed_tx = Some(tx_key);
         Ok(())
@@ -573,7 +562,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tx_meta_written() -> Result<(), Error> {
+    async fn test_latest_tx_key_after_transact() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
@@ -589,7 +578,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tx_meta_empty_db() -> Result<(), Error> {
+    async fn test_latest_tx_key_empty_db() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let snapshot = Arc::new(slate.snapshot().await?);
         let latest = latest_tx_key_from_snapshot(&snapshot).await?;
@@ -598,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tx_meta_latest_wins() -> Result<(), Error> {
+    async fn test_latest_tx_key_highest_wins() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
