@@ -6,7 +6,7 @@ use anyhow::{Error, Result};
 use bincode;
 use bytes::Bytes;
 use tokio::sync::broadcast;
-use log::warn;
+use log::{error, trace, warn};
 
 use serde::{Deserialize, Serialize};
 
@@ -166,7 +166,7 @@ impl Indexer {
             Ok(tx_key) => Ok(tx_key),
             Err(e) => {
                 if let Err(abort_err) = self.write_aborted_tx(tx_key, e.to_string()).await {
-                    warn!("Failed to write aborted tx entity for {}: {}", tx_key.tx_id, abort_err);
+                    error!("Failed to write aborted tx entity for {}: {}", tx_key.tx_id, abort_err);
                 }
                 Err(e)
             }
@@ -280,10 +280,8 @@ impl Indexer {
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
 
-        // Send notification (warn if no receivers, matching memory_log.rs:51-52)
-        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
         if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
-            warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
+            trace!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
         }
 
         Ok(tx_key)
