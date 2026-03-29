@@ -89,6 +89,7 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
     let mut latest: Option<(i64, Instant)> = None;
+    // TODO This should scan for the largest entity id and then extract the db/txId attribute
     while let Some(kv) = iter.next().await? {
         let (_entity_id, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
         if attribute != crate::schema::DB_TX_ID {
