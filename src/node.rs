@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,12 +9,13 @@ use crate::clock;
 use edn::query::ParsedQuery;
 use crate::file_log::FileLog;
 use crate::indexer::{Indexer, latest_tx_key_from_snapshot};
+use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::log::{subscribe, TxLog, TxLogReader};
 use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
-use crate::ops::{Entid, TxOp};
+use crate::ops::{DataType, Entid, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
-use crate::schema::IdentMap;
+use crate::schema::{AttributeMap, EntidMap, IdentMap};
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
@@ -36,9 +38,20 @@ pub trait QueryNode {
     async fn db_as_of(&self, tx_key: TxKey) -> Result<Self::DB, Error>;
 }
 
+/// Represents a bound value from an entity lookup.
+/// Cardinality-one attributes produce `Scalar`, cardinality-many produce `Vec`.
+/// See Mentat's `StructuredMap(IndexMap<Keyword, Binding>)` for future pull expression support.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Binding {
+    Scalar(DataType),
+    Vec(Vec<DataType>),
+}
+
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
     ident_map: IdentMap,
+    entid_map: EntidMap,
+    attribute_map: AttributeMap,
     handle: Handle,
     tx_key: TxKey,
     tx_eid: i64,
@@ -46,22 +59,102 @@ pub struct DB {
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
-        Self { snapshot, ident_map, handle, tx_key, tx_eid }
+    pub fn new(
+        snapshot: Arc<slatedb::DbSnapshot>,
+        ident_map: IdentMap,
+        entid_map: EntidMap,
+        attribute_map: AttributeMap,
+        handle: Handle,
+        tx_key: TxKey,
+        tx_eid: i64,
+    ) -> Self {
+        Self { snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle) -> Result<Self, Error> {
+    pub async fn from_latest_snapshot(
+        snapshot: Arc<slatedb::DbSnapshot>,
+        ident_map: IdentMap,
+        entid_map: EntidMap,
+        attribute_map: AttributeMap,
+        handle: Handle,
+    ) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
-        Ok(Self { snapshot, ident_map, handle, tx_key, tx_eid })
+        Ok(Self { snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid })
     }
 
     pub fn tx_key(&self) -> &TxKey {
         &self.tx_key
     }
 
-    pub fn entity(&self, _eid: Entid) {
-        todo!()
+    /// Return all current attribute-value pairs for the given entity ID.
+    /// Cardinality-one attributes return `Binding::Scalar`, cardinality-many return `Binding::Vec`.
+    pub async fn entity(&self, eid: Entid) -> Result<HashMap<String, Binding>, Error> {
+        let snapshot = self.snapshot.clone();
+        let handle = self.handle.clone();
+        let entid_map = self.entid_map.clone();
+        let attribute_map = self.attribute_map.clone();
+        let as_of = self.tx_eid;
+
+        // Build EAV prefix: [EAV byte][encoded entity_id]
+        let mut prefix = vec![crate::codec::EAV];
+        crate::codec::encode_datatype(&DataType::Long(eid), &mut prefix);
+        let prefix_len = prefix.len();
+
+        tokio::task::spawn_blocking(move || {
+            use crate::codec::{decode_i64, decode_datatype};
+            use crate::iterator::slate_iterator::Index;
+
+            let extractor: crate::iterator::slate_iterator::Extractor =
+                Box::new(move |key: bytes::Bytes| {
+                    key.slice(prefix_len..key.len() - crate::codec::TX_EID_OP_SUFFIX)
+                });
+
+            let mut iter = TemporalFilterIterator::new(
+                &prefix, &snapshot, handle, extractor, as_of,
+            )?;
+
+            let mut result: HashMap<String, Binding> = HashMap::new();
+            result.insert("db/id".to_string(), Binding::Scalar(DataType::Long(eid)));
+
+            loop {
+                match iter.get_value()? {
+                    None => break,
+                    Some(extracted) => {
+                        let mut cursor: &[u8] = &extracted;
+                        let attr_id = decode_i64(&mut cursor)?;
+                        let value = decode_datatype(&mut cursor)?;
+                        if let Some(name) = entid_map.get(&attr_id) {
+                            let multival = attribute_map
+                                .get(&attr_id)
+                                .map(|a| a.multival)
+                                .unwrap_or(false);
+                            if multival {
+                                match result.entry(name.clone()) {
+                                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                                        if let Binding::Vec(ref mut vec) = e.get_mut() {
+                                            vec.push(value);
+                                        }
+                                    }
+                                    std::collections::hash_map::Entry::Vacant(e) => {
+                                        e.insert(Binding::Vec(vec![value]));
+                                    }
+                                }
+                            } else {
+                                result.insert(name.clone(), Binding::Scalar(value));
+                            }
+                        }
+                    }
+                }
+                if iter.next()?.is_none() {
+                    break;
+                }
+            }
+
+            Ok(result)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Entity task failed: {}", e))?
     }
 }
 
@@ -187,17 +280,25 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
+        let (ident_map, entid_map, attribute_map) = {
+            let indexer = self.indexer.read().await;
+            let schema = &indexer.metadata().schema;
+            (schema.ident_map.clone(), schema.entid_map.clone(), schema.attribute_map.clone())
+        };
         let handle = Handle::current();
-        DB::from_latest_snapshot(snapshot, ident_map, handle).await
+        DB::from_latest_snapshot(snapshot, ident_map, entid_map, attribute_map, handle).await
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
+        let (ident_map, entid_map, attribute_map) = {
+            let indexer = self.indexer.read().await;
+            let schema = &indexer.metadata().schema;
+            (schema.ident_map.clone(), schema.entid_map.clone(), schema.attribute_map.clone())
+        };
         let handle = Handle::current();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid))
+        Ok(DB::new(snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid))
     }
 }
 
@@ -1071,4 +1172,112 @@ mod tests {
         }
     }
 
+    // ---- entity() tests ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_entity_basic() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("name".to_string()),
+                value: DataType::String("alice".to_string()),
+            },
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("age".to_string()),
+                value: DataType::Long(30),
+            },
+        ]).await.unwrap();
+
+        let db = node.db().await.unwrap();
+        let entity = db.entity(2000).await.unwrap();
+
+        assert_eq!(entity.get("db/id"), Some(&Binding::Scalar(DataType::Long(2000))));
+        assert_eq!(entity.get("name"), Some(&Binding::Scalar(DataType::String("alice".to_string()))));
+        assert_eq!(entity.get("age"), Some(&Binding::Scalar(DataType::Long(30))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_entity_cardinality_many() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("tags".to_string()),
+                value: DataType::String("rust".to_string()),
+            },
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("tags".to_string()),
+                value: DataType::String("database".to_string()),
+            },
+        ]).await.unwrap();
+
+        let db = node.db().await.unwrap();
+        let entity = db.entity(2000).await.unwrap();
+
+        match entity.get("tags").unwrap() {
+            Binding::Vec(tags) => {
+                let mut tag_strs: Vec<String> = tags.iter().map(|v| match v {
+                    DataType::String(s) => s.clone(),
+                    _ => panic!("Expected String"),
+                }).collect();
+                tag_strs.sort();
+                assert_eq!(tag_strs, vec!["database", "rust"]);
+            }
+            _ => panic!("Expected Binding::Vec for tags"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_entity_retracted() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("name".to_string()),
+                value: DataType::String("alice".to_string()),
+            },
+            TxOp::Add {
+                entity_id: 2000,
+                attribute: Attribute("age".to_string()),
+                value: DataType::Long(30),
+            },
+        ]).await.unwrap();
+
+        // Retract the name attribute
+        node.execute_tx(vec![
+            TxOp::Retract {
+                entity_id: 2000,
+                attribute: Attribute("name".to_string()),
+                value: DataType::String("alice".to_string()),
+            },
+        ]).await.unwrap();
+
+        let db = node.db().await.unwrap();
+        let entity = db.entity(2000).await.unwrap();
+
+        assert!(entity.get("name").is_none(), "Retracted attribute should not appear");
+        assert_eq!(entity.get("age"), Some(&Binding::Scalar(DataType::Long(30))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_entity_not_found() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let db = node.db().await.unwrap();
+        let entity = db.entity(9999).await.unwrap();
+
+        // Only db/id should be present
+        assert_eq!(entity.len(), 1);
+        assert_eq!(entity.get("db/id"), Some(&Binding::Scalar(DataType::Long(9999))));
+    }
 }
