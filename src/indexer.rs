@@ -489,7 +489,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // The entity was auto-assigned an ID in USER_PARTITION
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let user_base = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 0);
 
         // Find the EAV entry for the user entity (skip bootstrap/schema entries)
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -530,7 +530,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify an EAV entry in USER_PARTITION exists
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let user_base = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 0);
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut found = false;
         while let Some(kv) = iter.next().await? {
@@ -558,7 +558,7 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Count EAV entries in USER_PARTITION (should be 2: name + age)
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let user_base = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 0);
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
         let mut eav_count = 0;
         while let Some(kv) = iter.next().await? {
@@ -737,7 +737,7 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find the auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let user_base = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 0);
         let mut entity_id: i64 = 0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         while let Some(kv) = iter.next().await? {
@@ -799,7 +799,7 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let user_base = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 0);
         let mut entity_id: i64 = 0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         while let Some(kv) = iter.next().await? {

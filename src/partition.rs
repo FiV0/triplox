@@ -3,15 +3,15 @@ use std::collections::HashMap;
 /// Entity ID bit layout (from PARTITIONS.md):
 ///
 /// ```text
-///  63  62   61                    42  41                              0
-/// +----+----+---------------------+---+-------------------------------+
-/// | S  | 0  | partition (20 bits) |          counter (42 bits)        |
-/// +----+----+---------------------+---+-------------------------------+
+///  63  62   61                  44  43                                0
+/// +----+----+-------------------+---+---------------------------------+
+/// | S  | 0  | partition (18 b)  |          counter (44 bits)          |
+/// +----+----+-------------------+---+---------------------------------+
 /// ```
 
-pub const COUNTER_BITS: u32 = 42;
-pub const COUNTER_MASK: i64 = (1i64 << 42) - 1;
-pub const PARTITION_MASK: i64 = ((1i64 << 20) - 1) << 42;
+pub const COUNTER_BITS: u32 = 44;
+pub const COUNTER_MASK: i64 = (1i64 << 44) - 1;
+pub const PARTITION_MASK: i64 = ((1i64 << 18) - 1) << 44;
 
 pub const DB_PARTITION: u32 = 0;
 pub const TX_PARTITION: u32 = 1;
@@ -21,17 +21,17 @@ pub const USER_PARTITION: u32 = 2;
 ///
 /// For partition 0, the result equals the counter (small, readable IDs).
 pub fn make_entity_id(partition: u32, counter: i64) -> i64 {
-    assert!(partition < (1 << 20), "partition must fit in 20 bits");
-    assert!(counter >= 0 && counter <= COUNTER_MASK, "counter must fit in 42 bits");
+    assert!(partition < (1 << 18), "partition must fit in 18 bits");
+    assert!(counter >= 0 && counter <= COUNTER_MASK, "counter must fit in 44 bits");
     ((partition as i64) << COUNTER_BITS) | counter
 }
 
-/// Extract the partition number (bits 61–42) from an entity ID.
+/// Extract the partition number (bits 61–44) from an entity ID.
 pub fn extract_partition(eid: i64) -> u32 {
     ((eid & PARTITION_MASK) >> COUNTER_BITS) as u32
 }
 
-/// Extract the counter value (bits 41–0) from an entity ID.
+/// Extract the counter value (bits 43–0) from an entity ID.
 pub fn extract_counter(eid: i64) -> i64 {
     eid & COUNTER_MASK
 }
@@ -127,7 +127,7 @@ mod tests {
         let eid = make_entity_id(TX_PARTITION, 100);
         assert_eq!(extract_partition(eid), TX_PARTITION);
         assert_eq!(extract_counter(eid), 100);
-        assert_eq!(eid, (1i64 << 42) | 100);
+        assert_eq!(eid, (1i64 << 44) | 100);
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
         let eid = make_entity_id(USER_PARTITION, 500);
         assert_eq!(extract_partition(eid), USER_PARTITION);
         assert_eq!(extract_counter(eid), 500);
-        assert_eq!(eid, (2i64 << 42) | 500);
+        assert_eq!(eid, (2i64 << 44) | 500);
     }
 
     #[test]
@@ -149,19 +149,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "partition must fit in 20 bits")]
+    #[should_panic(expected = "partition must fit in 18 bits")]
     fn test_partition_overflow() {
-        make_entity_id(1 << 20, 0);
+        make_entity_id(1 << 18, 0);
     }
 
     #[test]
-    #[should_panic(expected = "counter must fit in 42 bits")]
+    #[should_panic(expected = "counter must fit in 44 bits")]
     fn test_counter_overflow() {
         make_entity_id(0, COUNTER_MASK + 1);
     }
 
     #[test]
-    #[should_panic(expected = "counter must fit in 42 bits")]
+    #[should_panic(expected = "counter must fit in 44 bits")]
     fn test_counter_negative() {
         make_entity_id(0, -1);
     }
