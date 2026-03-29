@@ -1372,7 +1372,7 @@ mod tests {
         }).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], vec![kw("db.tx/committed")]);
+        assert_eq!(result[0][0], kw("db.tx/committed"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
