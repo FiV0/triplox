@@ -17,7 +17,7 @@ Every message on the wire uses the following envelope:
 ```
 +------+--------+-------------------+
 | type | length |     payload       |
-| 1 B  | 4 B   | (length - 4) B    |
+| 1 B  | 4 B    | (length - 4) B    |
 +------+--------+-------------------+
 ```
 
