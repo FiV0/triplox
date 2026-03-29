@@ -162,6 +162,18 @@ impl Indexer {
     /// Uses a SlateDB transaction for atomic read-then-write: the EAV index scan
     /// and all index writes happen in a single transaction.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        match self.transact_tx_inner(tx_key, tx_ops).await {
+            Ok(tx_key) => Ok(tx_key),
+            Err(e) => {
+                if let Err(abort_err) = self.write_aborted_tx(tx_key, e.to_string()).await {
+                    warn!("Failed to write aborted tx entity for {}: {}", tx_key.tx_id, abort_err);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn transact_tx_inner(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         // TODO: resolve_entity_ids + tx_ops_to_datoms should be unified into a single pass
         // Use a temporary copy of counters; only persist advances after successful commit.
         let mut pending_counters = self.counters.clone();
@@ -369,11 +381,10 @@ impl Subscriber for Indexer {
                 return;
             }
         };
+        // TODO: transact_tx now handles writing aborted tx entities internally;
+        // the subscriber should propagate the error notification via tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
-            if let Err(abort_err) = self.write_aborted_tx(record.tx_key, e.to_string()).await {
-                warn!("Failed to write aborted tx entity for {}: {}", record.tx_key.tx_id, abort_err);
-            }
             let _ = self.tx_completion_sender.send((record.tx_key, Err(Arc::new(e))));
         }
     }

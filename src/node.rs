@@ -874,7 +874,6 @@ mod tests {
         })
     }
 
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_predicate_lt() {
         let node = Node::memory_node().await;
