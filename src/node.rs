@@ -12,7 +12,7 @@ use crate::indexer::{Indexer, latest_tx_key_from_snapshot};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
-use crate::ops::TxOp;
+use crate::ops::{EntityId, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
@@ -44,9 +44,6 @@ pub struct DB {
 }
 
 #[allow(unused)]
-pub struct Eid {}
-
-#[allow(unused)]
 impl DB {
     pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey) -> Self {
         Self { snapshot, attribute_map, handle, tx_key }
@@ -62,7 +59,7 @@ impl DB {
         &self.tx_key
     }
 
-    pub fn entity(&self, _eid: Eid) {
+    pub fn entity(&self, _eid: EntityId) {
         todo!()
     }
 }
