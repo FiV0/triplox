@@ -24,18 +24,18 @@ Partitions serve two purposes:
 An entity ID is a 64-bit signed integer with three fields:
 
 ```
- 63  62   61                    42  41                              0
-+----+----+---------------------+---+-------------------------------+
-| S  | 0  | partition (20 bits) |          counter (42 bits)        |
-+----+----+---------------------+---+-------------------------------+
+ 63  62   61                  44  43                                0
++----+----+-------------------+---+---------------------------------+
+| S  | 0  | partition (18 b)  |          counter (44 bits)          |
++----+----+-------------------+---+---------------------------------+
 ```
 
-| Field     | Bits  | Width | Range                      |
-|-----------|-------|-------|----------------------------|
-| Sign      | 63    | 1     | 0 (permanent), 1 (tempid)  |
-| Reserved  | 62    | 1     | Always 0                   |
-| Partition | 61–42 | 20    | 0 to 1,048,575             |
-| Counter   | 41–0  | 42    | 0 to 4,398,046,511,103     |
+| Field     | Bits  | Width | Range                        |
+|-----------|-------|-------|------------------------------|
+| Sign      | 63    | 1     | 0 (permanent), 1 (tempid)    |
+| Reserved  | 62    | 1     | Always 0                     |
+| Partition | 61–44 | 18    | 0 to 262,143                 |
+| Counter   | 43–0  | 44    | 0 to 17,592,186,044,415      |
 
 Because partition 0 places no bits above the counter, entities in `:db.part/db` have small, readable entity IDs (the raw counter value).
 
@@ -54,8 +54,8 @@ Three partitions are installed at bootstrap:
 | Partition | Number | Keyword           | Entity ID base    | Purpose                          |
 |-----------|--------|-------------------|-------------------|----------------------------------|
 | db        | 0      | `:db.part/db`     | `0`               | Schema, enums, system entities   |
-| tx        | 1      | `:db.part/tx`     | `1 << 42`         | Transaction entities             |
-| user      | 2      | `:db.part/user`   | `2 << 42`         | Default for application data     |
+| tx        | 1      | `:db.part/tx`     | `1 << 44`         | Transaction entities             |
+| user      | 2      | `:db.part/user`   | `2 << 44`         | Default for application data     |
 
 ### 2.1 :db.part/db (partition 0)
 
@@ -74,7 +74,7 @@ Each transaction is reified as an entity in this partition. The transaction enti
 | `db.tx/id`      | long       | The sequential tx_id assigned by the log                       |
 | `db.tx/error`   | string     | Error message (present only when `db.tx/result` is `:db.tx/aborted`) |
 
-A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
+A transaction with counter value `t` has entity ID `(1 << 44) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
 
 Note: the relationship between `db.tx/id` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. In the future we may align these so that the log tx_id and the entity ID counter share the same value.
 
@@ -88,7 +88,7 @@ The default partition for application data. When a tempid does not specify a par
 
 Entity IDs are allocated from a single, monotonically increasing counter called **T**. Every allocation — whether for a schema entity in `:db.part/db`, a transaction entity in `:db.part/tx`, or a user entity in `:db.part/user` — advances the same counter.
 
-When an entity is allocated in partition P, its entity ID is `(P << 42) | T`, and T advances to `T + 1`.
+When an entity is allocated in partition P, its entity ID is `(P << 44) | T`, and T advances to `T + 1`.
 
 ### 3.1 Counter Semantics
 
@@ -130,7 +130,7 @@ Because entity IDs encode the partition in their upper bits, and because entity 
 
 _This section covers a future phase. The details of partition creation and assignment are TBD._
 
-The 20-bit partition field supports up to 1,048,575 partitions beyond the three built-in ones. In the future we will allow users to create named partitions and assign entities to them. This enables domain-specific locality. It allows for grouping all entities related to a particular tenant or dataset so they cluster together in the E-leading indices.
+The 18-bit partition field supports up to 262,143 partitions beyond the three built-in ones. In the future we will allow users to create named partitions and assign entities to them. This enables domain-specific locality. It allows for grouping all entities related to a particular tenant or dataset so they cluster together in the E-leading indices.
 
 Topics to be addressed:
 
