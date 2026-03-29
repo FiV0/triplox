@@ -2,7 +2,7 @@
 #![allow(unused)]
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc, TimeZone};
+use chrono::{DateTime, Timelike, Utc, TimeZone};
 
 pub type Instant = DateTime<Utc>;
 
@@ -14,7 +14,12 @@ pub struct SystemClock;
 
 impl SystemTimeSource for SystemClock {
     fn now(&mut self) -> Instant {
-        Utc::now()
+        // Truncate to microsecond precision — all persistent encodings
+        // (encode_timestamp, encode_instant) use microseconds, so sub-µs
+        // nanoseconds would be silently dropped on round-trip.
+        let now = Utc::now();
+        now.with_nanosecond((now.timestamp_subsec_nanos() / 1_000) * 1_000)
+            .expect("truncated nanoseconds should always be valid")
     }
 }
 

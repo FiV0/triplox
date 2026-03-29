@@ -49,7 +49,7 @@ impl DB {
         Self { snapshot, attribute_map, handle, tx_key }
     }
 
-    /// Construct a DB from a snapshot by scanning TX_TO_META keys to find the latest TxKey.
+    /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
     pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
         let tx_key = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
         Ok(Self { snapshot, attribute_map, handle, tx_key })
