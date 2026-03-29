@@ -190,6 +190,7 @@ impl<L: TxLog> QueryNode for Node<L> {
         let handle = Handle::current();
         DB::from_latest_snapshot(snapshot, attribute_map, handle).await
     }
+    // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
         let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
