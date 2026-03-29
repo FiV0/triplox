@@ -6,16 +6,17 @@ use anyhow::{Error, Result};
 use bincode;
 use bytes::Bytes;
 use tokio::sync::broadcast;
-use log::warn;
+use log::{error, trace, warn};
 
 use serde::{Deserialize, Serialize};
 
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
-use crate::partition::resolve_entity_ids;
+use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, TX_PARTITION};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
 use crate::partition::PartitionCounters;
+use edn::symbols::Keyword;
 use crate::schema::SchemaCache;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
@@ -114,6 +115,31 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
     }))
 }
 
+/// Build datoms for a first-class transaction entity in TX_PARTITION.
+fn build_tx_entity_datoms(
+    counters: &mut PartitionCounters,
+    tx_key: TxKey,
+    committed: bool,
+    error: Option<String>,
+) -> Vec<Datom> {
+    let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(counters, TX_PARTITION));
+    let st = tx_key.system_time;
+    let result_kw = if committed {
+        Keyword::namespaced("db.tx", "committed")
+    } else {
+        Keyword::namespaced("db.tx", "aborted")
+    };
+    let mut datoms = vec![
+        Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: st, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txId".into(), value: DataType::Long(tx_key.tx_id), tx: st, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txResult".into(), value: DataType::Keyword(result_kw), tx: st, op: DatomOp::Assert },
+    ];
+    if let Some(err) = error {
+        datoms.push(Datom { entity: tx_eid, attribute: "db.tx/error".into(), value: DataType::String(err), tx: st, op: DatomOp::Assert });
+    }
+    datoms
+}
+
 impl Indexer {
     pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache, counters: PartitionCounters, latest_indexed_tx: Option<TxKey>) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
@@ -136,11 +162,27 @@ impl Indexer {
     /// Uses a SlateDB transaction for atomic read-then-write: the EAV index scan
     /// and all index writes happen in a single transaction.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+        match self.transact_tx_inner(tx_key, tx_ops).await {
+            Ok(tx_key) => Ok(tx_key),
+            Err(e) => {
+                if let Err(abort_err) = self.write_aborted_tx(tx_key, e.to_string()).await {
+                    error!("Failed to write aborted tx entity for {}: {}", tx_key.tx_id, abort_err);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn transact_tx_inner(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         // TODO: resolve_entity_ids + tx_ops_to_datoms should be unified into a single pass
         // Use a temporary copy of counters; only persist advances after successful commit.
         let mut pending_counters = self.counters.clone();
         let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_counters)?;
-        let datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
+        let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
+
+        // Build first-class transaction entity in TX_PARTITION
+        let tx_entity_datoms = build_tx_entity_datoms(&mut pending_counters, tx_key, true, None);
+        datoms.extend(tx_entity_datoms);
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
 
@@ -238,10 +280,8 @@ impl Indexer {
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
 
-        // Send notification (warn if no receivers, matching memory_log.rs:51-52)
-        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
         if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
-            warn!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
+            trace!("No receivers for indexed transaction {}: {}", tx_key.tx_id, e);
         }
 
         Ok(tx_key)
@@ -267,6 +307,17 @@ impl Indexer {
         }
     }
 
+    /// Write an aborted transaction entity (no user data) when transact_tx fails.
+    async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
+        let datoms = build_tx_entity_datoms(&mut self.counters, tx_key, false, Some(error));
+        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
+        write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
+        let meta = TxMeta { system_time: tx_key.system_time };
+        txn.put(&tx_meta_key(tx_key.tx_id), &bincode::serialize(&meta)?)?;
+        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        self.latest_indexed_tx = Some(tx_key);
+        Ok(())
+    }
 }
 
 
@@ -328,6 +379,8 @@ impl Subscriber for Indexer {
                 return;
             }
         };
+        // TODO: transact_tx now handles writing aborted tx entities internally;
+        // the subscriber should propagate the error notification via tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
             let _ = self.tx_completion_sender.send((record.tx_key, Err(Arc::new(e))));

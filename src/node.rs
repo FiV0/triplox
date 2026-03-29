@@ -214,8 +214,12 @@ mod tests {
     use edn::Keyword;
     use super::*;
 
-    fn kw(name: &str) -> DataType {
-        DataType::Keyword(Keyword::plain(name))
+    // TODO: unify with a kw! macro in the edn crate
+    fn kw(s: &str) -> DataType {
+        DataType::Keyword(match s.rsplit_once('/') {
+            Some((ns, name)) => Keyword::namespaced(ns, name),
+            None => Keyword::plain(s),
+        })
     }
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
@@ -1334,4 +1338,76 @@ mod tests {
         assert_eq!(crate::partition::extract_counter(eids[0]), 0);
         assert_eq!(crate::partition::extract_counter(eids[1]), 1);
     }
+
+    // --- First-class transaction entity tests ---
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_committed_tx_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut doc = BTreeMap::new();
+        doc.insert("name".to_string(), DataType::String("alice".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let tx_key = match result {
+            TransactionResult::TxCommited(k) => k,
+            _ => panic!("Expected committed"),
+        };
+
+        // Query for the tx entity matching this tx_id
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?result"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw("db/txId")),
+                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
+                }),
+                triple("?tx", "db/txResult", "?result"),
+            ],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], kw("db.tx/committed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_aborted_tx_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Submit a transaction with an unknown attribute to trigger abort
+        let mut doc = BTreeMap::new();
+        doc.insert("nonexistent".to_string(), DataType::String("x".to_string()));
+        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let tx_key = match &result {
+            TransactionResult::TxAborted(k, _) => *k,
+            _ => panic!("Expected aborted, got {:?}", result),
+        };
+
+        // Query for the aborted tx entity
+        let db = node.db().await.unwrap();
+        let result = db.query(&Query {
+            find: find_vars(&["?result", "?error"]),
+            where_clauses: vec![
+                WhereClause::Triple(TriplePattern {
+                    entity: PatternElement::Variable("?tx".to_string()),
+                    attribute: PatternElement::Constant(kw("db/txId")),
+                    value: PatternElement::Constant(DataType::Long(tx_key.tx_id)),
+                }),
+                triple("?tx", "db/txResult", "?result"),
+                triple("?tx", "db.tx/error", "?error"),
+            ],
+        }).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], kw("db.tx/aborted"));
+        if let DataType::String(s) = &result[0][1] {
+            assert!(s.contains("nonexistent"), "Error should mention the unknown attribute, got: {}", s);
+        } else {
+            panic!("Expected String for error, got {:?}", result[0][1]);
+        }
+    }
+
 }

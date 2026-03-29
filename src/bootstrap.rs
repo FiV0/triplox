@@ -99,11 +99,15 @@ mod tests {
     async fn test_init_db_fresh() {
         let slatedb = Arc::new(in_memory_slate().await);
         let (cache, counters) = init_db(slatedb).await;
-        // Bootstrap defines 3 schema attributes (db/ident, db/valueType, db/cardinality)
-        assert_eq!(cache.len(), 3);
+        // Bootstrap defines 7 schema attributes (3 core + 4 tx)
+        assert_eq!(cache.len(), 7);
         assert!(cache.get("db/ident").is_some());
         assert!(cache.get("db/valueType").is_some());
         assert!(cache.get("db/cardinality").is_some());
+        assert!(cache.get("db/txInstant").is_some());
+        assert!(cache.get("db/txId").is_some());
+        assert!(cache.get("db/txResult").is_some());
+        assert!(cache.get("db.tx/error").is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
         assert_eq!(counters[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
     }
@@ -115,7 +119,7 @@ mod tests {
         // Second call takes the existing-DB path (scan EAV for counters)
         let (cache2, counters2) = init_db(slatedb).await;
         assert_eq!(cache1.len(), cache2.len());
-        assert_eq!(cache1.len(), 3);
+        assert_eq!(cache1.len(), 7);
         assert_eq!(counters1[&DB_PARTITION], counters2[&DB_PARTITION]);
     }
 
