@@ -217,6 +217,7 @@ mod tests {
     use edn::Keyword;
     use super::*;
 
+    // TODO: unify with a kw! macro in the edn crate
     fn kw(s: &str) -> DataType {
         DataType::Keyword(match s.rsplit_once('/') {
             Some((ns, name)) => Keyword::namespaced(ns, name),
