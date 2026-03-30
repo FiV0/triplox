@@ -294,6 +294,9 @@ pub entities -> Vec<Entity<ValueAndSpan>>
 // pattern (say "[") should be bracketed on either side with either a
 // whitespace-eating rule or an explicit whitespace eating `__`.
 
+// "/" is special-cased here because it serves as the namespace separator in
+// symbol_name (e.g. foo/bar) but is also a valid division operator in
+// predicates and where-fn clauses like [(/ ?age 2) ?half].
 query_function -> query::QueryFunction
     = __ n:$(symbol_name / "/") __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
