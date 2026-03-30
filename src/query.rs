@@ -8,7 +8,7 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
-use crate::clock::Instant;
+
 use crate::aggregate::{make_accumulator, Accumulator};
 use crate::datalog::{
     AggregateFunc, FindElement, FindSpec, FnExpr, OrBranch, PatternClause, PatternElement, Query,
@@ -347,7 +347,7 @@ pub fn compile_pattern(
     attribute_id: i64,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
-    as_of: Instant,
+    as_of: i64,
 ) -> Result<GenericPrefixExtender, Error> {
     let pattern_clause = PatternClause::from(pattern.clone());
     let pattern_vars = pattern_clause.variables();
@@ -661,7 +661,7 @@ fn compile_or_branch(
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, i64>,
-    as_of: Instant,
+    as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrBranch::Clause(clause) => {
@@ -685,7 +685,7 @@ fn compile_where_clause(
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
     attribute_map: &HashMap<String, i64>,
-    as_of: Instant,
+    as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
         WhereClause::Triple(pattern) => {
@@ -733,7 +733,7 @@ pub fn execute_query(
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
     attribute_map: &HashMap<String, i64>,
-    as_of: Instant,
+    as_of: i64,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);

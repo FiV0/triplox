@@ -41,18 +41,19 @@ pub struct DB {
     attribute_map: HashMap<String, i64>,
     handle: Handle,
     tx_key: TxKey,
+    tx_eid: i64,
 }
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey) -> Self {
-        Self { snapshot, attribute_map, handle, tx_key }
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
+        Self { snapshot, attribute_map, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
     pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
-        let tx_key = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
-        Ok(Self { snapshot, attribute_map, handle, tx_key })
+        let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
+        Ok(Self { snapshot, attribute_map, handle, tx_key, tx_eid })
     }
 
     pub fn tx_key(&self) -> &TxKey {
@@ -74,7 +75,7 @@ impl Database for DB {
         let handle = self.handle.clone();
         let attribute_map = self.attribute_map.clone();
         let query = query.clone();
-        let as_of = self.tx_key.system_time;
+        let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
             execute_query(&query, snapshot, handle, &attribute_map, as_of)
@@ -117,7 +118,7 @@ impl Node<FileLog> {
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(slatedb.snapshot().await?);
-        let latest_indexed = latest_tx_key_from_snapshot(&snapshot).await?;
+        let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
         let latest_indexed_tx = if latest_indexed.tx_id > 0 {
             Some(latest_indexed)
         } else {
@@ -195,7 +196,8 @@ impl<L: TxLog> QueryNode for Node<L> {
         let snapshot = self.slatedb.snapshot().await?;
         let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
         let handle = Handle::current();
-        Ok(DB::new(snapshot, attribute_map, handle, tx_key))
+        let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
+        Ok(DB::new(snapshot, attribute_map, handle, tx_key, tx_eid))
     }
 }
 

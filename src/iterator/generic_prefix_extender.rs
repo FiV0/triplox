@@ -5,7 +5,6 @@ use bytes::Bytes;
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
-use crate::clock::Instant;
 use crate::codec::{self, index_type_to_prefix};
 use crate::index::IndexType;
 use crate::util::make_extractor;
@@ -22,7 +21,7 @@ pub struct GenericPrefixExtender {
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
-    as_of: Instant,                   // temporal filter: only see facts at or before this time
+    as_of: i64,                   // temporal filter: only see facts at or before this time
 }
 
 impl GenericPrefixExtender {
@@ -33,7 +32,7 @@ impl GenericPrefixExtender {
         attribute_id: i64,
         constant_prefix: Vec<u8>,
         participating_levels: Vec<usize>,
-        as_of: Instant,
+        as_of: i64,
     ) -> Self {
         let mut full_prefix = Vec::new();
         codec::encode_i64(attribute_id, &mut full_prefix);
@@ -213,7 +212,7 @@ mod tests {
         codec::encode_i64(attribute, &mut key);
         key.extend_from_slice(&value);
         key.extend_from_slice(&DataType::Long(entity).encode());
-        key.extend_from_slice(&crate::codec::encode_timestamp(crate::clock::st_from_unix_epoch(1_000_000)));
+        key.extend_from_slice(&crate::codec::encode_i64_bytes(1000));
         key.push(crate::codec::ADD);
 
         slate.put(&key, b"dummy_value").await?;
@@ -243,7 +242,7 @@ mod tests {
             42,
             vec![],
             vec![0, 1],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         assert!(extender.participates_in_level(0));
@@ -270,7 +269,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         let count = extender.count(&vec![]);
@@ -298,7 +297,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         let values = extender.propose(&vec![]);
@@ -329,7 +328,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0, 1],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         let values = extender.propose(&vec![]);
@@ -360,7 +359,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         let candidates = vec![
@@ -405,7 +404,7 @@ mod tests {
             attr_name,
             value_bytes.to_vec(),
             vec![0],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         let proposed = extender.propose(&vec![]);
@@ -431,7 +430,7 @@ mod tests {
             attr_name,
             vec![],
             vec![0],
-            crate::clock::st_from_unix_epoch(2_000_000),
+            2000_i64,
         );
 
         // Note: estimate_key_count may return non-zero even for empty ranges

@@ -410,8 +410,8 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
     validate_query(&query).expect("Schema query validation failed");
 
     let results = tokio::task::spawn_blocking(move || {
-        // TODO: use the latest submitted system_time instead of Utc::now() for consistency
-        execute_query(&query, snapshot, handle, &attribute_map, chrono::Utc::now())
+        // Use i64::MAX to see all facts (no temporal filtering)
+        execute_query(&query, snapshot, handle, &attribute_map, i64::MAX)
     })
     .await
     .expect("Schema query task failed")
@@ -472,7 +472,6 @@ pub fn test_schema_tx() -> Vec<TxOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::st_from_unix_epoch;
     use crate::ops::tx_ops_to_datoms;
 
     fn kw_ns(ns: &str, name: &str) -> DataType {
@@ -482,7 +481,7 @@ mod tests {
     fn to_datoms(ops: &[TxOp]) -> Vec<Datom> {
         let mut counters = crate::partition::PartitionCounters::new();
         let resolved = crate::partition::resolve_entity_ids(ops, &mut counters).unwrap();
-        tx_ops_to_datoms(&resolved, st_from_unix_epoch(0)).unwrap()
+        tx_ops_to_datoms(&resolved, 0_i64).unwrap()
     }
 
     fn extract_and_process(cache: &mut SchemaCache, datoms: &[Datom]) {
@@ -492,7 +491,7 @@ mod tests {
     fn bootstrapped_cache() -> SchemaCache {
         let mut cache = SchemaCache::new();
         let tx_ops = bootstrap_schema_tx();
-        let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
+        let datoms = tx_ops_to_datoms(&tx_ops, 0_i64).unwrap();
         extract_and_process(&mut cache, &datoms);
         cache
     }

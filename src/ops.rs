@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use anyhow::Result;
-use crate::clock::Instant;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct EntityId(pub i64);
@@ -174,7 +173,7 @@ pub struct Datom {
     pub entity: i64,
     pub attribute: String, // TODO(triplox-gaz): avoid cloning, consider Cow or interning
     pub value: DataType,
-    pub tx: Instant,
+    pub tx: i64,
     pub op: DatomOp,
 }
 
@@ -183,7 +182,7 @@ pub struct Datom {
 /// - Add(triple) → 1 Assert datom
 /// - Retract(triple) → 1 Retract datom
 /// - Delete/Erase → panics (not yet implemented)
-pub fn tx_ops_to_datoms(ops: &[TxOp], tx: Instant) -> Result<Vec<Datom>> {
+pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
     let mut datoms = Vec::new();
     for op in ops {
         match op {
@@ -328,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_tx_ops_to_datoms_put() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
@@ -344,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_tx_ops_to_datoms_add() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         let ops = vec![TxOp::Add {
             entity_id: EntityId(200),
             attribute: Attribute("name".to_string()),
@@ -361,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_tx_ops_to_datoms_retract() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         let ops = vec![TxOp::Retract {
             entity_id: EntityId(200),
             attribute: Attribute("name".to_string()),
@@ -376,20 +375,20 @@ mod tests {
     #[test]
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_tx_ops_to_datoms_delete_panics() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         tx_ops_to_datoms(&[TxOp::Delete(EntityId(100))], tx).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_tx_ops_to_datoms_erase_panics() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         tx_ops_to_datoms(&[TxOp::Erase(EntityId(200))], tx).unwrap();
     }
 
     #[test]
     fn test_tx_ops_to_datoms_put_missing_id() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         let mut doc = BTreeMap::new();
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
         let ops = vec![TxOp::Put(doc)];
@@ -401,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_tx_ops_to_datoms_put_wrong_id_type() {
-        let tx = crate::clock::st_from_unix_epoch(1000);
+        let tx = 1000_i64;
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::String("not-a-long".to_string()));
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
