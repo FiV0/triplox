@@ -121,30 +121,25 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
     }
 }
 
-/// Look up the tx_eid for a given TxKey by scanning TX_PARTITION entities
-/// for one with matching `db/txId`.
+/// Look up the tx_eid for a given TxKey using the AVE index.
+/// AVE key layout: [AVE][attribute][value][entity_id][tx_eid][op]
+/// We build a prefix for (db/txId, tx_key.tx_id) and extract the entity from the first match.
 pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxKey) -> Result<i64> {
-    let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
-    let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
-    let mut current_eid: Option<i64> = None;
-    while let Some(kv) = iter.next().await? {
-        let (entity_dt, attribute, value, _tx_eid, _op) = eav_key_to_parts(kv.key)?;
-        let eid = match entity_dt {
-            DataType::Long(id) => id,
-            other => bail!("Expected Long entity ID in EAV key, got {:?}", other),
-        };
-        if current_eid != Some(eid) {
-            current_eid = Some(eid);
-        }
-        if attribute == crate::schema::DB_TX_ID {
-            if let DataType::Long(id) = value {
-                if id == tx_key.tx_id {
-                    return Ok(eid);
-                }
+    let attr_bytes = encode_i64_bytes(crate::schema::DB_TX_ID);
+    let mut value_bytes = Vec::new();
+    codec::encode_datatype(&DataType::Long(tx_key.tx_id), &mut value_bytes);
+    let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
+    let mut iter = snapshot.scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS).await?;
+    match iter.next().await? {
+        Some(kv) => {
+            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(kv.key)?;
+            match entity_dt {
+                DataType::Long(eid) => Ok(eid),
+                other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
             }
         }
+        None => bail!("No tx entity found for tx_id={}", tx_key.tx_id),
     }
-    bail!("No tx entity found for tx_id={}", tx_key.tx_id)
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
