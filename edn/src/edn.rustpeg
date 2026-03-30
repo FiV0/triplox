@@ -145,7 +145,7 @@ namespace_separator = "/"
 // TODO: Be more picky here
 // Keywords follow the rules of symbols, except they can (and must) begin with :
 // e.g. :fred or :my/fred. See https://github.com/edn-format/edn#keywords
-symbol_char_initial = [a-zA-Z0-9*!_?$%&=<>+-]
+symbol_char_initial = [a-zA-Z0-9*!_?$%&=<>]
 symbol_char_subsequent = [+a-zA-Z0-9*!_?$%&=<>-]
 
 symbol_namespace = symbol_char_initial symbol_char_subsequent* (namespace_divider symbol_char_subsequent+)*
@@ -294,11 +294,13 @@ pub entities -> Vec<Entity<ValueAndSpan>>
 // pattern (say "[") should be bracketed on either side with either a
 // whitespace-eating rule or an explicit whitespace eating `__`.
 
-// "/" is special-cased here because it serves as the namespace separator in
-// symbol_name (e.g. foo/bar) but is also a valid division operator in
-// predicates and where-fn clauses like [(/ ?age 2) ?half].
+// "+", "-", and "/" are special-cased here rather than added to
+// symbol_char_initial because they conflict with number parsing (sign
+// prefix) and namespace separation respectively. Adding them globally
+// would let symbol_name match "-3" as a symbol in contexts that bypass
+// the value rule's number-before-symbol ordering.
 query_function -> query::QueryFunction
-    = __ n:$(symbol_name / "/") __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
+    = __ n:$(symbol_name / "/" / "+" / "-") __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
 fn_arg -> query::FnArg
     = v:value {? query::FnArg::from_value(&v).ok_or("expected query function argument") }
