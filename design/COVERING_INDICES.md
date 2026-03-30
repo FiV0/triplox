@@ -1,15 +1,15 @@
 # Covering Indices
 
-Triplox uses Datomic-style covering indices that encode the transaction time in
-every key. Each assertion and retraction produces a distinct key, so the full
-history of every triple is available directly from the indices — no transaction
-log replay is needed for temporal queries.
+Triplox uses Datomic-style covering indices that encode the transaction entity
+ID (tx_eid) in every key. Each assertion and retraction produces a distinct key,
+so the full history of every triple is available directly from the indices — no
+transaction log replay is needed for temporal queries.
 
 ## Index Key Layouts
 
 Five indices are maintained. The three **full indices** (EAVT, AVET, AEVT)
-contain all components of the (E, A, V) triple plus the transaction time T and
-an operation flag. The two **partial indices** (AE, AV) omit one triple
+contain all components of the (E, A, V) triple plus the transaction entity ID T
+and an operation flag. The two **partial indices** (AE, AV) omit one triple
 component and are atemporal — they carry neither T nor op.
 
 | Index | Key components |
@@ -20,8 +20,9 @@ component and are atemporal — they carry neither T nor op.
 | AE    | A, E           |
 | AV    | A, V           |
 
-- **T** is stored in descending order so that **newest transactions sort first**
-  within each logical key group.
+- **T** is the transaction entity ID (tx_eid), stored using descending i64
+  encoding so that **newest transactions sort first** within each logical key
+  group. This uses the same encoding as entity IDs in the E position.
 - **op** is a flag: *added* or *retracted*.
 
 See `ENCODING.md` for byte-level encoding details.
@@ -125,7 +126,7 @@ and `v3` over its lifetime.
 (E2, A1, V1, ...)
 ```
 
-When iterating over these values only one of them will be an assertion on the latest valid timestamp.
+When iterating over these values only one of them will be an assertion at the latest valid transaction.
 The remaining ones will be retractions. So even if we iterate over these values in the joins, in an `as-of`
 query only one value will appear. A similar pattern holds for the other indices (forgetting partial indices AV/AE).
 

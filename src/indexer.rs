@@ -20,7 +20,6 @@ use crate::transaction::TxKey;
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
-use crate::clock::Instant;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
@@ -35,9 +34,9 @@ pub(crate) fn write_index_entries(
     txn: &slatedb::DbTransaction,
     datoms: &[Datom],
     schema_cache: &SchemaCache,
-    system_time: Instant,
+    tx_eid: i64,
 ) -> Result<(), Error> {
-    let timestamp = codec::encode_timestamp(system_time);
+    let tx_eid_bytes = encode_i64_bytes(tx_eid);
 
     for datom in datoms {
         // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
@@ -55,12 +54,12 @@ pub(crate) fn write_index_entries(
             DatomOp::Retract => codec::RETRACT,
         };
 
-        // Temporal indices include timestamp + op
+        // Temporal indices include tx_eid + op
         // TODO(triplox-7fl): concat_bytes allocates intermediate Vecs per component;
         // encoding directly into a single buffer would be faster.
-        txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &timestamp, &[op_byte]]), &[])?;
-        txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &timestamp, &[op_byte]]), &[])?;
-        txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &timestamp, &[op_byte]]), &[])?;
+        txn.put(&concat_bytes(&[&[codec::EAV], &entity_id, &attribute, &value, &tx_eid_bytes, &[op_byte]]), &[])?;
+        txn.put(&concat_bytes(&[&[codec::AVE], &attribute, &value, &entity_id, &tx_eid_bytes, &[op_byte]]), &[])?;
+        txn.put(&concat_bytes(&[&[codec::AEV], &attribute, &entity_id, &value, &tx_eid_bytes, &[op_byte]]), &[])?;
 
         // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
@@ -73,25 +72,26 @@ pub(crate) fn write_index_entries(
     Ok(())
 }
 
-/// Scan EAV entries for TX_PARTITION entities and return the TxKey for the highest tx_id.
-/// If no transaction entities exist, returns a sentinel TxKey (tx_id=0, system_time=epoch).
+/// Scan EAV entries for TX_PARTITION entities and return (tx_eid, TxKey) for the latest tx.
+/// If no transaction entities exist, returns a sentinel (0, TxKey{tx_id=0, system_time=epoch}).
 ///
 /// Uses the high bits of TX_PARTITION entity IDs to build a targeted EAV prefix,
-/// restricting the scan to TX_PARTITION entities. For each entry with attribute
-/// `db/txId`, the tx_id is extracted from the value and system_time from the key's
-/// timestamp suffix.
+/// restricting the scan to TX_PARTITION entities. With descending entity encoding,
+/// the first TX_PARTITION entity is the latest.
 ///
-/// TODO(triplox-8mc): Return Option<TxKey> (None for empty DB) instead of a
-/// sentinel. Needs coordination with the bootstrap transaction (tx_id=0).
+/// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
+/// system_time from `db/txInstant` value.
 ///
-/// With descending entity encoding, the first TX_PARTITION entity is the latest.
-pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
+/// TODO(triplox-8mc): Return Option instead of sentinel. Needs coordination with
+/// the bootstrap transaction (tx_id=0).
+pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<(i64, TxKey)> {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
     let mut first_eid: Option<i64> = None;
-    let mut result: Option<(i64, Instant)> = None;
+    let mut tx_id: Option<i64> = None;
+    let mut system_time: Option<crate::clock::Instant> = None;
     while let Some(kv) = iter.next().await? {
-        let (entity_dt, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
+        let (entity_dt, attribute, value, _tx_eid, _op) = eav_key_to_parts(kv.key)?;
         let eid = match entity_dt {
             DataType::Long(id) => id,
             other => bail!("Expected Long entity ID in EAV key, got {:?}", other),
@@ -102,28 +102,57 @@ pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) ->
             _ => {}
         }
         if attribute == crate::schema::DB_TX_ID {
-            if let DataType::Long(tx_id) = value {
-                result = Some((tx_id, timestamp));
+            if let DataType::Long(id) = value {
+                tx_id = Some(id);
+            }
+        }
+        if attribute == crate::schema::DB_TX_INSTANT {
+            if let DataType::Instant(st) = value {
+                system_time = Some(st);
             }
         }
     }
-    Ok(result.map(|(tx_id, system_time)| TxKey {
-        tx_id,
-        system_time,
-    }).unwrap_or_else(|| TxKey {
-        tx_id: 0,
-        system_time: crate::clock::st_from_unix_epoch(0),
-    }))
+    match (first_eid, tx_id, system_time) {
+        (Some(eid), Some(tid), Some(st)) => Ok((eid, TxKey { tx_id: tid, system_time: st })),
+        _ => Ok((0, TxKey {
+            tx_id: 0,
+            system_time: crate::clock::st_from_unix_epoch(0),
+        })),
+    }
+}
+
+/// Look up the tx_eid for a given TxKey using the AVE index.
+/// AVE key layout: [AVE][attribute][value][entity_id][tx_eid][op]
+/// We build a prefix for (db/txId, tx_key.tx_id) and extract the entity from the first match.
+pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxKey) -> Result<i64> {
+    let attr_bytes = encode_i64_bytes(crate::schema::DB_TX_ID);
+    let mut value_bytes = Vec::new();
+    codec::encode_datatype(&DataType::Long(tx_key.tx_id), &mut value_bytes);
+    let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
+    let mut iter = snapshot.scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS).await?;
+    match iter.next().await? {
+        Some(kv) => {
+            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(kv.key)?;
+            match entity_dt {
+                DataType::Long(eid) => Ok(eid),
+                other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
+            }
+        }
+        // TODO: the caller (db_as_of) should wait for the transaction to be
+        // indexed before calling this function, so this case shouldn't happen
+        // in normal operation.
+        None => bail!("No tx entity found for tx_id={}", tx_key.tx_id),
+    }
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
+/// The `tx_eid` is the pre-allocated entity ID for this transaction.
 fn build_tx_entity_datoms(
-    counters: &mut PartitionCounters,
+    tx_eid: i64,
     tx_key: TxKey,
     committed: bool,
     error: Option<String>,
 ) -> Vec<Datom> {
-    let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(counters, TX_PARTITION));
     let st = tx_key.system_time;
     let result_kw = if committed {
         Keyword::namespaced("db.tx", "committed")
@@ -131,12 +160,12 @@ fn build_tx_entity_datoms(
         Keyword::namespaced("db.tx", "aborted")
     };
     let mut datoms = vec![
-        Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: st, op: DatomOp::Assert },
-        Datom { entity: tx_eid, attribute: "db/txId".into(), value: DataType::Long(tx_key.tx_id), tx: st, op: DatomOp::Assert },
-        Datom { entity: tx_eid, attribute: "db/txResult".into(), value: DataType::Keyword(result_kw), tx: st, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: tx_eid, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txId".into(), value: DataType::Long(tx_key.tx_id), tx: tx_eid, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: "db/txResult".into(), value: DataType::Keyword(result_kw), tx: tx_eid, op: DatomOp::Assert },
     ];
     if let Some(err) = error {
-        datoms.push(Datom { entity: tx_eid, attribute: "db.tx/error".into(), value: DataType::String(err), tx: st, op: DatomOp::Assert });
+        datoms.push(Datom { entity: tx_eid, attribute: "db.tx/error".into(), value: DataType::String(err), tx: tx_eid, op: DatomOp::Assert });
     }
     datoms
 }
@@ -179,10 +208,13 @@ impl Indexer {
         // Use a temporary copy of counters; only persist advances after successful commit.
         let mut pending_counters = self.counters.clone();
         let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_counters)?;
-        let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_key.system_time)?;
+
+        // Allocate tx_eid early so it can be used in both user datoms and tx entity datoms
+        let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(&mut pending_counters, TX_PARTITION));
+        let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_eid)?;
 
         // Build first-class transaction entity in TX_PARTITION
-        let tx_entity_datoms = build_tx_entity_datoms(&mut pending_counters, tx_key, true, None);
+        let tx_entity_datoms = build_tx_entity_datoms(tx_eid, tx_key, true, None);
         datoms.extend(tx_entity_datoms);
 
         let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
@@ -193,7 +225,7 @@ impl Indexer {
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
-        let as_of_encoded = codec::encode_timestamp(tx_key.system_time);
+        let as_of_encoded = encode_i64_bytes(tx_eid);
         let mut resolved_datoms: HashSet<Datom> = HashSet::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
@@ -225,8 +257,8 @@ impl Indexer {
             while let Some(kv) = iter.next().await? {
                 let key = &kv.key;
                 assert!(
-                    key.len() >= codec::TIMESTAMP_OP_SUFFIX,
-                    "Key too short ({} bytes) to contain timestamp + op suffix",
+                    key.len() >= codec::TX_EID_OP_SUFFIX,
+                    "Key too short ({} bytes) to contain tx_eid + op suffix",
                     key.len()
                 );
                 match temporal_filter_iterator::resolve_temporal_key(key, &as_of_encoded) {
@@ -235,7 +267,7 @@ impl Indexer {
                         break;
                     }
                     Some(_) => {
-                        let value_bytes = &key[eav_prefix.len()..key.len() - codec::TIMESTAMP_OP_SUFFIX];
+                        let value_bytes = &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
                         let mut cursor = value_bytes;
                         let value: DataType = decode_datatype(&mut cursor)?;
                         old_value = Some(value);
@@ -263,7 +295,7 @@ impl Indexer {
         }
         let datoms: Vec<Datom> = resolved_datoms.into_iter().collect();
 
-        write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
+        write_index_entries(&txn, &datoms, &self.schema_cache, tx_eid)?;
 
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
@@ -307,9 +339,10 @@ impl Indexer {
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
     async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
         let mut pending_counters = self.counters.clone();
-        let datoms = build_tx_entity_datoms(&mut pending_counters, tx_key, false, Some(error));
+        let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(&mut pending_counters, TX_PARTITION));
+        let datoms = build_tx_entity_datoms(tx_eid, tx_key, false, Some(error));
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
-        write_index_entries(&txn, &datoms, &self.schema_cache, tx_key.system_time)?;
+        write_index_entries(&txn, &datoms, &self.schema_cache, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
         self.counters = pending_counters;
         self.latest_indexed_tx = Some(tx_key);
@@ -385,18 +418,19 @@ impl Subscriber for Indexer {
     }
 }
 
-/// Strip a temporal index key into (data_bytes, timestamp, op).
-fn strip_temporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Result<(&'a [u8], Instant, u8), Error> {
+/// Strip a temporal index key into (data_bytes, tx_eid, op).
+fn strip_temporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Result<(&'a [u8], i64, u8), Error> {
     if key.first() != Some(&expected_prefix) {
         return Err(anyhow::anyhow!("Not a {} key", name));
     }
-    if key.len() < 1 + codec::TIMESTAMP_OP_SUFFIX {
+    if key.len() < 1 + codec::TX_EID_OP_SUFFIX {
         return Err(anyhow::anyhow!("Key too short"));
     }
-    let data = &key[1..key.len() - codec::TIMESTAMP_OP_SUFFIX];
-    let timestamp = codec::decode_timestamp(&key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH])?;
+    let data = &key[1..key.len() - codec::TX_EID_OP_SUFFIX];
+    let mut cursor = &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+    let tx_eid = decode_i64(&mut cursor)?;
     let op = key[key.len() - 1];
-    Ok((data, timestamp, op))
+    Ok((data, tx_eid, op))
 }
 
 /// Strip an atemporal index key, returning data bytes after the prefix.
@@ -410,31 +444,31 @@ fn strip_atemporal_key<'a>(key: &'a [u8], expected_prefix: u8, name: &str) -> Re
     Ok(&key[1..])
 }
 
-pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, Instant, u8), Error> {
-    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::EAV, "EAV")?;
+pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8), Error> {
+    let (data, tx_eid, op) = strip_temporal_key(key.as_ref(), codec::EAV, "EAV")?;
     let mut cursor = data;
     let entity_id = decode_datatype(&mut cursor)?;
     let attribute = decode_i64(&mut cursor)?;
     let value = decode_datatype(&mut cursor)?;
-    Ok((entity_id, attribute, value, timestamp, op))
+    Ok((entity_id, attribute, value, tx_eid, op))
 }
 
-pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
-    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AVE, "AVE")?;
+pub fn ave_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, i64, u8), Error> {
+    let (data, tx_eid, op) = strip_temporal_key(key.as_ref(), codec::AVE, "AVE")?;
     let mut cursor = data;
     let attribute = decode_i64(&mut cursor)?;
     let value = decode_datatype(&mut cursor)?;
     let entity_id = decode_datatype(&mut cursor)?;
-    Ok((attribute, value, entity_id, timestamp, op))
+    Ok((attribute, value, entity_id, tx_eid, op))
 }
 
-pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, Instant, u8), Error> {
-    let (data, timestamp, op) = strip_temporal_key(key.as_ref(), codec::AEV, "AEV")?;
+pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, i64, u8), Error> {
+    let (data, tx_eid, op) = strip_temporal_key(key.as_ref(), codec::AEV, "AEV")?;
     let mut cursor = data;
     let attribute = decode_i64(&mut cursor)?;
     let entity_id = decode_datatype(&mut cursor)?;
     let value = decode_datatype(&mut cursor)?;
-    Ok((attribute, entity_id, value, timestamp, op))
+    Ok((attribute, entity_id, value, tx_eid, op))
 }
 
 pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
@@ -458,7 +492,7 @@ mod tests {
     use std::collections::BTreeMap;
     use slatedb::{Db, config::ScanOptions};
 
-    use crate::clock::st_from_unix_epoch;
+    use crate::clock::{st_from_unix_epoch, Instant};
     use crate::schema::test_schema_tx;
     use crate::slate::in_memory_slate;
     use super::*;
@@ -579,9 +613,10 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        let (tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
         assert_eq!(latest.tx_id, 42);
         assert_eq!(latest.system_time, st_from_unix_epoch(1000));
+        assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
         Ok(())
     }
 
@@ -589,8 +624,9 @@ mod tests {
     async fn test_latest_tx_key_empty_db() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        let (tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
         assert_eq!(latest.tx_id, 0, "Should return sentinel for empty DB");
+        assert_eq!(tx_eid, 0, "Should return sentinel tx_eid for empty DB");
         Ok(())
     }
 
@@ -609,9 +645,40 @@ mod tests {
         }
 
         let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_key_from_snapshot(&snapshot).await?;
+        let (_tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
         assert_eq!(latest.tx_id, 3, "Should return highest tx_id");
         assert_eq!(latest.system_time, st_from_unix_epoch(300));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_eid_for_tx_key_found() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
+
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
+        indexer.transact_tx(tx_key, tx_ops).await?;
+
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let tx_eid = tx_eid_for_tx_key(&snapshot, &tx_key).await?;
+        assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
+
+        // Should match what latest_tx_key_from_snapshot returns
+        let (latest_tx_eid, _) = latest_tx_key_from_snapshot(&snapshot).await?;
+        assert_eq!(tx_eid, latest_tx_eid);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_eid_for_tx_key_not_found() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(1000) };
+
+        let result = tx_eid_for_tx_key(&snapshot, &tx_key).await;
+        assert!(result.is_err(), "Should fail for non-existent tx_id");
+        assert!(result.unwrap_err().to_string().contains("tx_id=999"));
         Ok(())
     }
 

@@ -3,7 +3,6 @@ use bytes::Bytes;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
-use crate::clock::Instant;
 use crate::codec;
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::next_prefix;
@@ -13,10 +12,10 @@ use super::slate_iterator::{Extractor, Index};
 /// An iterator that wraps a SlateDB prefix scan and resolves temporal versions.
 ///
 /// Keys are expected to have the layout: `[prefix...][data...][T:8][op:1]`
-/// where T is an inverted big-endian timestamp (newest first in sort order).
+/// where T is a descending-encoded tx_eid (newest first in sort order).
 ///
 /// For each distinct logical key (everything except T and op), emits only the
-/// most recent version whose real timestamp <= `as_of`.
+/// most recent version whose tx_eid <= `as_of`.
 ///
 /// TODO(triplox-28q): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
@@ -31,21 +30,21 @@ pub(crate) struct TemporalFilterIterator {
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
 pub(crate) fn logical_key(key: &[u8]) -> &[u8] {
-    &key[..key.len() - codec::TIMESTAMP_OP_SUFFIX]
+    &key[..key.len() - codec::TX_EID_OP_SUFFIX]
 }
 
-/// Extract the encoded timestamp bytes from a full key.
-pub(crate) fn timestamp_bytes(key: &[u8]) -> &[u8] {
-    &key[key.len() - codec::TIMESTAMP_OP_SUFFIX..key.len() - codec::OP_LENGTH]
+/// Extract the encoded tx_eid bytes from a full key.
+pub(crate) fn tx_eid_bytes(key: &[u8]) -> &[u8] {
+    &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH]
 }
 
-/// Resolve a temporal key against an as-of timestamp.
+/// Resolve a temporal key against an as-of tx_eid.
 ///
-/// Returns `Some(op_byte)` if the key's timestamp <= as_of (i.e. it is the newest
+/// Returns `Some(op_byte)` if the key's tx_eid <= as_of (i.e. it is the newest
 /// valid entry), or `None` if the entry is newer than as_of and should be skipped.
 pub(crate) fn resolve_temporal_key(key: &[u8], as_of_encoded: &[u8; 8]) -> Option<u8> {
-    let ts = timestamp_bytes(key);
-    // Inverted encoding: encoded_T >= as_of_encoded means real_T <= as_of
+    let ts = tx_eid_bytes(key);
+    // Descending encoding: encoded_T >= as_of_encoded means real_T <= as_of
     if ts >= &as_of_encoded[..] {
         Some(key[key.len() - 1])
     } else {
@@ -59,10 +58,10 @@ impl TemporalFilterIterator {
         slate: &slatedb::DbSnapshot,
         handle: Handle,
         extractor: Extractor,
-        as_of: Instant,
+        as_of: i64,
     ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
-        let as_of_encoded = codec::encode_timestamp(as_of);
+        let as_of_encoded = codec::encode_i64_bytes(as_of);
         let iterator =
             handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
 
@@ -107,8 +106,8 @@ impl TemporalFilterIterator {
                 Some(kv) => {
                     let key = kv.key;
                     assert!(
-                        key.len() >= codec::TIMESTAMP_OP_SUFFIX,
-                        "Key too short ({} bytes) to contain timestamp + op suffix",
+                        key.len() >= codec::TX_EID_OP_SUFFIX,
+                        "Key too short ({} bytes) to contain tx_eid + op suffix",
                         key.len()
                     );
 
@@ -195,29 +194,28 @@ impl Index for TemporalFilterIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::st_from_unix_epoch;
     use crate::slate::in_memory_slate;
 
     const PFX: &[u8] = b"\x04"; // AV prefix
 
-    fn make_key(prefix: &[u8], data: &[u8], time: Instant, op: u8) -> Vec<u8> {
+    fn make_key(prefix: &[u8], data: &[u8], tx_eid: i64, op: u8) -> Vec<u8> {
         let mut key = prefix.to_vec();
         key.extend_from_slice(data);
-        key.extend_from_slice(&codec::encode_timestamp(time));
+        key.extend_from_slice(&codec::encode_i64_bytes(tx_eid));
         key.push(op);
         key
     }
 
     fn make_test_extractor(prefix_len: usize) -> Extractor {
         Box::new(move |key: Bytes| {
-            key.slice(prefix_len..key.len() - codec::TIMESTAMP_OP_SUFFIX)
+            key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX)
         })
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_single_version() {
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
+        let t1 = 1000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
 
@@ -227,7 +225,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
+                PFX, &snapshot, handle, extractor, 2000,
             ).unwrap();
 
             assert!(iter.has_next());
@@ -238,8 +236,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_skips_future() {
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
-        let t2 = st_from_unix_epoch(2_000_000);
+        let t1 = 1000;
+        let t2 = 2000;
 
         // Two versions of "alice" at t1 and t2
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
@@ -263,7 +261,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_before_all() {
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(2_000_000);
+        let t1 = 2000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
 
@@ -274,7 +272,7 @@ mod tests {
             // Query as-of before t1 — should see nothing
             let extractor = make_test_extractor(PFX.len());
             let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(1_000_000),
+                PFX, &snapshot, handle, extractor, 1000,
             ).unwrap();
 
             assert!(!iter.has_next());
@@ -285,8 +283,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_multiple_logical_keys() {
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
-        let t2 = st_from_unix_epoch(2_000_000);
+        let t1 = 1000;
+        let t2 = 2000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
@@ -298,7 +296,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(3_000_000),
+                PFX, &snapshot, handle, extractor, 3000,
             ).unwrap();
 
             // Should see alice and bob (deduplicated)
@@ -318,10 +316,10 @@ mod tests {
         // as-of T2: alice hidden (retracted)
         // as-of T3: alice visible again (re-added)
         let slate = in_memory_slate().await;
-        let t0 = st_from_unix_epoch(500_000);
-        let t1 = st_from_unix_epoch(1_000_000);
-        let t2 = st_from_unix_epoch(2_000_000);
-        let t3 = st_from_unix_epoch(3_000_000);
+        let t0 = 500;
+        let t1 = 1000;
+        let t2 = 2000;
+        let t3 = 3000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
@@ -383,7 +381,7 @@ mod tests {
         // Three logical keys: alice, bob, charlie at T1.
         // Seek to "bob" should land on bob, then next gives charlie.
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
+        let t1 = 1000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
@@ -395,7 +393,7 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, st_from_unix_epoch(2_000_000),
+                PFX, &snapshot, handle, extractor, 2000,
             ).unwrap();
 
             // Initially at alice
@@ -421,8 +419,8 @@ mod tests {
         // As-of T1: see alice and bob.
         // As-of T2: only bob (alice retracted).
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
-        let t2 = st_from_unix_epoch(2_000_000);
+        let t1 = 1000;
+        let t2 = 2000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
@@ -464,9 +462,9 @@ mod tests {
         // "alice" added at T1, retracted at T2, re-added at T3.
         // As-of T2: not visible. As-of T3: visible again.
         let slate = in_memory_slate().await;
-        let t1 = st_from_unix_epoch(1_000_000);
-        let t2 = st_from_unix_epoch(2_000_000);
-        let t3 = st_from_unix_epoch(3_000_000);
+        let t1 = 1000;
+        let t2 = 2000;
+        let t3 = 3000;
 
         slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;

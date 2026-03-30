@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use slatedb::{Db, IsolationLevel};
-use crate::clock::{self, st_from_unix_epoch};
 use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::ops::tx_ops_to_datoms;
@@ -69,12 +68,12 @@ pub async fn init_db(slatedb: Arc<Db>) -> (SchemaCache, PartitionCounters) {
         None => {
             // Fresh DB — bootstrap schema (ops have explicit db/id values)
             let tx_ops = bootstrap_schema_tx();
-            let datoms = tx_ops_to_datoms(&tx_ops, st_from_unix_epoch(0)).unwrap();
+            let datoms = tx_ops_to_datoms(&tx_ops, 0_i64).unwrap();
             let mut cache = SchemaCache::new();
             cache.process_tx(SchemaCache::validate_schema_attrs(&datoms).unwrap());
 
             let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
-            write_index_entries(&txn, &datoms, &cache, clock::st_from_unix_epoch(0)).unwrap();
+            write_index_entries(&txn, &datoms, &cache, 0_i64).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             txn.put(&version_key, version.as_bytes()).unwrap();

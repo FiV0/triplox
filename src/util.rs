@@ -109,7 +109,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::TX_EID_OP_SUFFIX,
                 ),
             },
             IndexType::AVE => match position {
@@ -119,11 +119,11 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
                 ),
                 2.. => (
-                    total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
-                    total_length - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                    total_length - codec::TX_EID_OP_SUFFIX,
                 ),
             },
             IndexType::AEV => match position {
@@ -137,7 +137,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
-                    total_length - codec::TIMESTAMP_OP_SUFFIX,
+                    total_length - codec::TX_EID_OP_SUFFIX,
                 ),
             },
             // AE/AV are atemporal — no T+op suffix
@@ -188,7 +188,7 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
             IndexType::AVE => match position {
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                2.. => total_length - codec::ENTITY_LENGTH - codec::TIMESTAMP_OP_SUFFIX,
+                2.. => total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
             },
             IndexType::AEV => match position {
                 0 => codec::CODEC_LENGTH,
