@@ -29,7 +29,7 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionCounters {
             .expect("Failed to scan EAV partition prefix");
 
         if let Some(kv) = iter.next().await.expect("Failed to read EAV key") {
-            let mut cursor: &[u8] = &kv.key[1..1 + codec::ENTITY_LENGTH];
+            let mut cursor: &[u8] = &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
             let eid = match codec::decode_datatype(&mut cursor).expect("Failed to decode entity ID from EAV key") {
                 crate::ops::DataType::Long(id) => id,
                 other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
