@@ -110,7 +110,7 @@ pub fn encode_i64(value: i64, buf: &mut Vec<u8>) {
 }
 
 pub fn encode_i64_bytes(value: i64) -> [u8; 8] {
-    (value ^ i64::MIN).to_be_bytes()
+    (value ^ i64::MAX).to_be_bytes()
 }
 
 pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError> {
@@ -119,11 +119,11 @@ pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError> {
     }
     let bytes: [u8; 8] = cursor[..8].try_into().unwrap();
     *cursor = &cursor[8..];
-    Ok(i64::from_be_bytes(bytes) ^ i64::MIN)
+    Ok(i64::from_be_bytes(bytes) ^ i64::MAX)
 }
 
 pub fn encode_i128(value: i128, buf: &mut Vec<u8>) {
-    let encoded = (value ^ i128::MIN).to_be_bytes();
+    let encoded = (value ^ i128::MAX).to_be_bytes();
     buf.extend_from_slice(&encoded);
 }
 
@@ -133,7 +133,7 @@ pub fn decode_i128(cursor: &mut &[u8]) -> Result<i128, DecodeError> {
     }
     let bytes: [u8; 16] = cursor[..16].try_into().unwrap();
     *cursor = &cursor[16..];
-    Ok(i128::from_be_bytes(bytes) ^ i128::MIN)
+    Ok(i128::from_be_bytes(bytes) ^ i128::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -564,11 +564,11 @@ mod tests {
     #[test]
     fn i64_encoding_table() {
         let cases: Vec<(i64, Vec<u8>)> = vec![
-            (i64::MIN, vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            (-1, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
-            (0, vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            (1, vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
-            (i64::MAX, vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (i64::MIN, vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (-1, vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            (0, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (1, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]),
+            (i64::MAX, vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
         ];
         for (value, expected) in cases {
             let mut buf = Vec::new();
@@ -826,8 +826,8 @@ mod tests {
             encode_i64(window[0], &mut a_buf);
             encode_i64(window[1], &mut b_buf);
             assert!(
-                a_buf < b_buf,
-                "{} should encode before {}",
+                a_buf > b_buf,
+                "{} should encode after {}",
                 window[0],
                 window[1]
             );
@@ -842,7 +842,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_i128(window[0], &mut a_buf);
             encode_i128(window[1], &mut b_buf);
-            assert!(a_buf < b_buf);
+            assert!(a_buf > b_buf);
         }
     }
 

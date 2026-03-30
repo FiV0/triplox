@@ -33,11 +33,12 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionCounters {
             other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
         };
         let partition = extract_partition(eid);
-        let counter = extract_counter(eid);
-        let entry = counters.entry(partition).or_insert(0);
-        if counter + 1 > *entry {
-            *entry = counter + 1;
+        // Descending encoding: first entity per partition has the highest counter.
+        if counters.contains_key(&partition) {
+            continue;
         }
+        let counter = extract_counter(eid);
+        counters.insert(partition, counter + 1);
     }
 
     // Reserve space for future bootstrap entities (only if DB_PARTITION has entries)
