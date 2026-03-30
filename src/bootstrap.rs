@@ -4,7 +4,7 @@ use crate::clock::{self, st_from_unix_epoch};
 use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::ops::tx_ops_to_datoms;
-use crate::partition::{PartitionCounters, extract_counter};
+use crate::partition::{PartitionCounters, extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION};
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, SchemaCache};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
@@ -20,8 +20,6 @@ const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
 /// With descending encoding, the first entity per partition has the highest counter.
 /// The DB_PARTITION counter is clamped to at least DB_PARTITION_COUNTER_FLOOR.
 pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionCounters {
-    use crate::partition::{DB_PARTITION, TX_PARTITION, USER_PARTITION, partition_entity_prefix};
-
     let mut counters = PartitionCounters::new();
     for partition in [DB_PARTITION, TX_PARTITION, USER_PARTITION] {
         let prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(partition)]);
