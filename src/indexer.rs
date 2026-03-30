@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::IsolationLevel;
-use anyhow::{Error, Result};
+use anyhow::{bail, Error, Result};
 use bincode;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -88,13 +88,17 @@ pub(crate) fn write_index_entries(
 pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
-    let mut first_entity: Option<DataType> = None;
+    let mut first_eid: Option<i64> = None;
     let mut result: Option<(i64, Instant)> = None;
     while let Some(kv) = iter.next().await? {
-        let (entity_id, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
-        match &first_entity {
-            None => first_entity = Some(entity_id),
-            Some(eid) if *eid != entity_id => break,
+        let (entity_dt, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
+        let eid = match entity_dt {
+            DataType::Long(id) => id,
+            other => bail!("Expected Long entity ID in EAV key, got {:?}", other),
+        };
+        match first_eid {
+            None => first_eid = Some(eid),
+            Some(first) if first != eid => break,
             _ => {}
         }
         if attribute == crate::schema::DB_TX_ID {
