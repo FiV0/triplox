@@ -1,29 +1,19 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
-
 **New to the project?** See [GLOSSARY.md](GLOSSARY.md) for explanations of key concepts.
 
-## Quick Reference
+## Issue Tracking
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-```
+Issues are tracked via GitHub Issues. Use `gh issue list` and `gh issue view <number>` to find and review work.
 
-## Syncing Beads
+Priority labels follow a P0–P4 hierarchy:
+- **P0-critical** — Must be done immediately, blocks everything else
+- **P1-high** — Important, should be tackled next
+- **P2-medium** — Standard priority, the bulk of planned work
+- **P3-low** — Nice to have, do when higher-priority work is clear
+- **P4-backlog** — Long-term ideas, research, and speculative improvements
 
-Beads issues are synced to git via JSONL export to the `beads-sync` branch:
-
-```bash
-bd export > /path/to/beads-sync-worktree/.beads/issues.jsonl
-cd /path/to/beads-sync-worktree
-git add .beads/issues.jsonl
-git commit -m "beads: sync issues"
-git push origin beads-sync
-```
+Issues are also labeled by type: `bug`, `enhancement`, `task`, `epic`.
 
 ## Style
 
@@ -42,23 +32,3 @@ cargo test
 ```
 
 For JVM client integration tests, see [triplox-jvm/README.md](triplox-jvm/README.md).
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
