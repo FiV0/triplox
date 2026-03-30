@@ -138,6 +138,9 @@ pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxK
                 other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
             }
         }
+        // TODO: the caller (db_as_of) should wait for the transaction to be
+        // indexed before calling this function, so this case shouldn't happen
+        // in normal operation.
         None => bail!("No tx entity found for tx_id={}", tx_key.tx_id),
     }
 }
