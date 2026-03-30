@@ -258,7 +258,7 @@ impl Indexer {
                 let key = &kv.key;
                 assert!(
                     key.len() >= codec::TX_EID_OP_SUFFIX,
-                    "Key too short ({} bytes) to contain timestamp + op suffix",
+                    "Key too short ({} bytes) to contain tx_eid + op suffix",
                     key.len()
                 );
                 match temporal_filter_iterator::resolve_temporal_key(key, &as_of_encoded) {
@@ -648,6 +648,37 @@ mod tests {
         let (_tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
         assert_eq!(latest.tx_id, 3, "Should return highest tx_id");
         assert_eq!(latest.system_time, st_from_unix_epoch(300));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_eid_for_tx_key_found() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let tx_key = TxKey { tx_id: 42, system_time: st_from_unix_epoch(1000) };
+
+        let tx_ops = vec![TxOp::Put(user_doc(vec![("name", DataType::String("alice".into()))]))];
+        indexer.transact_tx(tx_key, tx_ops).await?;
+
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let tx_eid = tx_eid_for_tx_key(&snapshot, &tx_key).await?;
+        assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
+
+        // Should match what latest_tx_key_from_snapshot returns
+        let (latest_tx_eid, _) = latest_tx_key_from_snapshot(&snapshot).await?;
+        assert_eq!(tx_eid, latest_tx_eid);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tx_eid_for_tx_key_not_found() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let snapshot = Arc::new(slate.snapshot().await?);
+        let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(1000) };
+
+        let result = tx_eid_for_tx_key(&snapshot, &tx_key).await;
+        assert!(result.is_err(), "Should fail for non-existent tx_id");
+        assert!(result.unwrap_err().to_string().contains("tx_id=999"));
         Ok(())
     }
 

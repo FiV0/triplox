@@ -12,10 +12,10 @@ use super::slate_iterator::{Extractor, Index};
 /// An iterator that wraps a SlateDB prefix scan and resolves temporal versions.
 ///
 /// Keys are expected to have the layout: `[prefix...][data...][T:8][op:1]`
-/// where T is an inverted big-endian timestamp (newest first in sort order).
+/// where T is a descending-encoded tx_eid (newest first in sort order).
 ///
 /// For each distinct logical key (everything except T and op), emits only the
-/// most recent version whose real timestamp <= `as_of`.
+/// most recent version whose tx_eid <= `as_of`.
 ///
 /// TODO(triplox-28q): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
@@ -38,9 +38,9 @@ pub(crate) fn tx_eid_bytes(key: &[u8]) -> &[u8] {
     &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH]
 }
 
-/// Resolve a temporal key against an as-of timestamp.
+/// Resolve a temporal key against an as-of tx_eid.
 ///
-/// Returns `Some(op_byte)` if the key's timestamp <= as_of (i.e. it is the newest
+/// Returns `Some(op_byte)` if the key's tx_eid <= as_of (i.e. it is the newest
 /// valid entry), or `None` if the entry is newer than as_of and should be skipped.
 pub(crate) fn resolve_temporal_key(key: &[u8], as_of_encoded: &[u8; 8]) -> Option<u8> {
     let ts = tx_eid_bytes(key);
@@ -107,7 +107,7 @@ impl TemporalFilterIterator {
                     let key = kv.key;
                     assert!(
                         key.len() >= codec::TX_EID_OP_SUFFIX,
-                        "Key too short ({} bytes) to contain timestamp + op suffix",
+                        "Key too short ({} bytes) to contain tx_eid + op suffix",
                         key.len()
                     );
 
