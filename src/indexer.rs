@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use slatedb::Db;
 use slatedb::IsolationLevel;
-use anyhow::{Error, Result};
+use anyhow::{bail, Error, Result};
 use bincode;
 use bytes::Bytes;
 use tokio::sync::broadcast;
@@ -84,24 +84,30 @@ pub(crate) fn write_index_entries(
 /// TODO(triplox-8mc): Return Option<TxKey> (None for empty DB) instead of a
 /// sentinel. Needs coordination with the bootstrap transaction (tx_id=0).
 ///
-/// TODO: Use a reverse iterator for O(1) lookup once SlateDB supports reverse scanning.
+/// With descending entity encoding, the first TX_PARTITION entity is the latest.
 pub async fn latest_tx_key_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxKey> {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = snapshot.scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS).await?;
-    let mut latest: Option<(i64, Instant)> = None;
-    // TODO This should scan for the largest entity id and then extract the db/txId attribute
+    let mut first_eid: Option<i64> = None;
+    let mut result: Option<(i64, Instant)> = None;
     while let Some(kv) = iter.next().await? {
-        let (_entity_id, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
-        if attribute != crate::schema::DB_TX_ID {
-            continue;
+        let (entity_dt, attribute, value, timestamp, _op) = eav_key_to_parts(kv.key)?;
+        let eid = match entity_dt {
+            DataType::Long(id) => id,
+            other => bail!("Expected Long entity ID in EAV key, got {:?}", other),
+        };
+        match first_eid {
+            None => first_eid = Some(eid),
+            Some(first) if first != eid => break,
+            _ => {}
         }
-        if let DataType::Long(tx_id) = value {
-            if latest.as_ref().map_or(true, |(best_id, _)| tx_id > *best_id) {
-                latest = Some((tx_id, timestamp));
+        if attribute == crate::schema::DB_TX_ID {
+            if let DataType::Long(tx_id) = value {
+                result = Some((tx_id, timestamp));
             }
         }
     }
-    Ok(latest.map(|(tx_id, system_time)| TxKey {
+    Ok(result.map(|(tx_id, system_time)| TxKey {
         tx_id,
         system_time,
     }).unwrap_or_else(|| TxKey {

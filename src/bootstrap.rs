@@ -4,7 +4,7 @@ use crate::clock::{self, st_from_unix_epoch};
 use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::ops::tx_ops_to_datoms;
-use crate::partition::{PartitionCounters, extract_partition, extract_counter};
+use crate::partition::{PartitionCounters, extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION};
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, SchemaCache};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
@@ -16,27 +16,26 @@ const META_KEY_VERSION: &[u8] = b"version";
 /// leaving room below for future bootstrap entities.
 const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
 
-/// Scan all EAV keys and return per-partition counters (max counter + 1 for each partition).
+/// Scan each partition's EAV prefix and return per-partition counters (max counter + 1).
+/// With descending encoding, the first entity per partition has the highest counter.
 /// The DB_PARTITION counter is clamped to at least DB_PARTITION_COUNTER_FLOOR.
 pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionCounters {
     let mut counters = PartitionCounters::new();
-    let mut iter = slatedb
-        .scan_prefix_with_options(&[codec::EAV], &DEFAULT_SCAN_OPTIONS)
-        .await
-        .expect("Failed to scan EAV index");
+    for partition in [DB_PARTITION, TX_PARTITION, USER_PARTITION] {
+        let prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(partition)]);
+        let mut iter = slatedb
+            .scan_prefix_with_options(&prefix, &DEFAULT_SCAN_OPTIONS)
+            .await
+            .expect("Failed to scan EAV partition prefix");
 
-    while let Some(kv) = iter.next().await.expect("Failed to read EAV key") {
-        // EAV key: [EAV:1] [entity_id:ENTITY_LENGTH] ...
-        let mut cursor: &[u8] = &kv.key[1..1 + codec::ENTITY_LENGTH];
-        let eid = match codec::decode_datatype(&mut cursor).expect("Failed to decode entity ID from EAV key") {
-            crate::ops::DataType::Long(id) => id,
-            other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
-        };
-        let partition = extract_partition(eid);
-        let counter = extract_counter(eid);
-        let entry = counters.entry(partition).or_insert(0);
-        if counter + 1 > *entry {
-            *entry = counter + 1;
+        if let Some(kv) = iter.next().await.expect("Failed to read EAV key") {
+            let mut cursor: &[u8] = &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
+            let eid = match codec::decode_datatype(&mut cursor).expect("Failed to decode entity ID from EAV key") {
+                crate::ops::DataType::Long(id) => id,
+                other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
+            };
+            let counter = extract_counter(eid);
+            counters.insert(partition, counter + 1);
         }
     }
 

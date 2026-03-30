@@ -264,11 +264,11 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(
             DataType::decode(&result[0][0]).unwrap(),
-            DataType::Long(10)
+            DataType::Long(20)
         );
         assert_eq!(
             DataType::decode(&result[1][0]).unwrap(),
-            DataType::Long(20)
+            DataType::Long(10)
         );
     }
 

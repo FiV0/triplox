@@ -26,7 +26,7 @@ pub const USER_PARTITION: u32 = 2;
 /// encoding of the partition's base entity ID (`make_entity_id(partition, 0)`),
 /// truncated to the 3 bytes that carry the partition bits.
 ///
-/// For TX_PARTITION this produces `[7, 0x80, 0x00, 0x04]`.
+/// For TX_PARTITION this produces `[7, 0x7F, 0xFF, 0xFB]`.
 ///
 /// **Note**: the partition/counter boundary (bit 42) is not byte-aligned, so
 /// byte 2 contains both partition bits (47–42) and counter bits (41–40). The

@@ -102,22 +102,22 @@ All encodings guarantee: `memcmp(encode(a), encode(b))` equals `DataType::partia
 
 ### 3.1 Signed Integers: `i64`, `i128`
 
-XOR sign bit, then big-endian bytes.
+XOR all value bits, then big-endian bytes. This produces **descending** byte order (largest values sort first).
 
 ```
-i64:  encoded = (value ^ 0x8000_0000_0000_0000).to_be_bytes()        // 8 bytes
-i128: encoded = (value ^ (1_i128 << 127)).to_be_bytes()              // 16 bytes
+i64:  encoded = (value ^ 0x7FFF_FFFF_FFFF_FFFF).to_be_bytes()       // 8 bytes
+i128: encoded = (value ^ i128::MAX).to_be_bytes()                    // 16 bytes
 ```
 
-XORing the sign bit maps the signed range `[MIN, MAX]` to the unsigned range `[0, UMAX]`, preserving order. Big-endian ensures the most significant byte is compared first.
+XORing with `MAX` flips all bits except the sign bit, mapping the signed range `[MIN, MAX]` to the unsigned range `[UMAX, 0]` — reversing byte order. Big-endian ensures the most significant byte is compared first.
 
 | Value         | Encoded (hex)              |
 |---------------|----------------------------|
-| `i64::MIN`    | `00 00 00 00 00 00 00 00`  |
-| `-1`          | `7F FF FF FF FF FF FF FF`  |
-| `0`           | `80 00 00 00 00 00 00 00`  |
-| `1`           | `80 00 00 00 00 00 00 01`  |
-| `i64::MAX`    | `FF FF FF FF FF FF FF FF`  |
+| `i64::MIN`    | `FF FF FF FF FF FF FF FF`  |
+| `-1`          | `80 00 00 00 00 00 00 00`  |
+| `0`           | `7F FF FF FF FF FF FF FF`  |
+| `1`           | `7F FF FF FF FF FF FF FE`  |
+| `i64::MAX`    | `00 00 00 00 00 00 00 00`  |
 
 **Size**: i64 = 8 bytes. i128 = 16 bytes.
 
