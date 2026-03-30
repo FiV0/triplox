@@ -296,6 +296,7 @@ fn var_to_string(v: &eq::Variable) -> Variable {
 
 #[cfg(test)]
 mod tests {
+    use edn::kw;
     use super::*;
 
     /// Parse both vector and map syntax, assert they produce identical results.
@@ -331,7 +332,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?x".into()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced("foo", "bar"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:foo/bar))),
                 value: PatternElement::Variable("?y".into()),
             })
         );
@@ -363,7 +364,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?x".into()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::plain("active"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:active))),
                 value: PatternElement::Constant(DataType::Boolean(true)),
             })
         );
@@ -379,7 +380,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?x".into()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::plain("name"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:name))),
                 value: PatternElement::Constant(DataType::String("Alice".into())),
             })
         );
@@ -397,7 +398,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?x".into()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::plain("id"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:id))),
                 value: PatternElement::Constant(DataType::Uuid(expected_uuid)),
             })
         );
@@ -528,7 +529,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Constant(DataType::Long(42)),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced("foo", "bar"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:foo/bar))),
                 value: PatternElement::Variable("?v".into()),
             })
         );
@@ -567,7 +568,7 @@ mod tests {
             q.where_clauses[0],
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?x".into()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced("foo", "bar"))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:foo/bar))),
                 value: PatternElement::Constant(DataType::Long(-5)),
             })
         );

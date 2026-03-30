@@ -214,10 +214,10 @@ mod tests {
     use crate::ops::{Attribute, DataType, EntityId, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
+    use edn::kw;
     use edn::Keyword;
     use super::*;
 
-    // TODO: unify with a kw! macro in the edn crate
     fn kw(s: &str) -> DataType {
         DataType::Keyword(match s.rsplit_once('/') {
             Some((ns, name)) => Keyword::namespaced(ns, name),
@@ -1083,9 +1083,9 @@ mod tests {
 
         // Define "sex" attribute with keyword value type
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -1108,7 +1108,7 @@ mod tests {
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(kw("sex")),
-                    value: PatternElement::Constant(DataType::Keyword(Keyword::plain("male"))),
+                    value: PatternElement::Constant(DataType::Keyword(kw!(:male))),
                 }),
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
@@ -1135,9 +1135,9 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -1161,7 +1161,7 @@ mod tests {
                 WhereClause::Triple(TriplePattern {
                     entity: PatternElement::Variable("?e".to_string()),
                     attribute: PatternElement::Constant(kw("sex")),
-                    value: PatternElement::Constant(DataType::Keyword(Keyword::plain("male"))),
+                    value: PatternElement::Constant(DataType::Keyword(kw!(:male))),
                 }),
             ],
         };
@@ -1183,9 +1183,9 @@ mod tests {
 
         // Define "last-name" attribute
         let mut attr = BTreeMap::new();
-        attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
-        attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
-        attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:last-name)));
+        attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
+        attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names

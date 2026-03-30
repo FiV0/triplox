@@ -4,6 +4,7 @@ use std::fmt;
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
+use edn::kw;
 use edn::symbols::Keyword;
 use uuid::Uuid;
 
@@ -736,9 +737,9 @@ mod tests {
     #[test]
     fn roundtrip_keyword() {
         let keywords = vec![
-            Keyword::plain("foo"),
-            Keyword::namespaced("db", "ident"),
-            Keyword::namespaced("my.ns", "attr"),
+            kw!(:foo),
+            kw!(:db/ident),
+            kw!(:my.ns/attr),
         ];
         for v in keywords {
             let mut buf = Vec::new();
@@ -762,8 +763,8 @@ mod tests {
             DataType::Double(3.14),
             DataType::Float(2.5),
             DataType::Instant(Utc.timestamp_opt(1_000_000, 0).unwrap()),
-            DataType::Keyword(Keyword::plain("foo")),
-            DataType::Keyword(Keyword::namespaced("db", "ident")),
+            DataType::Keyword(kw!(:foo)),
+            DataType::Keyword(kw!(:db/ident)),
             DataType::Long(42),
             DataType::Long(i64::MIN),
             DataType::String("hello".to_string()),
@@ -936,11 +937,11 @@ mod tests {
     #[test]
     fn order_keyword() {
         let values = vec![
-            Keyword::plain("a"),        // empty ns sorts first
-            Keyword::plain("b"),
-            Keyword::namespaced("a", "a"),
-            Keyword::namespaced("a", "b"),
-            Keyword::namespaced("b", "a"),
+            kw!(:a),        // empty ns sorts first
+            kw!(:b),
+            kw!(:a/a),
+            kw!(:a/b),
+            kw!(:b/a),
         ];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
@@ -1015,7 +1016,7 @@ mod tests {
             DataType::Double(3.14),
             DataType::Float(2.5),
             DataType::Instant(Utc.timestamp_opt(1_000_000, 0).unwrap()),
-            DataType::Keyword(Keyword::namespaced("db", "id")),
+            DataType::Keyword(kw!(:db/id)),
             DataType::Long(99),
             DataType::String("test".to_string()),
             DataType::Tuple(vec![DataType::Long(1)]),

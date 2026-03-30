@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Error, Result};
+use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
@@ -328,35 +329,35 @@ fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp
 pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     vec![
         // Schema attribute entities
-        bootstrap_schema_attribute(DB_IDENT, Keyword::namespaced("db", "ident"), "keyword"),
-        bootstrap_schema_attribute(DB_VALUE_TYPE, Keyword::namespaced("db", "valueType"), "keyword"),
-        bootstrap_schema_attribute(DB_CARDINALITY, Keyword::namespaced("db", "cardinality"), "keyword"),
+        bootstrap_schema_attribute(DB_IDENT, kw!(:db/ident), "keyword"),
+        bootstrap_schema_attribute(DB_VALUE_TYPE, kw!(:db/valueType), "keyword"),
+        bootstrap_schema_attribute(DB_CARDINALITY, kw!(:db/cardinality), "keyword"),
         // Value type enum entities
-        bootstrap_put(DB_TYPE_KEYWORD, Keyword::namespaced("db.type", "keyword")),
-        bootstrap_put(DB_TYPE_STRING, Keyword::namespaced("db.type", "string")),
-        bootstrap_put(DB_TYPE_LONG, Keyword::namespaced("db.type", "long")),
-        bootstrap_put(DB_TYPE_REF, Keyword::namespaced("db.type", "ref")),
-        bootstrap_put(DB_TYPE_BOOLEAN, Keyword::namespaced("db.type", "boolean")),
-        bootstrap_put(DB_TYPE_DOUBLE, Keyword::namespaced("db.type", "double")),
-        bootstrap_put(DB_TYPE_FLOAT, Keyword::namespaced("db.type", "float")),
-        bootstrap_put(DB_TYPE_INSTANT, Keyword::namespaced("db.type", "instant")),
-        bootstrap_put(DB_TYPE_UUID, Keyword::namespaced("db.type", "uuid")),
-        bootstrap_put(DB_TYPE_BYTES, Keyword::namespaced("db.type", "bytes")),
-        bootstrap_put(DB_TYPE_BIGINT, Keyword::namespaced("db.type", "bigint")),
-        bootstrap_put(DB_TYPE_TUPLE, Keyword::namespaced("db.type", "tuple")),
-        bootstrap_put(DB_TYPE_VECTOR, Keyword::namespaced("db.type", "vector")),
-        bootstrap_put(DB_TYPE_MAP, Keyword::namespaced("db.type", "map")),
+        bootstrap_put(DB_TYPE_KEYWORD, kw!(:db.type/keyword)),
+        bootstrap_put(DB_TYPE_STRING, kw!(:db.type/string)),
+        bootstrap_put(DB_TYPE_LONG, kw!(:db.type/long)),
+        bootstrap_put(DB_TYPE_REF, kw!(:db.type/ref)),
+        bootstrap_put(DB_TYPE_BOOLEAN, kw!(:db.type/boolean)),
+        bootstrap_put(DB_TYPE_DOUBLE, kw!(:db.type/double)),
+        bootstrap_put(DB_TYPE_FLOAT, kw!(:db.type/float)),
+        bootstrap_put(DB_TYPE_INSTANT, kw!(:db.type/instant)),
+        bootstrap_put(DB_TYPE_UUID, kw!(:db.type/uuid)),
+        bootstrap_put(DB_TYPE_BYTES, kw!(:db.type/bytes)),
+        bootstrap_put(DB_TYPE_BIGINT, kw!(:db.type/bigint)),
+        bootstrap_put(DB_TYPE_TUPLE, kw!(:db.type/tuple)),
+        bootstrap_put(DB_TYPE_VECTOR, kw!(:db.type/vector)),
+        bootstrap_put(DB_TYPE_MAP, kw!(:db.type/map)),
         // Cardinality enum entities
-        bootstrap_put(DB_CARDINALITY_ONE, Keyword::namespaced("db.cardinality", "one")),
-        bootstrap_put(DB_CARDINALITY_MANY, Keyword::namespaced("db.cardinality", "many")),
+        bootstrap_put(DB_CARDINALITY_ONE, kw!(:db.cardinality/one)),
+        bootstrap_put(DB_CARDINALITY_MANY, kw!(:db.cardinality/many)),
         // Transaction schema attributes
-        bootstrap_schema_attribute(DB_TX_INSTANT, Keyword::namespaced("db", "txInstant"), "instant"),
-        bootstrap_schema_attribute(DB_TX_ID, Keyword::namespaced("db", "txId"), "long"),
-        bootstrap_schema_attribute(DB_TX_RESULT, Keyword::namespaced("db", "txResult"), "keyword"),
-        bootstrap_schema_attribute(DB_TX_ERROR, Keyword::namespaced("db.tx", "error"), "string"),
+        bootstrap_schema_attribute(DB_TX_INSTANT, kw!(:db/txInstant), "instant"),
+        bootstrap_schema_attribute(DB_TX_ID, kw!(:db/txId), "long"),
+        bootstrap_schema_attribute(DB_TX_RESULT, kw!(:db/txResult), "keyword"),
+        bootstrap_schema_attribute(DB_TX_ERROR, kw!(:db.tx/error), "string"),
         // Transaction result enum entities
-        bootstrap_put(DB_TX_COMMITTED, Keyword::namespaced("db.tx", "committed")),
-        bootstrap_put(DB_TX_ABORTED, Keyword::namespaced("db.tx", "aborted")),
+        bootstrap_put(DB_TX_COMMITTED, kw!(:db.tx/committed)),
+        bootstrap_put(DB_TX_ABORTED, kw!(:db.tx/aborted)),
     ]
 }
 
@@ -383,25 +384,17 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
         where_clauses: vec![
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced(
-                    "db", "ident",
-                ))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/ident))),
                 value: PatternElement::Variable("?ident".to_string()),
             }),
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced(
-                    "db",
-                    "valueType",
-                ))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/valueType))),
                 value: PatternElement::Variable("?vt".to_string()),
             }),
             WhereClause::Triple(TriplePattern {
                 entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(Keyword::namespaced(
-                    "db",
-                    "cardinality",
-                ))),
+                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/cardinality))),
                 value: PatternElement::Variable("?card".to_string()),
             }),
         ],
@@ -460,12 +453,12 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn test_schema_tx() -> Vec<TxOp> {
     vec![
-        schema_attribute(Keyword::plain("name"), "string"),
-        schema_attribute(Keyword::plain("age"), "long"),
-        schema_attribute(Keyword::plain("email"), "string"),
+        schema_attribute(kw!(:name), "string"),
+        schema_attribute(kw!(:age), "long"),
+        schema_attribute(kw!(:email), "string"),
         // TODO: update this to ref once we support DataType::Ref
-        schema_attribute(Keyword::plain("follows"), "long"),
-        schema_attribute_with_cardinality(Keyword::plain("tags"), "string", "many"),
+        schema_attribute(kw!(:follows), "long"),
+        schema_attribute_with_cardinality(kw!(:tags), "string", "many"),
     ]
 }
 
@@ -498,7 +491,7 @@ mod tests {
 
     fn bootstrapped_cache_with_person_name() -> SchemaCache {
         let mut cache = bootstrapped_cache();
-        let ops = [schema_attribute(Keyword::plain("name"), "string")];
+        let ops = [schema_attribute(kw!(:name), "string")];
         extract_and_process(&mut cache, &to_datoms(&ops));
         cache
     }
@@ -570,7 +563,7 @@ mod tests {
     #[test]
     fn test_validate_tx_schema_defining_tx() {
         let cache = bootstrapped_cache();
-        let ops = [schema_attribute(Keyword::plain("name"), "string")];
+        let ops = [schema_attribute(kw!(:name), "string")];
         assert!(cache.validate_tx(&to_datoms(&ops)).is_ok());
     }
 
@@ -582,9 +575,9 @@ mod tests {
         // Cannot redefine existing schema entity
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(name_id));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
+        doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
-        doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        doc.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
@@ -599,7 +592,7 @@ mod tests {
     #[test]
     fn test_validate_schema_attrs_parses_cardinality_many() {
         let ops = [schema_attribute_with_cardinality(
-            Keyword::plain("tags"), "string", "many",
+            kw!(:tags), "string", "many",
         )];
         let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
         assert_eq!(attrs.len(), 1);
@@ -609,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_validate_schema_attrs_parses_cardinality_one() {
-        let ops = [schema_attribute(Keyword::plain("name"), "string")];
+        let ops = [schema_attribute(kw!(:name), "string")];
         let attrs = SchemaCache::validate_schema_attrs(&to_datoms(&ops)).unwrap();
         assert_eq!(attrs.len(), 1);
         assert_eq!(attrs[0].cardinality, Cardinality::One);
@@ -619,7 +612,7 @@ mod tests {
     fn test_validate_schema_attrs_missing_cardinality_errors() {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("name")));
+        doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
         doc.insert("db/valueType".to_string(), kw_ns("db.type", "string"));
         // No db/cardinality
         let err = SchemaCache::validate_schema_attrs(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
