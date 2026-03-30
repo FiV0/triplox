@@ -467,10 +467,6 @@ mod tests {
     use super::*;
     use crate::ops::tx_ops_to_datoms;
 
-    fn kw_ns(ns: &str, name: &str) -> DataType {
-        DataType::Keyword(Keyword::namespaced(ns, name))
-    }
-
     fn to_datoms(ops: &[TxOp]) -> Vec<Datom> {
         let mut counters = crate::partition::PartitionCounters::new();
         let resolved = crate::partition::resolve_entity_ids(ops, &mut counters).unwrap();
@@ -576,7 +572,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(name_id));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), kw_ns("db.type", "long"));
+        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/long)));
         doc.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         let err = cache.validate_tx(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
@@ -613,7 +609,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), kw_ns("db.type", "string"));
+        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
         // No db/cardinality
         let err = SchemaCache::validate_schema_attrs(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));

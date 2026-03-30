@@ -388,4 +388,6 @@ fn test_kw_macro() {
     // Hyphenated
     assert_eq!(kw!(:last-name), Keyword::plain("last-name"));
     assert_eq!(kw!(:foo/bar-baz), Keyword::namespaced("foo", "bar-baz"));
+    // Hyphenated namespace
+    assert_eq!(kw!(:my-ns/attr), Keyword::namespaced("my-ns", "attr"));
 }

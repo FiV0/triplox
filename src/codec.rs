@@ -4,7 +4,6 @@ use std::fmt;
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
-use edn::kw;
 use edn::symbols::Keyword;
 use uuid::Uuid;
 
@@ -557,6 +556,7 @@ impl Decode for DataType {
 
 #[cfg(test)]
 mod tests {
+    use edn::kw;
     use super::*;
     use chrono::TimeZone;
 
