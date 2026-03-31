@@ -9,8 +9,8 @@ use tokio::runtime::Handle;
 
 use edn::query::{
     Element, FindSpec, NonIntegerConstant, NotJoin, OrJoin, OrWhereClause, Pattern,
-    PatternNonValuePlace, PatternValuePlace, ParsedQuery, Predicate as EdnPredicate, UnifyVars,
-    Variable, WhereClause, WhereFn as EdnWhereFn,
+    PatternNonValuePlace, PatternValuePlace, ParsedQuery, Predicate as EdnPredicate, ToVariable,
+    UnifyVars, Variable, WhereClause, WhereFn as EdnWhereFn,
 };
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
@@ -1100,8 +1100,8 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?name")
+                "?e".to_var(),
+                "?name".to_var()
             ]
         );
     }
@@ -1114,9 +1114,9 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?name"),
-                Variable::from_valid_name("?age"),
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
             ]
         );
     }
@@ -1125,14 +1125,14 @@ mod tests {
     fn test_query_variable_order_with_constants() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"]]"#);
         let order = query_variable_order(&parsed.where_clauses);
-        assert_eq!(order, vec![Variable::from_valid_name("?e")]);
+        assert_eq!(order, vec!["?e".to_var()]);
     }
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
         let parsed = parse_query("[:find ?e :where (or [?e _ 10] [?e _ 15])]");
         let order = query_variable_order(&parsed.where_clauses);
-        assert_eq!(order, vec![Variable::from_valid_name("?e")]);
+        assert_eq!(order, vec!["?e".to_var()]);
     }
 
     #[test]
@@ -1144,8 +1144,8 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?age"),
+                "?e".to_var(),
+                "?age".to_var(),
             ]
         );
     }
@@ -1158,8 +1158,8 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?age"),
+                "?e".to_var(),
+                "?age".to_var(),
             ]
         );
     }
@@ -1196,9 +1196,9 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?age"),
-                Variable::from_valid_name("?next_age"),
+                "?e".to_var(),
+                "?age".to_var(),
+                "?next_age".to_var(),
             ]
         );
     }
@@ -1245,9 +1245,9 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?age"),
-                Variable::from_valid_name("?next_age"),
+                "?e".to_var(),
+                "?age".to_var(),
+                "?next_age".to_var(),
             ]
         );
     }
@@ -1261,9 +1261,9 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                Variable::from_valid_name("?e"),
-                Variable::from_valid_name("?name"),
-                Variable::from_valid_name("?age"),
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
             ]
         );
     }

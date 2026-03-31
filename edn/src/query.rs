@@ -84,6 +84,16 @@ impl Variable {
     }
 }
 
+pub trait ToVariable {
+    fn to_var(&self) -> Variable;
+}
+
+impl ToVariable for str {
+    fn to_var(&self) -> Variable {
+        Variable::from_valid_name(self)
+    }
+}
+
 pub trait FromValue<T> {
     fn from_value(v: &::ValueAndSpan) -> Option<T>;
 }
@@ -645,8 +655,8 @@ pub enum Limit {
 /// # fn main() {
 ///
 ///   let elements = vec![
-///     Element::Variable(Variable::from_valid_name("?foo")),
-///     Element::Variable(Variable::from_valid_name("?bar")),
+///     Element::Variable("?foo".to_var()),
+///     Element::Variable("?bar".to_var()),
 ///   ];
 ///   let rel = FindSpec::FindRel(elements);
 ///
@@ -787,7 +797,7 @@ impl Binding {
     /// use edn::query::{Binding,Variable,VariableOrPlaceholder};
     /// use std::rc::Rc;
     ///
-    /// let v = Variable::from_valid_name("?foo");
+    /// let v = "?foo".to_var();
     /// let vv = VariableOrPlaceholder::Variable(v);
     /// let p = VariableOrPlaceholder::Placeholder;
     ///

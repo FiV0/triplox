@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::{Encode, Decode};
-use edn::query::Variable;
+use edn::query::{ToVariable, Variable};
 use crate::expr::{evaluate, EvalContext, Expr};
 use crate::ops::DataType;
 
@@ -145,11 +145,11 @@ mod tests {
         // (abs ?x) where ?x = -5 at prefix level 0
         let expr = Expr::UnaryExpr(UnaryExpr {
             op: UnaryOp::Abs,
-            operand: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            operand: Box::new(Expr::Variable("?x".to_var())),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1, // output at level 1
         );
 
@@ -166,13 +166,13 @@ mod tests {
     fn test_propose_binary_add_with_constant() {
         // (+ ?x 10) where ?x = 25 at prefix level 0
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1,
         );
 
@@ -189,13 +189,13 @@ mod tests {
     fn test_propose_binary_add_two_variables() {
         // (+ ?x ?y) where ?x = 10 at level 0, ?y = 20 at level 1
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
-            right: Box::new(Expr::Variable(Variable::from_valid_name("?y"))),
+            right: Box::new(Expr::Variable("?y".to_var())),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0), (Variable::from_valid_name("?y"), 1)],
+            vec![("?x".to_var(), 0), ("?y".to_var(), 1)],
             2, // output at level 2
         );
 
@@ -215,13 +215,13 @@ mod tests {
     fn test_propose_returns_empty_on_type_mismatch() {
         // (+ ?x 10) where ?x is a String — type mismatch returns empty
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1,
         );
 
@@ -234,13 +234,13 @@ mod tests {
     fn test_intersect_matching() {
         // (+ ?x 10) where ?x = 25 → result = 35
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1,
         );
 
@@ -263,13 +263,13 @@ mod tests {
     fn test_intersect_no_match() {
         // (+ ?x 10) where ?x = 25 → result = 35, but extensions don't contain 35
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let ext = GenericFnPrefixExtender::new(
             expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1,
         );
 
@@ -295,13 +295,13 @@ mod tests {
         let level0 = SingleLevelExtender::new(values, 0);
 
         let fn_expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?x"))),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(1))),
         });
         let fn_ext = GenericFnPrefixExtender::new(
             fn_expr,
-            vec![(Variable::from_valid_name("?x"), 0)],
+            vec![("?x".to_var(), 0)],
             1,
         );
 
@@ -339,13 +339,13 @@ mod tests {
         let level1 = SingleLevelExtender::new(names, 1);
 
         let fn_expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable(Variable::from_valid_name("?age"))),
+            left: Box::new(Expr::Variable("?age".to_var())),
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(1))),
         });
         let fn_ext = GenericFnPrefixExtender::new(
             fn_expr,
-            vec![(Variable::from_valid_name("?age"), 0)],
+            vec![("?age".to_var(), 0)],
             2,
         );
 
