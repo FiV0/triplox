@@ -683,6 +683,14 @@ pub fn compile_pattern(
 // ---------------------------------------------------------------------------
 
 /// How to produce one column of the output row.
+///
+/// Two index spaces are in play:
+/// - **join-order index**: position in the raw result tuple from the join
+/// - **group position**: position in `FindPlan::group_key_indices`
+///
+/// `GroupVar` uses a group position (indirect) so that `group_key_indices` can
+/// be iterated directly in the hot loop without filtering. `Aggregate` uses a
+/// join-order index (direct) since aggregates are only read once per row.
 pub(crate) enum Projection {
     /// Index into `group_key_indices`, which itself holds a join-order index.
     GroupVar(usize),
