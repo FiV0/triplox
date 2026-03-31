@@ -9,14 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use anyhow::Result;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct EntityId(pub i64);
-
-impl EntityId {
-    pub fn new(id: i64) -> Self {
-        EntityId(id)
-    }
-}
+pub type Entid = i64;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Attribute(pub String);
@@ -154,10 +147,10 @@ impl_from_for_enum!(
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(BTreeMap<String, DataType>),
-    Add { entity_id: EntityId, attribute: Attribute, value: DataType },
-    Retract { entity_id: EntityId, attribute: Attribute, value: DataType },
-    Delete(EntityId),
-    Erase(EntityId),
+    Add { entity_id: Entid, attribute: Attribute, value: DataType },
+    Retract { entity_id: Entid, attribute: Attribute, value: DataType },
+    Delete(Entid),
+    Erase(Entid),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -204,7 +197,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
             }
             TxOp::Add { entity_id, attribute, value } => {
                 datoms.push(Datom {
-                    entity: entity_id.0,
+                    entity: *entity_id,
                     attribute: attribute.0.clone(),
                     value: value.clone(),
                     tx,
@@ -213,7 +206,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
             }
             TxOp::Retract { entity_id, attribute, value } => {
                 datoms.push(Datom {
-                    entity: entity_id.0,
+                    entity: *entity_id,
                     attribute: attribute.0.clone(),
                     value: value.clone(),
                     tx,
@@ -288,7 +281,7 @@ mod tests {
     #[test]
     fn test_op_add() {
         let op = TxOp::Add {
-            entity_id: EntityId(1),
+            entity_id: 1,
             attribute: Attribute("string".to_string()),
             value: DataType::String("string_value".to_string()),
         };
@@ -300,7 +293,7 @@ mod tests {
     #[test]
     fn test_op_retract() {
         let op = TxOp::Retract {
-            entity_id: EntityId(1),
+            entity_id: 1,
             attribute: Attribute("string".to_string()),
             value: DataType::String("string_value".to_string()),
         };
@@ -311,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_op_delete() {
-        let op = TxOp::Delete(EntityId(1));
+        let op = TxOp::Delete(1);
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -319,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_op_erase() {
-        let op = TxOp::Erase(EntityId(1));
+        let op = TxOp::Erase(1);
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -345,7 +338,7 @@ mod tests {
     fn test_tx_ops_to_datoms_add() {
         let tx = 1000_i64;
         let ops = vec![TxOp::Add {
-            entity_id: EntityId(200),
+            entity_id: 200,
             attribute: Attribute("name".to_string()),
             value: DataType::String("bob".to_string()),
         }];
@@ -362,7 +355,7 @@ mod tests {
     fn test_tx_ops_to_datoms_retract() {
         let tx = 1000_i64;
         let ops = vec![TxOp::Retract {
-            entity_id: EntityId(200),
+            entity_id: 200,
             attribute: Attribute("name".to_string()),
             value: DataType::String("bob".to_string()),
         }];
@@ -376,14 +369,14 @@ mod tests {
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_tx_ops_to_datoms_delete_panics() {
         let tx = 1000_i64;
-        tx_ops_to_datoms(&[TxOp::Delete(EntityId(100))], tx).unwrap();
+        tx_ops_to_datoms(&[TxOp::Delete(100)], tx).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_tx_ops_to_datoms_erase_panics() {
         let tx = 1000_i64;
-        tx_ops_to_datoms(&[TxOp::Erase(EntityId(200))], tx).unwrap();
+        tx_ops_to_datoms(&[TxOp::Erase(200)], tx).unwrap();
     }
 
     #[test]

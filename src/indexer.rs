@@ -912,7 +912,7 @@ mod tests {
         // First tx: assert tags="rust" for entity 2000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];
@@ -921,7 +921,7 @@ mod tests {
         // Second tx: assert tags="database" for same entity — should NOT retract "rust"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("database".to_string()),
         }];
@@ -961,7 +961,7 @@ mod tests {
         // First tx: assert tags="rust" for entity 2000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];
@@ -970,7 +970,7 @@ mod tests {
         // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }];

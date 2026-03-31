@@ -12,7 +12,7 @@ use crate::indexer::{Indexer, latest_tx_key_from_snapshot};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
-use crate::ops::{EntityId, TxOp};
+use crate::ops::{Entid, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
@@ -60,7 +60,7 @@ impl DB {
         &self.tx_key
     }
 
-    pub fn entity(&self, _eid: EntityId) {
+    pub fn entity(&self, _eid: Entid) {
         todo!()
     }
 }
@@ -211,7 +211,7 @@ mod tests {
     use crate::datalog::{FindElement, FindSpec, FnExpr, OrBranch, PatternElement, Query, TriplePattern, WhereClause};
     use crate::expr::{BinaryExpr, BinaryOp, Expr};
     use crate::indexer::eav_key_to_parts;
-    use crate::ops::{Attribute, DataType, EntityId, TxOp};
+    use crate::ops::{Attribute, DataType, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -259,7 +259,7 @@ mod tests {
 
         // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
-            entity_id: EntityId::new(2000),
+            entity_id: 2000,
             attribute: Attribute("email".to_string()),
             value: DataType::String("test@example.com".to_string()),
         }];
@@ -1261,14 +1261,14 @@ mod tests {
 
         // Insert entity 2000 with tags="rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("rust".to_string()),
         }]).await.unwrap();
 
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: crate::ops::EntityId::new(2000),
+            entity_id: 2000,
             attribute: crate::ops::Attribute("tags".to_string()),
             value: DataType::String("database".to_string()),
         }]).await.unwrap();
