@@ -7,7 +7,7 @@ use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
 use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
-use crate::ops::{Attribute, DataType, Datom, DatomOp, EntityId, TxOp};
+use crate::ops::{Attribute, DataType, Datom, DatomOp, TxOp};
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---

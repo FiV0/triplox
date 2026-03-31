@@ -665,8 +665,8 @@ A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payloa
 | 0   | Put      | `Document` (encoded as `Map<String, DataType>`) |
 | 1   | Add      | `Triple` (see below)                       |
 | 2   | Retract  | `Triple` (see below)                       |
-| 3   | Delete   | `EntityId` (`i64`)                         |
-| 4   | Erase    | `EntityId` (`i64`)                         |
+| 3   | Delete   | `Entid` (`i64`)                         |
+| 4   | Erase    | `Entid` (`i64`)                         |
 
 **Triple encoding**:
 

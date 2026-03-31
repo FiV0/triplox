@@ -11,7 +11,7 @@ use edn::symbols::Keyword;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::ops::{Attribute, DataType, EntityId, TxOp};
+use crate::ops::{Attribute, DataType, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -406,8 +406,8 @@ fn encode_data_type_map(buf: &mut Vec<u8>, map: &BTreeMap<String, DataType>) {
 // Wire Encoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn encode_eav(buf: &mut Vec<u8>, entity_id: &EntityId, attribute: &Attribute, value: &DataType) {
-    encode_i64(buf, entity_id.0);
+fn encode_eav(buf: &mut Vec<u8>, entity_id: &i64, attribute: &Attribute, value: &DataType) {
+    encode_i64(buf, *entity_id);
     encode_string(buf, &attribute.0);
     encode_data_type(buf, value);
 }
@@ -428,11 +428,11 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
         }
         TxOp::Delete(eid) => {
             encode_u8(buf, TXOP_DELETE);
-            encode_i64(buf, eid.0);
+            encode_i64(buf, *eid);
         }
         TxOp::Erase(eid) => {
             encode_u8(buf, TXOP_ERASE);
-            encode_i64(buf, eid.0);
+            encode_i64(buf, *eid);
         }
     }
 }
@@ -650,8 +650,8 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 // Wire Decoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn decode_eav(cursor: &mut Cursor) -> Result<(EntityId, Attribute, DataType)> {
-    let entity_id = EntityId(cursor.read_i64()?);
+fn decode_eav(cursor: &mut Cursor) -> Result<(i64, Attribute, DataType)> {
+    let entity_id = cursor.read_i64()?;
     let attribute = Attribute(cursor.read_string()?);
     let value = decode_data_type(cursor)?;
     Ok((entity_id, attribute, value))
@@ -672,8 +672,8 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
             let (entity_id, attribute, value) = decode_eav(cursor)?;
             Ok(TxOp::Retract { entity_id, attribute, value })
         }
-        TXOP_DELETE => Ok(TxOp::Delete(EntityId(cursor.read_i64()?))),
-        TXOP_ERASE => Ok(TxOp::Erase(EntityId(cursor.read_i64()?))),
+        TXOP_DELETE => Ok(TxOp::Delete(cursor.read_i64()?)),
+        TXOP_ERASE => Ok(TxOp::Erase(cursor.read_i64()?)),
         _ => bail!("Unknown TxOp tag: {}", tag),
     }
 }
@@ -1225,7 +1225,7 @@ mod tests {
     #[test]
     fn test_tx_op_add() {
         let op = TxOp::Add {
-            entity_id: EntityId(42),
+            entity_id: 42,
             attribute: Attribute("email".to_string()),
             value: DataType::String("test@example.com".to_string()),
         };
@@ -1235,7 +1235,7 @@ mod tests {
     #[test]
     fn test_tx_op_retract() {
         let op = TxOp::Retract {
-            entity_id: EntityId(42),
+            entity_id: 42,
             attribute: Attribute("email".to_string()),
             value: DataType::String("old@example.com".to_string()),
         };
@@ -1244,13 +1244,13 @@ mod tests {
 
     #[test]
     fn test_tx_op_delete() {
-        let op = TxOp::Delete(EntityId(99));
+        let op = TxOp::Delete(99);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 
     #[test]
     fn test_tx_op_erase() {
-        let op = TxOp::Erase(EntityId(100));
+        let op = TxOp::Erase(100);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 
@@ -1306,7 +1306,7 @@ mod tests {
         let msg = FrontendMessage::Execute {
             ops: vec![
                 TxOp::Put(map),
-                TxOp::Delete(EntityId(99)),
+                TxOp::Delete(99),
             ],
             await_indexing: true,
         };

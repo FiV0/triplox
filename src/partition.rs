@@ -202,7 +202,7 @@ mod tests {
     // --- resolve_entity_ids tests ---
 
     use std::collections::BTreeMap;
-    use crate::ops::{TxOp, DataType, EntityId, Attribute};
+    use crate::ops::{TxOp, DataType, Attribute};
 
     #[test]
     fn test_resolve_entity_ids_explicit_id_passthrough() {
@@ -294,12 +294,12 @@ mod tests {
         let mut counters = PartitionCounters::new();
         let ops = vec![
             TxOp::Add {
-                entity_id: EntityId(100),
+                entity_id: 100,
                 attribute: Attribute("name".into()),
                 value: DataType::String("alice".into()),
             },
             TxOp::Retract {
-                entity_id: EntityId(100),
+                entity_id: 100,
                 attribute: Attribute("name".into()),
                 value: DataType::String("alice".into()),
             },
