@@ -8,6 +8,8 @@ use bytes::Bytes;
 use tokio::sync::broadcast;
 use log::{error, trace, warn};
 
+use edn::kw;
+
 use crate::log::{Record, Subscriber};
 use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
 use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, partition_entity_prefix, TX_PARTITION};
@@ -155,9 +157,9 @@ fn build_tx_entity_datoms(
 ) -> Vec<Datom> {
     let st = tx_key.system_time;
     let result_kw = if committed {
-        Keyword::namespaced("db.tx", "committed")
+        kw!(:db.tx/committed)
     } else {
-        Keyword::namespaced("db.tx", "aborted")
+        kw!(:db.tx/aborted)
     };
     let mut datoms = vec![
         Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: tx_eid, op: DatomOp::Assert },

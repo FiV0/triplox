@@ -246,10 +246,10 @@ mod tests {
         let mut counters = PartitionCounters::new();
         let mut doc = BTreeMap::new();
         doc.insert("db/ident".to_string(), DataType::Keyword(
-            edn::symbols::Keyword::plain("my-attr"),
+            edn::kw!(:my-attr),
         ));
         doc.insert("db/valueType".to_string(), DataType::Keyword(
-            edn::symbols::Keyword::namespaced("db.type", "string"),
+            edn::kw!(:db.type/string),
         ));
         let ops = vec![TxOp::Put(doc)];
 
@@ -272,7 +272,7 @@ mod tests {
         let mut counters = PartitionCounters::new();
         let mut doc = BTreeMap::new();
         doc.insert("db/ident".to_string(), DataType::Keyword(
-            edn::symbols::Keyword::namespaced("db.type", "string"),
+            edn::kw!(:db.type/string),
         ));
         let ops = vec![TxOp::Put(doc)];
 

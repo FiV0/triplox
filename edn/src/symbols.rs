@@ -16,11 +16,82 @@ use std::fmt::{
 
 use namespaceable_name::NamespaceableName;
 
+/// Construct a `Keyword` from a Clojure-like literal syntax.
+///
+/// # Examples
+/// ```
+/// use edn::kw;
+/// // Namespaced keywords
+/// let k = kw!(:db/ident);           // :db/ident
+/// let k = kw!(:db.type/keyword);    // :db.type/keyword
+/// // Plain keywords
+/// let k = kw!(:name);               // :name
+/// // Hyphenated keywords
+/// let k = kw!(:last-name);          // :last-name
+/// ```
 #[macro_export]
-macro_rules! ns_keyword {
-    ($ns: expr, $name: expr) => {{
-        $crate::Keyword::namespaced($ns, $name)
-    }}
+macro_rules! kw {
+    // Dotted ns, dotted name: :ns.sub/name.sub
+    ( : $ns:ident $(. $nss:ident)+ / $nn:ident $(. $nns:ident)+ ) => {
+        $crate::Keyword::namespaced(
+            concat!(stringify!($ns) $(, ".", stringify!($nss))*),
+            concat!(stringify!($nn) $(, ".", stringify!($nns))*),
+        )
+    };
+    // Dotted ns, simple name: :ns.sub/name
+    ( : $ns:ident $(. $nss:ident)+ / $nn:ident ) => {
+        $crate::Keyword::namespaced(
+            concat!(stringify!($ns) $(, ".", stringify!($nss))*),
+            stringify!($nn)
+        )
+    };
+    // Dotted ns, hyphenated name: :ns.sub/name-part
+    ( : $ns:ident $(. $nss:ident)+ / $nn:ident $(- $nnh:ident)+ ) => {
+        $crate::Keyword::namespaced(
+            concat!(stringify!($ns) $(, ".", stringify!($nss))*),
+            concat!(stringify!($nn) $(, "-", stringify!($nnh))*)
+        )
+    };
+    // Simple ns, dotted name: :ns/name.sub
+    ( : $ns:ident / $nn:ident $(. $nns:ident)+ ) => {
+        $crate::Keyword::namespaced(
+            stringify!($ns),
+            concat!(stringify!($nn) $(, ".", stringify!($nns))*),
+        )
+    };
+    // Simple ns, simple name: :ns/name
+    ( : $ns:ident / $nn:ident ) => {
+        $crate::Keyword::namespaced(
+            stringify!($ns),
+            stringify!($nn)
+        )
+    };
+    // Simple ns, hyphenated name: :ns/name-part
+    ( : $ns:ident / $nn:ident $(- $nnh:ident)+ ) => {
+        $crate::Keyword::namespaced(
+            stringify!($ns),
+            concat!(stringify!($nn) $(, "-", stringify!($nnh))*)
+        )
+    };
+    // Hyphenated ns, simple name: :ns-part/name
+    ( : $ns:ident $(- $nsh:ident)+ / $nn:ident ) => {
+        $crate::Keyword::namespaced(
+            concat!(stringify!($ns) $(, "-", stringify!($nsh))*),
+            stringify!($nn)
+        )
+    };
+    // Plain keyword: :name
+    ( : $n:ident ) => {
+        $crate::Keyword::plain(
+            stringify!($n)
+        )
+    };
+    // Plain hyphenated keyword: :name-part
+    ( : $n:ident $(- $nh:ident)+ ) => {
+        $crate::Keyword::plain(
+            concat!(stringify!($n) $(, "-", stringify!($nh))*)
+        )
+    };
 }
 
 /// A simplification of Clojure's Symbol.
@@ -306,9 +377,17 @@ impl Display for Keyword {
 }
 
 #[test]
-fn test_ns_keyword_macro() {
-    assert_eq!(ns_keyword!("test", "name").to_string(),
-               Keyword::namespaced("test", "name").to_string());
-    assert_eq!(ns_keyword!("ns", "_name").to_string(),
-               Keyword::namespaced("ns", "_name").to_string());
+fn test_kw_macro() {
+    // Namespaced
+    assert_eq!(kw!(:test/name), Keyword::namespaced("test", "name"));
+    assert_eq!(kw!(:ns/_name), Keyword::namespaced("ns", "_name"));
+    // Dotted namespace
+    assert_eq!(kw!(:db.type/keyword), Keyword::namespaced("db.type", "keyword"));
+    // Plain
+    assert_eq!(kw!(:name), Keyword::plain("name"));
+    // Hyphenated
+    assert_eq!(kw!(:last-name), Keyword::plain("last-name"));
+    assert_eq!(kw!(:foo/bar-baz), Keyword::namespaced("foo", "bar-baz"));
+    // Hyphenated namespace
+    assert_eq!(kw!(:my-ns/attr), Keyword::namespaced("my-ns", "attr"));
 }

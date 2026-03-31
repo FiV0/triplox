@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use edn::kw;
 use edn::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{QueryNode, SubmitNode, TransactionResult};
@@ -30,7 +31,7 @@ fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
     );
     doc.insert(
         "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
+        DataType::Keyword(kw!(:db.cardinality/one)),
     );
     TxOp::Put(doc)
 }

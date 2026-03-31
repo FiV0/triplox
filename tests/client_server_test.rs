@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, TxOp};
+use edn::kw;
 use edn::symbols::Keyword;
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
@@ -400,12 +401,12 @@ async fn test_aggregates_and_or() {
         .unwrap();
     assert_eq!(result.len(), 2, "expected 2 groups, got {:?}", result);
     assert!(result.contains(&vec![
-        DataType::Keyword(Keyword::plain("male")),
+        DataType::Keyword(kw!(:male)),
         DataType::Long(2),
         DataType::Long(45),
     ]));
     assert!(result.contains(&vec![
-        DataType::Keyword(Keyword::plain("female")),
+        DataType::Keyword(kw!(:female)),
         DataType::Long(1),
         DataType::Long(21),
     ]));

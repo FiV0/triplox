@@ -1054,6 +1054,7 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use edn::kw;
     use super::*;
     use std::collections::BTreeMap;
 
@@ -1139,13 +1140,13 @@ mod tests {
 
     #[test]
     fn test_data_type_keyword_plain() {
-        let dt = DataType::Keyword(Keyword::plain("foo"));
+        let dt = DataType::Keyword(kw!(:foo));
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
 
     #[test]
     fn test_data_type_keyword_namespaced() {
-        let dt = DataType::Keyword(Keyword::namespaced("person", "name"));
+        let dt = DataType::Keyword(kw!(:person/name));
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
 
