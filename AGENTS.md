@@ -15,6 +15,8 @@ Priority labels follow a P0–P4 hierarchy:
 
 Issues are also labeled by type: `bug`, `enhancement`, `task`, `epic`.
 
+When creating or updating issues, apply the appropriate priority and type labels and assign them to the **Triplox** project board.
+
 ## Style
 
 Keep comments to one line where possible. Multi-line is fine for complex logic.
