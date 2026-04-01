@@ -1272,11 +1272,26 @@ impl std::fmt::Display for NonIntegerConstant {
                     write!(f, "#f -Infinity")
                 } else if v.is_nan() {
                     write!(f, "#f NaN")
+                } else if v.fract() == 0.0 {
+                    write!(f, "{:.1}", v)
                 } else {
                     write!(f, "{}", v)
                 }
             },
-            NonIntegerConstant::Text(ref v) => write!(f, "\"{}\"", v),
+            NonIntegerConstant::Text(ref v) => {
+                write!(f, "\"")?;
+                for c in v.chars() {
+                    match c {
+                        '"' => write!(f, "\\\"")?,
+                        '\\' => write!(f, "\\\\")?,
+                        '\n' => write!(f, "\\n")?,
+                        '\r' => write!(f, "\\r")?,
+                        '\t' => write!(f, "\\t")?,
+                        c => write!(f, "{}", c)?,
+                    }
+                }
+                write!(f, "\"")
+            },
             NonIntegerConstant::Instant(v) => write!(f, "#inst \"{}\"", v.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
             NonIntegerConstant::Uuid(ref u) => write!(f, "#uuid \"{}\"", u.hyphenated()),
         }

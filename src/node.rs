@@ -210,9 +210,10 @@ mod tests {
     use crate::codec;
     use crate::parse::parse_query;
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{Attribute, DataType, Entid, TxOp};
+    use crate::ops::{Attribute, DataType, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
+    use edn::kw;
     use edn::Keyword;
     use super::*;
 
@@ -801,9 +802,9 @@ mod tests {
 
         // Define "sex" attribute with keyword value type
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -839,9 +840,9 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("sex")));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "keyword")));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -877,9 +878,9 @@ mod tests {
 
         // Define "last-name" attribute
         let mut attr = BTreeMap::new();
-        attr.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain("last-name")));
-        attr.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", "string")));
-        attr.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+        attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:last-name)));
+        attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
+        attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
         node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names
@@ -1038,7 +1039,7 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(Keyword::namespaced("db.tx", "committed")));
+        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1062,7 +1063,7 @@ mod tests {
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(Keyword::namespaced("db.tx", "aborted")));
+        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
         if let DataType::String(s) = &result[0][1] {
             assert!(s.contains("nonexistent"), "Error should mention the unknown attribute, got: {}", s);
         } else {
