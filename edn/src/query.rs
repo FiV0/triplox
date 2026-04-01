@@ -1387,7 +1387,7 @@ impl std::fmt::Display for WhereClause {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             WhereClause::Pattern(ref p) => write!(f, "{}", p),
-            WhereClause::Pred(ref p) => write!(f, "{}", p),
+            WhereClause::Pred(ref p) => write!(f, "[{}]", p),
             WhereClause::WhereFn(ref wf) => write!(f, "{}", wf),
             WhereClause::NotJoin(ref nj) => write!(f, "{}", nj),
             WhereClause::OrJoin(ref oj) => write!(f, "{}", oj),

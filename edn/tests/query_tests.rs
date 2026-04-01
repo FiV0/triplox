@@ -31,7 +31,6 @@ use edn::query::{
     Predicate,
     UnifyVars,
     ToVariable,
-    Variable,
     WhereClause,
 };
 
@@ -298,4 +297,90 @@ fn can_parse_exotic_whitespace() {
                                 PatternValuePlace::Constant(NonIntegerConstant::Uuid(expected)),
                                 PatternNonValuePlace::Placeholder)
                        .expect("valid pattern")));
+}
+
+// ---------------------------------------------------------------------------
+// Display round-trip tests
+// ---------------------------------------------------------------------------
+
+/// Parse a query, Display it, re-parse, and assert structural equality.
+fn assert_round_trip(input: &str) {
+    let parsed = parse_query(input).expect("initial parse failed");
+    let displayed = parsed.to_string();
+    let reparsed = parse_query(&displayed)
+        .unwrap_or_else(|e| panic!("re-parse of Display output failed: {}\nDisplayed: {}", e, displayed));
+    assert_eq!(parsed, reparsed, "round-trip mismatch\n  input:     {}\n  displayed: {}", input, displayed);
+}
+
+#[test]
+fn round_trip_predicate() {
+    assert_round_trip("[:find ?x :where [?x _ ?y] [(< ?y 10)]]");
+}
+
+#[test]
+fn round_trip_where_fn() {
+    assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ ?y 2) ?result]]");
+}
+
+#[test]
+fn round_trip_simple_pattern() {
+    assert_round_trip("[:find ?x ?y :where [?x :foo/bar ?y]]");
+}
+
+#[test]
+fn round_trip_or() {
+    assert_round_trip("[:find ?x :where (or [?x _ 10] [?x _ 15])]");
+}
+
+#[test]
+fn round_trip_or_join() {
+    assert_round_trip("[:find ?x :where (or-join [?x] [?x _ 10] [?x _ 15])]");
+}
+
+#[test]
+fn round_trip_not() {
+    assert_round_trip("[:find ?x :where [?x :foo/bar _] (not [?x :foo/baz _])]");
+}
+
+#[test]
+fn round_trip_string_with_special_chars() {
+    assert_round_trip(r#"[:find ?x :where [?x :name "Alice \"Bob\" \\ \n"]]"#);
+}
+
+#[test]
+fn round_trip_uuid() {
+    assert_round_trip(r#"[:find ?x :where [?x :id #uuid "4cb3f828-752d-497a-90c9-b1fd516d5644"]]"#);
+}
+
+#[test]
+fn round_trip_boolean() {
+    assert_round_trip("[:find ?x :where [?x :active true]]");
+}
+
+#[test]
+fn round_trip_float() {
+    assert_round_trip("[:find ?x :where [?x :score 3.14]]");
+}
+
+#[test]
+fn round_trip_integer_like_float() {
+    // A float with zero fractional part must display as "1.0" not "1"
+    assert_round_trip("[:find ?x :where [?x :score 1.0]]");
+}
+
+#[test]
+fn round_trip_negative_integer() {
+    assert_round_trip("[:find ?x :where [?x :foo/bar -5]]");
+}
+
+#[test]
+fn round_trip_multiple_predicates() {
+    assert_round_trip("[:find ?x :where [?x _ ?y] [(> ?y 0)] [(< ?y 100)]]");
+}
+
+#[test]
+fn round_trip_or_and() {
+    assert_round_trip(
+        "[:find ?x :where (or (and [?x :foo/bar _] [?x :foo/baz _]) [?x _ 10])]",
+    );
 }
