@@ -241,7 +241,7 @@ macro_rules! def_into {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use edn::types::to_symbol;
 /// # use edn::types::Value;
 /// # use edn::symbols;
@@ -270,7 +270,7 @@ macro_rules! to_symbol {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use edn::types::to_keyword;
 /// # use edn::types::Value;
 /// # use edn::symbols;

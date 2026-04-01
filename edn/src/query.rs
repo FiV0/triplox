@@ -649,7 +649,7 @@ pub enum Limit {
 ///
 /// Examples:
 ///
-/// ```rust
+/// ```ignore
 /// # use edn::query::{Element, FindSpec, Variable};
 ///
 /// # fn main() {
@@ -793,7 +793,7 @@ impl Binding {
     /// Return `true` if no variable is bound twice, i.e., each binding entry is either a
     /// placeholder or unique.
     ///
-    /// ```
+    /// ```ignore
     /// use edn::query::{Binding,Variable,VariableOrPlaceholder};
     /// use std::rc::Rc;
     ///

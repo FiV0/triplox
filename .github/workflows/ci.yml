@@ -25,6 +25,9 @@ jobs:
       - name: Run tests
         run: cargo test --all-features
 
+      - name: Run edn tests
+        run: cargo test -p edn --all-features
+
   jvm-test:
     runs-on: ubuntu-latest
 
