@@ -920,6 +920,8 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
 }
 
 /// Validate a query before execution.
+// TODO: Move query validation into the edn parsing crate so that invalid
+// queries are rejected at parse time rather than at execution time.
 pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
     let join_order = query_variable_order(&query.where_clauses);
     if join_order.is_empty() {
