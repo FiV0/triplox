@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::Decode;
-use crate::datalog::Variable;
+use edn::query::{ToVariable, Variable};
 use crate::expr::{evaluate_as_bool, EvalContext, Expr};
 use crate::ops::DataType;
 
@@ -104,7 +104,7 @@ mod tests {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
             vec![],
-            "?x".to_string(),
+            "?x".to_var(),
             0,
         );
         assert_eq!(ext.count(&vec![]), usize::MAX);
@@ -116,7 +116,7 @@ mod tests {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
             vec![],
-            "?x".to_string(),
+            "?x".to_var(),
             0,
         );
         ext.propose(&vec![]);
@@ -127,7 +127,7 @@ mod tests {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
             vec![],
-            "?x".to_string(),
+            "?x".to_var(),
             2,
         );
         assert!(!ext.participates_in_level(0));
@@ -140,11 +140,11 @@ mod tests {
     fn test_binary_lt_one_var_one_const() {
         // (< ?age 30)
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable("?age".to_string())),
+            left: Box::new(Expr::Variable("?age".to_var())),
             op: BinaryOp::Lt,
             right: Box::new(Expr::Literal(DataType::Long(30))),
         });
-        let ext = GenericPredicatePrefixExtender::new(expr, vec![], "?age".to_string(), 0);
+        let ext = GenericPredicatePrefixExtender::new(expr, vec![], "?age".to_var(), 0);
 
         let extensions = vec![
             serialize(&DataType::Long(25)),
@@ -169,14 +169,14 @@ mod tests {
     fn test_binary_lt_two_vars() {
         // (< ?a ?b) where ?a is at level 0 (prefix), ?b is at level 1 (extension)
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable("?a".to_string())),
+            left: Box::new(Expr::Variable("?a".to_var())),
             op: BinaryOp::Lt,
-            right: Box::new(Expr::Variable("?b".to_string())),
+            right: Box::new(Expr::Variable("?b".to_var())),
         });
         let ext = GenericPredicatePrefixExtender::new(
             expr,
-            vec![("?a".to_string(), 0)],
-            "?b".to_string(),
+            vec![("?a".to_var(), 0)],
+            "?b".to_var(),
             1,
         );
 
@@ -206,14 +206,14 @@ mod tests {
         // (< ?b ?a) where ?a is at level 0 (prefix), ?b is at level 1 (extension)
         // The extension variable (?b) appears first in the expression args.
         let expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable("?b".to_string())),
+            left: Box::new(Expr::Variable("?b".to_var())),
             op: BinaryOp::Lt,
-            right: Box::new(Expr::Variable("?a".to_string())),
+            right: Box::new(Expr::Variable("?a".to_var())),
         });
         let ext = GenericPredicatePrefixExtender::new(
             expr,
-            vec![("?a".to_string(), 0)],
-            "?b".to_string(),
+            vec![("?a".to_var(), 0)],
+            "?b".to_var(),
             1,
         );
 
@@ -246,14 +246,14 @@ mod tests {
         let level0 = SingleLevelExtender::new(values, 0);
 
         let pred_expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable("?x".to_string())),
+            left: Box::new(Expr::Variable("?x".to_var())),
             op: BinaryOp::Lt,
             right: Box::new(Expr::Literal(DataType::Long(25))),
         });
         let pred = GenericPredicatePrefixExtender::new(
             pred_expr,
             vec![],
-            "?x".to_string(),
+            "?x".to_var(),
             0,
         );
 
@@ -290,14 +290,14 @@ mod tests {
         let level1 = SingleLevelExtender::new(names, 1);
 
         let pred_expr = Expr::BinaryExpr(BinaryExpr {
-            left: Box::new(Expr::Variable("?age".to_string())),
+            left: Box::new(Expr::Variable("?age".to_var())),
             op: BinaryOp::GtEq,
             right: Box::new(Expr::Literal(DataType::Long(20))),
         });
         let pred = GenericPredicatePrefixExtender::new(
             pred_expr,
             vec![],
-            "?age".to_string(),
+            "?age".to_var(),
             0,
         );
 

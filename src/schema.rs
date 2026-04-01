@@ -6,8 +6,8 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::datalog::{FindElement, FindSpec, PatternElement, Query, TriplePattern, WhereClause};
-use crate::ops::{Attribute, DataType, Datom, DatomOp, TxOp};
+use crate::ops::{Attribute, DataType, Datom, DatomOp, Entid, TxOp};
+use crate::parse::parse_query;
 use crate::query::{execute_query, validate_query};
 
 // --- Reserved entity IDs ---
@@ -374,31 +374,9 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
     let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
     let handle = Handle::current();
 
-    let query = Query {
-        find: FindSpec::FindRel(vec![
-            FindElement::Variable("?e".to_string()),
-            FindElement::Variable("?ident".to_string()),
-            FindElement::Variable("?vt".to_string()),
-            FindElement::Variable("?card".to_string()),
-        ]),
-        where_clauses: vec![
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/ident))),
-                value: PatternElement::Variable("?ident".to_string()),
-            }),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/valueType))),
-                value: PatternElement::Variable("?vt".to_string()),
-            }),
-            WhereClause::Triple(TriplePattern {
-                entity: PatternElement::Variable("?e".to_string()),
-                attribute: PatternElement::Constant(DataType::Keyword(kw!(:db/cardinality))),
-                value: PatternElement::Variable("?card".to_string()),
-            }),
-        ],
-    };
+    let query = parse_query(
+        "[:find ?e ?ident ?vt ?card :where [?e :db/ident ?ident] [?e :db/valueType ?vt] [?e :db/cardinality ?card]]"
+    ).expect("Schema query parse failed");
 
     validate_query(&query).expect("Schema query validation failed");
 

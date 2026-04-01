@@ -609,15 +609,12 @@ async fn handle_query(
     let parsed = parse_query(query_string)?;
 
     // Extract find variable names for RowDescription
-    let find_vars: Vec<String> = match &parsed.find {
-        crate::datalog::FindSpec::FindRel(elements) => elements
+    let find_vars: Vec<String> = match &parsed.find_spec {
+        edn::query::FindSpec::FindRel(elements) => elements
             .iter()
-            .map(|e| match e {
-                crate::datalog::FindElement::Variable(v) => v.clone(),
-                crate::datalog::FindElement::PullExpr(_) => "?_pull".to_string(),
-                crate::datalog::FindElement::Aggregate(f, v) => format!("({} {})", f, v),
-            })
+            .map(|e| e.to_string())
             .collect(),
+        _ => vec![],
     };
 
     let result = db.query(&parsed).await?;

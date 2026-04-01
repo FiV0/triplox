@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::datalog::Variable;
+use edn::query::{ToVariable, Variable};
 use crate::ops::DataType;
 
 /// Operators for binary expressions (inspired by DataFusion's Operator enum).
@@ -256,7 +256,7 @@ mod tests {
     }
 
     fn var(name: &str) -> Expr {
-        Expr::Variable(name.to_string())
+        Expr::Variable(name.to_var())
     }
 
     fn lit_long(n: i64) -> Expr {
@@ -293,7 +293,7 @@ mod tests {
     fn test_evaluate_variable() {
         let expr = var("?x");
         let x = DataType::Long(10);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_string(), &x)]));
+        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
 
@@ -308,9 +308,9 @@ mod tests {
     fn test_evaluate_lt() {
         let expr = binary(var("?age"), BinaryOp::Lt, lit_long(30));
         let young = DataType::Long(25);
-        let ctx_young = EvalContext::new(HashMap::from([("?age".to_string(), &young)]));
+        let ctx_young = EvalContext::new(HashMap::from([("?age".to_var(), &young)]));
         let old = DataType::Long(35);
-        let ctx_old = EvalContext::new(HashMap::from([("?age".to_string(), &old)]));
+        let ctx_old = EvalContext::new(HashMap::from([("?age".to_var(), &old)]));
         assert_eq!(
             eval(&expr, &ctx_young),
             Some(DataType::Boolean(true))
@@ -327,9 +327,9 @@ mod tests {
         let val_eq = DataType::Long(10);
         let val_less = DataType::Long(5);
         let val_greater = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_string(), &val_eq)]));
-        let ctx_less = EvalContext::new(HashMap::from([("?x".to_string(), &val_less)]));
-        let ctx_greater = EvalContext::new(HashMap::from([("?x".to_string(), &val_greater)]));
+        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
+        let ctx_less = EvalContext::new(HashMap::from([("?x".to_var(), &val_less)]));
+        let ctx_greater = EvalContext::new(HashMap::from([("?x".to_var(), &val_greater)]));
         assert_eq!(
             eval(&expr, &ctx_eq),
             Some(DataType::Boolean(true))
@@ -351,8 +351,8 @@ mod tests {
 
         let five = DataType::Long(5);
         let ten = DataType::Long(10);
-        let ctx_same = EvalContext::new(HashMap::from([("?a".to_string(), &five), ("?b".to_string(), &five)]));
-        let ctx_diff = EvalContext::new(HashMap::from([("?a".to_string(), &five), ("?b".to_string(), &ten)]));
+        let ctx_same = EvalContext::new(HashMap::from([("?a".to_var(), &five), ("?b".to_var(), &five)]));
+        let ctx_diff = EvalContext::new(HashMap::from([("?a".to_var(), &five), ("?b".to_var(), &ten)]));
         assert_eq!(
             eval(&expr_eq, &ctx_same),
             Some(DataType::Boolean(true))
@@ -378,8 +378,8 @@ mod tests {
 
         let val_eq = DataType::Long(10);
         let val_gt = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_string(), &val_eq)]));
-        let ctx_gt = EvalContext::new(HashMap::from([("?x".to_string(), &val_gt)]));
+        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
+        let ctx_gt = EvalContext::new(HashMap::from([("?x".to_var(), &val_gt)]));
         assert_eq!(
             eval(&gt, &ctx_eq),
             Some(DataType::Boolean(false))
@@ -426,8 +426,8 @@ mod tests {
         );
         let low = DataType::Long(5);
         let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x".to_string(), &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x".to_string(), &high)]));
+        let ctx_low = EvalContext::new(HashMap::from([("?x".to_var(), &low)]));
+        let ctx_high = EvalContext::new(HashMap::from([("?x".to_var(), &high)]));
         assert_eq!(
             eval(&expr, &ctx_low),
             Some(DataType::Boolean(false))
@@ -454,8 +454,8 @@ mod tests {
         let expr = binary(var("?x"), BinaryOp::Lt, lit_long(10));
         let low = DataType::Long(5);
         let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x".to_string(), &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x".to_string(), &high)]));
+        let ctx_low = EvalContext::new(HashMap::from([("?x".to_var(), &low)]));
+        let ctx_high = EvalContext::new(HashMap::from([("?x".to_var(), &high)]));
         assert!(evaluate_as_bool(&expr, &ctx_low));
         assert!(!evaluate_as_bool(&expr, &ctx_high));
     }
@@ -463,14 +463,14 @@ mod tests {
     #[test]
     fn test_expr_variables() {
         let expr = binary(var("?a"), BinaryOp::Lt, var("?b"));
-        assert_eq!(expr_variables(&expr), vec!["?a", "?b"]);
+        assert_eq!(expr_variables(&expr), vec!["?a".to_var(), "?b".to_var()]);
     }
 
     #[test]
     fn test_expr_variables_dedup() {
         // (< ?a ?a) — same variable used twice
         let expr = binary(var("?a"), BinaryOp::Lt, var("?a"));
-        assert_eq!(expr_variables(&expr), vec!["?a"]);
+        assert_eq!(expr_variables(&expr), vec!["?a".to_var()]);
     }
 
     #[test]
@@ -480,7 +480,7 @@ mod tests {
             UnaryOp::Not,
             binary(var("?x"), BinaryOp::Lt, lit_long(10)),
         );
-        assert_eq!(expr_variables(&expr), vec!["?x"]);
+        assert_eq!(expr_variables(&expr), vec!["?x".to_var()]);
     }
 
     #[test]
@@ -703,7 +703,7 @@ mod tests {
             lit_long(10),
         );
         let x = DataType::Long(5);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_string(), &x)]));
+        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(20)));
     }
 
@@ -711,7 +711,7 @@ mod tests {
     fn test_arithmetic_with_variable() {
         let expr = binary(var("?age"), BinaryOp::Add, lit_long(1));
         let age = DataType::Long(25);
-        let ctx = EvalContext::new(HashMap::from([("?age".to_string(), &age)]));
+        let ctx = EvalContext::new(HashMap::from([("?age".to_var(), &age)]));
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(26)));
     }
 }
