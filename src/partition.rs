@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use crate::codec;
+use crate::metadata::PartitionMap;
 use crate::protocol;
 
 /// Entity ID bit layout (from PARTITIONS.md):
@@ -59,18 +58,6 @@ pub fn extract_counter(eid: i64) -> i64 {
     eid & COUNTER_MASK
 }
 
-/// Per-partition counter map: partition number → next counter value to allocate.
-pub type PartitionCounters = HashMap<u32, i64>;
-
-/// Allocate the next counter value for a partition, returning the current value
-/// and incrementing it. Initializes to 0 if the partition has no entry yet.
-pub fn allocate_counter(counters: &mut PartitionCounters, partition: u32) -> i64 {
-    let counter = counters.entry(partition).or_insert(0);
-    let value = *counter;
-    *counter = value + 1;
-    value
-}
-
 /// Returns true if the entity ID is a tempid (sign bit set, i.e. negative).
 pub fn is_tempid(eid: i64) -> bool {
     eid < 0
@@ -79,11 +66,12 @@ pub fn is_tempid(eid: i64) -> bool {
 /// Resolve entity IDs for Put documents that lack a `db/id` field.
 ///
 /// - If `db/id` is `DataType::Long` → keep as-is (explicit ID).
-/// - If `db/id` is missing → allocate from per-partition counters:
+///   TODO: validate via `PartitionMap::contains_entid` once tempid resolution is implemented.
+/// - If `db/id` is missing → allocate from partition map:
 ///   - Documents with `db/ident` → `DB_PARTITION` (schema/enum entities).
 ///   - All other documents → `USER_PARTITION`.
 /// - Add/Retract/Delete/Erase → pass through unchanged (require explicit IDs).
-pub fn resolve_entity_ids(ops: &[crate::ops::TxOp], counters: &mut PartitionCounters) -> anyhow::Result<Vec<crate::ops::TxOp>> {
+pub fn resolve_entity_ids(ops: &[crate::ops::TxOp], partition_map: &mut PartitionMap) -> anyhow::Result<Vec<crate::ops::TxOp>> {
     use crate::ops::{TxOp, DataType};
 
     let mut resolved = Vec::with_capacity(ops.len());
@@ -100,7 +88,7 @@ pub fn resolve_entity_ids(ops: &[crate::ops::TxOp], counters: &mut PartitionCoun
                         } else {
                             USER_PARTITION
                         };
-                        let eid = make_entity_id(partition, allocate_counter(counters, partition));
+                        let eid = partition_map.allocate_entid(partition);
                         let mut new_doc = doc.clone();
                         new_doc.insert("db/id".to_string(), DataType::Long(eid));
                         resolved.push(TxOp::Put(new_doc));
@@ -206,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_explicit_id_passthrough() {
-        let mut counters = PartitionCounters::new();
+        let mut counters = PartitionMap::new();
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(42));
         doc.insert("name".to_string(), DataType::String("alice".into()));
@@ -222,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_user_partition() {
-        let mut counters = PartitionCounters::new();
+        let mut counters = PartitionMap::new();
         let mut doc = BTreeMap::new();
         doc.insert("name".to_string(), DataType::String("alice".into()));
         let ops = vec![TxOp::Put(doc)];
@@ -243,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_db_partition_for_schema() {
-        let mut counters = PartitionCounters::new();
+        let mut counters = PartitionMap::new();
         let mut doc = BTreeMap::new();
         doc.insert("db/ident".to_string(), DataType::Keyword(
             edn::kw!(:my-attr),
@@ -269,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_db_partition_for_enum() {
-        let mut counters = PartitionCounters::new();
+        let mut counters = PartitionMap::new();
         let mut doc = BTreeMap::new();
         doc.insert("db/ident".to_string(), DataType::Keyword(
             edn::kw!(:db.type/string),
@@ -291,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_add_retract_passthrough() {
-        let mut counters = PartitionCounters::new();
+        let mut counters = PartitionMap::new();
         let ops = vec![
             TxOp::Add {
                 entity_id: 100,
@@ -312,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_resolve_entity_ids_multiple_docs() {
-        let mut counters = PartitionCounters::from([(USER_PARTITION, 5i64)]);
+        let mut counters = PartitionMap::from([(USER_PARTITION, 5i64)]);
         let ops = vec![
             TxOp::Put({
                 let mut m = BTreeMap::new();
