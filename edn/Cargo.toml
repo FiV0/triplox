@@ -1,12 +1,12 @@
 [package]
 name = "edn"
 version = "0.1.0"
+edition = "2021"
 authors = ["Joe Walker <jwalker@mozilla.com>"]
 
 license = "Apache-2.0"
 repository = "https://github.com/mozilla/mentat"
 description = "EDN parser for Project Mentat"
-build = "build.rs"
 readme = "./README.md"
 
 [dependencies]
@@ -14,17 +14,14 @@ chrono = { workspace = true }
 itertools = "0.14"
 num = "0.4"
 ordered-float = "4.0"
+peg = "0.8"
 pretty = "0.12"
 uuid = { workspace = true, features = ["v4", "serde"] }
-serde = { workspace = true, optional = true }
-serde_derive = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 serde_test = "1.0"
 serde_json = "1.0"
 
 [features]
-serde_support = ["serde", "serde_derive"]
-
-[build-dependencies]
-peg = "0.5.7"
+serde_support = ["serde"]

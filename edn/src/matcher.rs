@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 use itertools::diff_with;
 
-use symbols;
-use types::Value;
+use crate::symbols;
+use crate::types::Value;
 
 /// A trait defining pattern matching rules for any given pattern of type `T`.
 trait PatternMatchingRules<'a, T> {
@@ -114,7 +114,7 @@ impl Value {
 
 #[cfg(test)]
 mod test {
-    use parse;
+    use crate::parse;
 
     macro_rules! assert_match {
         ( $pattern:tt, $value:tt, $expected:expr ) => {

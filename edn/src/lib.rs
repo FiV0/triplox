@@ -8,27 +8,9 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-#![allow(warnings)] // This will ignore all warnings in this crate
-
-extern crate chrono;
-extern crate itertools;
-extern crate num;
-extern crate ordered_float;
-extern crate pretty;
-extern crate uuid;
-
-#[cfg(feature = "serde_support")]
-extern crate serde;
-
-#[cfg(feature = "serde_support")]
-#[macro_use]
-extern crate serde_derive;
-
 pub mod entities;
 pub mod intern_set;
-pub use intern_set::{
-    InternSet,
-};
+pub use intern_set::InternSet;
 // Intentionally not pub.
 mod namespaceable_name;
 pub mod query;
@@ -44,9 +26,7 @@ pub use value_rc::{
     ValueRc,
 };
 
-pub mod parse {
-    include!(concat!(env!("OUT_DIR"), "/edn.rs"));
-}
+pub mod parse;
 
 // Re-export the types we use.
 pub use chrono::{DateTime, Utc};

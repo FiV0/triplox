@@ -8,12 +8,6 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate chrono;
-extern crate edn;
-extern crate num;
-extern crate ordered_float;
-extern crate uuid;
-
 use std::collections::{BTreeSet, BTreeMap, LinkedList};
 use std::iter::FromIterator;
 use std::f64;
@@ -30,7 +24,7 @@ use edn::types::{
     SpannedValue,
 };
 use chrono::{
-    TimeZone,
+    DateTime,
     Utc,
 };
 use edn::symbols;
@@ -280,7 +274,7 @@ fn test_inst() {
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000\"").is_err());   // No timezone.
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000z\"").is_err());  // Lowercase timezone.
 
-    let expected = Utc.timestamp(1493410985, 187000000);
+    let expected = DateTime::from_timestamp(1493410985, 187000000).unwrap();
     let s = "#inst \"2017-04-28T20:23:05.187Z\"";
     let actual = parse::value(s)
                        .expect("parse success")
@@ -456,10 +450,10 @@ fn test_value() {
     assert_eq!(value("{1 2}").unwrap(), Map(BTreeMap::from_iter(vec![(Integer(1), Integer(2))])));
     assert_eq!(value("#uuid \"e43c6f3e-3123-49b7-8098-9b47a7bc0fa4\"").unwrap(),
                Uuid(uuid::Uuid::parse_str("e43c6f3e-3123-49b7-8098-9b47a7bc0fa4").unwrap()));
-    assert_eq!(value("#instmillis 1493410985187").unwrap(), Instant(Utc.timestamp(1493410985, 187000000)));
-    assert_eq!(value("#instmicros 1493410985187123").unwrap(), Instant(Utc.timestamp(1493410985, 187123000)));
+    assert_eq!(value("#instmillis 1493410985187").unwrap(), Instant(DateTime::from_timestamp(1493410985, 187000000).unwrap()));
+    assert_eq!(value("#instmicros 1493410985187123").unwrap(), Instant(DateTime::from_timestamp(1493410985, 187123000).unwrap()));
     assert_eq!(value("#inst \"2017-04-28T20:23:05.187Z\"").unwrap(),
-               Instant(Utc.timestamp(1493410985, 187000000)));
+               Instant(DateTime::from_timestamp(1493410985, 187000000).unwrap()));
 }
 
 #[test]
@@ -1415,7 +1409,7 @@ macro_rules! def_test_into_type {
 }
 
 #[test]
-#[cfg_attr(feature = "cargo-clippy", allow(float_cmp))]
+#[allow(clippy::float_cmp)]
 fn test_is_and_as_type_helper_functions() {
     let max_i64 = i64::max_value().to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;

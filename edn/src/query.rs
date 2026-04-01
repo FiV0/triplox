@@ -40,7 +40,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ::{
+use crate::{
     BigInt,
     DateTime,
     OrderedFloat,
@@ -48,12 +48,12 @@ use ::{
     Utc,
 };
 
-use ::value_rc::{
+use crate::value_rc::{
     FromRc,
     ValueRc,
 };
 
-pub use ::{
+pub use crate::{
     Keyword,
     PlainSymbol,
 };
@@ -95,15 +95,15 @@ impl ToVariable for str {
 }
 
 pub trait FromValue<T> {
-    fn from_value(v: &::ValueAndSpan) -> Option<T>;
+    fn from_value(v: &crate::ValueAndSpan) -> Option<T>;
 }
 
 /// If the provided EDN value is a PlainSymbol beginning with '?', return
 /// it wrapped in a Variable. If not, return None.
 /// TODO: intern strings. #398.
 impl FromValue<Variable> for Variable {
-    fn from_value(v: &::ValueAndSpan) -> Option<Variable> {
-        if let ::SpannedValue::PlainSymbol(ref s) = v.inner {
+    fn from_value(v: &crate::ValueAndSpan) -> Option<Variable> {
+        if let crate::SpannedValue::PlainSymbol(ref s) = v.inner {
             Variable::from_symbol(s)
         } else {
             None
@@ -146,8 +146,8 @@ impl std::fmt::Display for Variable {
 pub struct QueryFunction(pub PlainSymbol);
 
 impl FromValue<QueryFunction> for QueryFunction {
-    fn from_value(v: &::ValueAndSpan) -> Option<QueryFunction> {
-        if let ::SpannedValue::PlainSymbol(ref s) = v.inner {
+    fn from_value(v: &crate::ValueAndSpan) -> Option<QueryFunction> {
+        if let crate::SpannedValue::PlainSymbol(ref s) = v.inner {
             QueryFunction::from_symbol(s)
         } else {
             None
@@ -185,8 +185,8 @@ pub enum SrcVar {
 }
 
 impl FromValue<SrcVar> for SrcVar {
-    fn from_value(v: &::ValueAndSpan) -> Option<SrcVar> {
-        if let ::SpannedValue::PlainSymbol(ref s) = v.inner {
+    fn from_value(v: &crate::ValueAndSpan) -> Option<SrcVar> {
+        if let crate::SpannedValue::PlainSymbol(ref s) = v.inner {
             SrcVar::from_symbol(s)
         } else {
             None
@@ -244,8 +244,8 @@ pub enum FnArg {
 }
 
 impl FromValue<FnArg> for FnArg {
-    fn from_value(v: &::ValueAndSpan) -> Option<FnArg> {
-        use ::SpannedValue::*;
+    fn from_value(v: &crate::ValueAndSpan) -> Option<FnArg> {
+        use crate::SpannedValue::*;
         match v.inner {
             Integer(x) =>
                 Some(FnArg::EntidOrInteger(x)),
@@ -364,14 +364,14 @@ impl PatternNonValuePlace {
 }
 
 impl FromValue<PatternNonValuePlace> for PatternNonValuePlace {
-    fn from_value(v: &::ValueAndSpan) -> Option<PatternNonValuePlace> {
+    fn from_value(v: &crate::ValueAndSpan) -> Option<PatternNonValuePlace> {
         match v.inner {
-            ::SpannedValue::Integer(x) => if x >= 0 {
+            crate::SpannedValue::Integer(x) => if x >= 0 {
                 Some(PatternNonValuePlace::Entid(x))
             } else {
                 None
             },
-            ::SpannedValue::PlainSymbol(ref x) => if x.0.as_str() == "_" {
+            crate::SpannedValue::PlainSymbol(ref x) => if x.0.as_str() == "_" {
                 Some(PatternNonValuePlace::Placeholder)
             } else {
                 if let Some(v) = Variable::from_symbol(x) {
@@ -380,7 +380,7 @@ impl FromValue<PatternNonValuePlace> for PatternNonValuePlace {
                     None
                 }
             },
-            ::SpannedValue::Keyword(ref x) =>
+            crate::SpannedValue::Keyword(ref x) =>
                 Some(x.clone().into()),
             _ => None,
         }
@@ -418,39 +418,39 @@ impl From<Keyword> for PatternValuePlace {
 }
 
 impl FromValue<PatternValuePlace> for PatternValuePlace {
-    fn from_value(v: &::ValueAndSpan) -> Option<PatternValuePlace> {
+    fn from_value(v: &crate::ValueAndSpan) -> Option<PatternValuePlace> {
         match v.inner {
-            ::SpannedValue::Integer(x) =>
+            crate::SpannedValue::Integer(x) =>
                 Some(PatternValuePlace::EntidOrInteger(x)),
-            ::SpannedValue::PlainSymbol(ref x) if x.0.as_str() == "_" =>
+            crate::SpannedValue::PlainSymbol(ref x) if x.0.as_str() == "_" =>
                 Some(PatternValuePlace::Placeholder),
-            ::SpannedValue::PlainSymbol(ref x) =>
+            crate::SpannedValue::PlainSymbol(ref x) =>
                 Variable::from_symbol(x).map(PatternValuePlace::Variable),
-            ::SpannedValue::Keyword(ref x) if x.is_namespaced() =>
+            crate::SpannedValue::Keyword(ref x) if x.is_namespaced() =>
                 Some(x.clone().into()),
-            ::SpannedValue::Boolean(x) =>
+            crate::SpannedValue::Boolean(x) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Boolean(x))),
-            ::SpannedValue::Float(x) =>
+            crate::SpannedValue::Float(x) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Float(x))),
-            ::SpannedValue::BigInteger(ref x) =>
+            crate::SpannedValue::BigInteger(ref x) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::BigInteger(x.clone()))),
-            ::SpannedValue::Instant(x) =>
+            crate::SpannedValue::Instant(x) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Instant(x))),
-            ::SpannedValue::Text(ref x) =>
+            crate::SpannedValue::Text(ref x) =>
                 // TODO: intern strings. #398.
                 Some(PatternValuePlace::Constant(x.clone().into())),
-            ::SpannedValue::Uuid(ref u) =>
+            crate::SpannedValue::Uuid(ref u) =>
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Uuid(u.clone()))),
 
             // TODO(triplox-14x): review which of these types should be supported
             // in the value position of query patterns.
-            ::SpannedValue::Nil => None,
-            ::SpannedValue::NamespacedSymbol(_) => None,
-            ::SpannedValue::Keyword(ref x) => Some(x.clone().into()),
-            ::SpannedValue::Map(_) => None,
-            ::SpannedValue::List(_) => None,
-            ::SpannedValue::Set(_) => None,
-            ::SpannedValue::Vector(_) => None,
+            crate::SpannedValue::Nil => None,
+            crate::SpannedValue::NamespacedSymbol(_) => None,
+            crate::SpannedValue::Keyword(ref x) => Some(x.clone().into()),
+            crate::SpannedValue::Map(_) => None,
+            crate::SpannedValue::List(_) => None,
+            crate::SpannedValue::Set(_) => None,
+            crate::SpannedValue::Vector(_) => None,
         }
     }
 }
@@ -730,7 +730,7 @@ impl FindSpec {
         !self.is_unit_limited()
     }
 
-    pub fn columns<'s>(&'s self) -> Box<Iterator<Item=&Element> + 's> {
+    pub fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&Element> + 's> {
         use self::FindSpec::*;
         match self {
             &FindScalar(ref e) => Box::new(std::iter::once(e)),
