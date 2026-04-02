@@ -341,9 +341,9 @@ limit -> query::Limit
     }
 
 order -> query::Order
-    = __ "(" __ "asc" v:variable ")" __ { query::Order(query::Direction::Ascending, v) }
-    / __ "(" __ "desc" v:variable ")" __ { query::Order(query::Direction::Descending, v) }
-    / v:variable { query::Order(query::Direction::Ascending, v) }
+    = __ "[" v:variable __ ":desc" __ "]" __ { query::Order(query::Direction::Descending, v) }
+    / __ "[" v:variable __ ":asc" __ "]" __ { query::Order(query::Direction::Ascending, v) }
+    / __ "[" v:variable __ "]" __ { query::Order(query::Direction::Ascending, v) }
 
 
 pattern_value_place -> query::PatternValuePlace
@@ -479,6 +479,8 @@ query_part -> query::QueryPart
 map_query_part -> query::QueryPart
     = __ ":find" __ "[" fs:find_spec "]" __ { query::QueryPart::FindSpec(fs) }
     / __ ":where" __ "[" ws:where_clause+ "]" __ { query::QueryPart::WhereClauses(ws) }
+    / __ ":order" __ "[" os:order+ "]" __ { query::QueryPart::Order(os) }
+    / __ ":limit" l:limit { query::QueryPart::Limit(l) }
 
 pub parse_query -> query::ParsedQuery
     = __ "[" qps:query_part+ "]" __ {? query::ParsedQuery::from_parts(qps) }
