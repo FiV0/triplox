@@ -8,9 +8,10 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use edn::query::{
-    Element, FindSpec, NonIntegerConstant, NotJoin, OrJoin, OrWhereClause, Pattern,
-    PatternNonValuePlace, PatternValuePlace, ParsedQuery, Predicate as EdnPredicate, ToVariable,
-    UnifyVars, Variable, WhereClause, WhereFn as EdnWhereFn,
+    Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin, Order, OrJoin,
+    OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
+    Predicate as EdnPredicate, ToVariable, UnifyVars, Variable, WhereClause,
+    WhereFn as EdnWhereFn,
 };
 
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple};
@@ -919,6 +920,88 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Resolve ORDER BY variables to output column indices in the find spec.
+fn resolve_order_columns(
+    orders: &[Order],
+    find_spec: &FindSpec,
+) -> Result<Vec<(usize, Direction)>, Error> {
+    let elements = match find_spec {
+        FindSpec::FindRel(elements) => elements,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "ORDER BY is only supported with :find [...]"
+            ))
+        }
+    };
+
+    let var_positions: HashMap<&Variable, usize> = elements
+        .iter()
+        .enumerate()
+        .filter_map(|(i, elem)| match elem {
+            Element::Variable(v) => Some((v, i)),
+            _ => None,
+        })
+        .collect();
+
+    orders
+        .iter()
+        .map(|Order(dir, var)| {
+            var_positions
+                .get(var)
+                .map(|&idx| (idx, dir.clone()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "ORDER BY variable {} is not in the :find clause",
+                        var
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Apply ORDER BY sorting and LIMIT truncation to projected results.
+fn apply_order_and_limit(
+    mut results: QueryResult,
+    order: &Option<Vec<Order>>,
+    limit: &Limit,
+    find_spec: &FindSpec,
+) -> Result<QueryResult, Error> {
+    if let Some(orders) = order {
+        let sort_keys = resolve_order_columns(orders, find_spec)?;
+        results.sort_by(|a, b| {
+            for (col, dir) in &sort_keys {
+                let ord = a[*col].partial_compare(&b[*col]);
+                match ord {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    Some(o) => {
+                        return match dir {
+                            Direction::Ascending => o,
+                            Direction::Descending => o.reverse(),
+                        };
+                    }
+                    None => continue,
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+    }
+
+    match limit {
+        Limit::None => {}
+        Limit::Fixed(n) => {
+            results.truncate(*n as usize);
+        }
+        Limit::Variable(v) => {
+            return Err(anyhow::anyhow!(
+                "Variable limit {} is not yet supported (requires input bindings)",
+                v
+            ));
+        }
+    }
+
+    Ok(results)
+}
+
 /// Validate a query before execution.
 // TODO: Move query validation into the edn parsing crate so that invalid
 // queries are rejected at parse time rather than at execution time.
@@ -937,6 +1020,20 @@ pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
+
+    // Validate ORDER BY variables are in the find spec.
+    if let Some(orders) = &query.order {
+        resolve_order_columns(orders, &query.find_spec)?;
+    }
+
+    // Variable limits are not yet supported.
+    if let Limit::Variable(v) = &query.limit {
+        return Err(anyhow::anyhow!(
+            "Variable limit {} is not yet supported (requires input bindings)",
+            v
+        ));
+    }
+
     Ok(())
 }
 
@@ -1087,11 +1184,14 @@ pub fn execute_query(
 
     // 4. Project and aggregate results based on find clause
     let plan = compile_find_plan(&query.find_spec, &var_index)?;
-    if plan.has_aggregates {
-        execute_aggregation(results, &plan)
+    let projected = if plan.has_aggregates {
+        execute_aggregation(results, &plan)?
     } else {
-        project_results(results, &plan)
-    }
+        project_results(results, &plan)?
+    };
+
+    // 5. Apply ORDER BY and LIMIT
+    apply_order_and_limit(projected, &query.order, &query.limit, &query.find_spec)
 }
 
 #[cfg(test)]
@@ -1306,5 +1406,145 @@ mod tests {
         let results: Vec<ResultTuple> = vec![];
         let output = execute_aggregation(results, &plan).unwrap();
         assert!(output.is_empty());
+    }
+
+    // -- ORDER BY and LIMIT tests --
+
+    fn make_find_rel(vars: &[&str]) -> FindSpec {
+        FindSpec::FindRel(
+            vars.iter()
+                .map(|name| Element::Variable(Variable::from_valid_name(name)))
+                .collect(),
+        )
+    }
+
+    fn rows(data: Vec<Vec<i64>>) -> QueryResult {
+        data.into_iter()
+            .map(|row| row.into_iter().map(DataType::from).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_apply_order_ascending() {
+        let find = make_find_rel(&["?a"]);
+        let order = Some(vec![Order(
+            Direction::Ascending,
+            Variable::from_valid_name("?a"),
+        )]);
+        let result =
+            apply_order_and_limit(rows(vec![vec![3], vec![1], vec![2]]), &order, &Limit::None, &find)
+                .unwrap();
+        assert_eq!(result, rows(vec![vec![1], vec![2], vec![3]]));
+    }
+
+    #[test]
+    fn test_apply_order_descending() {
+        let find = make_find_rel(&["?a"]);
+        let order = Some(vec![Order(
+            Direction::Descending,
+            Variable::from_valid_name("?a"),
+        )]);
+        let result =
+            apply_order_and_limit(rows(vec![vec![1], vec![3], vec![2]]), &order, &Limit::None, &find)
+                .unwrap();
+        assert_eq!(result, rows(vec![vec![3], vec![2], vec![1]]));
+    }
+
+    #[test]
+    fn test_apply_order_multi_key() {
+        let find = make_find_rel(&["?a", "?b"]);
+        let order = Some(vec![
+            Order(Direction::Ascending, Variable::from_valid_name("?a")),
+            Order(Direction::Descending, Variable::from_valid_name("?b")),
+        ]);
+        let input = rows(vec![
+            vec![1, 10],
+            vec![2, 20],
+            vec![1, 30],
+            vec![2, 10],
+        ]);
+        let result = apply_order_and_limit(input, &order, &Limit::None, &find).unwrap();
+        assert_eq!(
+            result,
+            rows(vec![vec![1, 30], vec![1, 10], vec![2, 20], vec![2, 10]])
+        );
+    }
+
+    #[test]
+    fn test_apply_limit_fixed() {
+        let find = make_find_rel(&["?a"]);
+        let result = apply_order_and_limit(
+            rows(vec![vec![1], vec![2], vec![3], vec![4], vec![5]]),
+            &None,
+            &Limit::Fixed(3),
+            &find,
+        )
+        .unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_apply_limit_zero() {
+        let find = make_find_rel(&["?a"]);
+        let result = apply_order_and_limit(
+            rows(vec![vec![1], vec![2]]),
+            &None,
+            &Limit::Fixed(0),
+            &find,
+        )
+        .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_apply_limit_exceeds_rows() {
+        let find = make_find_rel(&["?a"]);
+        let input = rows(vec![vec![1], vec![2]]);
+        let result =
+            apply_order_and_limit(input, &None, &Limit::Fixed(100), &find).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_apply_order_then_limit() {
+        let find = make_find_rel(&["?a"]);
+        let order = Some(vec![Order(
+            Direction::Ascending,
+            Variable::from_valid_name("?a"),
+        )]);
+        let result = apply_order_and_limit(
+            rows(vec![vec![5], vec![3], vec![1], vec![4], vec![2]]),
+            &order,
+            &Limit::Fixed(3),
+            &find,
+        )
+        .unwrap();
+        assert_eq!(result, rows(vec![vec![1], vec![2], vec![3]]));
+    }
+
+    #[test]
+    fn test_validate_order_var_not_in_find() {
+        let parsed = parse_query(
+            "[:find ?e :where [?e :name ?name] :order [?name :asc]]",
+        );
+        let err = validate_query(&parsed).unwrap_err();
+        assert!(
+            err.to_string().contains("ORDER BY variable"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_limit_variable_unsupported() {
+        let parsed = parse_query(
+            "[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]",
+        );
+        let err = validate_query(&parsed).unwrap_err();
+        assert!(
+            err.to_string().contains("not yet supported"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

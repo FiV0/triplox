@@ -554,6 +554,73 @@ async fn test_aggregate_empty_result() {
     token.cancel();
 }
 
+// ---------------------------------------------------------------------------
+// Order + Limit tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_order_and_limit() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    // Insert 5 people with different ages
+    for (id, name, age) in [
+        (100, "Alice", 30),
+        (101, "Bob", 20),
+        (102, "Carol", 40),
+        (103, "Dave", 10),
+        (104, "Eve", 50),
+    ] {
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(id));
+        doc.insert("name".to_string(), DataType::String(name.to_string()));
+        doc.insert("age".to_string(), DataType::Long(age));
+        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    }
+
+    let db = client.db().await.unwrap();
+
+    // ORDER BY age ascending, LIMIT 3 → youngest 3
+    let result = db
+        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]] :limit 3}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
+    assert_eq!(result[1], vec![DataType::String("Bob".to_string()), DataType::Long(20)]);
+    assert_eq!(result[2], vec![DataType::String("Alice".to_string()), DataType::Long(30)]);
+
+    // ORDER BY age descending, LIMIT 2 → oldest 2
+    let result = db
+        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :desc]] :limit 2}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
+    assert_eq!(result[1], vec![DataType::String("Carol".to_string()), DataType::Long(40)]);
+
+    // LIMIT only (no order) — should return exactly 2 rows
+    let result = db
+        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :limit 2}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2);
+
+    // ORDER BY only (no limit) — all 5 rows, sorted
+    let result = db
+        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 5);
+    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
+    assert_eq!(result[4], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aggregate_min_incompatible_types() {
     let (addr, token) = start_test_server().await;
