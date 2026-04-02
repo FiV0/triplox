@@ -1479,8 +1479,8 @@ impl std::fmt::Display for FindSpec {
 impl std::fmt::Display for Order {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self.0 {
-            Direction::Ascending => write!(f, "(asc {})", self.1),
-            Direction::Descending => write!(f, "(desc {})", self.1),
+            Direction::Ascending => write!(f, "[{} :asc]", self.1),
+            Direction::Descending => write!(f, "[{} :desc]", self.1),
         }
     }
 }

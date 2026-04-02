@@ -219,19 +219,19 @@ fn can_parse_order_by() {
     assert!(parse_query(invalid).is_err());
 
     // Defaults to ascending.
-    let default = "[:find ?x :where [?x :foo/baz ?y] :order ?y]";
+    let default = "[:find ?x :where [?x :foo/baz ?y] :order [?y]]";
     assert_eq!(parse_query(default).unwrap().order,
                Some(vec![Order(Direction::Ascending, "?y".to_var())]));
 
-    let ascending = "[:find ?x :where [?x :foo/baz ?y] :order (asc ?y)]";
+    let ascending = "[:find ?x :where [?x :foo/baz ?y] :order [?y :asc]]";
     assert_eq!(parse_query(ascending).unwrap().order,
                Some(vec![Order(Direction::Ascending, "?y".to_var())]));
 
-    let descending = "[:find ?x :where [?x :foo/baz ?y] :order (desc ?y)]";
+    let descending = "[:find ?x :where [?x :foo/baz ?y] :order [?y :desc]]";
     assert_eq!(parse_query(descending).unwrap().order,
                Some(vec![Order(Direction::Descending, "?y".to_var())]));
 
-    let mixed = "[:find ?x :where [?x :foo/baz ?y] :order (desc ?y) (asc ?x)]";
+    let mixed = "[:find ?x :where [?x :foo/baz ?y] :order [?y :desc] [?x :asc]]";
     assert_eq!(parse_query(mixed).unwrap().order,
                Some(vec![Order(Direction::Descending, "?y".to_var()),
                          Order(Direction::Ascending, "?x".to_var())]));
