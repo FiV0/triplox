@@ -975,6 +975,7 @@ fn apply_order_and_limit(
         // Also resolved in validate_query(); duplicated here to keep the API simple.
         let sort_keys = resolve_order_columns(orders, find_spec)?;
         // TODO: replace with Vec::try_sort_by once stabilized (rust-lang/rust#130044)
+        // TODO: For large result sets, consider on-disk sorting to avoid OOM.
         let mut sort_err: Option<anyhow::Error> = None;
         results.sort_by(|a, b| {
             if sort_err.is_some() {
