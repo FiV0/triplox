@@ -96,39 +96,29 @@ impl DataType {
     /// or if floats are NaN.
     pub fn partial_compare(&self, other: &DataType) -> Result<std::cmp::Ordering> {
         use DataType::*;
+        let nan_err = || anyhow::anyhow!("cannot compare NaN values");
         match (self, other) {
             (Long(a), Long(b)) => Ok(a.cmp(b)),
             (BigInt(a), BigInt(b)) => Ok(a.cmp(b)),
-            (Double(a), Double(b)) => a.partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Float(a), Float(b)) => a.partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Double(a), Double(b)) => a.partial_cmp(b).ok_or_else(nan_err),
+            (Float(a), Float(b)) => a.partial_cmp(b).ok_or_else(nan_err),
             (String(a), String(b)) => Ok(a.cmp(b)),
             (Boolean(a), Boolean(b)) => Ok(a.cmp(b)),
             (Instant(a), Instant(b)) => Ok(a.cmp(b)),
             // Cross-numeric promotion
+            // NOTE: casting BigInt(i128) to f32/f64 may lose precision for large values.
             (Long(a), BigInt(b)) => Ok((*a as i128).cmp(b)),
             (BigInt(a), Long(b)) => Ok(a.cmp(&(*b as i128))),
-            (Long(a), Double(b)) => (*a as f64).partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64))
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Long(a), Float(b)) => (*a as f32).partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Float(a), Long(b)) => a.partial_cmp(&(*b as f32))
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (BigInt(a), Float(b)) => (*a as f32).partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Float(a), BigInt(b)) => a.partial_cmp(&(*b as f32))
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (BigInt(a), Double(b)) => (*a as f64).partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Double(a), BigInt(b)) => a.partial_cmp(&(*b as f64))
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Float(a), Double(b)) => (*a as f64).partial_cmp(b)
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
-            (Double(a), Float(b)) => a.partial_cmp(&(*b as f64))
-                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Long(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
+            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
+            (Long(a), Float(b)) => (*a as f32).partial_cmp(b).ok_or_else(nan_err),
+            (Float(a), Long(b)) => a.partial_cmp(&(*b as f32)).ok_or_else(nan_err),
+            (BigInt(a), Float(b)) => (*a as f32).partial_cmp(b).ok_or_else(nan_err),
+            (Float(a), BigInt(b)) => a.partial_cmp(&(*b as f32)).ok_or_else(nan_err),
+            (BigInt(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
+            (Double(a), BigInt(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
+            (Float(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
+            (Double(a), Float(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
             _ => Err(anyhow::anyhow!(
                 "cannot compare {:?} with {:?}", self.value_type(), other.value_type()
             )),
@@ -296,8 +286,15 @@ mod tests {
 
     #[test]
     fn test_partial_compare_nan() {
+        // Same-type NaN
         assert!(DataType::Double(f64::NAN).partial_compare(&DataType::Double(1.0)).is_err());
         assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Float(1.0)).is_err());
+        // Cross-type NaN
+        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Long(1)).is_err());
+        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Double(1.0)).is_err());
+        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::BigInt(1)).is_err());
+        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::Long(1)).is_err());
+        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::BigInt(1)).is_err());
     }
 
     #[test]
