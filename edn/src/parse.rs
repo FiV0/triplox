@@ -288,8 +288,13 @@ peg::parser! {
         // pattern (say "[") should be bracketed on either side with either a
         // whitespace-eating rule or an explicit whitespace eating `__`.
 
+        // "+", "-", and "/" are special-cased here rather than added to
+        // symbol_char_initial because they conflict with number parsing (sign
+        // prefix) and namespace separation respectively. Adding them globally
+        // would let symbol_name match "-3" as a symbol in contexts that bypass
+        // the value rule's number-before-symbol ordering.
         rule query_function() -> query::QueryFunction
-            = __() n:$(symbol_name()) __() {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
+            = __() n:$(symbol_name() / "/" / "+" / "-") __() {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
         rule fn_arg() -> query::FnArg
             = v:value() {? query::FnArg::from_value(&v).ok_or("expected query function argument") }
@@ -310,8 +315,8 @@ peg::parser! {
         rule pull_attribute() -> query::PullAttributeSpec
             = __() "*" __() { query::PullAttributeSpec::Wildcard }
             / __() k:raw_forward_namespaced_keyword() __() alias:(":as" __() alias:raw_forward_keyword() __() { alias })? {
-                let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
-                let alias = alias.map(|alias| ::std::rc::Rc::new(alias));
+                let attribute = query::PullConcreteAttribute::Ident(::std::sync::Arc::new(k));
+                let alias = alias.map(|alias| ::std::sync::Arc::new(alias));
                 query::PullAttributeSpec::Attribute(
                     query::NamedPullAttribute {
                         attribute,
@@ -330,9 +335,9 @@ peg::parser! {
             }
 
         rule order() -> query::Order
-            = __() "(" __() "asc" v:variable() ")" __() { query::Order(query::Direction::Ascending, v) }
-            / __() "(" __() "desc" v:variable() ")" __() { query::Order(query::Direction::Descending, v) }
-            / v:variable() { query::Order(query::Direction::Ascending, v) }
+            = __() "[" v:variable() __() ":desc" __() "]" __() { query::Order(query::Direction::Descending, v) }
+            / __() "[" v:variable() __() ":asc" __() "]" __() { query::Order(query::Direction::Ascending, v) }
+            / __() "[" v:variable() __() "]" __() { query::Order(query::Direction::Ascending, v) }
 
 
         rule pattern_value_place() -> query::PatternValuePlace
@@ -453,6 +458,8 @@ peg::parser! {
         rule map_query_part() -> query::QueryPart
             = __() ":find" __() "[" fs:find_spec() "]" __() { query::QueryPart::FindSpec(fs) }
             / __() ":where" __() "[" ws:where_clause()+ "]" __() { query::QueryPart::WhereClauses(ws) }
+            / __() ":order" __() "[" os:order()+ "]" __() { query::QueryPart::Order(os) }
+            / __() ":limit" l:limit() { query::QueryPart::Limit(l) }
 
         pub rule parse_query() -> query::ParsedQuery
             = __() "[" qps:query_part()+ "]" __() {? query::ParsedQuery::from_parts(qps) }
