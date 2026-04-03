@@ -8,13 +8,8 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use ::std::rc::{
-    Rc,
-};
-
-use ::std::sync::{
-    Arc,
-};
+use std::rc::Rc;
+use std::sync::Arc;
 
 pub trait FromRc<T> {
     fn from_rc(val: Rc<T>) -> Self;
@@ -27,7 +22,7 @@ impl<T> FromRc<T> for Rc<T> where T: Sized + Clone {
     }
 
     fn from_arc(val: Arc<T>) -> Self {
-        match ::std::sync::Arc::<T>::try_unwrap(val) {
+        match Arc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
             Err(r) => Self::new(r.cloned()),
         }
@@ -36,7 +31,7 @@ impl<T> FromRc<T> for Rc<T> where T: Sized + Clone {
 
 impl<T> FromRc<T> for Arc<T> where T: Sized + Clone {
     fn from_rc(val: Rc<T>) -> Self {
-        match ::std::rc::Rc::<T>::try_unwrap(val) {
+        match Rc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
             Err(r) => Self::new(r.cloned()),
         }
@@ -49,14 +44,14 @@ impl<T> FromRc<T> for Arc<T> where T: Sized + Clone {
 
 impl<T> FromRc<T> for Box<T> where T: Sized + Clone {
     fn from_rc(val: Rc<T>) -> Self {
-        match ::std::rc::Rc::<T>::try_unwrap(val) {
+        match Rc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
             Err(r) => Self::new(r.cloned()),
         }
     }
 
     fn from_arc(val: Arc<T>) -> Self {
-        match ::std::sync::Arc::<T>::try_unwrap(val) {
+        match Arc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
             Err(r) => Self::new(r.cloned()),
         }

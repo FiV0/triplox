@@ -8,7 +8,7 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-#![cfg_attr(feature = "cargo-clippy", allow(linkedlist))]
+#![allow(clippy::linkedlist)]
 
 use std::collections::{BTreeSet, BTreeMap, LinkedList};
 use std::cmp::{Ordering, Ord, PartialOrd};
@@ -18,14 +18,13 @@ use std::f64;
 use chrono::{
     DateTime,
     SecondsFormat,
-    TimeZone,           // For Utc::timestamp. The compiler incorrectly complains that this is unused.
     Utc,
 };
 use num::BigInt;
 use ordered_float::OrderedFloat;
 use uuid::Uuid;
 
-use symbols;
+use crate::symbols;
 
 /// Value represents one of the allowed values in an EDN string.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -136,7 +135,7 @@ impl Value {
     /// But right now, it's used in the bootstrapper.  We'll fix that soon.
     pub fn with_spans(self) -> ValueAndSpan {
         let s = self.to_pretty(120).unwrap();
-        use ::parse;
+        use crate::parse;
         let with_spans = parse::value(&s).unwrap();
         assert_eq!(self, with_spans.clone().without_spans());
         with_spans
@@ -633,7 +632,7 @@ pub trait FromMicros {
 
 impl FromMicros for DateTime<Utc> {
     fn from_micros(ts: i64) -> Self {
-        Utc.timestamp(ts / 1_000_000, ((ts % 1_000_000).abs() as u32) * 1_000)
+        DateTime::from_timestamp(ts / 1_000_000, ((ts % 1_000_000).abs() as u32) * 1_000).unwrap()
     }
 }
 
@@ -655,7 +654,7 @@ pub trait FromMillis {
 
 impl FromMillis for DateTime<Utc> {
     fn from_millis(ts: i64) -> Self {
-        Utc.timestamp(ts / 1_000, ((ts % 1_000).abs() as u32) * 1_000)
+        DateTime::from_timestamp(ts / 1_000, ((ts % 1_000).abs() as u32) * 1_000).unwrap()
     }
 }
 
@@ -673,18 +672,14 @@ impl ToMillis for DateTime<Utc> {
 
 #[cfg(test)]
 mod test {
-    extern crate chrono;
-    extern crate ordered_float;
-    extern crate num;
-
     use super::*;
 
     use std::collections::{BTreeSet, BTreeMap, LinkedList};
-    use std::cmp::{Ordering};
+    use std::cmp::Ordering;
     use std::iter::FromIterator;
     use std::f64;
 
-    use parse;
+    use crate::parse;
 
     use chrono::{
         DateTime,

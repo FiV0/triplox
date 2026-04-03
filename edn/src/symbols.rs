@@ -14,7 +14,7 @@ use std::fmt::{
     Write,
 };
 
-use namespaceable_name::NamespaceableName;
+use crate::namespaceable_name::NamespaceableName;
 
 /// Construct a `Keyword` from a Clojure-like literal syntax.
 ///
@@ -139,7 +139,7 @@ pub struct NamespacedSymbol(NamespaceableName);
 /// Future: fast equality (interning?) for keywords.
 ///
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde_support", derive(serde::Serialize, serde::Deserialize))]
 pub struct Keyword(NamespaceableName);
 
 impl PlainSymbol {

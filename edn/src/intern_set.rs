@@ -8,8 +8,6 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::ops::{
@@ -17,9 +15,7 @@ use std::ops::{
     DerefMut,
 };
 
-use ::{
-    ValueRc,
-};
+use crate::ValueRc;
 
 /// An `InternSet` allows to "intern" some potentially large values, maintaining a single value
 /// instance owned by the `InternSet` and leaving consumers with lightweight ref-counted handles to
