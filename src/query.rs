@@ -968,16 +968,15 @@ fn apply_order_and_limit(
     if let Some(sort_keys) = sort_keys {
         results.sort_by(|a, b| {
             for (col, dir) in sort_keys {
-                let ord = a[*col].partial_compare(&b[*col]);
-                match ord {
-                    Some(std::cmp::Ordering::Equal) => continue,
-                    Some(o) => {
+                match a[*col].partial_compare(&b[*col]) {
+                    Ok(std::cmp::Ordering::Equal) => continue,
+                    Ok(o) => {
                         return match dir {
                             Direction::Ascending => o,
                             Direction::Descending => o.reverse(),
                         };
                     }
-                    None => continue,
+                    Err(_) => continue,
                 }
             }
             std::cmp::Ordering::Equal
