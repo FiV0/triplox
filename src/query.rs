@@ -920,11 +920,8 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Resolve ORDER BY variables to output column indices in the find spec.
-fn resolve_order_columns(
-    orders: &[Order],
-    find_spec: &FindSpec,
-) -> Result<Vec<(usize, Direction)>, Error> {
+/// Map find-spec variables to their output column index in the projected result.
+fn find_var_positions(find_spec: &FindSpec) -> Result<HashMap<&Variable, usize>, Error> {
     let elements = match find_spec {
         FindSpec::FindRel(elements) => elements,
         _ => {
@@ -934,14 +931,22 @@ fn resolve_order_columns(
         }
     };
 
-    let var_positions: HashMap<&Variable, usize> = elements
+    Ok(elements
         .iter()
         .enumerate()
         .filter_map(|(i, elem)| match elem {
             Element::Variable(v) => Some((v, i)),
             _ => None,
         })
-        .collect();
+        .collect())
+}
+
+/// Resolve ORDER BY variables to output column indices in the find spec.
+fn resolve_order_columns(
+    orders: &[Order],
+    find_spec: &FindSpec,
+) -> Result<Vec<(usize, Direction)>, Error> {
+    let var_positions = find_var_positions(find_spec)?;
 
     orders
         .iter()
