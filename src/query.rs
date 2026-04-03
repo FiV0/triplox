@@ -966,7 +966,12 @@ fn apply_order_and_limit(
     limit: &Limit,
 ) -> Result<QueryResult, Error> {
     if let Some(sort_keys) = sort_keys {
+        // TODO: replace with Vec::try_sort_by once stabilized (rust-lang/rust#130044)
+        let mut sort_err: Option<anyhow::Error> = None;
         results.sort_by(|a, b| {
+            if sort_err.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
             for (col, dir) in sort_keys {
                 match a[*col].partial_compare(&b[*col]) {
                     Ok(std::cmp::Ordering::Equal) => continue,
@@ -976,11 +981,17 @@ fn apply_order_and_limit(
                             Direction::Descending => o.reverse(),
                         };
                     }
-                    Err(_) => continue,
+                    Err(e) => {
+                        sort_err = Some(e);
+                        return std::cmp::Ordering::Equal;
+                    }
                 }
             }
             std::cmp::Ordering::Equal
         });
+        if let Some(e) = sort_err {
+            return Err(e);
+        }
     }
 
     match limit {
