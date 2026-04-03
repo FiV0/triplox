@@ -92,24 +92,46 @@ impl DataType {
         }
     }
 
-    /// Compare two DataType values. Returns None if the types are incompatible
+    /// Compare two DataType values. Returns an error if the types are incompatible
     /// or if floats are NaN.
-    pub fn partial_compare(&self, other: &DataType) -> Option<std::cmp::Ordering> {
+    pub fn partial_compare(&self, other: &DataType) -> Result<std::cmp::Ordering> {
         use DataType::*;
         match (self, other) {
-            (Long(a), Long(b)) => Some(a.cmp(b)),
-            (BigInt(a), BigInt(b)) => Some(a.cmp(b)),
-            (Double(a), Double(b)) => a.partial_cmp(b),
-            (Float(a), Float(b)) => a.partial_cmp(b),
-            (String(a), String(b)) => Some(a.cmp(b)),
-            (Boolean(a), Boolean(b)) => Some(a.cmp(b)),
-            (Instant(a), Instant(b)) => Some(a.cmp(b)),
+            (Long(a), Long(b)) => Ok(a.cmp(b)),
+            (BigInt(a), BigInt(b)) => Ok(a.cmp(b)),
+            (Double(a), Double(b)) => a.partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Float(a), Float(b)) => a.partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (String(a), String(b)) => Ok(a.cmp(b)),
+            (Boolean(a), Boolean(b)) => Ok(a.cmp(b)),
+            (Instant(a), Instant(b)) => Ok(a.cmp(b)),
             // Cross-numeric promotion
-            (Long(a), BigInt(b)) => Some((*a as i128).cmp(b)),
-            (BigInt(a), Long(b)) => Some(a.cmp(&(*b as i128))),
-            (Long(a), Double(b)) => (*a as f64).partial_cmp(b),
-            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64)),
-            _ => None,
+            (Long(a), BigInt(b)) => Ok((*a as i128).cmp(b)),
+            (BigInt(a), Long(b)) => Ok(a.cmp(&(*b as i128))),
+            (Long(a), Double(b)) => (*a as f64).partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64))
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Long(a), Float(b)) => (*a as f32).partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Float(a), Long(b)) => a.partial_cmp(&(*b as f32))
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (BigInt(a), Float(b)) => (*a as f32).partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Float(a), BigInt(b)) => a.partial_cmp(&(*b as f32))
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (BigInt(a), Double(b)) => (*a as f64).partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Double(a), BigInt(b)) => a.partial_cmp(&(*b as f64))
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Float(a), Double(b)) => (*a as f64).partial_cmp(b)
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            (Double(a), Float(b)) => a.partial_cmp(&(*b as f64))
+                .ok_or_else(|| anyhow::anyhow!("cannot compare NaN values")),
+            _ => Err(anyhow::anyhow!(
+                "cannot compare {:?} with {:?}", self.value_type(), other.value_type()
+            )),
         }
     }
 }
@@ -229,42 +251,53 @@ mod tests {
     #[test]
     fn test_partial_compare_same_type() {
         use std::cmp::Ordering;
-        assert_eq!(DataType::Long(1).partial_compare(&DataType::Long(2)), Some(Ordering::Less));
-        assert_eq!(DataType::Long(2).partial_compare(&DataType::Long(2)), Some(Ordering::Equal));
-        assert_eq!(DataType::Long(3).partial_compare(&DataType::Long(2)), Some(Ordering::Greater));
+        assert_eq!(DataType::Long(1).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Less);
+        assert_eq!(DataType::Long(2).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Equal);
+        assert_eq!(DataType::Long(3).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Greater);
 
         assert_eq!(
-            DataType::String("a".into()).partial_compare(&DataType::String("b".into())),
-            Some(Ordering::Less),
+            DataType::String("a".into()).partial_compare(&DataType::String("b".into())).unwrap(),
+            Ordering::Less,
         );
         assert_eq!(
-            DataType::Boolean(false).partial_compare(&DataType::Boolean(true)),
-            Some(Ordering::Less),
+            DataType::Boolean(false).partial_compare(&DataType::Boolean(true)).unwrap(),
+            Ordering::Less,
         );
         assert_eq!(
-            DataType::Double(1.5).partial_compare(&DataType::Double(2.5)),
-            Some(Ordering::Less),
+            DataType::Double(1.5).partial_compare(&DataType::Double(2.5)).unwrap(),
+            Ordering::Less,
         );
     }
 
     #[test]
     fn test_partial_compare_cross_numeric() {
         use std::cmp::Ordering;
-        assert_eq!(DataType::Long(10).partial_compare(&DataType::BigInt(20)), Some(Ordering::Less));
-        assert_eq!(DataType::BigInt(20).partial_compare(&DataType::Long(10)), Some(Ordering::Greater));
-        assert_eq!(DataType::Long(5).partial_compare(&DataType::Double(5.0)), Some(Ordering::Equal));
-        assert_eq!(DataType::Double(3.0).partial_compare(&DataType::Long(4)), Some(Ordering::Less));
+        assert_eq!(DataType::Long(10).partial_compare(&DataType::BigInt(20)).unwrap(), Ordering::Less);
+        assert_eq!(DataType::BigInt(20).partial_compare(&DataType::Long(10)).unwrap(), Ordering::Greater);
+        assert_eq!(DataType::Long(5).partial_compare(&DataType::Double(5.0)).unwrap(), Ordering::Equal);
+        assert_eq!(DataType::Double(3.0).partial_compare(&DataType::Long(4)).unwrap(), Ordering::Less);
+
+        // Float cross-numeric
+        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Less);
+        assert_eq!(DataType::Long(2).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
+        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::Double(1.0)).unwrap(), Ordering::Equal);
+        assert_eq!(DataType::Double(2.0).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
+        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::BigInt(2)).unwrap(), Ordering::Less);
+        assert_eq!(DataType::BigInt(2).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
+        assert_eq!(DataType::BigInt(1).partial_compare(&DataType::Double(2.0)).unwrap(), Ordering::Less);
+        assert_eq!(DataType::Double(2.0).partial_compare(&DataType::BigInt(1)).unwrap(), Ordering::Greater);
     }
 
     #[test]
     fn test_partial_compare_incompatible() {
-        assert_eq!(DataType::Long(1).partial_compare(&DataType::String("a".into())), None);
-        assert_eq!(DataType::Boolean(true).partial_compare(&DataType::Long(1)), None);
+        assert!(DataType::Long(1).partial_compare(&DataType::String("a".into())).is_err());
+        assert!(DataType::Boolean(true).partial_compare(&DataType::Long(1)).is_err());
     }
 
     #[test]
     fn test_partial_compare_nan() {
-        assert_eq!(DataType::Double(f64::NAN).partial_compare(&DataType::Double(1.0)), None);
+        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::Double(1.0)).is_err());
+        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Float(1.0)).is_err());
     }
 
     #[test]

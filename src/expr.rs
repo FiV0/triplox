@@ -135,17 +135,17 @@ pub fn evaluate_as_bool(expr: &Expr, ctx: &EvalContext) -> bool {
 fn eval_binary_op(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<DataType> {
     match op {
         BinaryOp::Lt => {
-            Some(DataType::Boolean(left.partial_compare(right)? == Ordering::Less))
+            Some(DataType::Boolean(left.partial_compare(right).ok()? == Ordering::Less))
         }
         BinaryOp::LtEq => {
-            let ord = left.partial_compare(right)?;
+            let ord = left.partial_compare(right).ok()?;
             Some(DataType::Boolean(ord == Ordering::Less || ord == Ordering::Equal))
         }
         BinaryOp::Gt => {
-            Some(DataType::Boolean(left.partial_compare(right)? == Ordering::Greater))
+            Some(DataType::Boolean(left.partial_compare(right).ok()? == Ordering::Greater))
         }
         BinaryOp::GtEq => {
-            let ord = left.partial_compare(right)?;
+            let ord = left.partial_compare(right).ok()?;
             Some(DataType::Boolean(ord == Ordering::Greater || ord == Ordering::Equal))
         }
         BinaryOp::Eq => Some(DataType::Boolean(left == right)),

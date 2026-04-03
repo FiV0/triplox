@@ -156,9 +156,7 @@ impl Accumulator for MinAccumulator {
                 self.current = Some(value.clone());
             }
             Some(current) => {
-                let ord = current
-                    .partial_compare(value)
-                    .ok_or_else(|| anyhow!("min: incomparable types"))?;
+                let ord = current.partial_compare(value)?;
                 if ord == std::cmp::Ordering::Greater {
                     self.current = Some(value.clone());
                 }
@@ -185,9 +183,7 @@ impl Accumulator for MaxAccumulator {
                 self.current = Some(value.clone());
             }
             Some(current) => {
-                let ord = current
-                    .partial_compare(value)
-                    .ok_or_else(|| anyhow!("max: incomparable types"))?;
+                let ord = current.partial_compare(value)?;
                 if ord == std::cmp::Ordering::Less {
                     self.current = Some(value.clone());
                 }
