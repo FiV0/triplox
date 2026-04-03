@@ -16,8 +16,6 @@ use std::fmt::{
 
 use crate::namespaceable_name::NamespaceableName;
 
-
-
 /// Construct a `Keyword` from a Clojure-like literal syntax.
 ///
 /// # Examples
