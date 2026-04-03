@@ -40,6 +40,13 @@
    (with-open [db (tc/db conn)]
      (set (tc/q db query-edn)))))
 
+(defn q-ordered
+  "Open a DB, run query, close DB, return results as a vector (preserves order)."
+  ([query-edn] (q-ordered *conn* query-edn))
+  ([conn query-edn]
+   (with-open [db (tc/db conn)]
+     (vec (tc/q db query-edn)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests — triple patterns
 ;; ---------------------------------------------------------------------------
@@ -506,3 +513,41 @@
 (deftest test-aggregate-empty-result
   (is (= #{[0]} (q '{:find [(count ?e)]
                      :where [[?e :name "nobody"]]}))))
+
+;; ---------------------------------------------------------------------------
+;; Tests — order-by & limit
+;; ---------------------------------------------------------------------------
+
+(deftest test-order-by-and-limit
+  (tc/transact *conn* [{:db/id 1000 :name "Alice" :age 30}
+                       {:db/id 1001 :name "Bob" :age 20}
+                       {:db/id 1002 :name "Carol" :age 40}
+                       {:db/id 1003 :name "Dave" :age 10}
+                       {:db/id 1004 :name "Eve" :age 50}])
+
+  (testing "order ascending with limit"
+    (is (= [["Dave" 10] ["Bob" 20] ["Alice" 30]]
+           (q-ordered '{:find [?name ?age]
+                        :where [[?e :name ?name] [?e :age ?age]]
+                        :order [[?age :asc]]
+                        :limit 3}))))
+
+  (testing "order descending with limit"
+    (is (= [["Eve" 50] ["Carol" 40]]
+           (q-ordered '{:find [?name ?age]
+                        :where [[?e :name ?name] [?e :age ?age]]
+                        :order [[?age :desc]]
+                        :limit 2}))))
+
+  (testing "limit only (no order)"
+    (is (= 2 (count (q-ordered '{:find [?name ?age]
+                                 :where [[?e :name ?name] [?e :age ?age]]
+                                 :limit 2})))))
+
+  (testing "order only (no limit)"
+    (let [result (q-ordered '{:find [?name ?age]
+                              :where [[?e :name ?name] [?e :age ?age]]
+                              :order [[?age :asc]]})]
+      (is (= 5 (count result)))
+      (is (= ["Dave" 10] (first result)))
+      (is (= ["Eve" 50] (last result))))))
