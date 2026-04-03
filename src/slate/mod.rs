@@ -13,19 +13,18 @@ use crate::util::random_string;
 
 pub async fn in_memory_slate() -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let kv_store = Db::open(
-        format!("tmp/{}", random_string(10)),
-        object_store,
-    )
-    .await
-    .unwrap();
-    kv_store
+    Db::builder(format!("tmp/triplox-{}", random_string(10)), object_store)
+        .build()
+        .await
+        .unwrap()
 }
 
 pub async fn local_slate(path: &str) -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    let kv_store = Db::open(path, object_store).await.unwrap();
-    kv_store
+    Db::builder("triplox", object_store)
+        .build()
+        .await
+        .unwrap()
 }
 
 pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
