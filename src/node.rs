@@ -69,7 +69,7 @@ impl Database for DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
     async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error> {
-        validate_query(query)?;
+        let sort_keys = validate_query(query)?;
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
@@ -78,7 +78,7 @@ impl Database for DB {
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &attribute_map, as_of)
+            execute_query(&query, snapshot, handle, &attribute_map, as_of, sort_keys)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?

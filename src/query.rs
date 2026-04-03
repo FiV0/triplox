@@ -929,7 +929,7 @@ fn resolve_order_columns(
         FindSpec::FindRel(elements) => elements,
         _ => {
             return Err(anyhow::anyhow!(
-                "ORDER BY is only supported with :find [...]"
+                "ORDER BY is only supported with relational :find (FindRel)"
             ))
         }
     };
@@ -962,14 +962,12 @@ fn resolve_order_columns(
 /// Apply ORDER BY sorting and LIMIT truncation to projected results.
 fn apply_order_and_limit(
     mut results: QueryResult,
-    order: &Option<Vec<Order>>,
+    sort_keys: &Option<Vec<(usize, Direction)>>,
     limit: &Limit,
-    find_spec: &FindSpec,
 ) -> Result<QueryResult, Error> {
-    if let Some(orders) = order {
-        let sort_keys = resolve_order_columns(orders, find_spec)?;
+    if let Some(sort_keys) = sort_keys {
         results.sort_by(|a, b| {
-            for (col, dir) in &sort_keys {
+            for (col, dir) in sort_keys {
                 let ord = a[*col].partial_compare(&b[*col]);
                 match ord {
                     Some(std::cmp::Ordering::Equal) => continue,
@@ -991,6 +989,7 @@ fn apply_order_and_limit(
         Limit::Fixed(n) => {
             results.truncate(*n as usize);
         }
+        // Defense-in-depth: validate_query() rejects this earlier, but guard here too.
         Limit::Variable(v) => {
             return Err(anyhow::anyhow!(
                 "Variable limit {} is not yet supported (requires input bindings)",
@@ -1005,7 +1004,7 @@ fn apply_order_and_limit(
 /// Validate a query before execution.
 // TODO: Move query validation into the edn parsing crate so that invalid
 // queries are rejected at parse time rather than at execution time.
-pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
+pub fn validate_query(query: &ParsedQuery) -> Result<Option<Vec<(usize, Direction)>>, Error> {
     let join_order = query_variable_order(&query.where_clauses);
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no variables"));
@@ -1021,10 +1020,10 @@ pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
     validate_fn_clauses(&query.where_clauses, &var_index)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
 
-    // Validate ORDER BY variables are in the find spec.
-    if let Some(orders) = &query.order {
-        resolve_order_columns(orders, &query.find_spec)?;
-    }
+    // Validate and resolve ORDER BY variables.
+    let sort_keys = query.order.as_ref()
+        .map(|orders| resolve_order_columns(orders, &query.find_spec))
+        .transpose()?;
 
     // Variable limits are not yet supported.
     if let Limit::Variable(v) = &query.limit {
@@ -1034,7 +1033,7 @@ pub fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
         ));
     }
 
-    Ok(())
+    Ok(sort_keys)
 }
 
 /// Compile an OrWhereClause into a PrefixExtender.
@@ -1156,6 +1155,7 @@ pub fn execute_query(
     handle: Handle,
     attribute_map: &HashMap<String, i64>,
     as_of: i64,
+    sort_keys: Option<Vec<(usize, Direction)>>,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order
     let join_order = query_variable_order(&query.where_clauses);
@@ -1191,7 +1191,7 @@ pub fn execute_query(
     };
 
     // 5. Apply ORDER BY and LIMIT
-    apply_order_and_limit(projected, &query.order, &query.limit, &query.find_spec)
+    apply_order_and_limit(projected, &sort_keys, &query.limit)
 }
 
 #[cfg(test)]
@@ -1410,14 +1410,6 @@ mod tests {
 
     // -- ORDER BY and LIMIT tests --
 
-    fn make_find_rel(vars: &[&str]) -> FindSpec {
-        FindSpec::FindRel(
-            vars.iter()
-                .map(|name| Element::Variable(Variable::from_valid_name(name)))
-                .collect(),
-        )
-    }
-
     fn rows(data: Vec<Vec<i64>>) -> QueryResult {
         data.into_iter()
             .map(|row| row.into_iter().map(DataType::from).collect())
@@ -1426,36 +1418,27 @@ mod tests {
 
     #[test]
     fn test_apply_order_ascending() {
-        let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Ascending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let sort_keys = Some(vec![(0, Direction::Ascending)]);
         let result =
-            apply_order_and_limit(rows(vec![vec![3], vec![1], vec![2]]), &order, &Limit::None, &find)
+            apply_order_and_limit(rows(vec![vec![3], vec![1], vec![2]]), &sort_keys, &Limit::None)
                 .unwrap();
         assert_eq!(result, rows(vec![vec![1], vec![2], vec![3]]));
     }
 
     #[test]
     fn test_apply_order_descending() {
-        let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Descending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let sort_keys = Some(vec![(0, Direction::Descending)]);
         let result =
-            apply_order_and_limit(rows(vec![vec![1], vec![3], vec![2]]), &order, &Limit::None, &find)
+            apply_order_and_limit(rows(vec![vec![1], vec![3], vec![2]]), &sort_keys, &Limit::None)
                 .unwrap();
         assert_eq!(result, rows(vec![vec![3], vec![2], vec![1]]));
     }
 
     #[test]
     fn test_apply_order_multi_key() {
-        let find = make_find_rel(&["?a", "?b"]);
-        let order = Some(vec![
-            Order(Direction::Ascending, Variable::from_valid_name("?a")),
-            Order(Direction::Descending, Variable::from_valid_name("?b")),
+        let sort_keys = Some(vec![
+            (0, Direction::Ascending),
+            (1, Direction::Descending),
         ]);
         let input = rows(vec![
             vec![1, 10],
@@ -1463,7 +1446,7 @@ mod tests {
             vec![1, 30],
             vec![2, 10],
         ]);
-        let result = apply_order_and_limit(input, &order, &Limit::None, &find).unwrap();
+        let result = apply_order_and_limit(input, &sort_keys, &Limit::None).unwrap();
         assert_eq!(
             result,
             rows(vec![vec![1, 30], vec![1, 10], vec![2, 20], vec![2, 10]])
@@ -1472,12 +1455,10 @@ mod tests {
 
     #[test]
     fn test_apply_limit_fixed() {
-        let find = make_find_rel(&["?a"]);
         let result = apply_order_and_limit(
             rows(vec![vec![1], vec![2], vec![3], vec![4], vec![5]]),
             &None,
             &Limit::Fixed(3),
-            &find,
         )
         .unwrap();
         assert_eq!(result.len(), 3);
@@ -1485,12 +1466,10 @@ mod tests {
 
     #[test]
     fn test_apply_limit_zero() {
-        let find = make_find_rel(&["?a"]);
         let result = apply_order_and_limit(
             rows(vec![vec![1], vec![2]]),
             &None,
             &Limit::Fixed(0),
-            &find,
         )
         .unwrap();
         assert!(result.is_empty());
@@ -1498,25 +1477,19 @@ mod tests {
 
     #[test]
     fn test_apply_limit_exceeds_rows() {
-        let find = make_find_rel(&["?a"]);
         let input = rows(vec![vec![1], vec![2]]);
         let result =
-            apply_order_and_limit(input, &None, &Limit::Fixed(100), &find).unwrap();
+            apply_order_and_limit(input, &None, &Limit::Fixed(100)).unwrap();
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_apply_order_then_limit() {
-        let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Ascending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let sort_keys = Some(vec![(0, Direction::Ascending)]);
         let result = apply_order_and_limit(
             rows(vec![vec![5], vec![3], vec![1], vec![4], vec![2]]),
-            &order,
+            &sort_keys,
             &Limit::Fixed(3),
-            &find,
         )
         .unwrap();
         assert_eq!(result, rows(vec![vec![1], vec![2], vec![3]]));

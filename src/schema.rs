@@ -378,11 +378,11 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> SchemaCache 
         "[:find ?e ?ident ?vt ?card :where [?e :db/ident ?ident] [?e :db/valueType ?vt] [?e :db/cardinality ?card]]"
     ).expect("Schema query parse failed");
 
-    validate_query(&query).expect("Schema query validation failed");
+    let sort_keys = validate_query(&query).expect("Schema query validation failed");
 
     let results = tokio::task::spawn_blocking(move || {
         // Use i64::MAX to see all facts (no temporal filtering)
-        execute_query(&query, snapshot, handle, &attribute_map, i64::MAX)
+        execute_query(&query, snapshot, handle, &attribute_map, i64::MAX, sort_keys)
     })
     .await
     .expect("Schema query task failed")
