@@ -443,10 +443,10 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// so the inefficiency is minor, but a single-pass approach would be cleaner.
 pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
-    let mut bootstrap_attr_map = HashMap::new();
-    bootstrap_attr_map.insert("db/ident".to_string(), DB_IDENT);
-    bootstrap_attr_map.insert("db/valueType".to_string(), DB_VALUE_TYPE);
-    bootstrap_attr_map.insert("db/cardinality".to_string(), DB_CARDINALITY);
+    let mut bootstrap_ident_map = HashMap::new();
+    bootstrap_ident_map.insert("db/ident".to_string(), DB_IDENT);
+    bootstrap_ident_map.insert("db/valueType".to_string(), DB_VALUE_TYPE);
+    bootstrap_ident_map.insert("db/cardinality".to_string(), DB_CARDINALITY);
     let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
     let handle = Handle::current();
 
@@ -457,9 +457,9 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
 
     let snap_clone = snapshot.clone();
     let handle_clone = handle.clone();
-    let attr_map_clone = bootstrap_attr_map.clone();
+    let ident_map_clone = bootstrap_ident_map.clone();
     let ident_results = tokio::task::spawn_blocking(move || {
-        execute_query(&ident_query, snap_clone, handle_clone, &attr_map_clone, i64::MAX)
+        execute_query(&ident_query, snap_clone, handle_clone, &ident_map_clone, i64::MAX)
     })
     .await
     .expect("Ident query task failed")
@@ -471,7 +471,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     ).expect("Attribute query parse failed");
 
     let attr_results = tokio::task::spawn_blocking(move || {
-        execute_query(&attr_query, snapshot, handle, &bootstrap_attr_map, i64::MAX)
+        execute_query(&attr_query, snapshot, handle, &bootstrap_ident_map, i64::MAX)
     })
     .await
     .expect("Attribute query task failed")

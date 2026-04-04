@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,6 +13,7 @@ use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
+use crate::schema::IdentMap;
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
@@ -38,7 +38,7 @@ pub trait QueryNode {
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
-    ident_map: HashMap<String, i64>,
+    ident_map: IdentMap,
     handle: Handle,
     tx_key: TxKey,
     tx_eid: i64,
@@ -46,12 +46,12 @@ pub struct DB {
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, ident_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
         Self { snapshot, ident_map, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, ident_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
+    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
         Ok(Self { snapshot, ident_map, handle, tx_key, tx_eid })
     }
