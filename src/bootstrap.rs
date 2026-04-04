@@ -71,6 +71,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             let datoms = tx_ops_to_datoms(&tx_ops, 0_i64).unwrap();
             let mut schema = Schema::default();
             let update = schema.validate_and_prepare(&datoms).unwrap();
+            // TODO: We should bootstrap the schema properly and do the validation in the same manner as the indexer
             schema.apply_schema_update(update);
 
             let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
