@@ -204,8 +204,8 @@ impl AttributeBuilder {
 /// Pre-validated schema changes, ready to apply after commit.
 #[derive(Debug)]
 pub struct SchemaUpdate {
-    pub idents: Vec<(i64, String)>,
-    pub attributes: Vec<(i64, Attribute)>,
+    pub(crate) idents: Vec<(i64, String)>,
+    pub(crate) attributes: Vec<(i64, Attribute)>,
 }
 
 impl SchemaUpdate {
@@ -252,9 +252,9 @@ impl Schema {
             }
 
             // Reject modifications to existing schema entities
-            if self.is_schema_entity(datom.entity) {
+            if let Some(ident) = self.entid_map.get(&datom.entity) {
                 return Err(anyhow::anyhow!(
-                    "Cannot modify schema entity {}", datom.entity
+                    "Cannot modify schema entity {} ({})", datom.entity, ident
                 ));
             }
 
@@ -436,6 +436,11 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// Runs two queries:
 /// 1. All entities with db/ident → populates ident_map/entid_map
 /// 2. Entities with db/ident + db/valueType + db/cardinality → populates attribute_map
+///
+/// TODO: These two queries could be merged into a single query that fetches all
+/// db/ident entities with optional db/valueType + db/cardinality. Query 2 re-fetches
+/// ?e and ?ident that were already retrieved in query 1. This is only run at startup
+/// so the inefficiency is minor, but a single-pass approach would be cleaner.
 pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_attr_map = HashMap::new();

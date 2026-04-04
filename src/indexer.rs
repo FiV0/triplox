@@ -341,6 +341,7 @@ impl Indexer {
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
         write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
         self.latest_indexed_tx = Some(tx_key);
         Ok(())
