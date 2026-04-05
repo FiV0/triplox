@@ -244,11 +244,6 @@ impl Schema {
         let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
         let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
 
-        // TODO(perf): these three kw!(...) allocate fresh Keywords on every call; lift to LazyLock statics.
-        let db_ident = kw!(:db/ident);
-        let db_value_type = kw!(:db/valueType);
-        let db_cardinality = kw!(:db/cardinality);
-
         for datom in datoms {
             if datom.op != DatomOp::Assert {
                 continue;
@@ -273,10 +268,10 @@ impl Schema {
                         datom.attribute, attr.value_type, datom.value
                     ));
                 }
-            } else if datom.attribute != db_ident
-                && datom.attribute != db_value_type
-                && datom.attribute != db_cardinality
-            {
+            } else if !matches!(
+                datom.attribute.components(),
+                ("db", "ident" | "valueType" | "cardinality")
+            ) {
                 return Err(anyhow::anyhow!("Unknown attribute: {}", datom.attribute));
             }
 
@@ -285,29 +280,26 @@ impl Schema {
             // db/valueType + db/cardinality) also has a db/ident. Bootstrap entities
             // always include one, but user-defined attributes could be installed without
             // a name. Not an issue for correctness, but maybe worth enforcing.
-            if datom.attribute == db_ident {
-                match &datom.value {
-                    DataType::Keyword(kw) => {
-                        ident_updates.push((datom.entity, kw.clone()));
-                    }
+            match datom.attribute.components() {
+                ("db", "ident") => match &datom.value {
+                    DataType::Keyword(kw) => ident_updates.push((datom.entity, kw.clone())),
                     _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
-                }
-            } else if datom.attribute == db_value_type {
-                match &datom.value {
+                },
+                ("db", "valueType") => match &datom.value {
                     DataType::Keyword(kw) => {
                         let vt = ValueType::from_keyword(kw)?;
                         builders.entry(datom.entity).or_default().value_type = Some(vt);
                     }
                     _ => return Err(anyhow::anyhow!("db/valueType must be a Keyword")),
-                }
-            } else if datom.attribute == db_cardinality {
-                match &datom.value {
+                },
+                ("db", "cardinality") => match &datom.value {
                     DataType::Keyword(kw) => {
                         let card = Cardinality::from_keyword(kw)?;
                         builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
                     }
                     _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
-                }
+                },
+                _ => {}
             }
         }
 
