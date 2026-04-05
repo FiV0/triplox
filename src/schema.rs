@@ -244,6 +244,7 @@ impl Schema {
         let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
         let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
 
+        // TODO(perf): these three kw!(...) allocate fresh Keywords on every call; lift to LazyLock statics.
         let db_ident = kw!(:db/ident);
         let db_value_type = kw!(:db/valueType);
         let db_cardinality = kw!(:db/cardinality);
