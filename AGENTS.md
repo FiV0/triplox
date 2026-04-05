@@ -21,6 +21,8 @@ When creating or updating issues, apply the appropriate priority and type labels
 
 Keep comments to one line where possible. Multi-line is fine for complex logic.
 
+Prefer one-line TODOs.
+
 ## Git
 
 Only commit and push when explicitly asked to by the user.
