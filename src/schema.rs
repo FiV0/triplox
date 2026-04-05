@@ -213,7 +213,7 @@ impl SchemaUpdate {
 }
 
 /// The schema: bidirectional ident/entid maps + attribute definitions.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Schema {
     pub entid_map: EntidMap,
     pub ident_map: IdentMap,

@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
 use crate::ops::{DataType, Entid, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
-use crate::schema::{AttributeMap, EntidMap, IdentMap};
+use crate::schema::Schema;
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
@@ -49,9 +49,7 @@ pub enum Binding {
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
-    ident_map: IdentMap,
-    entid_map: EntidMap,
-    attribute_map: AttributeMap,
+    schema: Arc<Schema>,
     handle: Handle,
     tx_key: TxKey,
     tx_eid: i64,
@@ -61,26 +59,22 @@ pub struct DB {
 impl DB {
     pub fn new(
         snapshot: Arc<slatedb::DbSnapshot>,
-        ident_map: IdentMap,
-        entid_map: EntidMap,
-        attribute_map: AttributeMap,
+        schema: Arc<Schema>,
         handle: Handle,
         tx_key: TxKey,
         tx_eid: i64,
     ) -> Self {
-        Self { snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid }
+        Self { snapshot, schema, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
     pub async fn from_latest_snapshot(
         snapshot: Arc<slatedb::DbSnapshot>,
-        ident_map: IdentMap,
-        entid_map: EntidMap,
-        attribute_map: AttributeMap,
+        schema: Arc<Schema>,
         handle: Handle,
     ) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
-        Ok(Self { snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid })
+        Ok(Self { snapshot, schema, handle, tx_key, tx_eid })
     }
 
     pub fn tx_key(&self) -> &TxKey {
@@ -92,8 +86,7 @@ impl DB {
     pub async fn entity(&self, eid: Entid) -> Result<HashMap<String, Binding>, Error> {
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
-        let entid_map = self.entid_map.clone();
-        let attribute_map = self.attribute_map.clone();
+        let schema = self.schema.clone();
         let as_of = self.tx_eid;
 
         // Build EAV prefix: [EAV byte][encoded entity_id]
@@ -124,8 +117,9 @@ impl DB {
                         let mut cursor: &[u8] = &extracted;
                         let attr_id = decode_i64(&mut cursor)?;
                         let value = decode_datatype(&mut cursor)?;
-                        if let Some(name) = entid_map.get(&attr_id) {
-                            let multival = attribute_map
+                        if let Some(name) = schema.entid_map.get(&attr_id) {
+                            let multival = schema
+                                .attribute_map
                                 .get(&attr_id)
                                 .map(|a| a.multival)
                                 .unwrap_or(false);
@@ -166,12 +160,12 @@ impl Database for DB {
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
-        let ident_map = self.ident_map.clone();
+        let schema = self.schema.clone();
         let query = query.clone();
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &ident_map, as_of)
+            execute_query(&query, snapshot, handle, &schema.ident_map, as_of)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -280,25 +274,19 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let (ident_map, entid_map, attribute_map) = {
-            let indexer = self.indexer.read().await;
-            let schema = &indexer.metadata().schema;
-            (schema.ident_map.clone(), schema.entid_map.clone(), schema.attribute_map.clone())
-        };
+        // TODO: store schema as Arc<Schema> in the indexer to avoid this full clone.
+        let schema = Arc::new(self.indexer.read().await.metadata().schema.clone());
         let handle = Handle::current();
-        DB::from_latest_snapshot(snapshot, ident_map, entid_map, attribute_map, handle).await
+        DB::from_latest_snapshot(snapshot, schema, handle).await
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let (ident_map, entid_map, attribute_map) = {
-            let indexer = self.indexer.read().await;
-            let schema = &indexer.metadata().schema;
-            (schema.ident_map.clone(), schema.entid_map.clone(), schema.attribute_map.clone())
-        };
+        // TODO: store schema as Arc<Schema> in the indexer to avoid this full clone.
+        let schema = Arc::new(self.indexer.read().await.metadata().schema.clone());
         let handle = Handle::current();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, ident_map, entid_map, attribute_map, handle, tx_key, tx_eid))
+        Ok(DB::new(snapshot, schema, handle, tx_key, tx_eid))
     }
 }
 
