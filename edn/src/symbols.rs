@@ -426,10 +426,10 @@ impl FromStr for Keyword {
     }
 }
 
-impl<'a> TryFrom<&'a str> for Keyword {
+impl TryFrom<&str> for Keyword {
     type Error = KeywordParseError;
 
-    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         Keyword::from_str(s)
     }
 }

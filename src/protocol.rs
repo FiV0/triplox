@@ -607,7 +607,7 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
         TAG_MAP => Ok(DataType::Map(decode_data_type_map(cursor)?)),
         TAG_KEYWORD => {
             let s = cursor.read_string()?;
-            Ok(DataType::Keyword(Keyword::from_str(&s).map_err(|e| anyhow!("{}", e))?))
+            Ok(DataType::Keyword(Keyword::from_str(&s)?))
         }
         _ => bail!("Unknown DataType tag: {}", tag),
     }
@@ -645,8 +645,7 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 
 fn decode_eav(cursor: &mut Cursor) -> Result<(i64, Keyword, DataType)> {
     let entity_id = cursor.read_i64()?;
-    let attribute_str = cursor.read_string()?;
-    let attribute = Keyword::from_str(&attribute_str).map_err(|e| anyhow!("{}", e))?;
+    let attribute = Keyword::from_str(&cursor.read_string()?)?;
     let value = decode_data_type(cursor)?;
     Ok((entity_id, attribute, value))
 }

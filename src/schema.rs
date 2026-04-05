@@ -238,7 +238,7 @@ impl Schema {
     /// For each datom:
     /// 1. Type-check value against attribute's value_type, error on unknown attributes
     /// 2. Witness schema-related datoms into two streams:
-    ///    - Ident stream: db/ident → pending (i64, String) pairs
+    ///    - Ident stream: db/ident → pending (i64, Keyword) pairs
     ///    - Attribute stream: db/valueType, db/cardinality → AttributeBuilder per entity
     pub fn validate_and_prepare(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
         let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
