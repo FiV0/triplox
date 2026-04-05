@@ -11,13 +11,13 @@ use log::{error, trace, warn};
 use edn::kw;
 
 use crate::log::{Record, Subscriber};
+use crate::metadata::Metadata;
 use crate::ops::{Datom, DatomOp, TxOp, tx_ops_to_datoms};
-use crate::partition::{resolve_entity_ids, allocate_counter, make_entity_id, partition_entity_prefix, TX_PARTITION};
+use crate::partition::{resolve_entity_ids, partition_entity_prefix, TX_PARTITION};
 use crate::codec::{self, Encode, encode_i64, encode_i64_bytes, encode_datatype, decode_i64, decode_datatype};
 use crate::iterator::temporal_filter_iterator;
-use crate::partition::PartitionCounters;
 use edn::symbols::Keyword;
-use crate::schema::SchemaCache;
+use crate::schema::Schema;
 use crate::transaction::TxKey;
 use crate::ops::DataType;
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
@@ -25,8 +25,7 @@ use crate::util::concat_bytes;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
-    schema_cache: SchemaCache,
-    counters: PartitionCounters,
+    metadata: Metadata,
     latest_indexed_tx: Option<TxKey>,
     tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
@@ -35,7 +34,7 @@ pub struct Indexer {
 pub(crate) fn write_index_entries(
     txn: &slatedb::DbTransaction,
     datoms: &[Datom],
-    schema_cache: &SchemaCache,
+    schema: &Schema,
     tx_eid: i64,
 ) -> Result<(), Error> {
     let tx_eid_bytes = encode_i64_bytes(tx_eid);
@@ -44,9 +43,9 @@ pub(crate) fn write_index_entries(
         // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
         // Revisit with schema/custom encoding.
         let entity_id = DataType::Long(datom.entity).encode();
-        let attribute_id = schema_cache
-            .get(&datom.attribute)
-            .map(|a| a.entity_id)
+        let attribute_id = schema
+            .get_attribute(&datom.attribute)
+            .map(|(eid, _)| eid)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
         let attribute = encode_i64_bytes(attribute_id);
         let mut value = Vec::new();
@@ -173,19 +172,18 @@ fn build_tx_entity_datoms(
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, schema_cache: SchemaCache, counters: PartitionCounters, latest_indexed_tx: Option<TxKey>) -> Self {
+    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: Option<TxKey>) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
-            schema_cache,
-            counters,
+            metadata,
             latest_indexed_tx,
             tx_completion_sender,
         }
     }
 
-    pub fn schema_cache(&self) -> &SchemaCache {
-        &self.schema_cache
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Transact a set of operations, automatically retracting old values for
@@ -206,21 +204,21 @@ impl Indexer {
     }
 
     async fn transact_tx_inner(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        // TODO: resolve_entity_ids + tx_ops_to_datoms should be unified into a single pass
-        // Use a temporary copy of counters; only persist advances after successful commit.
-        let mut pending_counters = self.counters.clone();
-        let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_counters)?;
+        // 1. Clone PartitionMap + allocate tx entity
+        let mut pending_pm = self.metadata.partition_map.clone();
+        let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
-        // Allocate tx_eid early so it can be used in both user datoms and tx entity datoms
-        let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(&mut pending_counters, TX_PARTITION));
+        // 2. Resolve entity IDs
+        let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_pm)?;
+
+        // 3. Expand to datoms + build tx entity datoms
         let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_eid)?;
+        datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // Build first-class transaction entity in TX_PARTITION
-        let tx_entity_datoms = build_tx_entity_datoms(tx_eid, tx_key, true, None);
-        datoms.extend(tx_entity_datoms);
+        // 4. Validate + prepare schema update (single pass, pre-commit, fallible)
+        let schema_update = self.metadata.schema.validate_and_prepare(&datoms)?;
 
-        let new_schema_attrs = self.schema_cache.validate_tx(&datoms)?;
-
+        // 5. Cardinality resolution (existing EAV scan for card-one auto-retract)
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
 
         // For each Assert datom, scan EAV for the current value of (entity, attribute).
@@ -234,17 +232,16 @@ impl Indexer {
                 resolved_datoms.insert(datom);
                 continue;
             }
-            let attr_schema = self.schema_cache
-                .get(&datom.attribute)
+            let (attribute_id, attr) = self.metadata.schema
+                .get_attribute(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
 
             // Cardinality-many attributes accumulate values without retraction.
-            if attr_schema.cardinality == crate::schema::Cardinality::Many {
+            if attr.multival {
                 resolved_datoms.insert(datom);
                 continue;
             }
 
-            let attribute_id = attr_schema.entity_id;
             let entity_id_bytes = DataType::Long(datom.entity).encode();
             let attr_id_bytes = encode_i64_bytes(attribute_id);
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
@@ -297,16 +294,16 @@ impl Indexer {
         }
         let datoms: Vec<Datom> = resolved_datoms.into_iter().collect();
 
-        write_index_entries(&txn, &datoms, &self.schema_cache, tx_eid)?;
-
+        // 6. Write indices + commit
+        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
-        // Commit succeeded — advance partition counters.
-        self.counters = pending_counters;
-
-        // Update schema cache after commit so new attributes are only visible
-        // in subsequent transactions.
-        self.schema_cache.process_tx(new_schema_attrs);
+        // 7. Apply on success only (infallible — validation already passed)
+        self.metadata.partition_map = pending_pm;
+        if !schema_update.is_empty() {
+            self.metadata.schema.apply_schema_update(schema_update);
+            self.metadata.advance_generation();
+        }
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
@@ -340,13 +337,14 @@ impl Indexer {
 
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
     async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
-        let mut pending_counters = self.counters.clone();
-        let tx_eid = make_entity_id(TX_PARTITION, allocate_counter(&mut pending_counters, TX_PARTITION));
+        let mut pending_pm = self.metadata.partition_map.clone();
+        let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
         let datoms = build_tx_entity_datoms(tx_eid, tx_key, false, Some(error));
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
-        write_index_entries(&txn, &datoms, &self.schema_cache, tx_eid)?;
+        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
-        self.counters = pending_counters;
+        // No need to advance generation for aborted transactions
+        self.metadata.partition_map = pending_pm;
         self.latest_indexed_tx = Some(tx_key);
         Ok(())
     }
@@ -503,8 +501,8 @@ mod tests {
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
-        let (cache, counters) = crate::bootstrap::init_db(slate.clone()).await;
-        let mut indexer = Indexer::new(slate, cache, counters, None);
+        let metadata = crate::bootstrap::init_db(slate.clone()).await;
+        let mut indexer = Indexer::new(slate, metadata, None);
         let tx_key_0 = TxKey { tx_id: 0, system_time: st_from_unix_epoch(1) };
         indexer.transact_tx(tx_key_0, test_schema_tx()).await.unwrap();
         indexer
@@ -514,7 +512,7 @@ mod tests {
     async fn test_indexer() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
+        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
         let mut doc = BTreeMap::new();
         doc.insert("name".to_string(), DataType::String("alan".to_string()));
@@ -724,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn test_await_tx_timeout() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
-        let indexer = Indexer::new(slate.clone(), SchemaCache::new(), PartitionCounters::new(), None);
+        let indexer = Indexer::new(slate.clone(), Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()), None);
 
         let tx_key = TxKey { tx_id: 999, system_time: st_from_unix_epoch(999) };
 
@@ -795,7 +793,7 @@ mod tests {
     async fn test_retract_on_overwrite() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
+        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
 
         // First tx: assert name="alice" for a new entity (auto-assigned)
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
@@ -857,7 +855,7 @@ mod tests {
     async fn test_same_value_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.schema_cache().get("name").unwrap().entity_id;
+        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
 
         // First tx: assert name="alice" for a new entity
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
@@ -928,7 +926,7 @@ mod tests {
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity 2000, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
-        let tags_id = indexer.schema_cache().get("tags").unwrap().entity_id;
+        let tags_id = indexer.metadata().schema.get_attribute("tags").unwrap().0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         let mut retract_count = 0;
@@ -977,7 +975,7 @@ mod tests {
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity 2000, tags attr — expect 2 ADDs (both written)
-        let tags_id = indexer.schema_cache().get("tags").unwrap().entity_id;
+        let tags_id = indexer.metadata().schema.get_attribute("tags").unwrap().0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         while let Some(kv) = iter.next().await? {

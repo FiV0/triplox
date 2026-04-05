@@ -12,6 +12,7 @@ mod iterator;
 mod log;
 pub mod logging;
 mod memory_log;
+pub(crate) mod metadata;
 pub mod ops;
 pub mod partition;
 mod parse;

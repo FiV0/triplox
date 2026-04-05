@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,6 +13,7 @@ use tokio::sync::RwLock;
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
+use crate::schema::IdentMap;
 use crate::slate::{in_memory_slate, local_slate};
 pub use crate::transaction::{TransactionResult, TxKey};
 use tokio_util::sync::CancellationToken;
@@ -38,7 +38,7 @@ pub trait QueryNode {
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
-    attribute_map: HashMap<String, i64>,
+    ident_map: IdentMap,
     handle: Handle,
     tx_key: TxKey,
     tx_eid: i64,
@@ -46,14 +46,14 @@ pub struct DB {
 
 #[allow(unused)]
 impl DB {
-    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
-        Self { snapshot, attribute_map, handle, tx_key, tx_eid }
+    pub fn new(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle, tx_key: TxKey, tx_eid: i64) -> Self {
+        Self { snapshot, ident_map, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, attribute_map: HashMap<String, i64>, handle: Handle) -> Result<Self, Error> {
+    pub async fn from_latest_snapshot(snapshot: Arc<slatedb::DbSnapshot>, ident_map: IdentMap, handle: Handle) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
-        Ok(Self { snapshot, attribute_map, handle, tx_key, tx_eid })
+        Ok(Self { snapshot, ident_map, handle, tx_key, tx_eid })
     }
 
     pub fn tx_key(&self) -> &TxKey {
@@ -73,12 +73,12 @@ impl Database for DB {
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
-        let attribute_map = self.attribute_map.clone();
+        let ident_map = self.ident_map.clone();
         let query = query.clone();
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &attribute_map, as_of)
+            execute_query(&query, snapshot, handle, &ident_map, as_of)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -96,8 +96,8 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slatedb = Arc::new(in_memory_slate().await);
-        let (cache, counters) = crate::bootstrap::init_db(slatedb.clone()).await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, counters, None)));
+        let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), metadata, None)));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
@@ -113,7 +113,7 @@ impl Node<FileLog> {
         let db_path_str = db_path.to_str()
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
         let slatedb = Arc::new(local_slate(db_path_str).await);
-        let (cache, counters) = crate::bootstrap::init_db(slatedb.clone()).await;
+        let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
@@ -125,7 +125,7 @@ impl Node<FileLog> {
             None
         };
 
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), cache, counters, latest_indexed_tx)));
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(slatedb.clone(), metadata, latest_indexed_tx)));
         let log = Arc::new(RwLock::new(
             FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock))?,
         ));
@@ -187,17 +187,17 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
+        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
         let handle = Handle::current();
-        DB::from_latest_snapshot(snapshot, attribute_map, handle).await
+        DB::from_latest_snapshot(snapshot, ident_map, handle).await
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
         let snapshot = self.slatedb.snapshot().await?;
-        let attribute_map = self.indexer.read().await.schema_cache().attribute_map();
+        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
         let handle = Handle::current();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, attribute_map, handle, tx_key, tx_eid))
+        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid))
     }
 }
 
@@ -265,7 +265,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
-        let email_id = node.indexer.read().await.schema_cache().get("email").unwrap().entity_id;
+        let email_id = node.indexer.read().await.metadata().schema.get_attribute("email").unwrap().0;
 
         // Check EAV index — find entry for entity 2000
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();

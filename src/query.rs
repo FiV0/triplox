@@ -7,6 +7,8 @@ use std::sync::Arc;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
+use crate::schema::IdentMap;
+
 use edn::query::{
     Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin, Order, OrJoin,
     OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
@@ -110,7 +112,7 @@ fn pattern_variables(pattern: &Pattern) -> Vec<Variable> {
 /// Resolve attribute from a PatternNonValuePlace to an attribute ID.
 fn resolve_attribute_from_pattern(
     attr: &PatternNonValuePlace,
-    attribute_map: &HashMap<String, i64>,
+    ident_map: &IdentMap,
 ) -> Result<i64, Error> {
     match attr {
         PatternNonValuePlace::Ident(ref kw) => {
@@ -118,7 +120,7 @@ fn resolve_attribute_from_pattern(
                 Some(ns) => format!("{}/{}", ns, kw.name()),
                 None => kw.name().to_string(),
             };
-            attribute_map
+            ident_map
                 .get(&name)
                 .copied()
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", name))
@@ -1062,12 +1064,12 @@ fn compile_or_branch(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
-    attribute_map: &HashMap<String, i64>,
+    ident_map: &IdentMap,
     as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrWhereClause::Clause(clause) => {
-            compile_where_clause(clause, join_order, var_index, slate, handle, attribute_map, as_of)
+            compile_where_clause(clause, join_order, var_index, slate, handle, ident_map, as_of)
         }
         OrWhereClause::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
@@ -1079,7 +1081,7 @@ fn compile_or_branch(
                         var_index,
                         slate,
                         handle,
-                        attribute_map,
+                        ident_map,
                         as_of,
                     )
                 })
@@ -1096,12 +1098,12 @@ fn compile_where_clause(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<slatedb::DbSnapshot>,
     handle: &Handle,
-    attribute_map: &HashMap<String, i64>,
+    ident_map: &IdentMap,
     as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
         WhereClause::Pattern(pattern) => {
-            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, attribute_map)?;
+            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, ident_map)?;
             let extender = compile_pattern(
                 pattern,
                 join_order,
@@ -1124,7 +1126,7 @@ fn compile_where_clause(
                         var_index,
                         slate,
                         handle,
-                        attribute_map,
+                        ident_map,
                         as_of,
                     )
                 })
@@ -1142,7 +1144,7 @@ fn compile_where_clause(
                         var_index,
                         slate,
                         handle,
-                        attribute_map,
+                        ident_map,
                         as_of,
                     )
                 })
@@ -1172,7 +1174,7 @@ pub fn execute_query(
     query: &ParsedQuery,
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
-    attribute_map: &HashMap<String, i64>,
+    ident_map: &IdentMap,
     as_of: i64,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order
@@ -1190,7 +1192,7 @@ pub fn execute_query(
             &var_index,
             &slate,
             &handle,
-            attribute_map,
+            ident_map,
             as_of,
         )?);
     }
