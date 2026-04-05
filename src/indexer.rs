@@ -300,8 +300,10 @@ impl Indexer {
 
         // 7. Apply on success only (infallible — validation already passed)
         self.metadata.partition_map = pending_pm;
-        self.metadata.schema.apply_schema_update(schema_update);
-        self.metadata.advance_generation();
+        if !schema_update.is_empty() {
+            self.metadata.schema.apply_schema_update(schema_update);
+            self.metadata.advance_generation();
+        }
 
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = Some(tx_key);
