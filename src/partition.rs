@@ -190,7 +190,8 @@ mod tests {
     // --- resolve_entity_ids tests ---
 
     use std::collections::BTreeMap;
-    use crate::ops::{TxOp, DataType, Attribute};
+    use crate::ops::{TxOp, DataType};
+    use edn::kw;
 
     #[test]
     fn test_resolve_entity_ids_explicit_id_passthrough() {
@@ -283,12 +284,12 @@ mod tests {
         let ops = vec![
             TxOp::Add {
                 entity_id: 100,
-                attribute: Attribute("name".into()),
+                attribute: kw!(:name),
                 value: DataType::String("alice".into()),
             },
             TxOp::Retract {
                 entity_id: 100,
-                attribute: Attribute("name".into()),
+                attribute: kw!(:name),
                 value: DataType::String("alice".into()),
             },
         ];

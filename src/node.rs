@@ -210,7 +210,7 @@ mod tests {
     use crate::codec;
     use crate::parse::parse_query;
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{Attribute, DataType, TxOp};
+    use crate::ops::{DataType, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -257,7 +257,7 @@ mod tests {
         // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
             entity_id: 2000,
-            attribute: Attribute("email".to_string()),
+            attribute: kw!(:email),
             value: DataType::String("test@example.com".to_string()),
         }];
 
@@ -265,7 +265,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let slate = node.slatedb.clone();
-        let email_id = node.indexer.read().await.metadata().schema.get_attribute("email").unwrap().0;
+        let email_id = node.indexer.read().await.metadata().schema.get_attribute(&kw!(:email)).unwrap().0;
 
         // Check EAV index — find entry for entity 2000
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await.unwrap();
@@ -955,14 +955,14 @@ mod tests {
         // Insert entity 2000 with tags="rust"
         node.execute_tx(vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("rust".to_string()),
         }]).await.unwrap();
 
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("database".to_string()),
         }]).await.unwrap();
 

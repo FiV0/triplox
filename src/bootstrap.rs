@@ -93,6 +93,7 @@ mod tests {
     use super::*;
     use crate::partition::DB_PARTITION;
     use crate::slate::in_memory_slate;
+    use edn::kw;
 
     #[tokio::test]
     async fn test_init_db_fresh() {
@@ -100,18 +101,18 @@ mod tests {
         let metadata = init_db(slatedb).await;
         // Bootstrap defines 7 schema attributes (3 core + 4 tx)
         assert_eq!(metadata.schema.len(), 7);
-        assert!(metadata.schema.get_attribute("db/ident").is_some());
-        assert!(metadata.schema.get_attribute("db/valueType").is_some());
-        assert!(metadata.schema.get_attribute("db/cardinality").is_some());
-        assert!(metadata.schema.get_attribute("db/txInstant").is_some());
-        assert!(metadata.schema.get_attribute("db/txId").is_some());
-        assert!(metadata.schema.get_attribute("db/txResult").is_some());
-        assert!(metadata.schema.get_attribute("db.tx/error").is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/valueType)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/cardinality)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db.tx/error)).is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
         assert_eq!(metadata.partition_map[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
         // Enum entities are in ident_map but not attribute_map
-        assert!(metadata.schema.ident_map.contains_key("db.type/string"));
-        assert!(metadata.schema.get_attribute("db.type/string").is_none());
+        assert!(metadata.schema.ident_map.contains_key(&kw!(:db.type/string)));
+        assert!(metadata.schema.get_attribute(&kw!(:db.type/string)).is_none());
     }
 
     #[tokio::test]

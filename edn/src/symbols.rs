@@ -13,8 +13,38 @@ use std::fmt::{
     Formatter,
     Write,
 };
+use std::str::FromStr;
 
 use crate::namespaceable_name::NamespaceableName;
+
+/// Error returned when a string cannot be parsed as a `Keyword`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeywordParseError {
+    /// Input did not start with `:`.
+    MissingColonPrefix,
+    /// The namespace part (before `/`) was empty.
+    EmptyNamespace,
+    /// The name part was empty.
+    EmptyName,
+}
+
+impl Display for KeywordParseError {
+    fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result {
+        match self {
+            KeywordParseError::MissingColonPrefix => {
+                write!(f, "keyword must start with ':'")
+            }
+            KeywordParseError::EmptyNamespace => {
+                write!(f, "keyword namespace cannot be empty")
+            }
+            KeywordParseError::EmptyName => {
+                write!(f, "keyword name cannot be empty")
+            }
+        }
+    }
+}
+
+impl std::error::Error for KeywordParseError {}
 
 /// Construct a `Keyword` from a Clojure-like literal syntax.
 ///
@@ -355,6 +385,52 @@ impl Display for NamespacedSymbol {
     /// ```
     fn fmt(&self, f: &mut Formatter) -> ::std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl FromStr for Keyword {
+    type Err = KeywordParseError;
+
+    /// Parse a keyword from its EDN Display form, e.g. `:foo/bar` or `:baz`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use std::str::FromStr;
+    /// # use edn::symbols::Keyword;
+    /// assert_eq!(Keyword::from_str(":foo/bar").unwrap(), Keyword::namespaced("foo", "bar"));
+    /// assert_eq!(Keyword::from_str(":baz").unwrap(), Keyword::plain("baz"));
+    /// assert!(Keyword::from_str("foo/bar").is_err());
+    /// assert!(Keyword::from_str(":/bar").is_err());
+    /// assert!(Keyword::from_str(":foo/").is_err());
+    /// ```
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.strip_prefix(':').ok_or(KeywordParseError::MissingColonPrefix)?;
+        match s.split_once('/') {
+            Some((ns, name)) => {
+                if ns.is_empty() {
+                    return Err(KeywordParseError::EmptyNamespace);
+                }
+                if name.is_empty() {
+                    return Err(KeywordParseError::EmptyName);
+                }
+                Ok(Keyword::namespaced(ns, name))
+            }
+            None => {
+                if s.is_empty() {
+                    return Err(KeywordParseError::EmptyName);
+                }
+                Ok(Keyword::plain(s))
+            }
+        }
+    }
+}
+
+impl TryFrom<&str> for Keyword {
+    type Error = KeywordParseError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Keyword::from_str(s)
     }
 }
 
