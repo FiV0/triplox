@@ -1,18 +1,17 @@
 #[allow(unused_imports)]
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
+use edn::symbols::Keyword;
 #[allow(unused_imports)]
-use edn::symbols::{Keyword, NamespacedSymbol};
+use edn::symbols::NamespacedSymbol;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 use uuid::Uuid;
 use anyhow::Result;
 
 pub type Entid = i64;
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Attribute(pub String);
 
 // TODO: Ref commented out for now — entity refs are stored as DataType::Long.
 // Revisit when schema is added (ref-typed attributes should use entity encoding).
@@ -159,8 +158,8 @@ impl_from_for_enum!(
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(BTreeMap<String, DataType>),
-    Add { entity_id: Entid, attribute: Attribute, value: DataType },
-    Retract { entity_id: Entid, attribute: Attribute, value: DataType },
+    Add { entity_id: Entid, attribute: Keyword, value: DataType },
+    Retract { entity_id: Entid, attribute: Keyword, value: DataType },
     Delete(Entid),
     Erase(Entid),
 }
@@ -172,11 +171,11 @@ pub enum DatomOp {
 }
 
 /// A normalized fact: (entity, attribute, value, tx, op).
-/// The attribute is an unresolved string name.
+/// The attribute is an unresolved keyword ident.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Datom {
     pub entity: i64,
-    pub attribute: String, // TODO(triplox-gaz): avoid cloning, consider Cow or interning
+    pub attribute: Keyword,
     pub value: DataType,
     pub tx: i64,
     pub op: DatomOp,
@@ -198,9 +197,11 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
                 for (attr, value) in doc.iter().filter(|(k, _)| *k != "db/id") {
+                    let kw = Keyword::from_str(&format!(":{}", attr))
+                        .map_err(|e| anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, e))?;
                     datoms.push(Datom {
                         entity,
-                        attribute: attr.clone(),
+                        attribute: kw,
                         value: value.clone(),
                         tx,
                         op: DatomOp::Assert,
@@ -210,7 +211,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
             TxOp::Add { entity_id, attribute, value } => {
                 datoms.push(Datom {
                     entity: *entity_id,
-                    attribute: attribute.0.clone(),
+                    attribute: attribute.clone(),
                     value: value.clone(),
                     tx,
                     op: DatomOp::Assert,
@@ -219,7 +220,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
             TxOp::Retract { entity_id, attribute, value } => {
                 datoms.push(Datom {
                     entity: *entity_id,
-                    attribute: attribute.0.clone(),
+                    attribute: attribute.clone(),
                     value: value.clone(),
                     tx,
                     op: DatomOp::Retract,
@@ -237,6 +238,7 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
 mod tests {
     use super::*;
     use bincode;
+    use edn::kw;
 
     #[test]
     fn test_partial_compare_same_type() {
@@ -312,7 +314,7 @@ mod tests {
     fn test_op_add() {
         let op = TxOp::Add {
             entity_id: 1,
-            attribute: Attribute("string".to_string()),
+            attribute: kw!(:string),
             value: DataType::String("string_value".to_string()),
         };
         let serialized = bincode::serialize(&op).unwrap();
@@ -324,7 +326,7 @@ mod tests {
     fn test_op_retract() {
         let op = TxOp::Retract {
             entity_id: 1,
-            attribute: Attribute("string".to_string()),
+            attribute: kw!(:string),
             value: DataType::String("string_value".to_string()),
         };
         let serialized = bincode::serialize(&op).unwrap();
@@ -369,14 +371,14 @@ mod tests {
         let tx = 1000_i64;
         let ops = vec![TxOp::Add {
             entity_id: 200,
-            attribute: Attribute("name".to_string()),
+            attribute: kw!(:name),
             value: DataType::String("bob".to_string()),
         }];
 
         let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].entity, 200);
-        assert_eq!(datoms[0].attribute, "name");
+        assert_eq!(datoms[0].attribute, kw!(:name));
         assert_eq!(datoms[0].value, DataType::String("bob".to_string()));
         assert_eq!(datoms[0].op, DatomOp::Assert);
     }
@@ -386,7 +388,7 @@ mod tests {
         let tx = 1000_i64;
         let ops = vec![TxOp::Retract {
             entity_id: 200,
-            attribute: Attribute("name".to_string()),
+            attribute: kw!(:name),
             value: DataType::String("bob".to_string()),
         }];
 

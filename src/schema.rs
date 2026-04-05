@@ -155,9 +155,9 @@ impl Cardinality {
 }
 
 /// ident → entity_id (ALL named entities: enums + schema attrs)
-pub type IdentMap = HashMap<String, i64>;
+pub type IdentMap = HashMap<Keyword, i64>;
 /// entity_id → ident (ALL named entities: enums + schema attrs)
-pub type EntidMap = HashMap<i64, String>;
+pub type EntidMap = HashMap<i64, Keyword>;
 /// entity_id → Attribute (only schema attributes with db/valueType)
 pub type AttributeMap = HashMap<i64, Attribute>;
 
@@ -202,7 +202,7 @@ impl AttributeBuilder {
 /// Pre-validated schema changes, ready to apply after commit.
 #[derive(Debug)]
 pub struct SchemaUpdate {
-    pub(crate) idents: Vec<(i64, String)>,
+    pub(crate) idents: Vec<(i64, Keyword)>,
     pub(crate) attributes: Vec<(i64, Attribute)>,
 }
 
@@ -222,7 +222,7 @@ pub struct Schema {
 
 impl Schema {
     /// Two-step lookup: ident → entity_id via ident_map, then entity_id → Attribute via attribute_map.
-    pub fn get_attribute(&self, ident: &str) -> Option<(i64, &Attribute)> {
+    pub fn get_attribute(&self, ident: &Keyword) -> Option<(i64, &Attribute)> {
         let eid = self.ident_map.get(ident)?;
         let attr = self.attribute_map.get(eid)?;
         Some((*eid, attr))
@@ -241,8 +241,12 @@ impl Schema {
     ///    - Ident stream: db/ident → pending (i64, String) pairs
     ///    - Attribute stream: db/valueType, db/cardinality → AttributeBuilder per entity
     pub fn validate_and_prepare(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
-        let mut ident_updates: Vec<(i64, String)> = Vec::new();
+        let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
         let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
+
+        let db_ident = kw!(:db/ident);
+        let db_value_type = kw!(:db/valueType);
+        let db_cardinality = kw!(:db/cardinality);
 
         for datom in datoms {
             if datom.op != DatomOp::Assert {
@@ -268,7 +272,10 @@ impl Schema {
                         datom.attribute, attr.value_type, datom.value
                     ));
                 }
-            } else if !matches!(datom.attribute.as_str(), "db/ident" | "db/valueType" | "db/cardinality") {
+            } else if datom.attribute != db_ident
+                && datom.attribute != db_value_type
+                && datom.attribute != db_cardinality
+            {
                 return Err(anyhow::anyhow!("Unknown attribute: {}", datom.attribute));
             }
 
@@ -277,38 +284,29 @@ impl Schema {
             // db/valueType + db/cardinality) also has a db/ident. Bootstrap entities
             // always include one, but user-defined attributes could be installed without
             // a name. Not an issue for correctness, but maybe worth enforcing.
-            match datom.attribute.as_str() {
-                "db/ident" => {
-                    // TODO: should match against a namespaced Keyword and use its
-                    // namespace/name directly instead of string-stripping the colon prefix.
-                    match &datom.value {
-                        DataType::Keyword(kw) => {
-                            let s = kw.to_string();
-                            let ident = s.strip_prefix(':').unwrap_or(&s).to_string();
-                            ident_updates.push((datom.entity, ident));
-                        }
-                        _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
+            if datom.attribute == db_ident {
+                match &datom.value {
+                    DataType::Keyword(kw) => {
+                        ident_updates.push((datom.entity, kw.clone()));
                     }
+                    _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
                 }
-                "db/valueType" => {
-                    match &datom.value {
-                        DataType::Keyword(kw) => {
-                            let vt = ValueType::from_keyword(kw)?;
-                            builders.entry(datom.entity).or_default().value_type = Some(vt);
-                        }
-                        _ => return Err(anyhow::anyhow!("db/valueType must be a Keyword")),
+            } else if datom.attribute == db_value_type {
+                match &datom.value {
+                    DataType::Keyword(kw) => {
+                        let vt = ValueType::from_keyword(kw)?;
+                        builders.entry(datom.entity).or_default().value_type = Some(vt);
                     }
+                    _ => return Err(anyhow::anyhow!("db/valueType must be a Keyword")),
                 }
-                "db/cardinality" => {
-                    match &datom.value {
-                        DataType::Keyword(kw) => {
-                            let card = Cardinality::from_keyword(kw)?;
-                            builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
-                        }
-                        _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
+            } else if datom.attribute == db_cardinality {
+                match &datom.value {
+                    DataType::Keyword(kw) => {
+                        let card = Cardinality::from_keyword(kw)?;
+                        builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
                     }
+                    _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
                 }
-                _ => {}
             }
         }
 
@@ -322,8 +320,8 @@ impl Schema {
                 // Find the ident for better error messages
                 let ident = ident_updates.iter()
                     .find(|(eid, _)| *eid == entity_id)
-                    .map(|(_, name)| name.as_str())
-                    .unwrap_or("<unknown>");
+                    .map(|(_, kw)| kw.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
                 anyhow::anyhow!("{} for '{}'", e, ident)
             })?;
             attribute_updates.push((entity_id, builder.build()));
@@ -449,10 +447,10 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// so the inefficiency is minor, but a single-pass approach would be cleaner.
 pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
-    let mut bootstrap_ident_map = HashMap::new();
-    bootstrap_ident_map.insert("db/ident".to_string(), DB_IDENT);
-    bootstrap_ident_map.insert("db/valueType".to_string(), DB_VALUE_TYPE);
-    bootstrap_ident_map.insert("db/cardinality".to_string(), DB_CARDINALITY);
+    let mut bootstrap_ident_map: IdentMap = HashMap::new();
+    bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
+    bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
+    bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
     let handle = Handle::current();
 
@@ -492,11 +490,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             other => panic!("Expected Long for entity_id, got {:?}", other),
         };
         let ident = match &row[1] {
-            DataType::Keyword(kw) => {
-                let s = kw.to_string();
-                // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
-                s.strip_prefix(':').unwrap_or(&s).to_string()
-            }
+            DataType::Keyword(kw) => kw.clone(),
             other => panic!("Expected Keyword for ident, got {:?}", other),
         };
         schema.ident_map.insert(ident.clone(), entity_id);
@@ -579,21 +573,21 @@ mod tests {
         // 7 schema attrs (3 core + 4 tx); enum entities go into ident_map but not attribute_map
         assert_eq!(schema.len(), 7);
 
-        let (eid, attr) = schema.get_attribute("db/ident").unwrap();
+        let (eid, attr) = schema.get_attribute(&kw!(:db/ident)).unwrap();
         assert_eq!(eid, DB_IDENT);
         assert_eq!(attr.value_type, ValueType::Keyword);
 
-        let (eid, attr) = schema.get_attribute("db/valueType").unwrap();
+        let (eid, attr) = schema.get_attribute(&kw!(:db/valueType)).unwrap();
         assert_eq!(eid, DB_VALUE_TYPE);
         assert_eq!(attr.value_type, ValueType::Keyword);
 
-        let (eid, attr) = schema.get_attribute("db/cardinality").unwrap();
+        let (eid, attr) = schema.get_attribute(&kw!(:db/cardinality)).unwrap();
         assert_eq!(eid, DB_CARDINALITY);
         assert_eq!(attr.value_type, ValueType::Keyword);
 
         // Enum entities are in ident_map but not attribute_map
-        assert!(schema.ident_map.contains_key("db.type/string"));
-        assert_eq!(schema.ident_map["db.type/string"], DB_TYPE_STRING);
+        assert!(schema.ident_map.contains_key(&kw!(:db.type/string)));
+        assert_eq!(schema.ident_map[&kw!(:db.type/string)], DB_TYPE_STRING);
     }
 
     #[test]
@@ -601,7 +595,7 @@ mod tests {
         let schema = bootstrapped_schema_with_person_name();
         assert_eq!(schema.len(), 8);
 
-        let (_eid, attr) = schema.get_attribute("name").unwrap();
+        let (_eid, attr) = schema.get_attribute(&kw!(:name)).unwrap();
         assert_eq!(attr.value_type, ValueType::String);
     }
 
@@ -609,9 +603,9 @@ mod tests {
     fn test_enum_entity_not_in_attribute_map() {
         let schema = bootstrapped_schema();
         // enum entities have db/ident but no db/valueType → not in attribute_map
-        assert!(schema.get_attribute("db.type/string").is_none());
+        assert!(schema.get_attribute(&kw!(:db.type/string)).is_none());
         // but they are in ident_map
-        assert!(schema.ident_map.contains_key("db.type/string"));
+        assert!(schema.ident_map.contains_key(&kw!(:db.type/string)));
     }
 
     #[test]
@@ -630,7 +624,7 @@ mod tests {
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("person/age".to_string(), DataType::Long(30));
         let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
-        assert!(err.to_string().contains("Unknown attribute: person/age"));
+        assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
 
     #[test]
@@ -653,7 +647,7 @@ mod tests {
     #[test]
     fn test_schema_immutability() {
         let schema = bootstrapped_schema_with_person_name();
-        let (name_id, _) = schema.get_attribute("name").unwrap();
+        let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
 
         // Cannot redefine existing schema entity
         let mut doc = BTreeMap::new();

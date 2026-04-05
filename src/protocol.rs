@@ -11,7 +11,9 @@ use edn::symbols::Keyword;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::ops::{Attribute, DataType, TxOp};
+use std::str::FromStr;
+
+use crate::ops::{DataType, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -406,9 +408,9 @@ fn encode_data_type_map(buf: &mut Vec<u8>, map: &BTreeMap<String, DataType>) {
 // Wire Encoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn encode_eav(buf: &mut Vec<u8>, entity_id: &i64, attribute: &Attribute, value: &DataType) {
+fn encode_eav(buf: &mut Vec<u8>, entity_id: &i64, attribute: &Keyword, value: &DataType) {
     encode_i64(buf, *entity_id);
-    encode_string(buf, &attribute.0);
+    encode_string(buf, &attribute.to_string());
     encode_data_type(buf, value);
 }
 
@@ -581,15 +583,6 @@ impl<'a> Cursor<'a> {
 // Wire Decoding: DataType
 // ---------------------------------------------------------------------------
 
-/// Parse a keyword string like ":foo/bar" or ":baz" into a Keyword.
-fn parse_keyword_string(s: &str) -> Result<Keyword> {
-    let s = s.strip_prefix(':').ok_or_else(|| anyhow!("Keyword must start with ':'"))?;
-    match s.split_once('/') {
-        Some((ns, name)) => Ok(Keyword::namespaced(ns, name)),
-        None => Ok(Keyword::plain(s)),
-    }
-}
-
 fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
     let tag = cursor.read_u8()?;
     match tag {
@@ -614,7 +607,7 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
         TAG_MAP => Ok(DataType::Map(decode_data_type_map(cursor)?)),
         TAG_KEYWORD => {
             let s = cursor.read_string()?;
-            Ok(DataType::Keyword(parse_keyword_string(&s)?))
+            Ok(DataType::Keyword(Keyword::from_str(&s).map_err(|e| anyhow!("{}", e))?))
         }
         _ => bail!("Unknown DataType tag: {}", tag),
     }
@@ -650,9 +643,10 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 // Wire Decoding: TxOp
 // ---------------------------------------------------------------------------
 
-fn decode_eav(cursor: &mut Cursor) -> Result<(i64, Attribute, DataType)> {
+fn decode_eav(cursor: &mut Cursor) -> Result<(i64, Keyword, DataType)> {
     let entity_id = cursor.read_i64()?;
-    let attribute = Attribute(cursor.read_string()?);
+    let attribute_str = cursor.read_string()?;
+    let attribute = Keyword::from_str(&attribute_str).map_err(|e| anyhow!("{}", e))?;
     let value = decode_data_type(cursor)?;
     Ok((entity_id, attribute, value))
 }
@@ -1226,7 +1220,7 @@ mod tests {
     fn test_tx_op_add() {
         let op = TxOp::Add {
             entity_id: 42,
-            attribute: Attribute("email".to_string()),
+            attribute: kw!(:email),
             value: DataType::String("test@example.com".to_string()),
         };
         assert_eq!(roundtrip_tx_op(&op), op);
@@ -1236,7 +1230,7 @@ mod tests {
     fn test_tx_op_retract() {
         let op = TxOp::Retract {
             entity_id: 42,
-            attribute: Attribute("email".to_string()),
+            attribute: kw!(:email),
             value: DataType::String("old@example.com".to_string()),
         };
         assert_eq!(roundtrip_tx_op(&op), op);

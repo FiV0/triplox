@@ -161,12 +161,12 @@ fn build_tx_entity_datoms(
         kw!(:db.tx/aborted)
     };
     let mut datoms = vec![
-        Datom { entity: tx_eid, attribute: "db/txInstant".into(), value: DataType::Instant(st), tx: tx_eid, op: DatomOp::Assert },
-        Datom { entity: tx_eid, attribute: "db/txId".into(), value: DataType::Long(tx_key.tx_id), tx: tx_eid, op: DatomOp::Assert },
-        Datom { entity: tx_eid, attribute: "db/txResult".into(), value: DataType::Keyword(result_kw), tx: tx_eid, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: kw!(:db/txInstant), value: DataType::Instant(st), tx: tx_eid, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: kw!(:db/txId), value: DataType::Long(tx_key.tx_id), tx: tx_eid, op: DatomOp::Assert },
+        Datom { entity: tx_eid, attribute: kw!(:db/txResult), value: DataType::Keyword(result_kw), tx: tx_eid, op: DatomOp::Assert },
     ];
     if let Some(err) = error {
-        datoms.push(Datom { entity: tx_eid, attribute: "db.tx/error".into(), value: DataType::String(err), tx: tx_eid, op: DatomOp::Assert });
+        datoms.push(Datom { entity: tx_eid, attribute: kw!(:db.tx/error), value: DataType::String(err), tx: tx_eid, op: DatomOp::Assert });
     }
     datoms
 }
@@ -512,7 +512,7 @@ mod tests {
     async fn test_indexer() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
+        let name_id = indexer.metadata().schema.get_attribute(&kw!(:name)).unwrap().0;
         let tx_key = TxKey { tx_id: 1, system_time: st_from_unix_epoch(2) };
         let mut doc = BTreeMap::new();
         doc.insert("name".to_string(), DataType::String("alan".to_string()));
@@ -793,7 +793,7 @@ mod tests {
     async fn test_retract_on_overwrite() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
+        let name_id = indexer.metadata().schema.get_attribute(&kw!(:name)).unwrap().0;
 
         // First tx: assert name="alice" for a new entity (auto-assigned)
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
@@ -855,7 +855,7 @@ mod tests {
     async fn test_same_value_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
-        let name_id = indexer.metadata().schema.get_attribute("name").unwrap().0;
+        let name_id = indexer.metadata().schema.get_attribute(&kw!(:name)).unwrap().0;
 
         // First tx: assert name="alice" for a new entity
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
@@ -911,7 +911,7 @@ mod tests {
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("rust".to_string()),
         }];
         indexer.transact_tx(tx1, tx_ops1).await?;
@@ -920,13 +920,13 @@ mod tests {
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("database".to_string()),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity 2000, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
-        let tags_id = indexer.metadata().schema.get_attribute("tags").unwrap().0;
+        let tags_id = indexer.metadata().schema.get_attribute(&kw!(:tags)).unwrap().0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         let mut retract_count = 0;
@@ -960,7 +960,7 @@ mod tests {
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("rust".to_string()),
         }];
         indexer.transact_tx(tx1, tx_ops1).await?;
@@ -969,13 +969,13 @@ mod tests {
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
             entity_id: 2000,
-            attribute: crate::ops::Attribute("tags".to_string()),
+            attribute: kw!(:tags),
             value: DataType::String("rust".to_string()),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity 2000, tags attr — expect 2 ADDs (both written)
-        let tags_id = indexer.metadata().schema.get_attribute("tags").unwrap().0;
+        let tags_id = indexer.metadata().schema.get_attribute(&kw!(:tags)).unwrap().0;
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
         let mut add_count = 0;
         while let Some(kv) = iter.next().await? {

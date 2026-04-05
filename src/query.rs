@@ -115,16 +115,10 @@ fn resolve_attribute_from_pattern(
     ident_map: &IdentMap,
 ) -> Result<i64, Error> {
     match attr {
-        PatternNonValuePlace::Ident(ref kw) => {
-            let name = match kw.namespace() {
-                Some(ns) => format!("{}/{}", ns, kw.name()),
-                None => kw.name().to_string(),
-            };
-            ident_map
-                .get(&name)
-                .copied()
-                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", name))
-        }
+        PatternNonValuePlace::Ident(ref kw) => ident_map
+            .get(kw.as_ref())
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", kw)),
         PatternNonValuePlace::Entid(id) => Ok(*id),
         _ => Err(anyhow::anyhow!("Attribute must be a keyword or entid")),
     }
