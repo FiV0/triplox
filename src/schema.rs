@@ -154,8 +154,6 @@ impl Cardinality {
     }
 }
 
-// --- Mentat-aligned type aliases ---
-
 /// ident → entity_id (ALL named entities: enums + schema attrs)
 pub type IdentMap = HashMap<String, i64>;
 /// entity_id → ident (ALL named entities: enums + schema attrs)
@@ -258,7 +256,11 @@ impl Schema {
                 ));
             }
 
-            // Type-check against known attributes (skip schema-defining attrs for new entities)
+            // Type-check against known attributes. The `else if` fallback exists only for
+            // the bootstrap transaction: db/ident, db/valueType, and db/cardinality are
+            // installed BY the bootstrap tx itself, so they aren't in attribute_map yet when
+            // we validate it.
+            // TODO: Make the bootstrap process resemble more what Mentat does and remove the else if fallback
             if let Some((_eid, attr)) = self.get_attribute(&datom.attribute) {
                 if !attr.value_type.matches(&datom.value) {
                     return Err(anyhow::anyhow!(
@@ -270,7 +272,11 @@ impl Schema {
                 return Err(anyhow::anyhow!("Unknown attribute: {}", datom.attribute));
             }
 
-            // Witness schema-related datoms
+            // Witness schema-related datoms.
+            // NOTE: we do not currently require that an attribute entity (one with
+            // db/valueType + db/cardinality) also has a db/ident. Bootstrap entities
+            // always include one, but user-defined attributes could be installed without
+            // a name. Not an issue for correctness, but maybe worth enforcing.
             match datom.attribute.as_str() {
                 "db/ident" => {
                     // TODO: should match against a namespaced Keyword and use its
