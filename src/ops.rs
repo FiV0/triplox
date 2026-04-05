@@ -175,7 +175,6 @@ pub enum DatomOp {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Datom {
     pub entity: i64,
-    // TODO(perf, triplox-gaz): Keyword::clone() still allocates (wraps String); revisit with interning.
     pub attribute: Keyword,
     pub value: DataType,
     pub tx: i64,
