@@ -7,6 +7,7 @@ use edn::symbols::NamespacedSymbol;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 use uuid::Uuid;
 use anyhow::Result;
 
@@ -180,32 +181,6 @@ pub struct Datom {
     pub op: DatomOp,
 }
 
-/// Parse a Put document key (e.g. `"name"`, `"db/ident"`) into a `Keyword`.
-///
-/// Put doc keys are stored without the leading `:` that `Keyword::from_str`
-/// expects, so we split on `/` directly and avoid the `format!(":{}", …)`
-/// allocation on the transaction hot path.
-fn parse_put_key(attr: &str) -> Result<Keyword> {
-    let bad = |reason: &str| anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, reason);
-    match attr.split_once('/') {
-        Some((ns, name)) => {
-            if ns.is_empty() {
-                return Err(bad("namespace cannot be empty"));
-            }
-            if name.is_empty() {
-                return Err(bad("name cannot be empty"));
-            }
-            Ok(Keyword::namespaced(ns, name))
-        }
-        None => {
-            if attr.is_empty() {
-                return Err(bad("name cannot be empty"));
-            }
-            Ok(Keyword::plain(attr))
-        }
-    }
-}
-
 /// Expand TxOps into a flat vec of Datoms.
 /// - Put(doc) → N Assert datoms (one per non-db/id field)
 /// - Add(triple) → 1 Assert datom
@@ -222,7 +197,12 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
                     None => return Err(anyhow::anyhow!("Document must have a db/id")),
                 };
                 for (attr, value) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                    let kw = parse_put_key(attr)?;
+                    // TODO(perf): allocates a fresh `:<attr>` String per attribute on the Put
+                    // hot path just to feed it to `Keyword::from_str`, which strips the `:`
+                    // and splits again. Could be replaced with a direct split-and-construct
+                    // once the Put doc key type is revisited (see client-side Keyword TODO).
+                    let kw = Keyword::from_str(&format!(":{}", attr))
+                        .map_err(|e| anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, e))?;
                     datoms.push(Datom {
                         entity,
                         attribute: kw,
