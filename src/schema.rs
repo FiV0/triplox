@@ -665,6 +665,7 @@ mod tests {
         assert!(!ValueType::Ref.matches(&DataType::String("x".into())));
     }
 
+    // TODO(#165): replace with from_entity_id test once db/valueType switches to ref
     #[test]
     fn test_value_type_from_keyword_ref() {
         assert_eq!(ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(), ValueType::Ref);
