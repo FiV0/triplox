@@ -10,15 +10,15 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use edn::kw;
 use edn::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{QueryNode, SubmitNode, TransactionResult};
 use triplox::ops::{DataType, TxOp};
-use triplox::schema;
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
-fn schema_attribute(id: i64, name: &str, value_type_id: i64) -> TxOp {
+fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert(
@@ -27,11 +27,11 @@ fn schema_attribute(id: i64, name: &str, value_type_id: i64) -> TxOp {
     );
     doc.insert(
         "db/valueType".to_string(),
-        DataType::Long(value_type_id),
+        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
     );
     doc.insert(
         "db/cardinality".to_string(),
-        DataType::Long(schema::DB_CARDINALITY_ONE),
+        DataType::Keyword(kw!(:db.cardinality/one)),
     );
     TxOp::Put(doc)
 }
@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
 
     // 1. Define schema attributes (entity IDs 50-51, above bootstrap range 1-31)
     let schema_ops = vec![
-        schema_attribute(50, "name", schema::DB_TYPE_STRING),
-        schema_attribute(51, "age", schema::DB_TYPE_LONG),
+        schema_attribute(50, "name", "string"),
+        schema_attribute(51, "age", "long"),
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {

@@ -237,8 +237,8 @@ mod tests {
         doc.insert("db/ident".to_string(), DataType::Keyword(
             edn::kw!(:my-attr),
         ));
-        doc.insert("db/valueType".to_string(), DataType::Long(
-            crate::schema::DB_TYPE_STRING,
+        doc.insert("db/valueType".to_string(), DataType::Keyword(
+            edn::kw!(:db.type/string),
         ));
         let ops = vec![TxOp::Put(doc)];
 

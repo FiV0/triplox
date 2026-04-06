@@ -23,11 +23,11 @@ them or changing their constraints. We call this deprecation guided schema evolu
 
 A **schema attribute** defines a named attribute that can appear on data entities. It is itself an entity with three required properties:
 
-| Property    | Key                | Value Type | Description                                          |
-|-------------|--------------------|------------|------------------------------------------------------|
-| Ident       | `db/ident`         | Keyword    | The attribute's name, e.g. `:person/name`            |
-| Value type  | `db/valueType`     | Ref        | Entity ref to a type enum, e.g. `11` (`:db.type/string`) |
-| Cardinality | `db/cardinality`   | Ref        | Entity ref: `30` (one) or `31` (many)                |
+| Property    | Key                | Value Type       | Description                                  |
+|-------------|--------------------|------------------|----------------------------------------------|
+| Ident       | `db/ident`         | Keyword          | The attribute's name, e.g. `:person/name`    |
+| Value type  | `db/valueType`     | Keyword          | The type of values, e.g. `:db.type/string`   |
+| Cardinality | `db/cardinality`   | Long (entity ref) | `30` (one) or `31` (many)                   |
 
 An entity becomes a schema attribute when all three properties (`db/ident`, `db/valueType`, `db/cardinality`) are present.
 Initially the 3 attributes need to be asserted in the same transaction. In later stages we might want to allow for more
@@ -102,7 +102,7 @@ The bootstrap transaction installs two enum entities representing transaction ou
 
 `ValueType::Ref` is a supported schema type. Ref values are stored as `DataType::Long` with the same byte-level encoding (same tag). The schema is the sole authority on whether a Long value is an entity reference — this allows ref values and entity IDs to unify at the byte level in the generic join algorithm without special-casing.
 
-`db/valueType` and `db/cardinality` are ref-typed attributes whose values are entity IDs pointing to the enum entities defined in the bootstrap transaction (e.g. `11` for `:db.type/string`, `30` for `:db.cardinality/one`). `db.tx/result` still uses keyword values; it could be migrated to ref in the future.
+Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future these attributes could become `ref`-typed with their values being entity IDs rather than keywords.
 
 ---
 

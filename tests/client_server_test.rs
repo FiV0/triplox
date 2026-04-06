@@ -289,24 +289,24 @@ async fn test_dev_server_connections_are_isolated() {
     token.cancel();
 }
 
-async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype_id: i64) {
+async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
     doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
-    doc.insert("db/valueType".to_string(), DataType::Long(vtype_id));
-    doc.insert("db/cardinality".to_string(), DataType::Long(triplox::schema::DB_CARDINALITY_ONE));
+    doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
+    doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
     client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
 }
 
 async fn define_people_schema(client: &ClientNode) {
-    define_schema_attr(client, 54, "last-name", triplox::schema::DB_TYPE_STRING).await;
-    define_schema_attr(client, 55, "sex", triplox::schema::DB_TYPE_KEYWORD).await;
-    define_schema_attr(client, 56, "salary", triplox::schema::DB_TYPE_LONG).await;
-    define_schema_attr(client, 57, "city", triplox::schema::DB_TYPE_STRING).await;
+    define_schema_attr(client, 54, "last-name", "string").await;
+    define_schema_attr(client, 55, "sex", "keyword").await;
+    define_schema_attr(client, 56, "salary", "long").await;
+    define_schema_attr(client, 57, "city", "string").await;
 }
 
 async fn define_heads_schema(client: &ClientNode) {
-    define_schema_attr(client, 58, "heads", triplox::schema::DB_TYPE_LONG).await;
+    define_schema_attr(client, 58, "heads", "long").await;
 }
 
 /// Mirror of Clojure test-query-using-keywords, exercised through the full
