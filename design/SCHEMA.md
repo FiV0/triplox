@@ -35,22 +35,22 @@ granular schema evolvement. This will require more work in the indexer so likely
 
 ### 1.1 Supported Value Types
 
-| Keyword              | Description                          |
-|----------------------|--------------------------------------|
-| `:db.type/keyword`   | EDN keyword                          |
-| `:db.type/string`    | UTF-8 string                         |
-| `:db.type/long`      | 64-bit signed integer                |
-| `:db.type/ref`       | Entity reference (stored as Long)    |
-| `:db.type/boolean`   | true / false                         |
-| `:db.type/double`    | 64-bit IEEE 754 float                |
-| `:db.type/float`     | 32-bit IEEE 754 float                |
-| `:db.type/instant`   | Timestamp (microseconds since epoch) |
-| `:db.type/uuid`      | 128-bit UUID                         |
-| `:db.type/bytes`     | Arbitrary binary data                |
-| `:db.type/bigint`    | Arbitrary precision integer          |
-| `:db.type/tuple`     | Ordered heterogeneous collection     |
-| `:db.type/vector`    | Ordered homogeneous collection       |
-| `:db.type/map`       | String-keyed map                     |
+| Keyword              | Description                                                       |
+|----------------------|-------------------------------------------------------------------|
+| `:db.type/keyword`   | EDN keyword                                                       |
+| `:db.type/string`    | UTF-8 string                                                      |
+| `:db.type/long`      | 64-bit signed integer                                             |
+| `:db.type/ref`       | Entity reference (same encoding as Long; schema-only distinction) |
+| `:db.type/boolean`   | true / false                                                      |
+| `:db.type/double`    | 64-bit IEEE 754 float                                             |
+| `:db.type/float`     | 32-bit IEEE 754 float                                             |
+| `:db.type/instant`   | Timestamp (microseconds since epoch)                              |
+| `:db.type/uuid`      | 128-bit UUID                                                      |
+| `:db.type/bytes`     | Arbitrary binary data                                             |
+| `:db.type/bigint`    | Arbitrary precision integer                                       |
+| `:db.type/tuple`     | Ordered heterogeneous collection                                  |
+| `:db.type/vector`    | Ordered homogeneous collection                                    |
+| `:db.type/map`       | String-keyed map                                                  |
 
 ### 1.2 Cardinality
 
@@ -100,7 +100,9 @@ The bootstrap transaction installs two enum entities representing transaction ou
 
 ### 2.2 Enums and References
 
-Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future we intend to support first-class enum entities and ref-typed attributes, at which point these attributes would become `ref`-typed and their values would be entity IDs rather than keywords.
+`ValueType::Ref` is a supported schema type. Ref values are stored as `DataType::Long` with the same byte-level encoding (same tag). The schema is the sole authority on whether a Long value is an entity reference — this allows ref values and entity IDs to unify at the byte level in the generic join algorithm without special-casing.
+
+Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future these attributes could become `ref`-typed with their values being entity IDs rather than keywords.
 
 ---
 
