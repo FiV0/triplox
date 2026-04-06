@@ -35,9 +35,7 @@ pub const DB_TYPE_VECTOR: i64 = 22;
 pub const DB_TYPE_MAP: i64 = 23;
 
 // Cardinality enum entities
-#[allow(dead_code)]
 pub const DB_CARDINALITY_ONE: i64 = 30;
-#[allow(dead_code)]
 pub const DB_CARDINALITY_MANY: i64 = 31;
 
 // Transaction schema attribute entities
@@ -94,31 +92,44 @@ impl std::fmt::Display for ValueType {
 }
 
 impl ValueType {
-    // TODO(triplox-r5a): In Datomic, db/valueType values are entity refs (Longs pointing to
-    // type enum entities like :db.type/string). We use keywords directly for now, which is
-    // simpler but diverges from the "everything is entities" model. Revisit when we add
-    // DataType::Ref and want schema-defining transactions to look like regular data.
-    /// Map a value type keyword (e.g. :db.type/string) to a ValueType.
-    pub fn from_keyword(kw: &Keyword) -> Result<Self> {
-        let s = kw.to_string();
-        // TODO: this destructing is brittle. Let's address it when we move to only use the EDN crate.
-        let s = s.strip_prefix(':').unwrap_or(&s);
-        match s {
-            "db.type/keyword" => Ok(ValueType::Keyword),
-            "db.type/string" => Ok(ValueType::String),
-            "db.type/long" => Ok(ValueType::Long),
-            "db.type/ref" => Ok(ValueType::Ref),
-            "db.type/boolean" => Ok(ValueType::Boolean),
-            "db.type/double" => Ok(ValueType::Double),
-            "db.type/float" => Ok(ValueType::Float),
-            "db.type/instant" => Ok(ValueType::Instant),
-            "db.type/uuid" => Ok(ValueType::Uuid),
-            "db.type/bytes" => Ok(ValueType::Bytes),
-            "db.type/bigint" => Ok(ValueType::BigInt),
-            "db.type/tuple" => Ok(ValueType::Tuple),
-            "db.type/vector" => Ok(ValueType::Vector),
-            "db.type/map" => Ok(ValueType::Map),
-            _ => Err(anyhow::anyhow!("Unknown value type keyword: {}", kw)),
+    /// Map a value type enum entity ID to a ValueType.
+    pub fn from_entity_id(id: i64) -> Result<Self> {
+        match id {
+            DB_TYPE_KEYWORD => Ok(ValueType::Keyword),
+            DB_TYPE_STRING => Ok(ValueType::String),
+            DB_TYPE_LONG => Ok(ValueType::Long),
+            DB_TYPE_REF => Ok(ValueType::Ref),
+            DB_TYPE_BOOLEAN => Ok(ValueType::Boolean),
+            DB_TYPE_DOUBLE => Ok(ValueType::Double),
+            DB_TYPE_FLOAT => Ok(ValueType::Float),
+            DB_TYPE_INSTANT => Ok(ValueType::Instant),
+            DB_TYPE_UUID => Ok(ValueType::Uuid),
+            DB_TYPE_BYTES => Ok(ValueType::Bytes),
+            DB_TYPE_BIGINT => Ok(ValueType::BigInt),
+            DB_TYPE_TUPLE => Ok(ValueType::Tuple),
+            DB_TYPE_VECTOR => Ok(ValueType::Vector),
+            DB_TYPE_MAP => Ok(ValueType::Map),
+            _ => Err(anyhow::anyhow!("Unknown value type entity ID: {}", id)),
+        }
+    }
+
+    /// Return the enum entity ID for this ValueType.
+    pub fn entity_id(&self) -> i64 {
+        match self {
+            ValueType::Keyword => DB_TYPE_KEYWORD,
+            ValueType::String => DB_TYPE_STRING,
+            ValueType::Long => DB_TYPE_LONG,
+            ValueType::Ref => DB_TYPE_REF,
+            ValueType::Boolean => DB_TYPE_BOOLEAN,
+            ValueType::Double => DB_TYPE_DOUBLE,
+            ValueType::Float => DB_TYPE_FLOAT,
+            ValueType::Instant => DB_TYPE_INSTANT,
+            ValueType::Uuid => DB_TYPE_UUID,
+            ValueType::Bytes => DB_TYPE_BYTES,
+            ValueType::BigInt => DB_TYPE_BIGINT,
+            ValueType::Tuple => DB_TYPE_TUPLE,
+            ValueType::Vector => DB_TYPE_VECTOR,
+            ValueType::Map => DB_TYPE_MAP,
         }
     }
 
@@ -148,14 +159,20 @@ impl std::fmt::Display for Cardinality {
 }
 
 impl Cardinality {
-    /// Map a cardinality keyword (e.g. :db.cardinality/one) to a Cardinality.
-    pub fn from_keyword(kw: &Keyword) -> Result<Self> {
-        let s = kw.to_string();
-        let s = s.strip_prefix(':').unwrap_or(&s);
-        match s {
-            "db.cardinality/one" => Ok(Cardinality::One),
-            "db.cardinality/many" => Ok(Cardinality::Many),
-            _ => Err(anyhow::anyhow!("Unknown cardinality keyword: {}", kw)),
+    /// Map a cardinality enum entity ID to a Cardinality.
+    pub fn from_entity_id(id: i64) -> Result<Self> {
+        match id {
+            DB_CARDINALITY_ONE => Ok(Cardinality::One),
+            DB_CARDINALITY_MANY => Ok(Cardinality::Many),
+            _ => Err(anyhow::anyhow!("Unknown cardinality entity ID: {}", id)),
+        }
+    }
+
+    /// Return the enum entity ID for this Cardinality.
+    pub fn entity_id(&self) -> i64 {
+        match self {
+            Cardinality::One => DB_CARDINALITY_ONE,
+            Cardinality::Many => DB_CARDINALITY_MANY,
         }
     }
 }
@@ -292,18 +309,18 @@ impl Schema {
                     _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
                 },
                 ("db", "valueType") => match &datom.value {
-                    DataType::Keyword(kw) => {
-                        let vt = ValueType::from_keyword(kw)?;
+                    DataType::Long(id) => {
+                        let vt = ValueType::from_entity_id(*id)?;
                         builders.entry(datom.entity).or_default().value_type = Some(vt);
                     }
-                    _ => return Err(anyhow::anyhow!("db/valueType must be a Keyword")),
+                    _ => return Err(anyhow::anyhow!("db/valueType must be a Ref (Long entity ID)")),
                 },
                 ("db", "cardinality") => match &datom.value {
-                    DataType::Keyword(kw) => {
-                        let card = Cardinality::from_keyword(kw)?;
+                    DataType::Long(id) => {
+                        let card = Cardinality::from_entity_id(*id)?;
                         builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
                     }
-                    _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
+                    _ => return Err(anyhow::anyhow!("db/cardinality must be a Ref (Long entity ID)")),
                 },
                 _ => {}
             }
@@ -354,17 +371,47 @@ impl Schema {
 
 // --- Bootstrap transaction builders ---
 
+/// Map a value type name (e.g. "string") to its enum entity ID.
+fn value_type_name_to_entity_id(name: &str) -> i64 {
+    match name {
+        "keyword" => DB_TYPE_KEYWORD,
+        "string" => DB_TYPE_STRING,
+        "long" => DB_TYPE_LONG,
+        "ref" => DB_TYPE_REF,
+        "boolean" => DB_TYPE_BOOLEAN,
+        "double" => DB_TYPE_DOUBLE,
+        "float" => DB_TYPE_FLOAT,
+        "instant" => DB_TYPE_INSTANT,
+        "uuid" => DB_TYPE_UUID,
+        "bytes" => DB_TYPE_BYTES,
+        "bigint" => DB_TYPE_BIGINT,
+        "tuple" => DB_TYPE_TUPLE,
+        "vector" => DB_TYPE_VECTOR,
+        "map" => DB_TYPE_MAP,
+        _ => panic!("Unknown value type name: {}", name),
+    }
+}
+
+/// Map a cardinality name ("one" or "many") to its enum entity ID.
+fn cardinality_name_to_entity_id(name: &str) -> i64 {
+    match name {
+        "one" => DB_CARDINALITY_ONE,
+        "many" => DB_CARDINALITY_MANY,
+        _ => panic!("Unknown cardinality name: {}", name),
+    }
+}
+
 /// Build a Put for a schema attribute without explicit db/id.
 fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
     let mut doc = BTreeMap::new();
     doc.insert("db/ident".to_string(), DataType::Keyword(ident));
     doc.insert(
         "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        DataType::Long(value_type_name_to_entity_id(value_type)),
     );
     doc.insert(
         "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
+        DataType::Long(cardinality_name_to_entity_id(cardinality)),
     );
     TxOp::Put(doc)
 }
@@ -388,11 +435,11 @@ fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp
     doc.insert("db/ident".to_string(), DataType::Keyword(ident));
     doc.insert(
         "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        DataType::Long(value_type_name_to_entity_id(value_type)),
     );
     doc.insert(
         "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
+        DataType::Long(DB_CARDINALITY_ONE),
     );
     TxOp::Put(doc)
 }
@@ -404,8 +451,8 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     vec![
         // Schema attribute entities
         bootstrap_schema_attribute(DB_IDENT, kw!(:db/ident), "keyword"),
-        bootstrap_schema_attribute(DB_VALUE_TYPE, kw!(:db/valueType), "keyword"),
-        bootstrap_schema_attribute(DB_CARDINALITY, kw!(:db/cardinality), "keyword"),
+        bootstrap_schema_attribute(DB_VALUE_TYPE, kw!(:db/valueType), "ref"),
+        bootstrap_schema_attribute(DB_CARDINALITY, kw!(:db/cardinality), "ref"),
         // Value type enum entities
         bootstrap_put(DB_TYPE_KEYWORD, kw!(:db.type/keyword)),
         bootstrap_put(DB_TYPE_STRING, kw!(:db.type/string)),
@@ -503,15 +550,15 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             other => panic!("Expected Long for entity_id, got {:?}", other),
         };
         let value_type = match &row[2] {
-            DataType::Keyword(kw) => {
-                ValueType::from_keyword(kw).unwrap_or_else(|e| panic!("Invalid value type: {}", e))
+            DataType::Long(id) => {
+                ValueType::from_entity_id(*id).unwrap_or_else(|e| panic!("Invalid value type: {}", e))
             }
-            other => panic!("Expected Keyword for valueType, got {:?}", other),
+            other => panic!("Expected Long (entity ref) for valueType, got {:?}", other),
         };
         let cardinality = match &row[3] {
-            DataType::Keyword(kw) => Cardinality::from_keyword(kw)
+            DataType::Long(id) => Cardinality::from_entity_id(*id)
                 .unwrap_or_else(|e| panic!("Invalid cardinality: {}", e)),
-            other => panic!("Expected Keyword for cardinality, got {:?}", other),
+            other => panic!("Expected Long (entity ref) for cardinality, got {:?}", other),
         };
 
         schema.attribute_map.insert(entity_id, Attribute {
@@ -577,11 +624,11 @@ mod tests {
 
         let (eid, attr) = schema.get_attribute(&kw!(:db/valueType)).unwrap();
         assert_eq!(eid, DB_VALUE_TYPE);
-        assert_eq!(attr.value_type, ValueType::Keyword);
+        assert_eq!(attr.value_type, ValueType::Ref);
 
         let (eid, attr) = schema.get_attribute(&kw!(:db/cardinality)).unwrap();
         assert_eq!(eid, DB_CARDINALITY);
-        assert_eq!(attr.value_type, ValueType::Keyword);
+        assert_eq!(attr.value_type, ValueType::Ref);
 
         // Enum entities are in ident_map but not attribute_map
         assert!(schema.ident_map.contains_key(&kw!(:db.type/string)));
@@ -651,8 +698,8 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(name_id));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/long)));
-        doc.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_LONG));
+        doc.insert("db/cardinality".to_string(), DataType::Long(DB_CARDINALITY_ONE));
         let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
@@ -668,8 +715,18 @@ mod tests {
     }
 
     #[test]
-    fn test_value_type_from_keyword_ref() {
-        assert_eq!(ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(), ValueType::Ref);
+    fn test_value_type_from_entity_id() {
+        assert_eq!(ValueType::from_entity_id(DB_TYPE_REF).unwrap(), ValueType::Ref);
+        assert_eq!(ValueType::from_entity_id(DB_TYPE_STRING).unwrap(), ValueType::String);
+        assert_eq!(ValueType::from_entity_id(DB_TYPE_LONG).unwrap(), ValueType::Long);
+        assert!(ValueType::from_entity_id(999).is_err());
+    }
+
+    #[test]
+    fn test_cardinality_from_entity_id() {
+        assert_eq!(Cardinality::from_entity_id(DB_CARDINALITY_ONE).unwrap(), Cardinality::One);
+        assert_eq!(Cardinality::from_entity_id(DB_CARDINALITY_MANY).unwrap(), Cardinality::Many);
+        assert!(Cardinality::from_entity_id(999).is_err());
     }
 
     #[test]
@@ -719,7 +776,7 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
+        doc.insert("db/valueType".to_string(), DataType::Long(DB_TYPE_STRING));
         // No db/cardinality
         let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));

@@ -803,8 +803,8 @@ mod tests {
         // Define "sex" attribute with keyword value type
         let mut sex_attr = BTreeMap::new();
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Long(crate::schema::DB_TYPE_KEYWORD));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Long(crate::schema::DB_CARDINALITY_ONE));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -841,8 +841,8 @@ mod tests {
 
         let mut sex_attr = BTreeMap::new();
         sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/keyword)));
-        sex_attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        sex_attr.insert("db/valueType".to_string(), DataType::Long(crate::schema::DB_TYPE_KEYWORD));
+        sex_attr.insert("db/cardinality".to_string(), DataType::Long(crate::schema::DB_CARDINALITY_ONE));
         node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
 
         let people = vec![
@@ -879,8 +879,8 @@ mod tests {
         // Define "last-name" attribute
         let mut attr = BTreeMap::new();
         attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:last-name)));
-        attr.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
-        attr.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
+        attr.insert("db/valueType".to_string(), DataType::Long(crate::schema::DB_TYPE_STRING));
+        attr.insert("db/cardinality".to_string(), DataType::Long(crate::schema::DB_CARDINALITY_ONE));
         node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
 
         // Insert entity 200 and entity 201 with last-names
