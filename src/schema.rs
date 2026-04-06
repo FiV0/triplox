@@ -57,8 +57,9 @@ pub enum ValueType {
     Keyword,
     String,
     Long,
-    // TODO: Ref commented out — entity refs stored as Long for now. Revisit with DataType::Ref.
-    // Ref,
+    // Ref shares the same byte-level encoding as Long (same tag). Differentiated only at the
+    // schema level: ref-typed attributes support entity joins and ident resolution.
+    Ref,
     Boolean,
     Double,
     Float,
@@ -77,6 +78,7 @@ impl std::fmt::Display for ValueType {
             ValueType::Keyword => write!(f, "keyword"),
             ValueType::String => write!(f, "string"),
             ValueType::Long => write!(f, "long"),
+            ValueType::Ref => write!(f, "ref"),
             ValueType::Boolean => write!(f, "boolean"),
             ValueType::Double => write!(f, "double"),
             ValueType::Float => write!(f, "float"),
@@ -105,7 +107,7 @@ impl ValueType {
             "db.type/keyword" => Ok(ValueType::Keyword),
             "db.type/string" => Ok(ValueType::String),
             "db.type/long" => Ok(ValueType::Long),
-            "db.type/ref" => Ok(ValueType::Long), // refs stored as Long for now
+            "db.type/ref" => Ok(ValueType::Ref),
             "db.type/boolean" => Ok(ValueType::Boolean),
             "db.type/double" => Ok(ValueType::Double),
             "db.type/float" => Ok(ValueType::Float),
@@ -122,7 +124,11 @@ impl ValueType {
 
     /// Check if a DataType matches this ValueType.
     pub fn matches(&self, data: &DataType) -> bool {
-        *self == data.value_type()
+        match self {
+            // Ref values are stored as DataType::Long (same byte-level encoding).
+            ValueType::Ref => data.value_type() == ValueType::Long,
+            _ => *self == data.value_type(),
+        }
     }
 }
 
@@ -525,8 +531,7 @@ pub fn test_schema_tx() -> Vec<TxOp> {
         schema_attribute(kw!(:name), "string"),
         schema_attribute(kw!(:age), "long"),
         schema_attribute(kw!(:email), "string"),
-        // TODO: update this to ref once we support DataType::Ref
-        schema_attribute(kw!(:follows), "long"),
+        schema_attribute(kw!(:follows), "ref"),
         schema_attribute_with_cardinality(kw!(:tags), "string", "many"),
     ]
 }
@@ -657,6 +662,37 @@ mod tests {
         assert!(ValueType::String.matches(&DataType::String("hello".to_string())));
         assert!(ValueType::Long.matches(&DataType::Long(42)));
         assert!(!ValueType::String.matches(&DataType::Long(42)));
+        // Ref accepts DataType::Long (same byte-level encoding)
+        assert!(ValueType::Ref.matches(&DataType::Long(42)));
+        assert!(!ValueType::Ref.matches(&DataType::String("x".into())));
+    }
+
+    #[test]
+    fn test_value_type_from_keyword_ref() {
+        assert_eq!(ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(), ValueType::Ref);
+    }
+
+    #[test]
+    fn test_schema_ref_attribute_validation() {
+        let mut schema = bootstrapped_schema();
+        let ops = [schema_attribute(kw!(:follows), "ref")];
+        let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
+        schema.apply_schema_update(update);
+
+        let (_eid, attr) = schema.get_attribute(&kw!(:follows)).unwrap();
+        assert_eq!(attr.value_type, ValueType::Ref);
+
+        // Long value accepted for ref-typed attribute
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(200));
+        doc.insert("follows".to_string(), DataType::Long(201));
+        assert!(schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).is_ok());
+
+        // String value rejected for ref-typed attribute
+        let mut doc = BTreeMap::new();
+        doc.insert("db/id".to_string(), DataType::Long(300));
+        doc.insert("follows".to_string(), DataType::String("not-a-ref".into()));
+        assert!(schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).is_err());
     }
 
     #[test]

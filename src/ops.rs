@@ -13,10 +13,6 @@ use anyhow::Result;
 
 pub type Entid = i64;
 
-// TODO: Ref commented out for now — entity refs are stored as DataType::Long.
-// Revisit when schema is added (ref-typed attributes should use entity encoding).
-// pub type Ref = i64;
-
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {
@@ -29,9 +25,7 @@ pub enum DataType {
     Float(f32),             // Single precision floating point
     Instant(DateTime<Utc>), // Timestamps or instants
     Keyword(Keyword),       // Keywords
-    Long(i64),              // Long integers
-    // TODO: Ref commented out — entity refs stored as Long for now. Revisit with schema.
-    // Ref(Ref),                     // Reference (for shared ownership, like pointers)
+    Long(i64),              // Long integers (also used for Ref values; see ValueType::Ref)
     String(String), // Strings
     // Symbol(NamespacedSymbol),                  // Symbols (can be represented as strings)
     Tuple(Vec<DataType>), // Tuples (can be represented as a vector of DataTypes)
@@ -146,8 +140,6 @@ impl_from_for_enum!(
     (Float, f32),
     (Instant, DateTime<Utc>),
     (Long, i64),
-    // as Ref is a type alias for i64, we can't have From for both of them
-    // (Ref, Ref),
     (String, String),
     (Uuid, Uuid),
     (Vector, Vec<DataType>),

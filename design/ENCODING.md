@@ -76,23 +76,23 @@ Structural fields with fixed schemas (e.g., entity IDs, attribute IDs) are **not
 
 Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 
-| Tag | Name    | Rust Type                      |
-|-----|---------|--------------------------------|
-| 0   | *(reserved — end-of-composite sentinel)* | — |
-| 1   | BigInt  | `i128`                         |
-| 2   | Boolean | `bool`                         |
-| 3   | Bytes   | `Vec<u8>`                      |
-| 4   | Double  | `f64`                          |
-| 5   | Float   | `f32`                          |
-| 6   | Instant | `DateTime<Utc>` (as i64 micros)|
-| 7   | Long    | `i64`                          |
-| 8   | Ref     | `i64` (reserved)               |
-| 9   | String  | `String`                       |
-| 10  | Tuple   | `Vec<DataType>`                |
-| 11  | Uuid    | `Uuid` (16 bytes)              |
-| 12  | Vector  | `Vec<DataType>`                |
-| 13  | Map     | `BTreeMap<String, DataType>`   |
-| 14  | Keyword | `Keyword`                      |
+| Tag | Name                                                             | Rust Type                      |
+|-----|------------------------------------------------------------------|--------------------------------|
+| 0   | *(reserved — end-of-composite sentinel)*                         | —                              |
+| 1   | BigInt                                                           | `i128`                         |
+| 2   | Boolean                                                          | `bool`                         |
+| 3   | Bytes                                                            | `Vec<u8>`                      |
+| 4   | Double                                                           | `f64`                          |
+| 5   | Float                                                            | `f32`                          |
+| 6   | Instant                                                          | `DateTime<Utc>` (as i64 micros)|
+| 7   | Long                                                             | `i64`                          |
+| 8   | *(reserved — Ref shares tag 7/Long, differentiated via schema)*  | —                              |
+| 9   | String                                                           | `String`                       |
+| 10  | Tuple                                                            | `Vec<DataType>`                |
+| 11  | Uuid                                                             | `Uuid` (16 bytes)              |
+| 12  | Vector                                                           | `Vec<DataType>`                |
+| 13  | Map                                                              | `BTreeMap<String, DataType>`   |
+| 14  | Keyword                                                          | `Keyword`                      |
 
 ---
 
