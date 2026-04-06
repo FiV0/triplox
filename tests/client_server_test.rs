@@ -1,14 +1,13 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use edn::kw;
-use edn::symbols::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, TxOp};
+use edn::kw;
+use edn::symbols::Keyword;
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
@@ -52,10 +51,10 @@ async fn test_execute_tx_and_query() {
     define_base_schema(&client).await;
 
     // Insert a document
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result = client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let result = client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
 
     // Open a DB and query
@@ -66,10 +65,7 @@ async fn test_execute_tx_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        vec![DataType::Long(100), DataType::String("alice".to_string())]
-    );
+    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -82,10 +78,10 @@ async fn test_submit_tx() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("bob".to_string()));
-    let tx_key = client.submit_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let tx_key = client
+        .submit_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "bob".into())])])
+        .await
+        .unwrap();
     assert!(tx_key.tx_id >= 0);
 
     client.close().await.unwrap();
@@ -99,15 +95,15 @@ async fn test_multiple_transactions_and_query() {
     define_base_schema(&client).await;
 
     // Insert two documents in separate transactions
-    let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(100));
-    doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
 
-    let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(200));
-    doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(200_i64, vec![(kw!(:name), "bob".into())])])
+        .await
+        .unwrap();
 
     let db = client.db().await.unwrap();
     let result = db
@@ -116,14 +112,8 @@ async fn test_multiple_transactions_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.contains(&vec![
-        DataType::Long(100),
-        DataType::String("alice".to_string())
-    ]));
-    assert!(result.contains(&vec![
-        DataType::Long(200),
-        DataType::String("bob".to_string())
-    ]));
+    assert!(result.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
+    assert!(result.contains(&vec![DataType::Long(200), DataType::String("bob".to_string())]));
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -137,24 +127,18 @@ async fn test_open_close_multiple_dbs() {
     define_base_schema(&client).await;
 
     // Insert data
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
 
     // Open two DB handles
     let db1 = client.db().await.unwrap();
     let db2 = client.db().await.unwrap();
 
     // Both should return same data
-    let r1 = db1
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
-        .await
-        .unwrap();
-    let r2 = db2
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
-        .await
-        .unwrap();
+    let r1 = db1.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
+    let r2 = db2.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
     assert_eq!(r1.len(), 1);
     assert_eq!(r2.len(), 1);
 
@@ -171,18 +155,15 @@ async fn test_two_connections() {
     // Connection 1 inserts data
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client1.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client1
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
 
     // Connection 2 can see the data
     let client2 = ClientNode::connect(&addr).await.unwrap();
     let db = client2.db().await.unwrap();
-    let result = db
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
-        .await
-        .unwrap();
+    let result = db.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
     assert_eq!(result.len(), 1);
 
     db.close().await.unwrap();
@@ -197,10 +178,10 @@ async fn test_execute_tx_returns_tx_key() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result = client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let result = client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
 
     match result {
         TransactionResult::TxCommited(tx_key) => {
@@ -220,20 +201,20 @@ async fn test_db_as_of() {
     define_base_schema(&client).await;
 
     // First transaction
-    let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(100));
-    doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result1 = client.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+    let result1 = client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
     let tx_key1 = match result1 {
         TransactionResult::TxCommited(tk) => tk,
         _ => panic!("Expected TxCommited"),
     };
 
     // Second transaction
-    let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(200));
-    doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(200_i64, vec![(kw!(:name), "bob".into())])])
+        .await
+        .unwrap();
 
     // Open DB pinned to tx_key after first tx — should only see alice
     let db = client.db_as_of(tx_key1).await.unwrap();
@@ -243,10 +224,7 @@ async fn test_db_as_of() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        vec![DataType::Long(100), DataType::String("alice".to_string())]
-    );
+    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -280,10 +258,10 @@ async fn test_dev_server_connections_are_isolated() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client1.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client1
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])])
+        .await
+        .unwrap();
 
     let db1 = client1.db().await.unwrap();
     let result1 = db1
@@ -311,21 +289,14 @@ async fn test_dev_server_connections_are_isolated() {
 }
 
 async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::plain(name)),
-    );
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", vtype)),
-    );
-    doc.insert(
-        "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
-    );
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(id, vec![
+            (kw!(:db/ident), DataType::Keyword(Keyword::plain(name)).into()),
+            (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", vtype)).into()),
+            (kw!(:db/cardinality), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")).into()),
+        ])])
+        .await
+        .unwrap();
 }
 
 async fn define_people_schema(client: &ClientNode) {
@@ -349,17 +320,15 @@ async fn test_query_keyword_value_comparison_via_wire() {
     define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
-    for (id, name, sex) in [
-        (100, "Ivan", "male"),
-        (101, "Petr", "male"),
-        (102, "Doris", "female"),
-        (103, "Jane", "female"),
-    ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
+                             (102, "Doris", "female"), (103, "Jane", "female")] {
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:name), name.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -370,12 +339,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
         .await
         .unwrap();
 
-    assert_eq!(
-        result.len(),
-        2,
-        "expected only Ivan and Petr, got {:?}",
-        result
-    );
+    assert_eq!(result.len(), 2, "expected only Ivan and Petr, got {:?}", result);
     assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
     assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
 
@@ -401,13 +365,15 @@ async fn test_aggregates_and_or() {
         (101, "Alan", "Turing", "male", 22),
         (102, "Adam", "Smith", "male", 23),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("last-name".to_string(), DataType::String(last.to_string()));
-        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:name), name.into()),
+                (kw!(:last-name), last.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -428,18 +394,14 @@ async fn test_aggregates_and_or() {
 
     // count with top-level OR: Lovelace OR male → 3
     let result = db
-        .query_edn(
-            "{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}",
-        )
+        .query_edn("{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
 
     // Grouped: gender, count, sum
     let result = db
-        .query_edn(
-            "{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}",
-        )
+        .query_edn("{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 2, "expected 2 groups, got {:?}", result);
@@ -466,16 +428,14 @@ async fn test_aggregate_set_semantics() {
     define_base_schema(&client).await;
     define_people_schema(&client).await;
 
-    for (id, name, city) in [
-        (100, "Alice", "NYC"),
-        (101, "Bob", "NYC"),
-        (102, "Carol", "LA"),
-    ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("city".to_string(), DataType::String(city.to_string()));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:name), name.into()),
+                (kw!(:city), city.into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -501,10 +461,12 @@ async fn test_datascript_aggregates() {
 
     // Insert monsters with heads
     for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("heads".to_string(), DataType::Long(heads));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:heads), (heads as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -534,10 +496,12 @@ async fn test_aggregate_avg() {
     define_base_schema(&client).await;
 
     for (id, age) in [(100, 21), (101, 22), (102, 23)] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -560,10 +524,12 @@ async fn test_aggregate_min_max_strings() {
     define_base_schema(&client).await;
 
     for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:name), name.into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -619,11 +585,13 @@ async fn test_order_and_limit() {
         (103, "Dave", 10),
         (104, "Eve", 50),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put_with_id(id, vec![
+                (kw!(:name), name.into()),
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -634,18 +602,9 @@ async fn test_order_and_limit() {
         .await
         .unwrap();
     assert_eq!(result.len(), 3);
-    assert_eq!(
-        result[0],
-        vec![DataType::String("Dave".to_string()), DataType::Long(10)]
-    );
-    assert_eq!(
-        result[1],
-        vec![DataType::String("Bob".to_string()), DataType::Long(20)]
-    );
-    assert_eq!(
-        result[2],
-        vec![DataType::String("Alice".to_string()), DataType::Long(30)]
-    );
+    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
+    assert_eq!(result[1], vec![DataType::String("Bob".to_string()), DataType::Long(20)]);
+    assert_eq!(result[2], vec![DataType::String("Alice".to_string()), DataType::Long(30)]);
 
     // ORDER BY age descending, LIMIT 2 → oldest 2
     let result = db
@@ -653,14 +612,8 @@ async fn test_order_and_limit() {
         .await
         .unwrap();
     assert_eq!(result.len(), 2);
-    assert_eq!(
-        result[0],
-        vec![DataType::String("Eve".to_string()), DataType::Long(50)]
-    );
-    assert_eq!(
-        result[1],
-        vec![DataType::String("Carol".to_string()), DataType::Long(40)]
-    );
+    assert_eq!(result[0], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
+    assert_eq!(result[1], vec![DataType::String("Carol".to_string()), DataType::Long(40)]);
 
     // LIMIT only (no order) — should return exactly 2 rows
     let result = db
@@ -671,20 +624,12 @@ async fn test_order_and_limit() {
 
     // ORDER BY only (no limit) — all 5 rows, sorted
     let result = db
-        .query_edn(
-            "{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}",
-        )
+        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 5);
-    assert_eq!(
-        result[0],
-        vec![DataType::String("Dave".to_string()), DataType::Long(10)]
-    );
-    assert_eq!(
-        result[4],
-        vec![DataType::String("Eve".to_string()), DataType::Long(50)]
-    );
+    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
+    assert_eq!(result[4], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -698,11 +643,13 @@ async fn test_aggregate_min_incompatible_types() {
     define_base_schema(&client).await;
 
     // Insert entity with both name (string) and age (long)
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("Alice".to_string()));
-    doc.insert("age".to_string(), DataType::Long(30));
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put_with_id(100_i64, vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
 
     let db = client.db().await.unwrap();
 

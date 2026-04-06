@@ -10,6 +10,7 @@ use crate::protocol;
 /// | S  | 0  | partition (20 bits) |          counter (42 bits)        |
 /// +----+----+---------------------+---+-------------------------------+
 /// ```
+
 pub const COUNTER_BITS: u32 = 42;
 pub const COUNTER_MASK: i64 = (1i64 << 42) - 1;
 pub const PARTITION_MASK: i64 = ((1i64 << 20) - 1) << 42;
@@ -43,10 +44,7 @@ pub fn partition_entity_prefix(partition: u32) -> Vec<u8> {
 /// For partition 0, the result equals the counter (small, readable IDs).
 pub fn make_entity_id(partition: u32, counter: i64) -> i64 {
     assert!(partition < (1 << 20), "partition must fit in 20 bits");
-    assert!(
-        (0..=COUNTER_MASK).contains(&counter),
-        "counter must fit in 42 bits"
-    );
+    assert!(counter >= 0 && counter <= COUNTER_MASK, "counter must fit in 42 bits");
     ((partition as i64) << COUNTER_BITS) | counter
 }
 
@@ -65,48 +63,6 @@ pub fn is_tempid(eid: i64) -> bool {
     eid < 0
 }
 
-/// Resolve entity IDs for Put documents that lack a `db/id` field.
-///
-/// - If `db/id` is `DataType::Long` → keep as-is (explicit ID).
-///   TODO: validate via `PartitionMap::contains_entid` once tempid resolution is implemented.
-/// - If `db/id` is missing → allocate from partition map:
-///   - Documents with `db/ident` → `DB_PARTITION` (schema/enum entities).
-///   - All other documents → `USER_PARTITION`.
-/// - Add/Retract/Delete/Erase → pass through unchanged (require explicit IDs).
-pub fn resolve_entity_ids(
-    ops: &[crate::ops::TxOp],
-    partition_map: &mut PartitionMap,
-) -> anyhow::Result<Vec<crate::ops::TxOp>> {
-    use crate::ops::{DataType, TxOp};
-
-    let mut resolved = Vec::with_capacity(ops.len());
-    for op in ops {
-        match op {
-            TxOp::Put(doc) => match doc.get("db/id") {
-                Some(DataType::Long(_)) => {
-                    resolved.push(op.clone());
-                }
-                None => {
-                    let partition = if doc.contains_key("db/ident") {
-                        DB_PARTITION
-                    } else {
-                        USER_PARTITION
-                    };
-                    let eid = partition_map.allocate_entid(partition);
-                    let mut new_doc = doc.clone();
-                    new_doc.insert("db/id".to_string(), DataType::Long(eid));
-                    resolved.push(TxOp::Put(new_doc));
-                }
-                Some(_) => {
-                    return Err(anyhow::anyhow!("Document db/id must be a Long"));
-                }
-            },
-            _ => resolved.push(op.clone()),
-        }
-    }
-    Ok(resolved)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,27 +77,11 @@ mod tests {
 
     #[test]
     fn test_bootstrap_ids_in_db_partition() {
-        // DB_PARTITION is 0, so make_entity_id(0, n) == n
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_IDENT),
-            crate::schema::DB_IDENT
-        );
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_VALUE_TYPE),
-            crate::schema::DB_VALUE_TYPE
-        );
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY),
-            crate::schema::DB_CARDINALITY
-        );
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY_ONE),
-            crate::schema::DB_CARDINALITY_ONE
-        );
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY_MANY),
-            crate::schema::DB_CARDINALITY_MANY
-        );
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_IDENT), crate::schema::DB_IDENT);
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_VALUE_TYPE), crate::schema::DB_VALUE_TYPE);
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY), crate::schema::DB_CARDINALITY);
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY_ONE), crate::schema::DB_CARDINALITY_ONE);
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_CARDINALITY_MANY), crate::schema::DB_CARDINALITY_MANY);
     }
 
     #[test]
@@ -203,157 +143,5 @@ mod tests {
         let user_min = make_entity_id(USER_PARTITION, 0);
         assert!(db_max < tx_min);
         assert!(tx_max < user_min);
-    }
-
-    // --- resolve_entity_ids tests ---
-
-    use crate::ops::{DataType, TxOp};
-    use edn::kw;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn test_resolve_entity_ids_explicit_id_passthrough() {
-        let mut counters = PartitionMap::new();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(42));
-        doc.insert("name".to_string(), DataType::String("alice".into()));
-        let ops = vec![TxOp::Put(doc)];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        assert!(
-            counters.is_empty(),
-            "counters should not advance for explicit IDs"
-        );
-        match &resolved[0] {
-            TxOp::Put(doc) => assert_eq!(doc.get("db/id"), Some(&DataType::Long(42))),
-            _ => panic!("Expected Put"),
-        }
-    }
-
-    #[test]
-    fn test_resolve_entity_ids_user_partition() {
-        let mut counters = PartitionMap::new();
-        let mut doc = BTreeMap::new();
-        doc.insert("name".to_string(), DataType::String("alice".into()));
-        let ops = vec![TxOp::Put(doc)];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        assert_eq!(counters[&USER_PARTITION], 1);
-        match &resolved[0] {
-            TxOp::Put(doc) => {
-                let eid = match doc.get("db/id") {
-                    Some(DataType::Long(id)) => *id,
-                    _ => panic!("Expected db/id Long"),
-                };
-                assert_eq!(extract_partition(eid), USER_PARTITION);
-            }
-            _ => panic!("Expected Put"),
-        }
-    }
-
-    #[test]
-    fn test_resolve_entity_ids_db_partition_for_schema() {
-        let mut counters = PartitionMap::new();
-        let mut doc = BTreeMap::new();
-        doc.insert(
-            "db/ident".to_string(),
-            DataType::Keyword(edn::kw!(:my-attr)),
-        );
-        doc.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(edn::kw!(:db.type/string)),
-        );
-        let ops = vec![TxOp::Put(doc)];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        assert_eq!(counters[&DB_PARTITION], 1);
-        match &resolved[0] {
-            TxOp::Put(doc) => {
-                let eid = match doc.get("db/id") {
-                    Some(DataType::Long(id)) => *id,
-                    _ => panic!("Expected db/id Long"),
-                };
-                assert_eq!(extract_partition(eid), DB_PARTITION);
-            }
-            _ => panic!("Expected Put"),
-        }
-    }
-
-    #[test]
-    fn test_resolve_entity_ids_db_partition_for_enum() {
-        let mut counters = PartitionMap::new();
-        let mut doc = BTreeMap::new();
-        doc.insert(
-            "db/ident".to_string(),
-            DataType::Keyword(edn::kw!(:db.type/string)),
-        );
-        let ops = vec![TxOp::Put(doc)];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        match &resolved[0] {
-            TxOp::Put(doc) => {
-                let eid = match doc.get("db/id") {
-                    Some(DataType::Long(id)) => *id,
-                    _ => panic!("Expected db/id Long"),
-                };
-                assert_eq!(extract_partition(eid), DB_PARTITION);
-            }
-            _ => panic!("Expected Put"),
-        }
-    }
-
-    #[test]
-    fn test_resolve_entity_ids_add_retract_passthrough() {
-        let mut counters = PartitionMap::new();
-        let ops = vec![
-            TxOp::Add {
-                entity_id: 100,
-                attribute: kw!(:name),
-                value: DataType::String("alice".into()),
-            },
-            TxOp::Retract {
-                entity_id: 100,
-                attribute: kw!(:name),
-                value: DataType::String("alice".into()),
-            },
-        ];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        assert!(counters.is_empty(), "Add/Retract should not allocate IDs");
-        assert_eq!(resolved.len(), 2);
-    }
-
-    #[test]
-    fn test_resolve_entity_ids_multiple_docs() {
-        let mut counters = PartitionMap::from([(USER_PARTITION, 5i64)]);
-        let ops = vec![
-            TxOp::Put({
-                let mut m = BTreeMap::new();
-                m.insert("name".to_string(), DataType::String("alice".into()));
-                m
-            }),
-            TxOp::Put({
-                let mut m = BTreeMap::new();
-                m.insert("name".to_string(), DataType::String("bob".into()));
-                m
-            }),
-        ];
-
-        let resolved = resolve_entity_ids(&ops, &mut counters).unwrap();
-        assert_eq!(counters[&USER_PARTITION], 7);
-
-        for (i, op) in resolved.iter().enumerate() {
-            match op {
-                TxOp::Put(doc) => {
-                    let eid = match doc.get("db/id") {
-                        Some(DataType::Long(id)) => *id,
-                        _ => panic!("Expected db/id Long"),
-                    };
-                    assert_eq!(extract_partition(eid), USER_PARTITION);
-                    assert_eq!(extract_counter(eid), 5 + i as i64);
-                }
-                _ => panic!("Expected Put"),
-            }
-        }
     }
 }

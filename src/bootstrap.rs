@@ -1,15 +1,13 @@
+use std::sync::Arc;
+use slatedb::{Db, IsolationLevel};
 use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::metadata::{Metadata, PartitionMap};
-use crate::ops::tx_ops_to_datoms;
-use crate::partition::{
-    extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION,
-};
+use crate::partition::{extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION};
 use crate::schema::{bootstrap_schema_tx, load_schema_from_indices, Schema};
+use crate::tx;
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::util::concat_bytes;
-use slatedb::{Db, IsolationLevel};
-use std::sync::Arc;
 
 const META_KEY_VERSION: &[u8] = b"version";
 
@@ -31,11 +29,8 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
             .expect("Failed to scan EAV partition prefix");
 
         if let Some(kv) = iter.next().await.expect("Failed to read EAV key") {
-            let mut cursor: &[u8] =
-                &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
-            let eid = match codec::decode_datatype(&mut cursor)
-                .expect("Failed to decode entity ID from EAV key")
-            {
+            let mut cursor: &[u8] = &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
+            let eid = match codec::decode_datatype(&mut cursor).expect("Failed to decode entity ID from EAV key") {
                 crate::ops::DataType::Long(id) => id,
                 other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
             };
@@ -63,11 +58,7 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
 pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
     let version_key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
 
-    match slatedb
-        .get(&version_key)
-        .await
-        .expect("Failed to read version from META_INDEX")
-    {
+    match slatedb.get(&version_key).await.expect("Failed to read version from META_INDEX") {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
             let schema = load_schema_from_indices(slatedb.clone()).await;
@@ -77,7 +68,10 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
         None => {
             // Fresh DB — bootstrap schema (ops have explicit db/id values)
             let tx_ops = bootstrap_schema_tx();
-            let datoms = tx_ops_to_datoms(&tx_ops, 0_i64).unwrap();
+            let schema = Schema::default();
+            let expanded = tx::expand_tx_ops(&tx_ops, &schema).unwrap();
+            let mut boot_pm = PartitionMap::new();
+            let datoms = tx::resolve_tempids(&expanded, &mut boot_pm, &schema).unwrap();
             let mut schema = Schema::default();
             let update = schema.validate_and_prepare(&datoms).unwrap();
             // TODO: We should bootstrap the schema properly and do the validation in the same manner as the indexer
@@ -88,9 +82,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             txn.put(&version_key, version.as_bytes()).unwrap();
-            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS)
-                .await
-                .unwrap();
+            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await.unwrap();
 
             // Derive counters from the just-written index
             let pm = scan_partition_counters(&slatedb).await;
@@ -114,28 +106,16 @@ mod tests {
         assert_eq!(metadata.schema.len(), 7);
         assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/valueType)).is_some());
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db/cardinality))
-            .is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/cardinality)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db.tx/error)).is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
-        assert_eq!(
-            metadata.partition_map[&DB_PARTITION],
-            DB_PARTITION_COUNTER_FLOOR
-        );
+        assert_eq!(metadata.partition_map[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
         // Enum entities are in ident_map but not attribute_map
-        assert!(metadata
-            .schema
-            .ident_map
-            .contains_key(&kw!(:db.type/string)));
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db.type/string))
-            .is_none());
+        assert!(metadata.schema.ident_map.contains_key(&kw!(:db.type/string)));
+        assert!(metadata.schema.get_attribute(&kw!(:db.type/string)).is_none());
     }
 
     #[tokio::test]
@@ -146,10 +126,7 @@ mod tests {
         let metadata2 = init_db(slatedb).await;
         assert_eq!(metadata1.schema.len(), metadata2.schema.len());
         assert_eq!(metadata1.schema.len(), 7);
-        assert_eq!(
-            metadata1.partition_map[&DB_PARTITION],
-            metadata2.partition_map[&DB_PARTITION]
-        );
+        assert_eq!(metadata1.partition_map[&DB_PARTITION], metadata2.partition_map[&DB_PARTITION]);
     }
 
     #[tokio::test]
@@ -166,4 +143,5 @@ mod tests {
         // No EAV entries → empty counters
         assert!(metadata.partition_map.is_empty());
     }
+
 }
