@@ -94,10 +94,8 @@ impl std::fmt::Display for ValueType {
 }
 
 impl ValueType {
-    // TODO(triplox-r5a): In Datomic, db/valueType values are entity refs (Longs pointing to
-    // type enum entities like :db.type/string). We use keywords directly for now, which is
-    // simpler but diverges from the "everything is entities" model. Revisit when we add
-    // DataType::Ref and want schema-defining transactions to look like regular data.
+    // TODO(#165): db/valueType and db/cardinality still use keywords. Switch to ref-typed
+    // (entity ID) values once ident lookup is supported in the transaction pipeline.
     /// Map a value type keyword (e.g. :db.type/string) to a ValueType.
     pub fn from_keyword(kw: &Keyword) -> Result<Self> {
         let s = kw.to_string();
