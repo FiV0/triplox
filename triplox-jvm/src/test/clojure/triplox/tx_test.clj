@@ -1,8 +1,7 @@
 (ns triplox.tx-test
   (:require [clojure.test :refer [deftest is testing]]
             [triplox.tx :as tx])
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
-            TxValue$Data TxValue$Ref
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident TxValue$Data TxValue$Ref
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (deftest map-to-put
