@@ -1,47 +1,51 @@
 (ns triplox.tx-test
   (:require [clojure.test :refer [deftest is testing]]
             [triplox.tx :as tx])
-  (:import [io.triplox.client TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
+            TxValue$Data TxValue$Ref
+            TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (deftest map-to-put
-  (testing "Map → TxOp.Put"
+  (testing "Map -> TxOp.Put"
     (let [ops (tx/tx-data->ops [{:db/id 1 :person/name "alice"}])
           op (first ops)]
       (is (instance? TxOp$Put op))
-      (is (= 1 (.get (.document ^TxOp$Put op) "db/id")))
-      (is (= "alice" (.get (.document ^TxOp$Put op) "person/name"))))))
+      (let [doc (.document ^TxOp$Put op)]
+        (is (instance? TxValue$Ref (.get doc :db/id)))
+        (is (= 1 (.id ^EntityRef$Id (.ref ^TxValue$Ref (.get doc :db/id)))))
+        (is (= "alice" (.value ^TxValue$Data (.get doc :person/name))))))))
 
 (deftest vec-to-add
-  (testing "[:db/add e a v] → TxOp.Add"
+  (testing "[:db/add e a v] -> TxOp.Add"
     (let [ops (tx/tx-data->ops [[:db/add 42 :email "test@example.com"]])
           op (first ops)]
       (is (instance? TxOp$Add op))
-      (is (= 42 (.entity ^TxOp$Add op)))
-      (is (= "email" (.attribute ^TxOp$Add op)))
-      (is (= "test@example.com" (.value ^TxOp$Add op))))))
+      (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Add op))))
+      (is (= :email (.attribute ^TxOp$Add op)))
+      (is (= "test@example.com" (.value ^TxValue$Data (.value ^TxOp$Add op)))))))
 
 (deftest vec-to-retract
-  (testing "[:db/retract e a v] → TxOp.Retract"
+  (testing "[:db/retract e a v] -> TxOp.Retract"
     (let [ops (tx/tx-data->ops [[:db/retract 42 :email "old@example.com"]])
           op (first ops)]
       (is (instance? TxOp$Retract op))
-      (is (= 42 (.entity ^TxOp$Retract op)))
-      (is (= "email" (.attribute ^TxOp$Retract op)))
-      (is (= "old@example.com" (.value ^TxOp$Retract op))))))
+      (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Retract op))))
+      (is (= :email (.attribute ^TxOp$Retract op)))
+      (is (= "old@example.com" (.value ^TxValue$Data (.value ^TxOp$Retract op)))))))
 
 (deftest vec-to-delete
-  (testing "[:db/delete eid] → TxOp.Delete"
+  (testing "[:db/delete eid] -> TxOp.Delete"
     (let [ops (tx/tx-data->ops [[:db/delete 99]])
           op (first ops)]
       (is (instance? TxOp$Delete op))
-      (is (= 99 (.entity ^TxOp$Delete op))))))
+      (is (= 99 (.id ^EntityRef$Id (.entity ^TxOp$Delete op)))))))
 
 (deftest vec-to-erase
-  (testing "[:db/erase eid] → TxOp.Erase"
+  (testing "[:db/erase eid] -> TxOp.Erase"
     (let [ops (tx/tx-data->ops [[:db/erase 100]])
           op (first ops)]
       (is (instance? TxOp$Erase op))
-      (is (= 100 (.entity ^TxOp$Erase op))))))
+      (is (= 100 (.id ^EntityRef$Id (.entity ^TxOp$Erase op)))))))
 
 (deftest mixed-tx-data
   (testing "Mixed tx-data forms"
@@ -56,6 +60,20 @@
       (is (instance? TxOp$Retract (nth ops 2)))
       (is (instance? TxOp$Delete (nth ops 3)))
       (is (instance? TxOp$Erase (nth ops 4))))))
+
+(deftest tempid-entity-ref
+  (testing "String entity becomes TempId"
+    (let [ops (tx/tx-data->ops [[:db/add "tempid-1" :name "alice"]])
+          op (first ops)]
+      (is (instance? EntityRef$TempId (.entity ^TxOp$Add op)))
+      (is (= "tempid-1" (.tempId ^EntityRef$TempId (.entity ^TxOp$Add op)))))))
+
+(deftest ident-entity-ref
+  (testing "Keyword entity becomes Ident"
+    (let [ops (tx/tx-data->ops [[:db/add :person/alice :name "Alice"]])
+          op (first ops)]
+      (is (instance? EntityRef$Ident (.entity ^TxOp$Add op)))
+      (is (= :person/alice (.ident ^EntityRef$Ident (.entity ^TxOp$Add op)))))))
 
 (deftest invalid-form-throws
   (testing "Invalid form throws"
