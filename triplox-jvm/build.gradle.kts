@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    `maven-publish`
     id("dev.clojurephant.clojure") version "0.8.0-beta.7"
 }
 
@@ -49,3 +50,53 @@ tasks.checkClojure {
 }
 
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            groupId = "com.github.fiv0"
+            artifactId = "triplox"
+            version = project.version.toString()
+
+            from(components["java"])
+
+            pom {
+                name.set("triplox")
+                description.set("A triple store built on top of XTDB")
+                url.set("https://github.com/FiV0/triplox")
+
+                licenses {
+                    license {
+                        // TODO: choose a license
+                        name.set("TODO")
+                        url.set("TODO")
+                    }
+                }
+
+                developers {
+                    developer {
+                        id.set("FiV0")
+                        name.set("Finn Völkel")
+                    }
+                }
+
+                scm {
+                    url.set("https://github.com/FiV0/triplox")
+                    connection.set("scm:git:git://github.com/FiV0/triplox.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/FiV0/triplox.git")
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = "clojars"
+            url = uri("https://repo.clojars.org/")
+            credentials {
+                username = findProperty("clojarsUsername") as String?
+                password = findProperty("clojarsPassword") as String?
+            }
+        }
+    }
+}
