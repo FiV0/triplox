@@ -196,7 +196,8 @@ mod tests {
 
     #[test]
     fn test_expand_put_with_id() {
-        let ops = vec![TxOp::put_with_id(100_i64, vec![
+        let ops = vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])];

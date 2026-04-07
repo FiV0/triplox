@@ -218,12 +218,7 @@ impl TxOp {
         TxOp::Put(attrs.into_iter().collect())
     }
 
-    /// Build a Put with an explicit entity reference as `:db/id`.
-    pub fn put_with_id(id: impl Into<EntityRef>, attrs: Vec<(Keyword, TxValue)>) -> Self {
-        let mut map: BTreeMap<Keyword, TxValue> = attrs.into_iter().collect();
-        map.insert(Keyword::namespaced("db", "id"), TxValue::Ref(id.into()));
-        TxOp::Put(map)
-    }
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

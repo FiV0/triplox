@@ -208,7 +208,7 @@ mod tests {
     use crate::codec;
     use crate::parse::parse_query;
     use crate::indexer::{eav_key_to_parts, ave_key_to_parts, aev_key_to_parts, ae_key_to_parts, av_key_to_parts};
-    use crate::ops::{DataType, EntityRef, TxOp};
+    use crate::ops::{DataType, EntityRef, TxOp, TxValue};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -338,11 +338,13 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put_with_id(2000_i64, vec![
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(2000_i64.into())),
             (kw!(:name), "alice".into()),
             (kw!(:follows), 2001_i64.into()),
         ])]).await.unwrap();
-        node.execute_tx(vec![TxOp::put_with_id(2001_i64, vec![
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(2001_i64.into())),
             (kw!(:name), "bob".into()),
         ])]).await.unwrap();
 
@@ -502,7 +504,7 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
 
-        let result = node.execute_tx(vec![TxOp::put_with_id(100_i64, vec![(kw!(:name), "alice".into())])]).await.unwrap();
+        let result = node.execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])]).await.unwrap();
         let tx_key = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("expected commit"),
@@ -805,8 +807,8 @@ mod tests {
 
         // Insert entity 200 and entity 201 with last-names
         node.execute_tx(vec![
-            TxOp::put_with_id(2200_i64, vec![(kw!(:last-name), "Ivannotov".into())]),
-            TxOp::put_with_id(1201_i64, vec![(kw!(:last-name), "Bobnev".into())]),
+            TxOp::put(vec![(kw!(:db/id), TxValue::Ref(2200_i64.into())), (kw!(:last-name), "Ivannotov".into())]),
+            TxOp::put(vec![(kw!(:db/id), TxValue::Ref(1201_i64.into())), (kw!(:last-name), "Bobnev".into())]),
         ]).await.unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position

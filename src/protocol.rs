@@ -1308,7 +1308,8 @@ mod tests {
 
     #[test]
     fn test_tx_op_put_with_id() {
-        let op = TxOp::put_with_id(EntityRef::Id(1), vec![
+        let op = TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(EntityRef::Id(1))),
             (kw!(:name), TxValue::Data(DataType::String("alice".to_string()))),
         ]);
         assert_eq!(roundtrip_tx_op(&op), op);
@@ -1316,7 +1317,8 @@ mod tests {
 
     #[test]
     fn test_tx_op_put_with_tempid() {
-        let op = TxOp::put_with_id(EntityRef::TempId("temp-1".to_string()), vec![
+        let op = TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(EntityRef::TempId("temp-1".to_string()))),
             (kw!(:name), TxValue::Data(DataType::String("bob".to_string()))),
         ]);
         assert_eq!(roundtrip_tx_op(&op), op);

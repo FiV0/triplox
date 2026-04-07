@@ -367,14 +367,16 @@ fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
 
 /// Build a bootstrap Put with an explicit entity ID.
 fn bootstrap_put(id: i64, ident: Keyword) -> TxOp {
-    TxOp::put_with_id(id, vec![
+    TxOp::put(vec![
+        (kw!(:db/id), TxValue::Ref(id.into())),
         (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
     ])
 }
 
 /// Build a bootstrap Put for a schema attribute with an explicit entity ID.
 fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
-    TxOp::put_with_id(id, vec![
+    TxOp::put(vec![
+        (kw!(:db/id), TxValue::Ref(id.into())),
         (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
         (kw!(:db/valueType), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.type", value_type)))),
         (kw!(:db/cardinality), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.cardinality", "one")))),
@@ -595,7 +597,8 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_valid() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put_with_id(200_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:name), "Alice".into()),
         ])];
         assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_ok());
@@ -604,7 +607,8 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put_with_id(200_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:person/age), 30_i64.into()),
         ])];
         let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
@@ -614,7 +618,8 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put_with_id(200_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:name), 42_i64.into()),
         ])];
         let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
@@ -633,7 +638,8 @@ mod tests {
         let schema = bootstrapped_schema_with_person_name();
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
 
-        let ops = [TxOp::put_with_id(name_id, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(name_id.into())),
             (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
             (kw!(:db/valueType), TxValue::Data(DataType::Keyword(kw!(:db.type/long)))),
             (kw!(:db/cardinality), TxValue::Data(DataType::Keyword(kw!(:db.cardinality/one)))),
@@ -669,13 +675,15 @@ mod tests {
         assert_eq!(attr.value_type, ValueType::Ref);
 
         // Long value accepted for ref-typed attribute
-        let ops = [TxOp::put_with_id(200_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:follows), 201_i64.into()),
         ])];
         assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_ok());
 
         // String value rejected for ref-typed attribute
-        let ops = [TxOp::put_with_id(300_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(300_i64.into())),
             (kw!(:follows), "not-a-ref".into()),
         ])];
         assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_err());
@@ -702,7 +710,8 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_missing_cardinality_errors() {
         let schema = bootstrapped_schema();
-        let ops = [TxOp::put_with_id(100_i64, vec![
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
             (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
             (kw!(:db/valueType), TxValue::Data(DataType::Keyword(kw!(:db.type/string)))),
             // No db/cardinality
