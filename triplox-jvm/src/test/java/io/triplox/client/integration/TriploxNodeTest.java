@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,15 +24,18 @@ class TriploxNodeTest {
     void testConnectTransactQueryClose() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
-            node.executeTx(List.of(new TxOp.Put(Map.of(
-                    "db/id", 200L,
-                    "db/ident", Keyword.intern("name"),
-                    "db/valueType", Keyword.intern("db.type", "string"),
-                    "db/cardinality", Keyword.intern("db.cardinality", "one")))));
+            var schema = new TreeMap<Keyword, TxValue>();
+            schema.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(200)));
+            schema.put(Keyword.intern("db", "ident"), new TxValue.Data(Keyword.intern("name")));
+            schema.put(Keyword.intern("db", "valueType"), new TxValue.Data(Keyword.intern("db.type", "string")));
+            schema.put(Keyword.intern("db", "cardinality"), new TxValue.Data(Keyword.intern("db.cardinality", "one")));
+            node.executeTx(List.of(new TxOp.Put(schema)));
 
             // Data
-            var txResult = node.executeTx(List.of(new TxOp.Put(
-                    Map.of("db/id", 1000L, "name", "alice"))));
+            var data = new TreeMap<Keyword, TxValue>();
+            data.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(1000)));
+            data.put(Keyword.intern("name"), new TxValue.Data("alice"));
+            var txResult = node.executeTx(List.of(new TxOp.Put(data)));
             assertTrue(txResult.isCommitted());
 
             // Query

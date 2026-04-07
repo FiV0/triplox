@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -8,7 +7,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
-use triplox::ops::{DataType, TxOp};
+use triplox::ops::{DataType, TxOp, TxValue};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
@@ -52,10 +51,13 @@ async fn test_execute_tx_and_query() {
     define_base_schema(&client).await;
 
     // Insert a document
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result = client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let result = client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
 
     // Open a DB and query
@@ -82,10 +84,13 @@ async fn test_submit_tx() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("bob".to_string()));
-    let tx_key = client.submit_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let tx_key = client
+        .submit_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
+        .await
+        .unwrap();
     assert!(tx_key.tx_id >= 0);
 
     client.close().await.unwrap();
@@ -99,15 +104,21 @@ async fn test_multiple_transactions_and_query() {
     define_base_schema(&client).await;
 
     // Insert two documents in separate transactions
-    let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(100));
-    doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
 
-    let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(200));
-    doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
+        .await
+        .unwrap();
 
     let db = client.db().await.unwrap();
     let result = db
@@ -137,10 +148,13 @@ async fn test_open_close_multiple_dbs() {
     define_base_schema(&client).await;
 
     // Insert data
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
 
     // Open two DB handles
     let db1 = client.db().await.unwrap();
@@ -171,10 +185,13 @@ async fn test_two_connections() {
     // Connection 1 inserts data
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client1.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client1
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
 
     // Connection 2 can see the data
     let client2 = ClientNode::connect(&addr).await.unwrap();
@@ -197,10 +214,13 @@ async fn test_execute_tx_returns_tx_key() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result = client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    let result = client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
 
     match result {
         TransactionResult::TxCommited(tx_key) => {
@@ -220,20 +240,26 @@ async fn test_db_as_of() {
     define_base_schema(&client).await;
 
     // First transaction
-    let mut doc1 = BTreeMap::new();
-    doc1.insert("db/id".to_string(), DataType::Long(100));
-    doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-    let result1 = client.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+    let result1 = client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
     let tx_key1 = match result1 {
         TransactionResult::TxCommited(tk) => tk,
         _ => panic!("Expected TxCommited"),
     };
 
     // Second transaction
-    let mut doc2 = BTreeMap::new();
-    doc2.insert("db/id".to_string(), DataType::Long(200));
-    doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-    client.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
+        .await
+        .unwrap();
 
     // Open DB pinned to tx_key after first tx — should only see alice
     let db = client.db_as_of(tx_key1).await.unwrap();
@@ -280,10 +306,13 @@ async fn test_dev_server_connections_are_isolated() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
 
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("alice".to_string()));
-    client1.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client1
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
+        .await
+        .unwrap();
 
     let db1 = client1.db().await.unwrap();
     let result1 = db1
@@ -311,21 +340,24 @@ async fn test_dev_server_connections_are_isolated() {
 }
 
 async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::plain(name)),
-    );
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", vtype)),
-    );
-    doc.insert(
-        "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
-    );
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(id.into())),
+            (
+                kw!(:db/ident),
+                DataType::Keyword(Keyword::plain(name)).into(),
+            ),
+            (
+                kw!(:db/valueType),
+                DataType::Keyword(Keyword::namespaced("db.type", vtype)).into(),
+            ),
+            (
+                kw!(:db/cardinality),
+                DataType::Keyword(Keyword::namespaced("db.cardinality", "one")).into(),
+            ),
+        ])])
+        .await
+        .unwrap();
 }
 
 async fn define_people_schema(client: &ClientNode) {
@@ -355,11 +387,14 @@ async fn test_query_keyword_value_comparison_via_wire() {
         (102, "Doris", "female"),
         (103, "Jane", "female"),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:name), name.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -401,32 +436,35 @@ async fn test_aggregates_and_or() {
         (101, "Alan", "Turing", "male", 22),
         (102, "Adam", "Smith", "male", 23),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("last-name".to_string(), DataType::String(last.to_string()));
-        doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:name), name.into()),
+                (kw!(:last-name), last.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
 
-    // count with OR: Lovelace AND (name=Ada OR sex=male) → 1 (only Ada)
+    // count with OR: Lovelace AND (name=Ada OR sex=male) -> 1 (only Ada)
     let result = db
         .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :male])]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
-    // count with OR: Lovelace AND (name=Ada OR sex=female) → 1
+    // count with OR: Lovelace AND (name=Ada OR sex=female) -> 1
     let result = db
         .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :female])]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
-    // count with top-level OR: Lovelace OR male → 3
+    // count with top-level OR: Lovelace OR male -> 3
     let result = db
         .query_edn(
             "{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}",
@@ -471,16 +509,19 @@ async fn test_aggregate_set_semantics() {
         (101, "Bob", "NYC"),
         (102, "Carol", "LA"),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("city".to_string(), DataType::String(city.to_string()));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:name), name.into()),
+                (kw!(:city), city.into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
 
-    // TODO: do we want Datomic (set → 2) or XTDB (bag → 3) semantics here?
+    // TODO: do we want Datomic (set -> 2) or XTDB (bag -> 3) semantics here?
     let result = db
         .query_edn("{:find [(count ?city)] :where [[?p :city ?city]]}")
         .await
@@ -501,10 +542,13 @@ async fn test_datascript_aggregates() {
 
     // Insert monsters with heads
     for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("heads".to_string(), DataType::Long(heads));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:heads), (heads as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -534,10 +578,13 @@ async fn test_aggregate_avg() {
     define_base_schema(&client).await;
 
     for (id, age) in [(100, 21), (101, 22), (102, 23)] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -560,10 +607,13 @@ async fn test_aggregate_min_max_strings() {
     define_base_schema(&client).await;
 
     for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:name), name.into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
@@ -619,16 +669,19 @@ async fn test_order_and_limit() {
         (103, "Dave", 10),
         (104, "Eve", 50),
     ] {
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(id));
-        doc.insert("name".to_string(), DataType::String(name.to_string()));
-        doc.insert("age".to_string(), DataType::Long(age));
-        client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        client
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:name), name.into()),
+                (kw!(:age), (age as i64).into()),
+            ])])
+            .await
+            .unwrap();
     }
 
     let db = client.db().await.unwrap();
 
-    // ORDER BY age ascending, LIMIT 3 → youngest 3
+    // ORDER BY age ascending, LIMIT 3 -> youngest 3
     let result = db
         .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]] :limit 3}")
         .await
@@ -647,7 +700,7 @@ async fn test_order_and_limit() {
         vec![DataType::String("Alice".to_string()), DataType::Long(30)]
     );
 
-    // ORDER BY age descending, LIMIT 2 → oldest 2
+    // ORDER BY age descending, LIMIT 2 -> oldest 2
     let result = db
         .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :desc]] :limit 2}")
         .await
@@ -698,15 +751,18 @@ async fn test_aggregate_min_incompatible_types() {
     define_base_schema(&client).await;
 
     // Insert entity with both name (string) and age (long)
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(100));
-    doc.insert("name".to_string(), DataType::String("Alice".to_string()));
-    doc.insert("age".to_string(), DataType::Long(30));
-    client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "Alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
 
     let db = client.db().await.unwrap();
 
-    // OR binds ?v to both string and long values → min should error on incomparable types
+    // OR binds ?v to both string and long values -> min should error on incomparable types
     let result = db
         .query_edn("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
         .await;

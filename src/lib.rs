@@ -23,6 +23,7 @@ pub mod schema;
 mod schema;
 mod slate;
 mod transaction;
+pub mod tx;
 mod util;
 
 pub mod client;

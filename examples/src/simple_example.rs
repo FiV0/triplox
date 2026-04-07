@@ -7,33 +7,22 @@
 //! Then run this example:
 //!   cargo run --bin simple-example  (from examples/)
 
-use std::collections::BTreeMap;
-
 use anyhow::Result;
 use edn::kw;
 use edn::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{QueryNode, SubmitNode, TransactionResult};
-use triplox::ops::{DataType, TxOp};
+use triplox::ops::{DataType, TxOp, TxValue};
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
 fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert(
-        "db/ident".to_string(),
-        DataType::Keyword(Keyword::plain(name)),
-    );
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-    );
-    doc.insert(
-        "db/cardinality".to_string(),
-        DataType::Keyword(kw!(:db.cardinality/one)),
-    );
-    TxOp::Put(doc)
+    TxOp::put(vec![
+        (kw!(:db/id), TxValue::Ref(id.into())),
+        (kw!(:db/ident), DataType::Keyword(Keyword::plain(name)).into()),
+        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type)).into()),
+        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one)).into()),
+    ])
 }
 
 #[tokio::main]
@@ -59,17 +48,18 @@ async fn main() -> Result<()> {
     }
 
     // 2. Insert some data
-    let mut alice = BTreeMap::new();
-    alice.insert("db/id".to_string(), DataType::Long(100));
-    alice.insert("name".to_string(), DataType::String("alice".to_string()));
-    alice.insert("age".to_string(), DataType::Long(30));
-
-    let mut bob = BTreeMap::new();
-    bob.insert("db/id".to_string(), DataType::Long(101));
-    bob.insert("name".to_string(), DataType::String("bob".to_string()));
-    bob.insert("age".to_string(), DataType::Long(25));
-
-    let data_ops = vec![TxOp::Put(alice), TxOp::Put(bob)];
+    let data_ops = vec![
+        TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ]),
+        TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(101_i64.into())),
+            (kw!(:name), "bob".into()),
+            (kw!(:age), 25_i64.into()),
+        ]),
+    ];
     let result = node.execute_tx(data_ops).await?;
     match &result {
         TransactionResult::TxCommited(tx_key) => {

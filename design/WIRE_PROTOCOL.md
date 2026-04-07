@@ -656,27 +656,41 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 10](#10-data-t
 | 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |
 | 14  | Keyword | `String` (u32 length + UTF-8 bytes)              |
 
-### 11.8 TxOp Encoding
+### 11.8 EntityRef Encoding
+
+An `EntityRef` value is encoded as a 1-byte variant tag followed by the variant payload:
+
+| Tag    | Name      | Payload                                  |
+|--------|-----------|------------------------------------------|
+| 0x90   | Id        | `i64`                                    |
+| 0x91   | TempId    | `String`                                 |
+| 0x92   | Ident     | `String` (keyword as string)             |
+| 0x93   | LookupRef | `String` (keyword) + `DataType`          |
+
+### 11.9 TxValue Encoding
+
+A `TxValue` value is encoded as a 1-byte variant tag followed by the variant payload:
+
+| Tag    | Name | Payload                                     |
+|--------|------|---------------------------------------------|
+| 0x94   | Data | `DataType`                                  |
+| 0x95   | Ref  | `EntityRef`                                 |
+
+### 11.10 TxOp Encoding
 
 A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payload:
 
-| Tag | Name     | Payload                                    |
-|-----|----------|--------------------------------------------|
-| 0   | Put      | `Document` (encoded as `Map<String, DataType>`) |
-| 1   | Add      | `Triple` (see below)                       |
-| 2   | Retract  | `Triple` (see below)                       |
-| 3   | Delete   | `Entid` (`i64`)                            |
-| 4   | Erase    | `Entid` (`i64`)                            |
+| Tag | Name     | Payload                                           |
+|-----|----------|---------------------------------------------------|
+| 0   | Put      | `Map<Keyword, TxValue>` (`:db/id` key holds entity ref) |
+| 1   | Add      | `EntityRef` + `String` (keyword) + `TxValue`       |
+| 2   | Retract  | `EntityRef` + `String` (keyword) + `TxValue`       |
+| 3   | Delete   | `EntityRef`                                        |
+| 4   | Erase    | `EntityRef`                                        |
 
-**Triple encoding**:
+**Put encoding**: a map of `Keyword` keys (encoded as `String`) to `TxValue` values (u32 count + entries). The `:db/id` key holds `TxValue::Ref(EntityRef)` for the entity identity; if absent, an internal tempid is auto-allocated during expansion.
 
-```
-+-------------------+---------------------+------------------+
-| entity: i64       | attribute: String    | value: DataType  |
-+-------------------+---------------------+------------------+
-```
-
-### 11.9 Message Payloads
+### 11.11 Message Payloads
 
 Each message payload is the concatenation of its fields in declaration order, encoded using the types above.
 

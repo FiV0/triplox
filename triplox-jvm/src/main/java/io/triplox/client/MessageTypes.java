@@ -64,4 +64,14 @@ public final class MessageTypes {
     public static final byte TXOP_RETRACT = 2;
     public static final byte TXOP_DELETE  = 3;
     public static final byte TXOP_ERASE   = 4;
+
+    // EntityRef tag bytes
+    public static final byte ENTITY_REF_ID      = (byte) 0x90;
+    public static final byte ENTITY_REF_TEMPID  = (byte) 0x91;
+    public static final byte ENTITY_REF_IDENT   = (byte) 0x92;
+    public static final byte ENTITY_REF_LOOKUP  = (byte) 0x93;
+
+    // TxValue tag bytes
+    public static final byte TXVALUE_DATA = (byte) 0x94;
+    public static final byte TXVALUE_REF  = (byte) 0x95;
 }

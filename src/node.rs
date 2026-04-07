@@ -259,8 +259,6 @@ impl<L: TxLog> QueryNode for Node<L> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use slatedb::config::ScanOptions;
 
     use super::*;
@@ -268,7 +266,7 @@ mod tests {
     use crate::indexer::{
         ae_key_to_parts, aev_key_to_parts, av_key_to_parts, ave_key_to_parts, eav_key_to_parts,
     };
-    use crate::ops::{DataType, TxOp};
+    use crate::ops::{DataType, EntityRef, TxOp, TxValue};
     use crate::parse::parse_query;
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
@@ -286,9 +284,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut map = BTreeMap::new();
-        map.insert("name".to_string(), DataType::String("bob".to_string()));
-        let tx_ops = vec![TxOp::Put(map)];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "bob".into())])];
 
         let waiter = node.indexer.read().await.tx_waiter();
 
@@ -317,9 +313,9 @@ mod tests {
 
         // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:email),
-            value: DataType::String("test@example.com".to_string()),
+            value: "test@example.com".into(),
         }];
 
         let result = node.execute_tx(tx_ops).await.unwrap();
@@ -363,14 +359,12 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
 
         let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
 
@@ -387,14 +381,12 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
 
         let query = parse_query(r#"[:find ?e :where [?e :name "alice"]]"#).unwrap();
 
@@ -409,15 +401,15 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("age".to_string(), DataType::Long(30));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
 
         let query =
             parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").unwrap();
@@ -438,17 +430,19 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(2000));
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("follows".to_string(), DataType::Long(2001));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(2001));
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(2000_i64.into())),
+            (kw!(:name), "alice".into()),
+            (kw!(:follows), 2001_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(2001_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
+        .await
+        .unwrap();
 
         // ?friend is in value position of :follows and entity position of :name
         let query = parse_query("[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]")
@@ -466,18 +460,15 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        let mut doc3 = BTreeMap::new();
-        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "charlie".into())])])
+            .await
+            .unwrap();
 
         let query = parse_query(
             r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#,
@@ -498,21 +489,24 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("age".to_string(), DataType::Long(30));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-        doc2.insert("age".to_string(), DataType::Long(25));
-
-        let mut doc3 = BTreeMap::new();
-        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
-        doc3.insert("age".to_string(), DataType::Long(35));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "bob".into()),
+            (kw!(:age), 25_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "charlie".into()),
+            (kw!(:age), 35_i64.into()),
+        ])])
+        .await
+        .unwrap();
 
         let query = parse_query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).unwrap();
 
@@ -535,21 +529,24 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc1.insert("age".to_string(), DataType::Long(30));
-
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-        doc2.insert("age".to_string(), DataType::Long(25));
-
-        let mut doc3 = BTreeMap::new();
-        doc3.insert("name".to_string(), DataType::String("charlie".to_string()));
-        doc3.insert("age".to_string(), DataType::Long(35));
-
-        node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
-        node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "bob".into()),
+            (kw!(:age), 25_i64.into()),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "charlie".into()),
+            (kw!(:age), 35_i64.into()),
+        ])])
+        .await
+        .unwrap();
 
         let query = parse_query(r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#).unwrap();
 
@@ -569,18 +566,20 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let tx_key1 = match node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap() {
+        let tx_key1 = match node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap()
+        {
             TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx1 should commit"),
         };
 
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        let tx_key2 = match node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap() {
+        let tx_key2 = match node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap()
+        {
             TransactionResult::TxCommited(tx_key) => tx_key,
             _ => panic!("Tx2 should commit"),
         };
@@ -612,10 +611,10 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
 
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let result = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
@@ -633,10 +632,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-
-        let result = node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
@@ -661,11 +660,13 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
 
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-
-        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(100_i64.into())),
+                (kw!(:name), "alice".into()),
+            ])])
+            .await
+            .unwrap();
         let tx_key = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("expected commit"),
@@ -697,18 +698,19 @@ mod tests {
         define_test_schema(&node).await;
 
         // First transaction: insert alice
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result1 = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        let result1 = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
         let tx_key1 = match result1 {
             TransactionResult::TxCommited(tk) => tk,
             _ => panic!("Expected TxCommited"),
         };
 
         // Second transaction: insert bob
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("name".to_string(), DataType::String("bob".to_string()));
-        node.execute_tx(vec![TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
@@ -745,10 +747,12 @@ mod tests {
     async fn insert_three_people(node: &impl SubmitNode) {
         let people = vec![("Ivan", 30), ("Bob", 40), ("Dominic", 50)];
         for (name, age) in people {
-            let mut doc = BTreeMap::new();
-            doc.insert("name".to_string(), DataType::String(name.to_string()));
-            doc.insert("age".to_string(), DataType::Long(age));
-            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+            node.execute_tx(vec![TxOp::put(vec![
+                (kw!(:name), name.into()),
+                (kw!(:age), age.into()),
+            ])])
+            .await
+            .unwrap();
         }
     }
 
@@ -925,17 +929,19 @@ mod tests {
         define_test_schema(&node).await;
 
         // Define "sex" attribute with keyword value type
-        let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(kw!(:db.type/keyword)),
-        );
-        sex_attr.insert(
-            "db/cardinality".to_string(),
-            DataType::Keyword(kw!(:db.cardinality/one)),
-        );
-        node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
+            (
+                kw!(:db/valueType),
+                DataType::Keyword(kw!(:db.type/keyword)).into(),
+            ),
+            (
+                kw!(:db/cardinality),
+                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+            ),
+        ])])
+        .await
+        .unwrap();
 
         let people = vec![
             ("Ivan", "male"),
@@ -944,10 +950,12 @@ mod tests {
             ("Doris", "female"),
         ];
         for (name, sex) in people {
-            let mut doc = BTreeMap::new();
-            doc.insert("name".to_string(), DataType::String(name.to_string()));
-            doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+            node.execute_tx(vec![TxOp::put(vec![
+                (kw!(:name), name.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+            ])])
+            .await
+            .unwrap();
         }
 
         // find ?name where [?e :sex :male] [?e :name ?name]
@@ -969,17 +977,19 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut sex_attr = BTreeMap::new();
-        sex_attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:sex)));
-        sex_attr.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(kw!(:db.type/keyword)),
-        );
-        sex_attr.insert(
-            "db/cardinality".to_string(),
-            DataType::Keyword(kw!(:db.cardinality/one)),
-        );
-        node.execute_tx(vec![TxOp::Put(sex_attr)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
+            (
+                kw!(:db/valueType),
+                DataType::Keyword(kw!(:db.type/keyword)).into(),
+            ),
+            (
+                kw!(:db/cardinality),
+                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+            ),
+        ])])
+        .await
+        .unwrap();
 
         let people = vec![
             ("Ivan", "male"),
@@ -988,10 +998,12 @@ mod tests {
             ("Jane", "female"),
         ];
         for (name, sex) in people {
-            let mut doc = BTreeMap::new();
-            doc.insert("name".to_string(), DataType::String(name.to_string()));
-            doc.insert("sex".to_string(), DataType::Keyword(Keyword::plain(sex)));
-            node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+            node.execute_tx(vec![TxOp::put(vec![
+                (kw!(:name), name.into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+            ])])
+            .await
+            .unwrap();
         }
 
         // Same clause order as Clojure: name first (binds ?e), sex filter second
@@ -1013,34 +1025,33 @@ mod tests {
         define_test_schema(&node).await;
 
         // Define "last-name" attribute
-        let mut attr = BTreeMap::new();
-        attr.insert("db/ident".to_string(), DataType::Keyword(kw!(:last-name)));
-        attr.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(kw!(:db.type/string)),
-        );
-        attr.insert(
-            "db/cardinality".to_string(),
-            DataType::Keyword(kw!(:db.cardinality/one)),
-        );
-        node.execute_tx(vec![TxOp::Put(attr)]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/ident), DataType::Keyword(kw!(:last-name)).into()),
+            (
+                kw!(:db/valueType),
+                DataType::Keyword(kw!(:db.type/string)).into(),
+            ),
+            (
+                kw!(:db/cardinality),
+                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+            ),
+        ])])
+        .await
+        .unwrap();
 
         // Insert entity 200 and entity 201 with last-names
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("db/id".to_string(), DataType::Long(2200));
-        doc1.insert(
-            "last-name".to_string(),
-            DataType::String("Ivannotov".to_string()),
-        );
-        let mut doc2 = BTreeMap::new();
-        doc2.insert("db/id".to_string(), DataType::Long(1201));
-        doc2.insert(
-            "last-name".to_string(),
-            DataType::String("Bobnev".to_string()),
-        );
-        node.execute_tx(vec![TxOp::Put(doc1), TxOp::Put(doc2)])
-            .await
-            .unwrap();
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(2200_i64.into())),
+                (kw!(:last-name), "Ivannotov".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(1201_i64.into())),
+                (kw!(:last-name), "Bobnev".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
         let query = parse_query("[:find ?ln :where [2200 :last-name ?ln]]").unwrap();
@@ -1059,15 +1070,9 @@ mod tests {
         let node = Node::memory_node().await;
 
         // Submit a tx with unknown attribute — should fail with TxAborted
-        let mut bad_doc = BTreeMap::new();
-        bad_doc.insert(
-            "nonexistent/attr".to_string(),
-            DataType::String("x".to_string()),
-        );
-
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::Put(bad_doc)]),
+            node.execute_tx(vec![TxOp::put(vec![(kw!(:nonexistent/attr), "x".into())])]),
         )
         .await
         .expect("Should not hang")
@@ -1093,12 +1098,9 @@ mod tests {
             result
         );
 
-        let mut good_doc = BTreeMap::new();
-        good_doc.insert("name".to_string(), DataType::String("alice".to_string()));
-
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::Put(good_doc)]),
+            node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])]),
         )
         .await
         .expect("Should not hang")
@@ -1120,18 +1122,18 @@ mod tests {
 
         // Insert entity 2000 with tags="rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("rust".to_string()),
+            value: "rust".into(),
         }])
         .await
         .unwrap();
 
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("database".to_string()),
+            value: "database".into(),
         }])
         .await
         .unwrap();
@@ -1153,24 +1155,27 @@ mod tests {
         define_test_schema(&node).await;
 
         // tx1: valid insert — allocates first user entity
-        let mut doc1 = BTreeMap::new();
-        doc1.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result1 = node.execute_tx(vec![TxOp::Put(doc1)]).await.unwrap();
+        let result1 = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
         assert!(matches!(result1, TransactionResult::TxCommited(_)));
 
         // tx2: insert with unknown attribute — should fail
-        let mut bad_doc = BTreeMap::new();
-        bad_doc.insert(
-            "nonexistent_attr".to_string(),
-            DataType::String("oops".to_string()),
-        );
-        let result2 = node.execute_tx(vec![TxOp::Put(bad_doc)]).await.unwrap();
+        let result2 = node
+            .execute_tx(vec![TxOp::put(vec![(
+                kw!(:nonexistent_attr),
+                "oops".into(),
+            )])])
+            .await
+            .unwrap();
         assert!(matches!(result2, TransactionResult::TxAborted(_, _)));
 
         // tx3: valid insert — should get the next contiguous entity ID
-        let mut doc3 = BTreeMap::new();
-        doc3.insert("name".to_string(), DataType::String("bob".to_string()));
-        let result3 = node.execute_tx(vec![TxOp::Put(doc3)]).await.unwrap();
+        let result3 = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .await
+            .unwrap();
         assert!(matches!(result3, TransactionResult::TxCommited(_)));
 
         // Query all (entity, name) pairs and verify contiguous counter values
@@ -1200,9 +1205,10 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let mut doc = BTreeMap::new();
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .await
+            .unwrap();
         let tx_key = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("Expected committed"),
@@ -1227,9 +1233,10 @@ mod tests {
         define_test_schema(&node).await;
 
         // Submit a transaction with an unknown attribute to trigger abort
-        let mut doc = BTreeMap::new();
-        doc.insert("nonexistent".to_string(), DataType::String("x".to_string()));
-        let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![(kw!(:nonexistent), "x".into())])])
+            .await
+            .unwrap();
         let tx_key = match &result {
             TransactionResult::TxAborted(k, _) => *k,
             _ => panic!("Expected aborted, got {:?}", result),

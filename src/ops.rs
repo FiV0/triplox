@@ -8,10 +8,86 @@ use edn::symbols::NamespacedSymbol;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
 use uuid::Uuid;
 
 pub type Entid = i64;
+
+/// How to identify an entity in a transaction.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq, Hash)]
+pub enum EntityRef {
+    Id(i64),
+    TempId(String),
+    Ident(Keyword),
+    /// Accepted in the type but errors at expansion (not yet supported).
+    LookupRef(Keyword, DataType),
+}
+
+impl From<i64> for EntityRef {
+    fn from(v: i64) -> Self {
+        EntityRef::Id(v)
+    }
+}
+
+impl From<Keyword> for EntityRef {
+    fn from(v: Keyword) -> Self {
+        EntityRef::Ident(v)
+    }
+}
+
+impl From<&str> for EntityRef {
+    fn from(v: &str) -> Self {
+        EntityRef::TempId(v.to_string())
+    }
+}
+
+/// A transaction value: either concrete data or an entity reference.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum TxValue {
+    Data(DataType),
+    Ref(EntityRef),
+}
+
+impl From<DataType> for TxValue {
+    fn from(v: DataType) -> Self {
+        TxValue::Data(v)
+    }
+}
+
+impl From<EntityRef> for TxValue {
+    fn from(v: EntityRef) -> Self {
+        TxValue::Ref(v)
+    }
+}
+
+impl From<i64> for TxValue {
+    fn from(v: i64) -> Self {
+        TxValue::Data(DataType::Long(v))
+    }
+}
+
+impl From<String> for TxValue {
+    fn from(v: String) -> Self {
+        TxValue::Data(DataType::String(v))
+    }
+}
+
+impl From<&str> for TxValue {
+    fn from(v: &str) -> Self {
+        TxValue::Data(DataType::String(v.to_string()))
+    }
+}
+
+impl From<bool> for TxValue {
+    fn from(v: bool) -> Self {
+        TxValue::Data(DataType::Boolean(v))
+    }
+}
+
+impl From<f64> for TxValue {
+    fn from(v: f64) -> Self {
+        TxValue::Data(DataType::Double(v))
+    }
+}
 
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -150,19 +226,26 @@ impl_from_for_enum!(
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
-    Put(BTreeMap<String, DataType>),
+    Put(BTreeMap<Keyword, TxValue>),
     Add {
-        entity_id: Entid,
+        entity: EntityRef,
         attribute: Keyword,
-        value: DataType,
+        value: TxValue,
     },
     Retract {
-        entity_id: Entid,
+        entity: EntityRef,
         attribute: Keyword,
-        value: DataType,
+        value: TxValue,
     },
-    Delete(Entid),
-    Erase(Entid),
+    Delete(EntityRef),
+    Erase(EntityRef),
+}
+
+impl TxOp {
+    /// Build a Put without explicit entity ID (auto-allocated).
+    pub fn put(attrs: Vec<(Keyword, TxValue)>) -> Self {
+        TxOp::Put(attrs.into_iter().collect())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,81 +254,15 @@ pub enum DatomOp {
     Retract,
 }
 
-/// A normalized fact: (entity, attribute, value, tx, op).
+/// A normalized fact: (entity, attribute, value, op).
 /// The attribute is an unresolved keyword ident.
+/// The tx_eid is not stored here — it's passed separately to write_index_entries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Datom {
     pub entity: i64,
     pub attribute: Keyword,
     pub value: DataType,
-    pub tx: i64,
     pub op: DatomOp,
-}
-
-/// Expand TxOps into a flat vec of Datoms.
-/// - Put(doc) → N Assert datoms (one per non-db/id field)
-/// - Add(triple) → 1 Assert datom
-/// - Retract(triple) → 1 Retract datom
-/// - Delete/Erase → panics (not yet implemented)
-pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
-    let mut datoms = Vec::new();
-    for op in ops {
-        match op {
-            TxOp::Put(doc) => {
-                let entity = match doc.get("db/id") {
-                    Some(DataType::Long(id)) => *id,
-                    Some(_) => return Err(anyhow::anyhow!("Document db/id must be a Long")),
-                    None => return Err(anyhow::anyhow!("Document must have a db/id")),
-                };
-                for (attr, value) in doc.iter().filter(|(k, _)| *k != "db/id") {
-                    // TODO(perf): allocates a fresh `:<attr>` String per attribute on the Put
-                    // hot path just to feed it to `Keyword::from_str`, which strips the `:`
-                    // and splits again. Could be replaced with a direct split-and-construct
-                    // once the Put doc key type is revisited (see client-side Keyword TODO).
-                    let kw = Keyword::from_str(&format!(":{}", attr)).map_err(|e| {
-                        anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, e)
-                    })?;
-                    datoms.push(Datom {
-                        entity,
-                        attribute: kw,
-                        value: value.clone(),
-                        tx,
-                        op: DatomOp::Assert,
-                    });
-                }
-            }
-            TxOp::Add {
-                entity_id,
-                attribute,
-                value,
-            } => {
-                datoms.push(Datom {
-                    entity: *entity_id,
-                    attribute: attribute.clone(),
-                    value: value.clone(),
-                    tx,
-                    op: DatomOp::Assert,
-                });
-            }
-            TxOp::Retract {
-                entity_id,
-                attribute,
-                value,
-            } => {
-                datoms.push(Datom {
-                    entity: *entity_id,
-                    attribute: attribute.clone(),
-                    value: value.clone(),
-                    tx,
-                    op: DatomOp::Retract,
-                });
-            }
-            TxOp::Delete(_) | TxOp::Erase(_) => {
-                panic!("Delete/Erase not yet implemented");
-            }
-        }
-    }
-    Ok(datoms)
 }
 
 #[cfg(test)]
@@ -413,22 +430,25 @@ mod tests {
     }
 
     #[test]
-    fn test_op_put() {
-        let mut document: BTreeMap<String, DataType> = BTreeMap::new();
-        document.insert("string".to_string(), "string_value".to_string().into());
-        document.insert("int".to_string(), 1i64.into());
-        let op = TxOp::Put(document);
+    fn test_op_put_bincode() {
+        let op = TxOp::put(vec![
+            (
+                kw!(:string),
+                TxValue::Data("string_value".to_string().into()),
+            ),
+            (kw!(:int), TxValue::Data(1i64.into())),
+        ]);
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
     }
 
     #[test]
-    fn test_op_add() {
+    fn test_op_add_bincode() {
         let op = TxOp::Add {
-            entity_id: 1,
+            entity: EntityRef::Id(1),
             attribute: kw!(:string),
-            value: DataType::String("string_value".to_string()),
+            value: TxValue::Data(DataType::String("string_value".to_string())),
         };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -436,11 +456,11 @@ mod tests {
     }
 
     #[test]
-    fn test_op_retract() {
+    fn test_op_retract_bincode() {
         let op = TxOp::Retract {
-            entity_id: 1,
+            entity: EntityRef::Id(1),
             attribute: kw!(:string),
-            value: DataType::String("string_value".to_string()),
+            value: TxValue::Data(DataType::String("string_value".to_string())),
         };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -448,106 +468,45 @@ mod tests {
     }
 
     #[test]
-    fn test_op_delete() {
-        let op = TxOp::Delete(1);
+    fn test_op_delete_bincode() {
+        let op = TxOp::Delete(EntityRef::Id(1));
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
     }
 
     #[test]
-    fn test_op_erase() {
-        let op = TxOp::Erase(1);
+    fn test_op_erase_bincode() {
+        let op = TxOp::Erase(EntityRef::Id(1));
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
     }
 
     #[test]
-    fn test_tx_ops_to_datoms_put() {
-        let tx = 1000_i64;
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        doc.insert("age".to_string(), DataType::Long(30));
-        let ops = vec![TxOp::Put(doc)];
-
-        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
-        assert_eq!(datoms.len(), 2);
-        assert!(datoms.iter().all(|d| d.entity == 100));
-        assert!(datoms.iter().all(|d| d.op == DatomOp::Assert));
-        assert!(datoms.iter().all(|d| d.tx == tx));
-    }
-
-    #[test]
-    fn test_tx_ops_to_datoms_add() {
-        let tx = 1000_i64;
-        let ops = vec![TxOp::Add {
-            entity_id: 200,
-            attribute: kw!(:name),
-            value: DataType::String("bob".to_string()),
-        }];
-
-        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
-        assert_eq!(datoms.len(), 1);
-        assert_eq!(datoms[0].entity, 200);
-        assert_eq!(datoms[0].attribute, kw!(:name));
-        assert_eq!(datoms[0].value, DataType::String("bob".to_string()));
-        assert_eq!(datoms[0].op, DatomOp::Assert);
-    }
-
-    #[test]
-    fn test_tx_ops_to_datoms_retract() {
-        let tx = 1000_i64;
-        let ops = vec![TxOp::Retract {
-            entity_id: 200,
-            attribute: kw!(:name),
-            value: DataType::String("bob".to_string()),
-        }];
-
-        let datoms = tx_ops_to_datoms(&ops, tx).unwrap();
-        assert_eq!(datoms.len(), 1);
-        assert_eq!(datoms[0].op, DatomOp::Retract);
-    }
-
-    #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
-    fn test_tx_ops_to_datoms_delete_panics() {
-        let tx = 1000_i64;
-        tx_ops_to_datoms(&[TxOp::Delete(100)], tx).unwrap();
-    }
-
-    #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
-    fn test_tx_ops_to_datoms_erase_panics() {
-        let tx = 1000_i64;
-        tx_ops_to_datoms(&[TxOp::Erase(200)], tx).unwrap();
-    }
-
-    #[test]
-    fn test_tx_ops_to_datoms_put_missing_id() {
-        let tx = 1000_i64;
-        let mut doc = BTreeMap::new();
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let ops = vec![TxOp::Put(doc)];
-
-        let result = tx_ops_to_datoms(&ops, tx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("db/id"));
-    }
-
-    #[test]
-    fn test_tx_ops_to_datoms_put_wrong_id_type() {
-        let tx = 1000_i64;
-        let mut doc = BTreeMap::new();
-        doc.insert(
-            "db/id".to_string(),
-            DataType::String("not-a-long".to_string()),
+    fn test_entity_ref_from_impls() {
+        assert_eq!(EntityRef::from(42_i64), EntityRef::Id(42));
+        assert_eq!(
+            EntityRef::from(kw!(:person/name)),
+            EntityRef::Ident(kw!(:person/name))
         );
-        doc.insert("name".to_string(), DataType::String("alice".to_string()));
-        let ops = vec![TxOp::Put(doc)];
+        assert_eq!(
+            EntityRef::from("temp-1"),
+            EntityRef::TempId("temp-1".to_string())
+        );
+    }
 
-        let result = tx_ops_to_datoms(&ops, tx);
-        assert!(result.is_err());
+    #[test]
+    fn test_tx_value_from_impls() {
+        assert_eq!(TxValue::from(42_i64), TxValue::Data(DataType::Long(42)));
+        assert_eq!(
+            TxValue::from("hello"),
+            TxValue::Data(DataType::String("hello".to_string()))
+        );
+        assert_eq!(TxValue::from(true), TxValue::Data(DataType::Boolean(true)));
+        assert_eq!(
+            TxValue::from(3.14_f64),
+            TxValue::Data(DataType::Double(3.14))
+        );
     }
 }

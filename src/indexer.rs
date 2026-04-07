@@ -16,11 +16,12 @@ use crate::iterator::temporal_filter_iterator;
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
-use crate::ops::{tx_ops_to_datoms, Datom, DatomOp, TxOp};
-use crate::partition::{partition_entity_prefix, resolve_entity_ids, TX_PARTITION};
+use crate::ops::{Datom, DatomOp, TxOp};
+use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::Schema;
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::transaction::TxKey;
+use crate::tx;
 use crate::util::concat_bytes;
 use edn::symbols::Keyword;
 
@@ -211,21 +212,18 @@ fn build_tx_entity_datoms(
             entity: tx_eid,
             attribute: kw!(:db/txInstant),
             value: DataType::Instant(st),
-            tx: tx_eid,
             op: DatomOp::Assert,
         },
         Datom {
             entity: tx_eid,
             attribute: kw!(:db/txId),
             value: DataType::Long(tx_key.tx_id),
-            tx: tx_eid,
             op: DatomOp::Assert,
         },
         Datom {
             entity: tx_eid,
             attribute: kw!(:db/txResult),
             value: DataType::Keyword(result_kw),
-            tx: tx_eid,
             op: DatomOp::Assert,
         },
     ];
@@ -234,7 +232,6 @@ fn build_tx_entity_datoms(
             entity: tx_eid,
             attribute: kw!(:db.tx/error),
             value: DataType::String(err),
-            tx: tx_eid,
             op: DatomOp::Assert,
         });
     }
@@ -285,11 +282,11 @@ impl Indexer {
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
-        // 2. Resolve entity IDs
-        let resolved_ops = resolve_entity_ids(&tx_ops, &mut pending_pm)?;
+        // 2. Expand TxOps to DatomWithTempids (resolves idents via schema)
+        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
 
-        // 3. Expand to datoms + build tx entity datoms
-        let mut datoms = tx_ops_to_datoms(&resolved_ops, tx_eid)?;
+        // 3. Resolve tempids + build tx entity datoms
+        let mut datoms = tx::resolve_tempids(&expanded, &mut pending_pm)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 4. Validate + prepare schema update (single pass, pre-commit, fallible)
@@ -368,7 +365,6 @@ impl Indexer {
                     entity: datom.entity,
                     attribute: datom.attribute.clone(),
                     value: old_value,
-                    tx: datom.tx,
                     op: DatomOp::Retract,
                 });
             }
@@ -590,10 +586,10 @@ pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
 #[cfg(test)]
 mod tests {
     use slatedb::{config::ScanOptions, Db};
-    use std::collections::BTreeMap;
 
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
+    use crate::ops::{EntityRef, TxValue};
     use crate::schema::test_schema_tx;
     use crate::slate::in_memory_slate;
 
@@ -628,9 +624,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
         };
-        let mut doc = BTreeMap::new();
-        doc.insert("name".to_string(), DataType::String("alan".to_string()));
-        let tx_ops = vec![TxOp::Put(doc)];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alan".into())])];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // The entity was auto-assigned an ID in USER_PARTITION
@@ -660,14 +654,6 @@ mod tests {
         Ok(())
     }
 
-    fn user_doc(attrs: Vec<(&str, DataType)>) -> BTreeMap<String, DataType> {
-        let mut map = BTreeMap::new();
-        for (k, v) in attrs {
-            map.insert(k.to_string(), v);
-        }
-        map
-    }
-
     #[tokio::test]
     async fn test_indexer_write_persisted() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
@@ -677,11 +663,7 @@ mod tests {
             system_time: st_from_unix_epoch(2),
         };
 
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alan".into()),
-        )]))];
-
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alan".into())])];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify an EAV entry in USER_PARTITION exists
@@ -714,10 +696,10 @@ mod tests {
             system_time: st_from_unix_epoch(2),
         };
 
-        let tx_ops = vec![TxOp::Put(user_doc(vec![
-            ("name", DataType::String("alan".into())),
-            ("age", DataType::Long(30)),
-        ]))];
+        let tx_ops = vec![TxOp::put(vec![
+            (kw!(:name), "alan".into()),
+            (kw!(:age), 30_i64.into()),
+        ])];
 
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
@@ -750,10 +732,7 @@ mod tests {
             system_time: st_from_unix_epoch(1000),
         };
 
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alice".into()),
-        )]))];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -785,10 +764,7 @@ mod tests {
                 tx_id,
                 system_time: st_from_unix_epoch(tx_id as u64 * 100),
             };
-            let tx_ops = vec![TxOp::Put(user_doc(vec![(
-                "name",
-                DataType::String(format!("user{}", i)),
-            )]))];
+            let tx_ops = vec![TxOp::put(vec![(kw!(:name), format!("user{}", i).into())])];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -808,10 +784,7 @@ mod tests {
             system_time: st_from_unix_epoch(1000),
         };
 
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alice".into()),
-        )]))];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -848,10 +821,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
         };
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alice".into()),
-        )]))];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         indexer.tx_waiter().await_tx(tx_key).await?;
@@ -875,10 +845,7 @@ mod tests {
 
         {
             let mut guard = indexer.write().await;
-            let tx_ops = vec![TxOp::Put(user_doc(vec![(
-                "name",
-                DataType::String("bob".into()),
-            )]))];
+            let tx_ops = vec![TxOp::put(vec![(kw!(:name), "bob".into())])];
 
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
@@ -926,10 +893,7 @@ mod tests {
                 tx_id,
                 system_time: st_from_unix_epoch(tx_id as u64 * 100),
             };
-            let tx_ops = vec![TxOp::Put(user_doc(vec![(
-                "name",
-                DataType::String(format!("user{}", i)),
-            )]))];
+            let tx_ops = vec![TxOp::put(vec![(kw!(:name), format!("user{}", i).into())])];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -968,10 +932,7 @@ mod tests {
         // Index the transaction
         {
             let mut guard = indexer.write().await;
-            let tx_ops = vec![TxOp::Put(user_doc(vec![(
-                "name",
-                DataType::String("shared".into()),
-            )]))];
+            let tx_ops = vec![TxOp::put(vec![(kw!(:name), "shared".into())])];
 
             guard.transact_tx(tx_key, tx_ops).await?;
         }
@@ -1001,10 +962,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alice".into()),
-        )]))];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find the auto-assigned entity ID
@@ -1029,10 +987,15 @@ mod tests {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(entity_id));
-        map.insert("name".to_string(), DataType::String("bob".to_string()));
-        indexer.transact_tx(tx2, vec![TxOp::Put(map)]).await?;
+        indexer
+            .transact_tx(
+                tx2,
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), TxValue::Ref(entity_id.into())),
+                    (kw!(:name), "bob".into()),
+                ])],
+            )
+            .await?;
 
         // Scan EAV for entity — expect: alice ADD, alice RETRACT, bob ADD
         let mut iter = slate
@@ -1084,10 +1047,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops = vec![TxOp::Put(user_doc(vec![(
-            "name",
-            DataType::String("alice".into()),
-        )]))];
+        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find auto-assigned entity ID
@@ -1111,10 +1071,15 @@ mod tests {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let mut map = BTreeMap::new();
-        map.insert("db/id".to_string(), DataType::Long(entity_id));
-        map.insert("name".to_string(), DataType::String("alice".to_string()));
-        indexer.transact_tx(tx2, vec![TxOp::Put(map)]).await?;
+        indexer
+            .transact_tx(
+                tx2,
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), TxValue::Ref(entity_id.into())),
+                    (kw!(:name), "alice".into()),
+                ])],
+            )
+            .await?;
 
         // Count EAV entries for entity, name attr — should be 1 ADD, 0 RETRACTs
         let mut iter = slate
@@ -1151,9 +1116,9 @@ mod tests {
             system_time: st_from_unix_epoch(100),
         };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("rust".to_string()),
+            value: "rust".into(),
         }];
         indexer.transact_tx(tx1, tx_ops1).await?;
 
@@ -1163,9 +1128,9 @@ mod tests {
             system_time: st_from_unix_epoch(200),
         };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("database".to_string()),
+            value: "database".into(),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
@@ -1216,9 +1181,9 @@ mod tests {
             system_time: st_from_unix_epoch(100),
         };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("rust".to_string()),
+            value: "rust".into(),
         }];
         indexer.transact_tx(tx1, tx_ops1).await?;
 
@@ -1228,9 +1193,9 @@ mod tests {
             system_time: st_from_unix_epoch(200),
         };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: 2000,
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
-            value: DataType::String("rust".to_string()),
+            value: "rust".into(),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 

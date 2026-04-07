@@ -6,7 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::ops::{DataType, Datom, DatomOp, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp, TxValue};
 use crate::parse::parse_query;
 use crate::query::execute_query;
 
@@ -364,17 +364,22 @@ impl Schema {
 
 /// Build a Put for a schema attribute without explicit db/id.
 fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-    );
-    doc.insert(
-        "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
-    );
-    TxOp::Put(doc)
+    TxOp::put(vec![
+        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+        (
+            kw!(:db/valueType),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.type", value_type,
+            ))),
+        ),
+        (
+            kw!(:db/cardinality),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.cardinality",
+                cardinality,
+            ))),
+        ),
+    ])
 }
 
 fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
@@ -383,26 +388,31 @@ fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
 
 /// Build a bootstrap Put with an explicit entity ID.
 fn bootstrap_put(id: i64, ident: Keyword) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
-    TxOp::Put(doc)
+    TxOp::put(vec![
+        (kw!(:db/id), TxValue::Ref(id.into())),
+        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+    ])
 }
 
 /// Build a bootstrap Put for a schema attribute with an explicit entity ID.
 fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
-    let mut doc = BTreeMap::new();
-    doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(ident));
-    doc.insert(
-        "db/valueType".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-    );
-    doc.insert(
-        "db/cardinality".to_string(),
-        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
-    );
-    TxOp::Put(doc)
+    TxOp::put(vec![
+        (kw!(:db/id), TxValue::Ref(id.into())),
+        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+        (
+            kw!(:db/valueType),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.type", value_type,
+            ))),
+        ),
+        (
+            kw!(:db/cardinality),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.cardinality",
+                "one",
+            ))),
+        ),
+    ])
 }
 
 /// Build the bootstrap schema transaction.
@@ -562,18 +572,20 @@ pub fn test_schema_tx() -> Vec<TxOp> {
 mod tests {
     use super::*;
     use crate::metadata::PartitionMap;
-    use crate::ops::tx_ops_to_datoms;
+    use crate::tx;
 
-    fn to_datoms(ops: &[TxOp]) -> Vec<Datom> {
+    fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
         let mut pm = PartitionMap::new();
-        let resolved = crate::partition::resolve_entity_ids(ops, &mut pm).unwrap();
-        tx_ops_to_datoms(&resolved, 0_i64).unwrap()
+        let expanded = tx::expand_tx_ops(ops, schema).unwrap();
+        tx::resolve_tempids(&expanded, &mut pm).unwrap()
     }
 
     fn bootstrapped_schema() -> Schema {
         let mut schema = Schema::default();
         let tx_ops = bootstrap_schema_tx();
-        let datoms = tx_ops_to_datoms(&tx_ops, 0_i64).unwrap();
+        let expanded = tx::expand_tx_ops(&tx_ops, &schema).unwrap();
+        let mut pm = PartitionMap::new();
+        let datoms = tx::resolve_tempids(&expanded, &mut pm).unwrap();
         let update = schema.validate_and_prepare(&datoms).unwrap();
         schema.apply_schema_update(update);
         schema
@@ -582,7 +594,9 @@ mod tests {
     fn bootstrapped_schema_with_person_name() -> Schema {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         schema.apply_schema_update(update);
         schema
     }
@@ -631,22 +645,24 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_valid() {
         let schema = bootstrapped_schema_with_person_name();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("name".to_string(), DataType::String("Alice".to_string()));
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), "Alice".into()),
+        ])];
         assert!(schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
     }
 
     #[test]
     fn test_validate_and_prepare_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("person/age".to_string(), DataType::Long(30));
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:person/age), 30_i64.into()),
+        ])];
         let err = schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
@@ -654,11 +670,12 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("name".to_string(), DataType::Long(42));
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), 42_i64.into()),
+        ])];
         let err = schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
@@ -667,7 +684,9 @@ mod tests {
     fn test_validate_and_prepare_schema_defining_tx() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        assert!(schema.validate_and_prepare(&to_datoms(&ops)).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .is_ok());
     }
 
     #[test]
@@ -675,20 +694,20 @@ mod tests {
         let schema = bootstrapped_schema_with_person_name();
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
 
-        // Cannot redefine existing schema entity
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(name_id));
-        doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(kw!(:db.type/long)),
-        );
-        doc.insert(
-            "db/cardinality".to_string(),
-            DataType::Keyword(kw!(:db.cardinality/one)),
-        );
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(name_id.into())),
+            (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
+            (
+                kw!(:db/valueType),
+                TxValue::Data(DataType::Keyword(kw!(:db.type/long))),
+            ),
+            (
+                kw!(:db/cardinality),
+                TxValue::Data(DataType::Keyword(kw!(:db.cardinality/one))),
+            ),
+        ])];
         let err = schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
@@ -716,26 +735,30 @@ mod tests {
     fn test_schema_ref_attribute_validation() {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:follows), "ref")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         schema.apply_schema_update(update);
 
         let (_eid, attr) = schema.get_attribute(&kw!(:follows)).unwrap();
         assert_eq!(attr.value_type, ValueType::Ref);
 
         // Long value accepted for ref-typed attribute
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(200));
-        doc.insert("follows".to_string(), DataType::Long(201));
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:follows), 201_i64.into()),
+        ])];
         assert!(schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
 
         // String value rejected for ref-typed attribute
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(300));
-        doc.insert("follows".to_string(), DataType::String("not-a-ref".into()));
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(300_i64.into())),
+            (kw!(:follows), "not-a-ref".into()),
+        ])];
         assert!(schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_err());
     }
 
@@ -747,7 +770,9 @@ mod tests {
             "string",
             "many",
         )];
-        let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(update.attributes[0].1.multival);
     }
@@ -756,7 +781,9 @@ mod tests {
     fn test_validate_and_prepare_parses_cardinality_one() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(!update.attributes[0].1.multival);
     }
@@ -764,16 +791,17 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_missing_cardinality_errors() {
         let schema = bootstrapped_schema();
-        let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::Long(100));
-        doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert(
-            "db/valueType".to_string(),
-            DataType::Keyword(kw!(:db.type/string)),
-        );
-        // No db/cardinality
+        let ops = [TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
+            (
+                kw!(:db/valueType),
+                TxValue::Data(DataType::Keyword(kw!(:db.type/string))),
+            ),
+            // No db/cardinality
+        ])];
         let err = schema
-            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));
     }
