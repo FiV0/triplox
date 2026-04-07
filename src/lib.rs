@@ -14,7 +14,6 @@ pub mod logging;
 mod memory_log;
 pub(crate) mod metadata;
 pub mod ops;
-mod parse;
 pub mod partition;
 mod query;
 #[cfg(any(test, feature = "test-helpers"))]

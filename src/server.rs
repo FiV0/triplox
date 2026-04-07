@@ -18,7 +18,6 @@ use tracing::{info, warn};
 
 use crate::log::TxLog;
 use crate::node::{Database, Node, QueryNode, SubmitNode, TransactionResult, DB};
-use crate::parse::parse_query;
 use crate::protocol::*;
 use crate::query::QueryResult;
 
@@ -606,7 +605,9 @@ async fn handle_query(
         .get_db(db_id)
         .ok_or_else(|| anyhow::anyhow!("Invalid DB handle: {}", db_id))?;
 
-    let parsed = parse_query(query_string)?;
+    let parsed: edn::query::ParsedQuery = query_string
+        .parse()
+        .map_err(|e| anyhow::anyhow!("EDN parse error: {}", e))?;
 
     // Extract find variable names for RowDescription
     let find_vars: Vec<String> = match &parsed.find_spec {

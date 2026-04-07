@@ -4,7 +4,6 @@
 //! both operating over TCP via the wire protocol.
 
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::sync::Arc;
 
 use anyhow::{bail, Error, Result};
@@ -248,48 +247,6 @@ impl ClientDb {
         self.tx_id
     }
 
-    /// Execute a query using a raw EDN string.
-    pub async fn query_edn(&self, edn: &str) -> Result<QueryResult> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::Query {
-                query_string: edn.to_string(),
-                db_id: self.db_id,
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
-
-        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-
-        match msg {
-            BackendMessage::RowDescription { .. } => {
-                // Collect DataRows until ReadyForQuery
-                let mut rows = Vec::new();
-                loop {
-                    let msg =
-                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                    match msg {
-                        BackendMessage::DataRow { values } => {
-                            rows.push(values);
-                        }
-                        BackendMessage::ReadyForQuery { .. } => break,
-                        other => bail!("Unexpected message during query: {:?}", other),
-                    }
-                }
-
-                Ok(rows)
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Query error: {}", message);
-            }
-            other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
-        }
-    }
-
     /// Release this DB handle on the server.
     pub async fn close(self) -> Result<()> {
         let mut conn = self.conn.lock().await;
@@ -324,7 +281,40 @@ impl ClientDb {
 
 impl Database for ClientDb {
     async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error> {
-        let edn = query.to_string();
-        self.query_edn(&edn).await
+        let mut conn = self.conn.lock().await;
+        write_frontend_message(
+            &mut conn.writer,
+            &FrontendMessage::Query {
+                query_string: query.to_string(),
+                db_id: self.db_id,
+            },
+        )
+        .await?;
+        conn.writer.flush().await?;
+
+        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+
+        match msg {
+            BackendMessage::RowDescription { .. } => {
+                let mut rows = Vec::new();
+                loop {
+                    let msg =
+                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+                    match msg {
+                        BackendMessage::DataRow { values } => {
+                            rows.push(values);
+                        }
+                        BackendMessage::ReadyForQuery { .. } => break,
+                        other => bail!("Unexpected message during query: {:?}", other),
+                    }
+                }
+                Ok(rows)
+            }
+            BackendMessage::ErrorResponse { message, .. } => {
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+                bail!("Query error: {}", message);
+            }
+            other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
+        }
     }
 }

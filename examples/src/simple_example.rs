@@ -11,7 +11,8 @@ use anyhow::Result;
 use edn::kw;
 use edn::Keyword;
 use triplox::client::ClientNode;
-use triplox::node::{QueryNode, SubmitNode, TransactionResult};
+use edn::query::ParsedQuery;
+use triplox::node::{Database, QueryNode, SubmitNode, TransactionResult};
 use triplox::ops::{DataType, TxOp};
 
 /// Build a schema attribute definition as a Put document.
@@ -74,8 +75,9 @@ async fn main() -> Result<()> {
     let db = node.db().await?;
     println!("Opened DB snapshot (tx_id={}).", db.tx_id());
 
-    let edn_query = r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#;
-    let rows = db.query_edn(edn_query).await?;
+    let edn_query: ParsedQuery =
+        r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#.parse()?;
+    let rows = db.query(&edn_query).await?;
 
     println!("Query returned {} row(s):", rows.len());
     for row in &rows {

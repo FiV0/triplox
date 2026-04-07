@@ -7,8 +7,8 @@ use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
 use crate::ops::{DataType, Datom, DatomOp, TxOp};
-use crate::parse::parse_query;
 use crate::query::execute_query;
+use edn::query::ParsedQuery;
 
 // --- Reserved entity IDs ---
 // Used as explicit db/id values in bootstrap_schema_tx().
@@ -462,7 +462,8 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let handle = Handle::current();
 
     // Query 1: all entities with db/ident (populates ident_map/entid_map)
-    let ident_query = parse_query("[:find ?e ?ident :where [?e :db/ident ?ident]]")
+    let ident_query: ParsedQuery = "[:find ?e ?ident :where [?e :db/ident ?ident]]"
+        .parse()
         .expect("Ident query parse failed");
 
     let snap_clone = snapshot.clone();
@@ -482,9 +483,9 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     .expect("Ident query execution failed");
 
     // Query 2: entities with db/ident + db/valueType + db/cardinality (populates attribute_map)
-    let attr_query = parse_query(
-        "[:find ?e ?ident ?vt ?card :where [?e :db/ident ?ident] [?e :db/valueType ?vt] [?e :db/cardinality ?card]]"
-    ).expect("Attribute query parse failed");
+    let attr_query: ParsedQuery = "[:find ?e ?ident ?vt ?card :where [?e :db/ident ?ident] [?e :db/valueType ?vt] [?e :db/cardinality ?card]]"
+        .parse()
+        .expect("Attribute query parse failed");
 
     let attr_results = tokio::task::spawn_blocking(move || {
         execute_query(

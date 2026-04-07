@@ -267,10 +267,10 @@ mod tests {
         ae_key_to_parts, aev_key_to_parts, av_key_to_parts, ave_key_to_parts, eav_key_to_parts,
     };
     use crate::ops::{DataType, EntityRef, TxOp};
-    use crate::parse::parse_query;
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
+    use edn::query::ParsedQuery;
     use edn::Keyword;
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
@@ -300,7 +300,9 @@ mod tests {
 
         // Verify data is queryable after async indexing
         let db = node.db().await.unwrap();
-        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
         let result = db.query(&query).await.unwrap();
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
@@ -366,7 +368,9 @@ mod tests {
             .await
             .unwrap();
 
-        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -388,7 +392,7 @@ mod tests {
             .await
             .unwrap();
 
-        let query = parse_query(r#"[:find ?e :where [?e :name "alice"]]"#).unwrap();
+        let query: ParsedQuery = r#"[:find ?e :where [?e :name "alice"]]"#.parse().unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -411,8 +415,9 @@ mod tests {
             .await
             .unwrap();
 
-        let query =
-            parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").unwrap();
+        let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -445,7 +450,8 @@ mod tests {
         .unwrap();
 
         // ?friend is in value position of :follows and entity position of :name
-        let query = parse_query("[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]")
+        let query = "[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]"
+            .parse::<ParsedQuery>()
             .unwrap();
 
         let db = node.db().await.unwrap();
@@ -470,10 +476,10 @@ mod tests {
             .await
             .unwrap();
 
-        let query = parse_query(
-            r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#,
-        )
-        .unwrap();
+        let query: ParsedQuery =
+            r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#
+                .parse()
+                .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -508,7 +514,7 @@ mod tests {
         .await
         .unwrap();
 
-        let query = parse_query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).unwrap();
+        let query: ParsedQuery = r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#.parse().unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -548,7 +554,7 @@ mod tests {
         .await
         .unwrap();
 
-        let query = parse_query(r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#).unwrap();
+        let query: ParsedQuery = r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#.parse().unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -584,7 +590,9 @@ mod tests {
             _ => panic!("Tx2 should commit"),
         };
 
-        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         // db_as_of(tx_key1): should only see alice
         let db1 = node.db_as_of(tx_key1).await.unwrap();
@@ -605,7 +613,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
 
-        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         // First node: insert data
         let node = Node::local_node(&root_path).await.unwrap();
@@ -714,7 +724,9 @@ mod tests {
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
-        let query = parse_query("[:find ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
         let results = db.query(&query).await.unwrap();
         assert_eq!(
             results.len(),
@@ -762,9 +774,9 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query =
-            parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(< ?age 50)]]")
-                .unwrap();
+        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(< ?age 50)]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -779,9 +791,9 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query =
-            parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(>= ?age 50)]]")
-                .unwrap();
+        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(>= ?age 50)]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -795,9 +807,9 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query =
-            parse_query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(= 30 ?age)]]")
-                .unwrap();
+        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(= 30 ?age)]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -811,8 +823,9 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query =
-            parse_query(r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#).unwrap();
+        let query: ParsedQuery = r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#
+            .parse()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -825,7 +838,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = parse_query("[:find ?name1 ?name2 :where [?e1 :name ?name1] [?e1 :age ?age1] [?e2 :name ?name2] [?e2 :age ?age2] [(<= ?age1 ?age2)]]").unwrap();
+        let query = "[:find ?name1 ?name2 :where [?e1 :name ?name1] [?e1 :age ?age1] [?e2 :name ?name2] [?e2 :age ?age2] [(<= ?age1 ?age2)]]".parse::<ParsedQuery>().unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -840,10 +853,10 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = parse_query(
-            "[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half]]",
-        )
-        .unwrap();
+        let query: ParsedQuery =
+            "[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half]]"
+                .parse()
+                .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -868,7 +881,7 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = parse_query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]").unwrap();
+        let query = "[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]".parse::<ParsedQuery>().unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -885,10 +898,10 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = parse_query(
-            "[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]",
-        )
-        .unwrap();
+        let query: ParsedQuery =
+            "[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]"
+                .parse()
+                .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -913,8 +926,9 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query =
-            parse_query("[:find ?name :where [?e :name ?name] (not [?e :age 50])]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name] (not [?e :age 50])]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -959,7 +973,9 @@ mod tests {
         }
 
         // find ?name where [?e :sex :male] [?e :name ?name]
-        let query = parse_query("[:find ?name :where [?e :sex :male] [?e :name ?name]]").unwrap();
+        let query = "[:find ?name :where [?e :sex :male] [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1007,7 +1023,9 @@ mod tests {
         }
 
         // Same clause order as Clojure: name first (binds ?e), sex filter second
-        let query = parse_query("[:find ?name :where [?e :name ?name] [?e :sex :male]]").unwrap();
+        let query = "[:find ?name :where [?e :name ?name] [?e :sex :male]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1054,7 +1072,9 @@ mod tests {
         .unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
-        let query = parse_query("[:find ?ln :where [2200 :last-name ?ln]]").unwrap();
+        let query = "[:find ?ln :where [2200 :last-name ?ln]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1139,7 +1159,9 @@ mod tests {
         .unwrap();
 
         // Query: find all tags for entity 2000
-        let query = parse_query("[:find ?tag :where [2000 :tags ?tag]]").unwrap();
+        let query = "[:find ?tag :where [2000 :tags ?tag]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db.query(&query).await.unwrap();
@@ -1180,7 +1202,9 @@ mod tests {
 
         // Query all (entity, name) pairs and verify contiguous counter values
         let db = node.db().await.unwrap();
-        let query = parse_query("[:find ?e ?name :where [?e :name ?name]]").unwrap();
+        let query = "[:find ?e ?name :where [?e :name ?name]]"
+            .parse::<ParsedQuery>()
+            .unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
@@ -1220,7 +1244,7 @@ mod tests {
             "[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]",
             tx_key.tx_id
         );
-        let query = parse_query(&query_str).unwrap();
+        let query = query_str.parse::<ParsedQuery>().unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
@@ -1245,7 +1269,7 @@ mod tests {
         // Query for the aborted tx entity
         let db = node.db().await.unwrap();
         let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
-        let query = parse_query(&query_str).unwrap();
+        let query = query_str.parse::<ParsedQuery>().unwrap();
         let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 1);
