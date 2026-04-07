@@ -65,10 +65,10 @@ fn resolve_tx_value(val: &TxValue, schema: &Schema) -> Result<ValueWithTempIds> 
 
 /// Expand TxOps into DatomWithTempids, resolving idents via schema.
 ///
-/// - `Put(map)` → N DatomWithTempids (one per non-`:db/id` attr). The `:db/id` key
+/// - `Put(map)` -> N DatomWithTempids (one per non-`:db/id` attr). The `:db/id` key
 ///   must map to `TxValue::Ref(EntityRef)`. If absent, generates an internal tempid.
-/// - `Add/Retract` → 1 DatomWithTempids
-/// - `Delete/Erase` → panics (not yet implemented)
+/// - `Add/Retract` -> 1 DatomWithTempids
+/// - `Delete/Erase` -> panics (not yet implemented)
 pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempids>> {
     let db_id_kw = Keyword::namespaced("db", "id");
     let mut datoms = Vec::new();
@@ -134,8 +134,10 @@ pub fn resolve_tempids(
     for d in datoms {
         if let IdOrTempId::TempId(ref s) = d.entity {
             if d.attribute == kw!(:db/ident) {
+                // insert() overrides so :db/ident always wins regardless of ordering
                 tempid_partitions.insert(s, DB_PARTITION);
             } else {
+                // or_insert() preserves existing, so a prior :db/ident won't be overwritten
                 tempid_partitions.entry(s).or_insert(USER_PARTITION);
             }
         }

@@ -14,22 +14,22 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 1. Clone PartitionMap           pending_pm = self.metadata.partition_map.clone()
    Allocate tx entity           tx_eid = pending_pm.allocate_entid(TX_PARTITION)
                                 ↓
-2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) → Vec<DatomWithTempids>
-   - TxOp::Put → N DatomWithTempids (one per attr)
-   - TxOp::Add/Retract → 1 DatomWithTempids
-   - Resolves EntityRef::Ident → entid via schema.ident_map
-   - EntityRef::Id → IdOrTempId::Id (passthrough)
-   - EntityRef::TempId → IdOrTempId::TempId (deferred)
-   - EntityRef::LookupRef → error (not yet supported)
-   - Put without :db/id key → generates internal tempid (__auto_N)
+2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomWithTempids>
+   - TxOp::Put -> N DatomWithTempids (one per attr)
+   - TxOp::Add/Retract -> 1 DatomWithTempids
+   - Resolves EntityRef::Ident -> entid via schema.ident_map
+   - EntityRef::Id -> IdOrTempId::Id (passthrough)
+   - EntityRef::TempId -> IdOrTempId::TempId (deferred)
+   - EntityRef::LookupRef -> error (not yet supported)
+   - Put without :db/id key -> generates internal tempid (__auto_N)
                                 ↓
 3. Resolve tempids              tx::resolve_tempids(datoms, &mut pending_pm)
-   - Pre-scan: tempids with :db/ident → DB_PARTITION, others → USER_PARTITION
-   - Allocate entids from PartitionMap (same tempid string → same entid)
-   - Map DatomWithTempids → Datom (IdOrTempId→i64, ValueWithTempIds→DataType)
+   - Pre-scan: tempids with :db/ident -> DB_PARTITION, others -> USER_PARTITION
+   - Allocate entids from PartitionMap (same tempid string -> same entid)
+   - Map DatomWithTempids -> Datom (IdOrTempId->i64, ValueWithTempIds->DataType)
    Build tx entity datoms       build_tx_entity_datoms(tx_eid, tx_key, ...)
                                 ↓
-4. Validate + prepare           schema.validate_and_prepare(datoms) → Result<SchemaUpdate>
+4. Validate + prepare           schema.validate_and_prepare(datoms) -> Result<SchemaUpdate>
    - Type checking: value type matches attribute's value_type
    - Unknown attribute errors
    - Witness pattern: split schema datoms, validate via AttributeBuilder
