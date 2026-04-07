@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use std::str::FromStr;
 
-use crate::ops::{DataType, EntityRef, TxOp};
+use crate::ops::{DataType, EntityRef, QueryArg, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,6 +103,12 @@ pub const ENTITY_REF_ID: u8 = 0x90;
 pub const ENTITY_REF_TEMPID: u8 = 0x91;
 pub const ENTITY_REF_IDENT: u8 = 0x92;
 pub const ENTITY_REF_LOOKUP: u8 = 0x93;
+
+// QueryArg tag bytes
+pub const QUERY_ARG_SCALAR: u8 = 0;
+pub const QUERY_ARG_COLLECTION: u8 = 1;
+pub const QUERY_ARG_TUPLE: u8 = 2;
+pub const QUERY_ARG_RELATION: u8 = 3;
 
 // ---------------------------------------------------------------------------
 // Error Codes
@@ -196,6 +202,7 @@ pub enum FrontendMessage {
     Query {
         query_string: String,
         db_id: u32,
+        args: Vec<QueryArg>,
     },
     Execute {
         ops: Vec<TxOp>,
@@ -204,6 +211,7 @@ pub enum FrontendMessage {
     Subscribe {
         query_string: String,
         db_id: u32,
+        args: Vec<QueryArg>,
     },
     Unsubscribe,
     Terminate,
@@ -491,6 +499,37 @@ fn encode_tx_ops(buf: &mut Vec<u8>, ops: &[TxOp]) {
     encode_u32(buf, ops.len() as u32);
     for op in ops {
         encode_tx_op(buf, op);
+    }
+}
+
+fn encode_query_arg(buf: &mut Vec<u8>, arg: &QueryArg) {
+    match arg {
+        QueryArg::Scalar(dt) => {
+            encode_u8(buf, QUERY_ARG_SCALAR);
+            encode_data_type(buf, dt);
+        }
+        QueryArg::Collection(items) => {
+            encode_u8(buf, QUERY_ARG_COLLECTION);
+            encode_data_type_vec(buf, items);
+        }
+        QueryArg::Tuple(items) => {
+            encode_u8(buf, QUERY_ARG_TUPLE);
+            encode_data_type_vec(buf, items);
+        }
+        QueryArg::Relation(rows) => {
+            encode_u8(buf, QUERY_ARG_RELATION);
+            encode_u32(buf, rows.len() as u32);
+            for row in rows {
+                encode_data_type_vec(buf, row);
+            }
+        }
+    }
+}
+
+fn encode_query_args(buf: &mut Vec<u8>, args: &[QueryArg]) {
+    encode_u32(buf, args.len() as u32);
+    for arg in args {
+        encode_query_arg(buf, arg);
     }
 }
 
@@ -787,6 +826,39 @@ fn decode_tx_ops(cursor: &mut Cursor) -> Result<Vec<TxOp>> {
     Ok(ops)
 }
 
+fn decode_query_arg(cursor: &mut Cursor) -> Result<QueryArg> {
+    let tag = cursor.read_u8()?;
+    match tag {
+        QUERY_ARG_SCALAR => Ok(QueryArg::Scalar(decode_data_type(cursor)?)),
+        QUERY_ARG_COLLECTION => Ok(QueryArg::Collection(decode_data_type_vec(cursor)?)),
+        QUERY_ARG_TUPLE => Ok(QueryArg::Tuple(decode_data_type_vec(cursor)?)),
+        QUERY_ARG_RELATION => {
+            let row_count = cursor.read_u32()? as usize;
+            if row_count > cursor.remaining() {
+                bail!("Relation row count {} exceeds remaining bytes {}", row_count, cursor.remaining());
+            }
+            let mut rows = Vec::with_capacity(row_count);
+            for _ in 0..row_count {
+                rows.push(decode_data_type_vec(cursor)?);
+            }
+            Ok(QueryArg::Relation(rows))
+        }
+        _ => bail!("Unknown QueryArg tag: {}", tag),
+    }
+}
+
+fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
+    let count = cursor.read_u32()? as usize;
+    if count > cursor.remaining() {
+        bail!("Vec<QueryArg> count {} exceeds remaining bytes {}", count, cursor.remaining());
+    }
+    let mut args = Vec::with_capacity(count);
+    for _ in 0..count {
+        args.push(decode_query_arg(cursor)?);
+    }
+    Ok(args)
+}
+
 // ---------------------------------------------------------------------------
 // Message Payload Encoding
 // ---------------------------------------------------------------------------
@@ -812,9 +884,11 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
         FrontendMessage::Query {
             query_string,
             db_id,
+            args,
         } => {
             encode_string(buf, query_string);
             encode_u32(buf, *db_id);
+            encode_query_args(buf, args);
         }
         FrontendMessage::Execute {
             ops,
@@ -826,9 +900,11 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
         FrontendMessage::Subscribe {
             query_string,
             db_id,
+            args,
         } => {
             encode_string(buf, query_string);
             encode_u32(buf, *db_id);
+            encode_query_args(buf, args);
         }
         FrontendMessage::Unsubscribe => {}
         FrontendMessage::Terminate => {}
@@ -912,6 +988,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
         MSG_QUERY => Ok(FrontendMessage::Query {
             query_string: cursor.read_string()?,
             db_id: cursor.read_u32()?,
+            args: decode_query_args(cursor)?,
         }),
         MSG_EXECUTE => {
             let ops = decode_tx_ops(cursor)?;
@@ -924,6 +1001,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
         MSG_SUBSCRIBE => Ok(FrontendMessage::Subscribe {
             query_string: cursor.read_string()?,
             db_id: cursor.read_u32()?,
+            args: decode_query_args(cursor)?,
         }),
         MSG_UNSUBSCRIBE => Ok(FrontendMessage::Unsubscribe),
         MSG_TERMINATE => Ok(FrontendMessage::Terminate),
@@ -1450,6 +1528,7 @@ mod tests {
         let msg = FrontendMessage::Query {
             query_string: "{:find [?e ?name] :where [[?e :person/name ?name]]}".to_string(),
             db_id: 1,
+            args: vec![],
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }
@@ -1471,6 +1550,7 @@ mod tests {
         let msg = FrontendMessage::Subscribe {
             query_string: "{:find [?name] :where [[?e :person/name ?name]]}".to_string(),
             db_id: 3,
+            args: vec![],
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }

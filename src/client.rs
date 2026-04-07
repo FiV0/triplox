@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use crate::node::{Database, IntoQuery, QueryNode, SubmitNode, TransactionResult, TxKey};
-use crate::ops::{DataType, TxOp};
+use crate::ops::{DataType, QueryArg, TxOp};
 use crate::protocol::*;
 use crate::query::QueryResult;
 use edn::query::ParsedQuery;
@@ -247,6 +247,57 @@ impl ClientDb {
         self.tx_id
     }
 
+    /// Execute a query using a raw EDN string.
+    pub async fn query_edn(&self, edn: &str) -> Result<QueryResult> {
+        self.query_edn_with_args(edn, vec![]).await
+    }
+
+    /// Execute a query with input binding arguments.
+    pub async fn query_edn_with_args(
+        &self,
+        edn: &str,
+        args: Vec<QueryArg>,
+    ) -> Result<QueryResult> {
+        let mut conn = self.conn.lock().await;
+        write_frontend_message(
+            &mut conn.writer,
+            &FrontendMessage::Query {
+                query_string: edn.to_string(),
+                db_id: self.db_id,
+                args,
+            },
+        )
+        .await?;
+        conn.writer.flush().await?;
+
+        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
+        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+
+        match msg {
+            BackendMessage::RowDescription { .. } => {
+                // Collect DataRows until ReadyForQuery
+                let mut rows = Vec::new();
+                loop {
+                    let msg =
+                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+                    match msg {
+                        BackendMessage::DataRow { values } => {
+                            rows.push(values);
+                        }
+                        BackendMessage::ReadyForQuery { .. } => break,
+                        other => bail!("Unexpected message during query: {:?}", other),
+                    }
+                }
+                Ok(rows)
+            }
+            BackendMessage::ErrorResponse { message, .. } => {
+                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
+                bail!("Query error: {}", message);
+            }
+            other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
+        }
+    }
+
     /// Release this DB handle on the server.
     pub async fn close(self) -> Result<()> {
         let mut conn = self.conn.lock().await;
@@ -280,44 +331,12 @@ impl ClientDb {
 }
 
 impl Database for ClientDb {
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let query = query.into_query()?;
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::Query {
-                query_string: query.to_string(),
-                db_id: self.db_id,
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
-
-        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-
-        match msg {
-            BackendMessage::RowDescription { .. } => {
-                // Collect DataRows until ReadyForQuery
-                let mut rows = Vec::new();
-                loop {
-                    let msg =
-                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                    match msg {
-                        BackendMessage::DataRow { values } => {
-                            rows.push(values);
-                        }
-                        BackendMessage::ReadyForQuery { .. } => break,
-                        other => bail!("Unexpected message during query: {:?}", other),
-                    }
-                }
-                Ok(rows)
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Query error: {}", message);
-            }
-            other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
-        }
+    async fn query_with_args(
+        &self,
+        query: &ParsedQuery,
+        args: &[QueryArg],
+    ) -> Result<QueryResult, Error> {
+        let edn = query.to_string();
+        self.query_edn_with_args(&edn, args.to_vec()).await
     }
 }

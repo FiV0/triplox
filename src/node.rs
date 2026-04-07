@@ -9,7 +9,7 @@ use crate::file_log::FileLog;
 use crate::indexer::{latest_tx_key_from_snapshot, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use crate::memory_log::MemoryLog;
-use crate::ops::{Entid, TxOp};
+use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
 use crate::slate::{in_memory_slate, local_slate};
@@ -56,7 +56,16 @@ impl IntoQuery for String {
 
 #[allow(async_fn_in_trait)]
 pub trait Database {
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
+    async fn query_with_args(
+        &self,
+        query: &ParsedQuery,
+        args: &[QueryArg],
+    ) -> Result<QueryResult, Error>;
+
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let parsed = query.into_query()?;
+        self.query_with_args(&parsed, &[]).await
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -120,17 +129,22 @@ impl DB {
 impl Database for DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let query = query.into_query()?;
-        validate_query(&query)?;
+    async fn query_with_args(
+        &self,
+        query: &ParsedQuery,
+        args: &[QueryArg],
+    ) -> Result<QueryResult, Error> {
+        validate_query(query, args)?;
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
         let ident_map = self.ident_map.clone();
+        let query = query.clone();
+        let args = args.to_vec();
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &ident_map, as_of)
+            execute_query(&query, &args, snapshot, handle, &ident_map, as_of)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?

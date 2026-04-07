@@ -549,6 +549,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let ident_results = tokio::task::spawn_blocking(move || {
         execute_query(
             &ident_query,
+            &[],
             snap_clone,
             handle_clone,
             &ident_map_clone,
@@ -567,6 +568,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let attr_results = tokio::task::spawn_blocking(move || {
         execute_query(
             &attr_query,
+            &[],
             snapshot,
             handle,
             &bootstrap_ident_map,

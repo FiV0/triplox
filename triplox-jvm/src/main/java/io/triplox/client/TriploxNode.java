@@ -89,7 +89,14 @@ public class TriploxNode implements AutoCloseable {
      * Execute a Datalog query against an open DB snapshot.
      */
     QueryResult queryInternal(Db db, String edn) throws IOException {
-        WireCodec.writeQuery(out, edn, db.dbId());
+        return queryInternal(db, edn, List.of());
+    }
+
+    /**
+     * Execute a Datalog query with input binding arguments.
+     */
+    QueryResult queryInternal(Db db, String edn, List<QueryArg> args) throws IOException {
+        WireCodec.writeQuery(out, edn, db.dbId(), args);
         out.flush();
 
         // Read RowDescription

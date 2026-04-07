@@ -54,9 +54,14 @@ public final class WireCodec {
     }
 
     public static void writeQuery(OutputStream out, String query, int dbId) throws IOException {
+        writeQuery(out, query, dbId, List.of());
+    }
+
+    public static void writeQuery(OutputStream out, String query, int dbId, List<QueryArg> args) throws IOException {
         writeFramed(out, MSG_QUERY, dos -> {
             DataTypeCodec.encodeString(dos, query);
             dos.writeInt(dbId);
+            QueryArg.encodeArgs(dos, args);
         });
     }
 
@@ -68,9 +73,14 @@ public final class WireCodec {
     }
 
     public static void writeSubscribe(OutputStream out, String query, int dbId) throws IOException {
+        writeSubscribe(out, query, dbId, List.of());
+    }
+
+    public static void writeSubscribe(OutputStream out, String query, int dbId, List<QueryArg> args) throws IOException {
         writeFramed(out, MSG_SUBSCRIBE, dos -> {
             DataTypeCodec.encodeString(dos, query);
             dos.writeInt(dbId);
+            QueryArg.encodeArgs(dos, args);
         });
     }
 
