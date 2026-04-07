@@ -14,8 +14,8 @@ pub mod logging;
 mod memory_log;
 pub(crate) mod metadata;
 pub mod ops;
-pub mod partition;
 mod parse;
+pub mod partition;
 mod query;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod schema;
@@ -25,10 +25,10 @@ mod slate;
 mod transaction;
 mod util;
 
+pub mod client;
 pub mod config;
 pub mod node;
 pub mod protocol;
 pub mod server;
-pub mod client;
 
 pub use node::{Database, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};

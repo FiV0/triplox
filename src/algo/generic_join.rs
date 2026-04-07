@@ -80,10 +80,7 @@ impl TupleExtender {
 
     fn is_prefix_matching(&self, prefix: &Prefix) -> bool {
         prefix.len() <= self.tuple.len()
-            && prefix
-                .iter()
-                .zip(self.tuple.iter())
-                .all(|(a, b)| a == b)
+            && prefix.iter().zip(self.tuple.iter()).all(|(a, b)| a == b)
     }
 }
 
@@ -140,15 +137,13 @@ impl FromPrefixExtender {
     }
 
     fn is_prefix_matching(&self, prefix: &Prefix) -> bool {
-        let mut i = 0;
-        for &level in &self.participating_levels {
+        for (i, &level) in self.participating_levels.iter().enumerate() {
             if level >= prefix.len() {
                 break;
             }
             if self.partial_prefix[i] != prefix[level] {
                 return false;
             }
-            i += 1;
         }
         true
     }
@@ -224,15 +219,13 @@ impl FromPrefixesExtender {
         self.partial_prefixes
             .iter()
             .filter(|partial_prefix| {
-                let mut i = 0;
-                for &level in &self.participating_levels {
+                for (i, &level) in self.participating_levels.iter().enumerate() {
                     if level >= prefix.len() {
                         break;
                     }
                     if partial_prefix[i] != prefix[level] {
                         return false;
                     }
-                    i += 1;
                 }
                 true
             })
@@ -296,7 +289,10 @@ pub struct GenericSingleJoin<'a> {
 impl<'a> GenericSingleJoin<'a> {
     pub fn new(extenders: Vec<&'a dyn PrefixExtender>, prefixes: Vec<Prefix>) -> Self {
         assert!(!extenders.is_empty(), "At least one extender is required");
-        Self { extenders, prefixes }
+        Self {
+            extenders,
+            prefixes,
+        }
     }
 
     pub fn join(&self) -> Vec<Prefix> {
@@ -467,14 +463,10 @@ mod tests {
 
     #[test]
     fn test_two_extenders_with_even_and_divisible_by_three() {
-        let even_extender = SingleLevelExtender::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_extender = SingleLevelExtender::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_extender =
+            SingleLevelExtender::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_extender =
+            SingleLevelExtender::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         let extenders: Vec<&dyn PrefixExtender> =
             vec![&even_extender, &divisible_by_three_extender];
@@ -492,23 +484,19 @@ mod tests {
     #[test]
     fn test_generic_join_with_two_levels() {
         // First level: even numbers and numbers divisible by 3
-        let even_extender = SingleLevelExtender::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_extender = SingleLevelExtender::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_extender =
+            SingleLevelExtender::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_extender =
+            SingleLevelExtender::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         // Second level: multiples of 6 and 12
-        let multiples_of_six = SingleLevelExtender::new(
-            vec![bi(6), bi(12)],
-            1,
-        );
+        let multiples_of_six = SingleLevelExtender::new(vec![bi(6), bi(12)], 1);
 
-        let extenders: Vec<&dyn PrefixExtender> =
-            vec![&even_extender, &divisible_by_three_extender, &multiples_of_six];
+        let extenders: Vec<&dyn PrefixExtender> = vec![
+            &even_extender,
+            &divisible_by_three_extender,
+            &multiples_of_six,
+        ];
 
         let join = GenericJoin::new(extenders, 2);
         let result = join.join();
@@ -643,10 +631,8 @@ mod tests {
 
     #[test]
     fn test_from_prefixes_extender_participates_in_correct_levels() {
-        let extender = FromPrefixesExtender::new(
-            vec![0, 2],
-            vec![vec![b("a"), b("b")], vec![b("x"), b("y")]],
-        );
+        let extender =
+            FromPrefixesExtender::new(vec![0, 2], vec![vec![b("a"), b("b")], vec![b("x"), b("y")]]);
 
         assert!(extender.participates_in_level(0));
         assert!(!extender.participates_in_level(1));
@@ -657,10 +643,8 @@ mod tests {
     #[test]
     fn test_from_prefixes_extender_count_with_matching_prefixes() {
         // Extender accepts two prefixes: ["a", "b"] or ["x", "y"] at levels [0, 2]
-        let extender = FromPrefixesExtender::new(
-            vec![0, 2],
-            vec![vec![b("a"), b("b")], vec![b("x"), b("y")]],
-        );
+        let extender =
+            FromPrefixesExtender::new(vec![0, 2], vec![vec![b("a"), b("b")], vec![b("x"), b("y")]]);
 
         // Empty prefix - both prefixes match
         assert_eq!(extender.count(&vec![]), 2);
@@ -686,10 +670,8 @@ mod tests {
 
     #[test]
     fn test_from_prefixes_extender_propose_with_matching_prefixes() {
-        let extender = FromPrefixesExtender::new(
-            vec![0, 2],
-            vec![vec![b("a"), b("b")], vec![b("x"), b("y")]],
-        );
+        let extender =
+            FromPrefixesExtender::new(vec![0, 2], vec![vec![b("a"), b("b")], vec![b("x"), b("y")]]);
 
         // Empty prefix - propose first values from both prefixes (distinct, sorted)
         assert_eq!(extender.propose(&vec![]), vec![b("a"), b("x")]);
@@ -709,10 +691,8 @@ mod tests {
 
     #[test]
     fn test_from_prefixes_extender_intersect_with_matching_prefixes() {
-        let extender = FromPrefixesExtender::new(
-            vec![0, 2],
-            vec![vec![b("a"), b("b")], vec![b("x"), b("y")]],
-        );
+        let extender =
+            FromPrefixesExtender::new(vec![0, 2], vec![vec![b("a"), b("b")], vec![b("x"), b("y")]]);
 
         // Empty prefix, extensions contain both expected values
         assert_eq!(
@@ -721,10 +701,7 @@ mod tests {
         );
 
         // Empty prefix, extensions contain only one expected value
-        assert_eq!(
-            extender.intersect(&vec![], &[b("a"), b("z")]),
-            vec![b("a")]
-        );
+        assert_eq!(extender.intersect(&vec![], &[b("a"), b("z")]), vec![b("a")]);
 
         // Empty prefix, extensions don't contain expected values
         assert_eq!(
@@ -757,18 +734,14 @@ mod tests {
         // Level 0: values "Ivan", "Petr", "Bob"
         // Level 1: values "Ivanov", "Petrov", "Smith"
 
-        let level0_extender =
-            SingleLevelExtender::new(vec![b("Bob"), b("Ivan"), b("Petr")], 0);
+        let level0_extender = SingleLevelExtender::new(vec![b("Bob"), b("Ivan"), b("Petr")], 0);
         let level1_extender =
             SingleLevelExtender::new(vec![b("Ivanov"), b("Petrov"), b("Smith")], 1);
 
         // This extender constrains to only allow: ["Ivan", "Ivanov"] or ["Petr", "Petrov"]
         let constraint_extender = FromPrefixesExtender::new(
             vec![0, 1],
-            vec![
-                vec![b("Ivan"), b("Ivanov")],
-                vec![b("Petr"), b("Petrov")],
-            ],
+            vec![vec![b("Ivan"), b("Ivanov")], vec![b("Petr"), b("Petrov")]],
         );
 
         let extenders: Vec<&dyn PrefixExtender> =
@@ -778,21 +751,20 @@ mod tests {
         let result = join.join();
 
         // Only the two valid combinations should remain
-        let expected = vec![
-            vec![b("Ivan"), b("Ivanov")],
-            vec![b("Petr"), b("Petrov")],
-        ];
+        let expected = vec![vec![b("Ivan"), b("Ivanov")], vec![b("Petr"), b("Petrov")]];
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_from_prefixes_extender_with_single_prefix_behaves_like_from_prefix_extender() {
         let single_extender = FromPrefixExtender::new(vec![0, 1], vec![b("a"), b("b")]);
-        let multi_extender =
-            FromPrefixesExtender::new(vec![0, 1], vec![vec![b("a"), b("b")]]);
+        let multi_extender = FromPrefixesExtender::new(vec![0, 1], vec![vec![b("a"), b("b")]]);
 
         // Both should behave identically
-        assert_eq!(single_extender.count(&vec![]), multi_extender.count(&vec![]));
+        assert_eq!(
+            single_extender.count(&vec![]),
+            multi_extender.count(&vec![])
+        );
         assert_eq!(
             single_extender.count(&vec![b("a")]),
             multi_extender.count(&vec![b("a")])

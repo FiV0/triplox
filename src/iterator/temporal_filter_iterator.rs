@@ -85,8 +85,7 @@ impl TemporalFilterIterator {
         // Assumes prefix-free value encodings
         match next_prefix(logical_key(key)) {
             Some(target) => {
-                self.handle
-                    .block_on(self.inner.seek(Bytes::from(target)))?;
+                self.handle.block_on(self.inner.seek(Bytes::from(target)))?;
                 Ok(true)
             }
             None => Ok(false),
@@ -207,9 +206,7 @@ mod tests {
     }
 
     fn make_test_extractor(prefix_len: usize) -> Extractor {
-        Box::new(move |key: Bytes| {
-            key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX)
-        })
+        Box::new(move |key: Bytes| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -217,20 +214,23 @@ mod tests {
         let slate = in_memory_slate().await;
         let t1 = 1000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, 2000,
-            ).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -240,8 +240,12 @@ mod tests {
         let t2 = 2000;
 
         // Two versions of "alice" at t1 and t2
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"alice", t2, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t2, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -249,13 +253,13 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             // Query as-of t1 — should see alice (t2 is in the future)
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, t1,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, t1).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -263,7 +267,9 @@ mod tests {
         let slate = in_memory_slate().await;
         let t1 = 2000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -271,13 +277,14 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             // Query as-of before t1 — should see nothing
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, 1000,
-            ).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 1000).unwrap();
 
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -286,7 +293,9 @@ mod tests {
         let t1 = 1000;
         let t2 = 2000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t2, codec::ADD), b"").await;
 
@@ -295,9 +304,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, 3000,
-            ).unwrap();
+            let mut iter =
+                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 3000).unwrap();
 
             // Should see alice and bob (deduplicated)
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
@@ -305,7 +313,9 @@ mod tests {
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -321,9 +331,15 @@ mod tests {
         let t2 = 2000;
         let t3 = 3000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
-        slate.put(&make_key(PFX, b"alice", t3, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
 
@@ -332,48 +348,48 @@ mod tests {
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t0,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t0).unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T1: alice visible
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
-            ).unwrap();
+            let mut iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T2: alice hidden (retracted)
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2).unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T3: alice visible again (re-added)
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t3,
-            ).unwrap();
+            let mut iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -383,18 +399,21 @@ mod tests {
         let slate = in_memory_slate().await;
         let t1 = 1000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"charlie", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"charlie", t1, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snapshot, handle, extractor, 2000,
-            ).unwrap();
+            let mut iter =
+                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000).unwrap();
 
             // Initially at alice
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
@@ -410,7 +429,9 @@ mod tests {
             // No more
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -422,8 +443,12 @@ mod tests {
         let t1 = 1000;
         let t2 = 2000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
+            .await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
@@ -433,28 +458,28 @@ mod tests {
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
-            ).unwrap();
+            let mut iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T2: only bob (alice retracted)
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
-            ).unwrap();
+            let mut iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
             iter.next().unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -466,9 +491,15 @@ mod tests {
         let t2 = 2000;
         let t3 = 3000;
 
-        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
-        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
-        slate.put(&make_key(PFX, b"alice", t3, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
+            .await;
+        slate
+            .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
+            .await;
 
         let snapshot = slate.snapshot().await.unwrap();
 
@@ -477,32 +508,32 @@ mod tests {
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t1,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T2: alice retracted
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t2,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2).unwrap();
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // as-of T3: alice visible again
         let handle = tokio::runtime::Handle::current();
         let snap = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(
-                PFX, &snap, handle, extractor, t3,
-            ).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 }

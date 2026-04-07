@@ -1,12 +1,12 @@
+use crate::clock::SystemTimeSource;
+use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
+use crate::transaction::TxKey;
+use anyhow::Result;
+use log::{error, warn};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 use tokio::sync::broadcast;
-use log::{error, warn};
-use crate::clock::SystemTimeSource;
-use crate::log::{Record, TxLog, TxLogReader, TxLogWriter, TxId};
-use crate::transaction::TxKey;
-use anyhow::Result;
 
 pub struct FileLog {
     file: BufWriter<File>,
@@ -21,8 +21,9 @@ impl FileLog {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path)?;
-        
+
         Ok(FileLog {
             file: BufWriter::new(file),
             tx_sender: broadcast::channel(1024).0,
@@ -31,7 +32,7 @@ impl FileLog {
     }
 
     fn current_offset(&mut self) -> io::Result<i64> {
-        Ok(self.file.seek(SeekFrom::Current(0))? as i64)
+        Ok(self.file.stream_position()? as i64)
     }
 }
 
@@ -65,9 +66,7 @@ impl TxLogReader for FileLog {
     }
 
     fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        let end_of_file = self.file.get_ref()
-            .seek(SeekFrom::End(0))
-            .unwrap_or(0) as TxId;
+        let end_of_file = self.file.get_ref().seek(SeekFrom::End(0)).unwrap_or(0) as TxId;
 
         (end_of_file, self.tx_sender.subscribe())
     }
@@ -76,11 +75,11 @@ impl TxLogReader for FileLog {
 impl TxLogWriter for FileLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let tx_id = self.current_offset().unwrap();
-        
+
         let record = Record {
             tx_key: TxKey {
                 tx_id,
-                system_time: self.clock.now()
+                system_time: self.clock.now(),
             },
             record,
         };
@@ -104,10 +103,10 @@ impl TxLog for FileLog {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::{st_from_unix_epoch, MockClock};
+    use crate::log::{subscribe, MockSubscriber};
     use std::sync::Arc;
     use tempfile::tempdir;
-    use crate::clock::{MockClock, st_from_unix_epoch};
-    use crate::log::{subscribe, MockSubscriber};
     use tokio::sync::RwLock;
 
     use crate::logging::init;
@@ -118,18 +117,19 @@ mod tests {
         init();
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.log");
-        
+
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![
             st_from_unix_epoch(0),
             st_from_unix_epoch(100),
             st_from_unix_epoch(200),
             st_from_unix_epoch(300),
-            st_from_unix_epoch(400)
-
+            st_from_unix_epoch(400),
         ]);
 
-        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+        let log = Arc::new(RwLock::new(
+            FileLog::new(&file_path, Box::new(clock)).unwrap(),
+        ));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         {
@@ -181,12 +181,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test_infinite_loop.log");
 
-        let clock = MockClock::new(vec![
-            st_from_unix_epoch(0),
-            st_from_unix_epoch(100),
-        ]);
+        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
 
-        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
+        let log = Arc::new(RwLock::new(
+            FileLog::new(&file_path, Box::new(clock)).unwrap(),
+        ));
 
         // Write one transaction
         {
@@ -208,7 +207,11 @@ mod tests {
         // Without the fix, the subscriber would process the same transaction
         // multiple times in an infinite loop until cancellation
         // With the fix, it should process it exactly once
-        assert_eq!(subscriber.records.len(), 1, "Should process transaction exactly once, not in an infinite loop");
+        assert_eq!(
+            subscriber.records.len(),
+            1,
+            "Should process transaction exactly once, not in an infinite loop"
+        );
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
     }
 }

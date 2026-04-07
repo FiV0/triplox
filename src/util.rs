@@ -146,20 +146,14 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                     codec::CODEC_LENGTH,
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
                 ),
-                1.. => (
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length,
-                ),
+                1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
             },
             IndexType::AV => match position {
                 0 => (
                     codec::CODEC_LENGTH,
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
                 ),
-                1.. => (
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length,
-                ),
+                1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
             },
         };
         bytes.get_slice(start, end)
@@ -170,7 +164,6 @@ pub fn extract_value<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index
     make_extractor(position, index)(bytes)
 }
 
-
 pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
     position: usize,
     index: IndexType,
@@ -179,7 +172,7 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
         check_position(position, index);
         let total_length = bytes.as_ref().len();
 
-        let end= match index {
+        let end = match index {
             IndexType::EAV => match position {
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ENTITY_LENGTH,

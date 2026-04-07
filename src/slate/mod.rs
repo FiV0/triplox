@@ -2,14 +2,13 @@
 
 pub mod cdc;
 
-use slatedb::Db;
-use slatedb::object_store::{ObjectStore, memory::InMemory};
-use slatedb::object_store::local::LocalFileSystem;
 use slatedb::config::{DurabilityLevel, ReadOptions, ScanOptions, WriteOptions};
+use slatedb::object_store::local::LocalFileSystem;
+use slatedb::object_store::{memory::InMemory, ObjectStore};
+use slatedb::Db;
 use std::sync::Arc;
 
 use crate::util::random_string;
-
 
 pub async fn in_memory_slate() -> Db {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
@@ -20,11 +19,9 @@ pub async fn in_memory_slate() -> Db {
 }
 
 pub async fn local_slate(path: &str) -> Db {
-    let object_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    Db::builder("triplox", object_store)
-        .build()
-        .await
-        .unwrap()
+    let object_store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
+    Db::builder("triplox", object_store).build().await.unwrap()
 }
 
 pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
@@ -44,4 +41,3 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     cache_blocks: false,
     max_fetch_tasks: 1,
 };
-

@@ -42,7 +42,9 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
 
         // Catch-up phase: read historical transactions after last_tx_id
         loop {
-            if task_token.is_cancelled() { break; }
+            if task_token.is_cancelled() {
+                break;
+            }
             let txs = log.read().await.read_txs_after(last_tx_id, 100);
             match txs {
                 Ok(txs) if txs.is_empty() => break,
@@ -53,7 +55,7 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                         subscriber.accept(tx.clone()).await;
                     }
                     last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
-                },
+                }
                 Err(e) => {
                     error!("Error reading txs: {}", e);
                     break;
@@ -68,7 +70,7 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                 result = tx_receiver.recv() => {
                     match result {
                         Ok(record) => {
-                            let already_seen = last_tx_id.map_or(false, |id| record.tx_key.tx_id <= id);
+                            let already_seen = last_tx_id.is_some_and(|id| record.tx_key.tx_id <= id);
                             if !already_seen {
                                 trace!("Processed live tx {}", record.tx_key.tx_id);
                                 last_tx_id = Some(record.tx_key.tx_id);

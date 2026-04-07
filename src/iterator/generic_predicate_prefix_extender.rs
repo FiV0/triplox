@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::Decode;
-use edn::query::{ToVariable, Variable};
 use crate::expr::{evaluate_as_bool, EvalContext, Expr};
 use crate::ops::DataType;
+use edn::query::{ToVariable, Variable};
 
 /// A prefix extender that filters extensions by evaluating a predicate expression.
 ///
@@ -56,8 +56,7 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx])
-                    .expect("failed to decode prefix variable");
+                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
                 (var.clone(), dt)
             })
             .collect();
@@ -65,8 +64,7 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
         extensions
             .iter()
             .filter(|ext| {
-                let ext_val = DataType::decode(ext)
-                    .expect("failed to decode extension value");
+                let ext_val = DataType::decode(ext).expect("failed to decode extension value");
 
                 let mut bindings: HashMap<Variable, &DataType> = prefix_values
                     .iter()
@@ -155,14 +153,8 @@ mod tests {
 
         let result = ext.intersect(&vec![], &extensions);
         assert_eq!(result.len(), 2);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(25)
-        );
-        assert_eq!(
-            DataType::decode(&result[1]).unwrap(),
-            DataType::Long(10)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(25));
+        assert_eq!(DataType::decode(&result[1]).unwrap(), DataType::Long(10));
     }
 
     #[test]
@@ -173,12 +165,8 @@ mod tests {
             op: BinaryOp::Lt,
             right: Box::new(Expr::Variable("?b".to_var())),
         });
-        let ext = GenericPredicatePrefixExtender::new(
-            expr,
-            vec![("?a".to_var(), 0)],
-            "?b".to_var(),
-            1,
-        );
+        let ext =
+            GenericPredicatePrefixExtender::new(expr, vec![("?a".to_var(), 0)], "?b".to_var(), 1);
 
         // prefix has ?a = 10 at level 0
         let prefix = vec![serialize(&DataType::Long(10))];
@@ -191,14 +179,8 @@ mod tests {
 
         let result = ext.intersect(&prefix, &extensions);
         assert_eq!(result.len(), 2);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(15)
-        );
-        assert_eq!(
-            DataType::decode(&result[1]).unwrap(),
-            DataType::Long(20)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(15));
+        assert_eq!(DataType::decode(&result[1]).unwrap(), DataType::Long(20));
     }
 
     #[test]
@@ -210,12 +192,8 @@ mod tests {
             op: BinaryOp::Lt,
             right: Box::new(Expr::Variable("?a".to_var())),
         });
-        let ext = GenericPredicatePrefixExtender::new(
-            expr,
-            vec![("?a".to_var(), 0)],
-            "?b".to_var(),
-            1,
-        );
+        let ext =
+            GenericPredicatePrefixExtender::new(expr, vec![("?a".to_var(), 0)], "?b".to_var(), 1);
 
         // prefix has ?a = 10
         let prefix = vec![serialize(&DataType::Long(10))];
@@ -227,10 +205,7 @@ mod tests {
 
         let result = ext.intersect(&prefix, &extensions);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(5)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(5));
     }
 
     #[test]
@@ -250,26 +225,15 @@ mod tests {
             op: BinaryOp::Lt,
             right: Box::new(Expr::Literal(DataType::Long(25))),
         });
-        let pred = GenericPredicatePrefixExtender::new(
-            pred_expr,
-            vec![],
-            "?x".to_var(),
-            0,
-        );
+        let pred = GenericPredicatePrefixExtender::new(pred_expr, vec![], "?x".to_var(), 0);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &pred];
         let join = GenericJoin::new(extenders, 1);
         let result = join.join();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(
-            DataType::decode(&result[0][0]).unwrap(),
-            DataType::Long(20)
-        );
-        assert_eq!(
-            DataType::decode(&result[1][0]).unwrap(),
-            DataType::Long(10)
-        );
+        assert_eq!(DataType::decode(&result[0][0]).unwrap(), DataType::Long(20));
+        assert_eq!(DataType::decode(&result[1][0]).unwrap(), DataType::Long(10));
     }
 
     #[test]
@@ -294,12 +258,7 @@ mod tests {
             op: BinaryOp::GtEq,
             right: Box::new(Expr::Literal(DataType::Long(20))),
         });
-        let pred = GenericPredicatePrefixExtender::new(
-            pred_expr,
-            vec![],
-            "?age".to_var(),
-            0,
-        );
+        let pred = GenericPredicatePrefixExtender::new(pred_expr, vec![], "?age".to_var(), 0);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &level1, &pred];
         let join = GenericJoin::new(extenders, 2);

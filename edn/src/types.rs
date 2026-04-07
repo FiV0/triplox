@@ -10,16 +10,12 @@
 
 #![allow(clippy::linkedlist)]
 
-use std::collections::{BTreeSet, BTreeMap, LinkedList};
-use std::cmp::{Ordering, Ord, PartialOrd};
-use std::fmt::{Display, Formatter};
+use std::cmp::{Ord, Ordering, PartialOrd};
+use std::collections::{BTreeMap, BTreeSet, LinkedList};
 use std::f64;
+use std::fmt::{Display, Formatter};
 
-use chrono::{
-    DateTime,
-    SecondsFormat,
-    Utc,
-};
+use chrono::{DateTime, SecondsFormat, Utc};
 use num::BigInt;
 use ordered_float::OrderedFloat;
 use uuid::Uuid;
@@ -93,7 +89,10 @@ pub struct ValueAndSpan {
 }
 
 impl ValueAndSpan {
-    pub fn new<I>(spanned_value: SpannedValue, span: I) -> ValueAndSpan where I: Into<Option<Span>> {
+    pub fn new<I>(spanned_value: SpannedValue, span: I) -> ValueAndSpan
+    where
+        I: Into<Option<Span>>,
+    {
         ValueAndSpan {
             inner: spanned_value,
             span: span.into().unwrap_or(Span(0, 0)), // TODO: consider if this has implications.
@@ -156,10 +155,18 @@ impl From<SpannedValue> for Value {
             SpannedValue::PlainSymbol(v) => Value::PlainSymbol(v),
             SpannedValue::NamespacedSymbol(v) => Value::NamespacedSymbol(v),
             SpannedValue::Keyword(v) => Value::Keyword(v),
-            SpannedValue::Vector(v) => Value::Vector(v.into_iter().map(|x| x.without_spans()).collect()),
-            SpannedValue::List(v) => Value::List(v.into_iter().map(|x| x.without_spans()).collect()),
+            SpannedValue::Vector(v) => {
+                Value::Vector(v.into_iter().map(|x| x.without_spans()).collect())
+            }
+            SpannedValue::List(v) => {
+                Value::List(v.into_iter().map(|x| x.without_spans()).collect())
+            }
             SpannedValue::Set(v) => Value::Set(v.into_iter().map(|x| x.without_spans()).collect()),
-            SpannedValue::Map(v) => Value::Map(v.into_iter().map(|(x, y)| (x.without_spans(), y.without_spans())).collect()),
+            SpannedValue::Map(v) => Value::Map(
+                v.into_iter()
+                    .map(|(x, y)| (x.without_spans(), y.without_spans()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -197,9 +204,12 @@ macro_rules! def_from_option {
 macro_rules! def_is {
     ($name: ident, $pat: pat) => {
         pub fn $name(&self) -> bool {
-            match *self { $pat => true, _ => false }
+            match *self {
+                $pat => true,
+                _ => false,
+            }
         }
-    }
+    };
 }
 
 /// Creates `as_$TYPE` helper functions for Value or SpannedValue, like
@@ -208,7 +218,7 @@ macro_rules! def_is {
 macro_rules! def_as {
     ($name: ident, $kind: path, $t: ty, $( $transform: expr ),* ) => {
         pub fn $name(&self) -> Option<$t> {
-            match *self { $kind(v) => { $( let v = $transform(v) )*; Some(v) }, _ => None }
+            match *self { $kind(v) => { $( let v = $transform(v); )* Some(v) }, _ => None }
         }
     }
 }
@@ -219,9 +229,12 @@ macro_rules! def_as {
 macro_rules! def_as_ref {
     ($name: ident, $kind: path, $t: ty) => {
         pub fn $name(&self) -> Option<&$t> {
-            match *self { $kind(ref v) => Some(v), _ => None }
+            match *self {
+                $kind(ref v) => Some(v),
+                _ => None,
+            }
         }
-    }
+    };
 }
 
 /// Creates `into_$TYPE` helper functions for Value or SpannedValue, like
@@ -230,7 +243,7 @@ macro_rules! def_as_ref {
 macro_rules! def_into {
     ($name: ident, $kind: path, $t: ty, $( $transform: expr ),* ) => {
         pub fn $name(self) -> Option<$t> {
-            match self { $kind(v) => { $( let v = $transform(v) )*; Some(v) }, _ => None }
+            match self { $kind(v) => { $( let v = $transform(v); )* Some(v) }, _ => None }
         }
     }
 }
@@ -260,8 +273,9 @@ macro_rules! to_symbol {
     ( $namespace:expr, $name:expr, $t:tt ) => {
         $namespace.into().map_or_else(
             || $t::PlainSymbol(symbols::PlainSymbol::plain($name)),
-            |ns| $t::NamespacedSymbol(symbols::NamespacedSymbol::namespaced(ns, $name)))
-    }
+            |ns| $t::NamespacedSymbol(symbols::NamespacedSymbol::namespaced(ns, $name)),
+        )
+    };
 }
 
 /// Converts `name` into a plain or namespaced value keyword, depending on
@@ -289,8 +303,9 @@ macro_rules! to_keyword {
     ( $namespace:expr, $name:expr, $t:tt ) => {
         $namespace.into().map_or_else(
             || $t::Keyword(symbols::Keyword::plain($name)),
-            |ns| $t::Keyword(symbols::Keyword::namespaced(ns, $name)))
-    }
+            |ns| $t::Keyword(symbols::Keyword::namespaced(ns, $name)),
+        )
+    };
 }
 
 /// Implements multiple is*, as*, into* and from* methods common to
@@ -507,9 +522,9 @@ macro_rules! def_common_value_ord {
             (&$t::List(ref a), &$t::List(ref b)) => b.cmp(a),
             (&$t::Set(ref a), &$t::Set(ref b)) => b.cmp(a),
             (&$t::Map(ref a), &$t::Map(ref b)) => b.cmp(a),
-            _ => $value.precedence().cmp(&$other.precedence())
+            _ => $value.precedence().cmp(&$other.precedence()),
         }
-    }
+    };
 }
 
 /// Converts a Value or SpannedValue to string, given a formatter.
@@ -521,7 +536,11 @@ macro_rules! def_common_value_display {
             $t::Nil => write!($f, "nil"),
             $t::Boolean(v) => write!($f, "{}", v),
             $t::Integer(v) => write!($f, "{}", v),
-            $t::Instant(v) => write!($f, "#inst \"{}\"", v.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+            $t::Instant(v) => write!(
+                $f,
+                "#inst \"{}\"",
+                v.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+            ),
             $t::BigInteger(ref v) => write!($f, "{}N", v),
             // TODO: make sure float syntax is correct.
             $t::Float(ref v) => {
@@ -570,7 +589,7 @@ macro_rules! def_common_value_display {
                 write!($f, " }}")
             }
         }
-    }
+    };
 }
 
 macro_rules! def_common_value_impl {
@@ -581,7 +600,7 @@ macro_rules! def_common_value_impl {
 
         impl PartialOrd for $t {
             fn partial_cmp(&self, other: &$t) -> Option<Ordering> {
-                Some(self.cmp(other))
+                Some(Ord::cmp(self, other))
             }
         }
 
@@ -596,7 +615,7 @@ macro_rules! def_common_value_impl {
                 def_common_value_display!($t, self, f)
             }
         }
-    }
+    };
 }
 
 def_common_value_impl!(Value<Value>);
@@ -610,7 +629,7 @@ impl ValueAndSpan {
 
 impl PartialOrd for ValueAndSpan {
     fn partial_cmp(&self, other: &ValueAndSpan) -> Option<Ordering> {
-        Some(self.cmp(other))
+        Some(Ord::cmp(self, other))
     }
 }
 
@@ -632,7 +651,11 @@ pub trait FromMicros {
 
 impl FromMicros for DateTime<Utc> {
     fn from_micros(ts: i64) -> Self {
-        DateTime::from_timestamp(ts / 1_000_000, ((ts % 1_000_000).abs() as u32) * 1_000).unwrap()
+        DateTime::from_timestamp(
+            ts / 1_000_000,
+            ((ts % 1_000_000).unsigned_abs() as u32) * 1_000,
+        )
+        .unwrap()
     }
 }
 
@@ -654,7 +677,7 @@ pub trait FromMillis {
 
 impl FromMillis for DateTime<Utc> {
     fn from_millis(ts: i64) -> Self {
-        DateTime::from_timestamp(ts / 1_000, ((ts % 1_000).abs() as u32) * 1_000).unwrap()
+        DateTime::from_timestamp(ts / 1_000, ((ts % 1_000).unsigned_abs() as u32) * 1_000).unwrap()
     }
 }
 
@@ -674,17 +697,14 @@ impl ToMillis for DateTime<Utc> {
 mod test {
     use super::*;
 
-    use std::collections::{BTreeSet, BTreeMap, LinkedList};
     use std::cmp::Ordering;
-    use std::iter::FromIterator;
+    use std::collections::{BTreeMap, BTreeSet, LinkedList};
     use std::f64;
+    use std::iter::FromIterator;
 
     use crate::parse;
 
-    use chrono::{
-        DateTime,
-        Utc,
-    };
+    use chrono::{DateTime, Utc};
     use num::BigInt;
     use ordered_float::OrderedFloat;
 
@@ -697,9 +717,18 @@ mod test {
 
     #[test]
     fn test_value_from() {
-        assert_eq!(Value::from_float(42f64), Value::Float(OrderedFloat::from(42f64)));
-        assert_eq!(Value::from_ordered_float(OrderedFloat::from(42f64)), Value::Float(OrderedFloat::from(42f64)));
-        assert_eq!(Value::from_bigint("42").unwrap(), Value::BigInteger(BigInt::from(42)));
+        assert_eq!(
+            Value::from_float(42f64),
+            Value::Float(OrderedFloat::from(42f64))
+        );
+        assert_eq!(
+            Value::from_ordered_float(OrderedFloat::from(42f64)),
+            Value::Float(OrderedFloat::from(42f64))
+        );
+        assert_eq!(
+            Value::from_bigint("42").unwrap(),
+            Value::BigInteger(BigInt::from(42))
+        );
     }
 
     #[test]
@@ -711,15 +740,11 @@ mod test {
         let data = Value::Vector(vec![
             Value::Integer(1),
             Value::Integer(2),
-            Value::List(LinkedList::from_iter(vec![
-                Value::from_float(3.14)
-            ])),
-            Value::Set(BTreeSet::from_iter(vec![
-                Value::from_bigint("4").unwrap()
-            ])),
+            Value::List(LinkedList::from_iter(vec![Value::from_float(3.14)])),
+            Value::Set(BTreeSet::from_iter(vec![Value::from_bigint("4").unwrap()])),
             Value::Map(BTreeMap::from_iter(vec![
                 (Value::from_symbol("foo", "bar"), Value::Integer(42)),
-                (Value::from_keyword("baz", "boz"), Value::Integer(43))
+                (Value::from_keyword("baz", "boz"), Value::Integer(43)),
             ])),
             Value::Vector(vec![]),
             Value::from_keyword(None, "five"),
@@ -736,26 +761,68 @@ mod test {
 
         assert_eq!(string, data.to_string());
         assert_eq!(string, parse::value(&data.to_string()).unwrap().to_string());
-        assert_eq!(string, parse::value(&data.to_string()).unwrap().without_spans().to_string());
+        assert_eq!(
+            string,
+            parse::value(&data.to_string())
+                .unwrap()
+                .without_spans()
+                .to_string()
+        );
     }
 
     #[test]
     fn test_ord() {
         // TODO: Check we follow the equality rules at the bottom of https://github.com/edn-format/edn
         assert_eq!(Value::Nil.cmp(&Value::Nil), Ordering::Equal);
-        assert_eq!(Value::Boolean(false).cmp(&Value::Boolean(true)), Ordering::Greater);
+        assert_eq!(
+            Value::Boolean(false).cmp(&Value::Boolean(true)),
+            Ordering::Greater
+        );
         assert_eq!(Value::Integer(1).cmp(&Value::Integer(2)), Ordering::Greater);
-        assert_eq!(Value::from_bigint("1").cmp(&Value::from_bigint("2")), Ordering::Greater);
-        assert_eq!(Value::from_float(1f64).cmp(&Value::from_float(2f64)), Ordering::Greater);
-        assert_eq!(Value::Text("1".to_string()).cmp(&Value::Text("2".to_string())), Ordering::Greater);
-        assert_eq!(Value::from_symbol("a", "b").cmp(&Value::from_symbol("c", "d")), Ordering::Greater);
-        assert_eq!(Value::from_symbol(None, "a").cmp(&Value::from_symbol(None, "b")), Ordering::Greater);
-        assert_eq!(Value::from_keyword(":a", ":b").cmp(&Value::from_keyword(":c", ":d")), Ordering::Greater);
-        assert_eq!(Value::from_keyword(None, ":a").cmp(&Value::from_keyword(None, ":b")), Ordering::Greater);
-        assert_eq!(Value::Vector(vec![]).cmp(&Value::Vector(vec![])), Ordering::Equal);
-        assert_eq!(Value::List(LinkedList::new()).cmp(&Value::List(LinkedList::new())), Ordering::Equal);
-        assert_eq!(Value::Set(BTreeSet::new()).cmp(&Value::Set(BTreeSet::new())), Ordering::Equal);
-        assert_eq!(Value::Map(BTreeMap::new()).cmp(&Value::Map(BTreeMap::new())), Ordering::Equal);
+        assert_eq!(
+            Value::from_bigint("1").cmp(&Value::from_bigint("2")),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::from_float(1f64).cmp(&Value::from_float(2f64)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::Text("1".to_string()).cmp(&Value::Text("2".to_string())),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::from_symbol("a", "b").cmp(&Value::from_symbol("c", "d")),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::from_symbol(None, "a").cmp(&Value::from_symbol(None, "b")),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::from_keyword(":a", ":b").cmp(&Value::from_keyword(":c", ":d")),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::from_keyword(None, ":a").cmp(&Value::from_keyword(None, ":b")),
+            Ordering::Greater
+        );
+        assert_eq!(
+            Value::Vector(vec![]).cmp(&Value::Vector(vec![])),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Value::List(LinkedList::new()).cmp(&Value::List(LinkedList::new())),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Value::Set(BTreeSet::new()).cmp(&Value::Set(BTreeSet::new())),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Value::Map(BTreeMap::new()).cmp(&Value::Map(BTreeMap::new())),
+            Ordering::Equal
+        );
     }
 
     #[test]

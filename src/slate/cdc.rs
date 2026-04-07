@@ -41,8 +41,7 @@ impl CdcStream {
         poll_interval: Duration,
         cancel: CancellationToken,
     ) -> Result<Self, slatedb::Error> {
-        let wal_files: VecDeque<WalFile> =
-            wal_reader.list(cursor.wal_id..).await?.into();
+        let wal_files: VecDeque<WalFile> = wal_reader.list(cursor.wal_id..).await?.into();
 
         let mut stream = CdcStream {
             wal_reader,
@@ -166,8 +165,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn setup_db(path: &str) -> (Db, Arc<dyn slatedb::object_store::ObjectStore>) {
-        let object_store: Arc<dyn slatedb::object_store::ObjectStore> =
-            Arc::new(InMemory::new());
+        let object_store: Arc<dyn slatedb::object_store::ObjectStore> = Arc::new(InMemory::new());
         let db = Db::open(path, object_store.clone()).await.unwrap();
         (db, object_store)
     }
@@ -310,7 +308,10 @@ mod tests {
         cancel2.cancel();
         let mut stream2 = CdcStream::new(
             wal_reader2,
-            CdcCursor { wal_id: 0, last_seq: tx1.seq },
+            CdcCursor {
+                wal_id: 0,
+                last_seq: tx1.seq,
+            },
             Duration::from_millis(10),
             cancel2,
         )
@@ -408,7 +409,10 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            CdcCursor {
+                wal_id: 0,
+                last_seq: snap_seq,
+            },
             Duration::from_millis(10),
             cancel,
         )
@@ -444,7 +448,10 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            CdcCursor {
+                wal_id: 0,
+                last_seq: snap_seq,
+            },
             Duration::from_millis(10),
             cancel,
         )
@@ -453,10 +460,19 @@ mod tests {
 
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            assert!(
+                tx.seq > snap_seq,
+                "tx.seq {} should be > snapshot seq {}",
+                tx.seq,
+                snap_seq
+            );
             txs.push(tx);
         }
-        assert!(txs.len() >= 2, "expected at least 2 post-snapshot transactions, got {}", txs.len());
+        assert!(
+            txs.len() >= 2,
+            "expected at least 2 post-snapshot transactions, got {}",
+            txs.len()
+        );
         db.close().await.unwrap();
     }
 
@@ -479,7 +495,10 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor { wal_id: 0, last_seq: snap_seq },
+            CdcCursor {
+                wal_id: 0,
+                last_seq: snap_seq,
+            },
             Duration::from_millis(10),
             cancel,
         )
@@ -488,10 +507,19 @@ mod tests {
 
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+            assert!(
+                tx.seq > snap_seq,
+                "tx.seq {} should be > snapshot seq {}",
+                tx.seq,
+                snap_seq
+            );
             txs.push(tx);
         }
-        assert!(txs.len() >= 2, "expected at least 2 transactions, got {}", txs.len());
+        assert!(
+            txs.len() >= 2,
+            "expected at least 2 transactions, got {}",
+            txs.len()
+        );
         db.close().await.unwrap();
     }
 
@@ -512,7 +540,10 @@ mod tests {
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
                 wal_reader,
-                CdcCursor { wal_id: 0, last_seq: snap_seq },
+                CdcCursor {
+                    wal_id: 0,
+                    last_seq: snap_seq,
+                },
                 Duration::from_millis(10),
                 cancel,
             )
@@ -533,11 +564,22 @@ mod tests {
 
             let mut txs = Vec::new();
             while let Some(tx) = stream.next_transaction().await.unwrap() {
-                assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+                assert!(
+                    tx.seq > snap_seq,
+                    "tx.seq {} should be > snapshot seq {}",
+                    tx.seq,
+                    snap_seq
+                );
                 txs.push(tx);
             }
-            assert!(txs.len() >= 2, "expected at least 2 live transactions, got {}", txs.len());
-        }).await.expect("test_cdc_after_snapshot_live_streaming timed out");
+            assert!(
+                txs.len() >= 2,
+                "expected at least 2 live transactions, got {}",
+                txs.len()
+            );
+        })
+        .await
+        .expect("test_cdc_after_snapshot_live_streaming timed out");
     }
 
     #[tokio::test]
@@ -562,7 +604,10 @@ mod tests {
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
                 wal_reader,
-                CdcCursor { wal_id: 0, last_seq: snap_seq },
+                CdcCursor {
+                    wal_id: 0,
+                    last_seq: snap_seq,
+                },
                 Duration::from_millis(10),
                 cancel,
             )
@@ -580,11 +625,22 @@ mod tests {
 
             let mut txs = Vec::new();
             while let Some(tx) = stream.next_transaction().await.unwrap() {
-                assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
+                assert!(
+                    tx.seq > snap_seq,
+                    "tx.seq {} should be > snapshot seq {}",
+                    tx.seq,
+                    snap_seq
+                );
                 txs.push(tx);
             }
             // Should see both k2 (already there) and k3 (arrived live).
-            assert!(txs.len() >= 2, "expected at least 2 transactions (pre-stream + live), got {}", txs.len());
-        }).await.expect("test_cdc_after_snapshot_mixed_timing timed out");
+            assert!(
+                txs.len() >= 2,
+                "expected at least 2 transactions (pre-stream + live), got {}",
+                txs.len()
+            );
+        })
+        .await
+        .expect("test_cdc_after_snapshot_mixed_timing timed out");
     }
 }

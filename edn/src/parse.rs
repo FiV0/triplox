@@ -8,13 +8,10 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use std::collections::{BTreeSet, BTreeMap, LinkedList};
+use std::collections::{BTreeMap, BTreeSet, LinkedList};
 use std::iter::FromIterator;
 
-use chrono::{
-    DateTime,
-    Utc,
-};
+use chrono::{DateTime, Utc};
 use num::BigInt;
 use ordered_float::OrderedFloat;
 use uuid::Uuid;
@@ -23,7 +20,7 @@ use crate::entities::*;
 use crate::query;
 use crate::query::FromValue;
 use crate::symbols::*;
-use crate::types::{SpannedValue, Span, ValueAndSpan};
+use crate::types::{Span, SpannedValue, ValueAndSpan};
 
 pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
 
@@ -110,7 +107,7 @@ peg::parser! {
             "#instmicros" whitespace()+ d:$( digit()+ ) {
                 let micros = d.parse::<i64>().unwrap();
                 let seconds: i64 = micros / 1000000;
-                let nanos: u32 = ((micros % 1000000).abs() as u32) * 1000;
+                let nanos: u32 = ((micros % 1000000).unsigned_abs() as u32) * 1000;
                 DateTime::from_timestamp(seconds, nanos).unwrap()
             }
 
@@ -118,7 +115,7 @@ peg::parser! {
             "#instmillis" whitespace()+ d:$( digit()+ ) {
                 let millis = d.parse::<i64>().unwrap();
                 let seconds: i64 = millis / 1000;
-                let nanos: u32 = ((millis % 1000).abs() as u32) * 1000000;
+                let nanos: u32 = ((millis % 1000).unsigned_abs() as u32) * 1000000;
                 DateTime::from_timestamp(seconds, nanos).unwrap()
             }
 
@@ -273,7 +270,7 @@ peg::parser! {
             / __() v:atom() __() { ValuePlace::Atom(v) }
 
         pub rule entity() -> Entity<ValueAndSpan>
-            = __() "[" __() op:(op()) __() e:(entity_place()) __() a:(forward_entid())  __() v:(value_place()) __()  "]" __() { Entity::AddOrRetract { op, e: e, a: AttributePlace::Entid(a), v: v } }
+            = __() "[" __() op:(op()) __() e:(entity_place()) __() a:(forward_entid())  __() v:(value_place()) __()  "]" __() { Entity::AddOrRetract { op, e, a: AttributePlace::Entid(a), v } }
             / __() "[" __() op:(op()) __() e:(value_place())  __() a:(backward_entid()) __() v:(entity_place()) __() "]" __() { Entity::AddOrRetract { op, e: v, a: AttributePlace::Entid(a), v: e } }
             / __() map:map_notation() __() { Entity::MapNotation(map) }
             / expected!("entity")
@@ -316,7 +313,7 @@ peg::parser! {
             = __() "*" __() { query::PullAttributeSpec::Wildcard }
             / __() k:raw_forward_namespaced_keyword() __() alias:(":as" __() alias:raw_forward_keyword() __() { alias })? {
                 let attribute = query::PullConcreteAttribute::Ident(::std::sync::Arc::new(k));
-                let alias = alias.map(|alias| ::std::sync::Arc::new(alias));
+                let alias = alias.map(::std::sync::Arc::new);
                 query::PullAttributeSpec::Attribute(
                     query::NamedPullAttribute {
                         attribute,

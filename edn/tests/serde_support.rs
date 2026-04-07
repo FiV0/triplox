@@ -8,7 +8,6 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-
 #![cfg(feature = "serde_support")]
 
 use edn::symbols::Keyword;
@@ -18,18 +17,23 @@ use serde_test::{assert_tokens, Token};
 #[test]
 fn test_serialize_keyword() {
     let kw = Keyword::namespaced("foo", "bar");
-    assert_tokens(&kw, &[
-        Token::NewtypeStruct { name: "Keyword" },
-        Token::Struct { name: "NamespaceableName", len: 2 },
-        Token::Str("namespace"),
-        Token::Some,
-        Token::BorrowedStr("foo"),
-        Token::Str("name"),
-        Token::BorrowedStr("bar"),
-        Token::StructEnd,
-    ]);
+    assert_tokens(
+        &kw,
+        &[
+            Token::NewtypeStruct { name: "Keyword" },
+            Token::Struct {
+                name: "NamespaceableName",
+                len: 2,
+            },
+            Token::Str("namespace"),
+            Token::Some,
+            Token::BorrowedStr("foo"),
+            Token::Str("name"),
+            Token::BorrowedStr("bar"),
+            Token::StructEnd,
+        ],
+    );
 }
-
 
 #[cfg(feature = "serde_support")]
 #[test]
@@ -47,6 +51,3 @@ fn test_deserialize_keyword() {
     let not_kw = serde_json::from_str::<Keyword>(bad_ns_json);
     assert!(not_kw.is_err());
 }
-
-
-

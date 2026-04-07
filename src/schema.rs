@@ -186,10 +186,14 @@ impl AttributeBuilder {
     /// Validate that all required fields are present for a new attribute.
     pub fn validate_install_attribute(&self) -> Result<()> {
         if self.value_type.is_none() {
-            return Err(anyhow::anyhow!("db/valueType is required for schema attribute"));
+            return Err(anyhow::anyhow!(
+                "db/valueType is required for schema attribute"
+            ));
         }
         if self.multival.is_none() {
-            return Err(anyhow::anyhow!("db/cardinality is required for schema attribute"));
+            return Err(anyhow::anyhow!(
+                "db/cardinality is required for schema attribute"
+            ));
         }
         Ok(())
     }
@@ -256,7 +260,9 @@ impl Schema {
             // Reject modifications to existing schema entities
             if let Some(ident) = self.entid_map.get(&datom.entity) {
                 return Err(anyhow::anyhow!(
-                    "Cannot modify schema entity {} ({})", datom.entity, ident
+                    "Cannot modify schema entity {} ({})",
+                    datom.entity,
+                    ident
                 ));
             }
 
@@ -269,7 +275,9 @@ impl Schema {
                 if !attr.value_type.matches(&datom.value) {
                     return Err(anyhow::anyhow!(
                         "Type mismatch for attribute {}: expected {}, got {:?}",
-                        datom.attribute, attr.value_type, datom.value
+                        datom.attribute,
+                        attr.value_type,
+                        datom.value
                     ));
                 }
             } else if !matches!(
@@ -299,7 +307,8 @@ impl Schema {
                 ("db", "cardinality") => match &datom.value {
                     DataType::Keyword(kw) => {
                         let card = Cardinality::from_keyword(kw)?;
-                        builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
+                        builders.entry(datom.entity).or_default().multival =
+                            Some(card == Cardinality::Many);
                     }
                     _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
                 },
@@ -315,7 +324,8 @@ impl Schema {
             // but that's the correct behavior.
             builder.validate_install_attribute().map_err(|e| {
                 // Find the ident for better error messages
-                let ident = ident_updates.iter()
+                let ident = ident_updates
+                    .iter()
                     .find(|(eid, _)| *eid == entity_id)
                     .map(|(_, kw)| kw.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
@@ -452,15 +462,20 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let handle = Handle::current();
 
     // Query 1: all entities with db/ident (populates ident_map/entid_map)
-    let ident_query = parse_query(
-        "[:find ?e ?ident :where [?e :db/ident ?ident]]"
-    ).expect("Ident query parse failed");
+    let ident_query = parse_query("[:find ?e ?ident :where [?e :db/ident ?ident]]")
+        .expect("Ident query parse failed");
 
     let snap_clone = snapshot.clone();
     let handle_clone = handle.clone();
     let ident_map_clone = bootstrap_ident_map.clone();
     let ident_results = tokio::task::spawn_blocking(move || {
-        execute_query(&ident_query, snap_clone, handle_clone, &ident_map_clone, i64::MAX)
+        execute_query(
+            &ident_query,
+            snap_clone,
+            handle_clone,
+            &ident_map_clone,
+            i64::MAX,
+        )
     })
     .await
     .expect("Ident query task failed")
@@ -472,7 +487,13 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     ).expect("Attribute query parse failed");
 
     let attr_results = tokio::task::spawn_blocking(move || {
-        execute_query(&attr_query, snapshot, handle, &bootstrap_ident_map, i64::MAX)
+        execute_query(
+            &attr_query,
+            snapshot,
+            handle,
+            &bootstrap_ident_map,
+            i64::MAX,
+        )
     })
     .await
     .expect("Attribute query task failed")
@@ -512,10 +533,13 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             other => panic!("Expected Keyword for cardinality, got {:?}", other),
         };
 
-        schema.attribute_map.insert(entity_id, Attribute {
-            value_type,
-            multival: cardinality == Cardinality::Many,
-        });
+        schema.attribute_map.insert(
+            entity_id,
+            Attribute {
+                value_type,
+                multival: cardinality == Cardinality::Many,
+            },
+        );
     }
 
     schema
@@ -610,7 +634,9 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("name".to_string(), DataType::String("Alice".to_string()));
-        assert!(schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .is_ok());
     }
 
     #[test]
@@ -619,7 +645,9 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("person/age".to_string(), DataType::Long(30));
-        let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
 
@@ -629,7 +657,9 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("name".to_string(), DataType::Long(42));
-        let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
 
@@ -649,9 +679,17 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(name_id));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/long)));
-        doc.insert("db/cardinality".to_string(), DataType::Keyword(kw!(:db.cardinality/one)));
-        let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
+        doc.insert(
+            "db/valueType".to_string(),
+            DataType::Keyword(kw!(:db.type/long)),
+        );
+        doc.insert(
+            "db/cardinality".to_string(),
+            DataType::Keyword(kw!(:db.cardinality/one)),
+        );
+        let err = schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
 
@@ -668,7 +706,10 @@ mod tests {
     // TODO(#165): replace with from_entity_id test once db/valueType switches to ref
     #[test]
     fn test_value_type_from_keyword_ref() {
-        assert_eq!(ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(), ValueType::Ref);
+        assert_eq!(
+            ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(),
+            ValueType::Ref
+        );
     }
 
     #[test]
@@ -685,19 +726,27 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(200));
         doc.insert("follows".to_string(), DataType::Long(201));
-        assert!(schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .is_ok());
 
         // String value rejected for ref-typed attribute
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(300));
         doc.insert("follows".to_string(), DataType::String("not-a-ref".into()));
-        assert!(schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).is_err());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .is_err());
     }
 
     #[test]
     fn test_validate_and_prepare_parses_cardinality_many() {
         let schema = bootstrapped_schema();
-        let ops = [schema_attribute_with_cardinality(kw!(:tags), "string", "many")];
+        let ops = [schema_attribute_with_cardinality(
+            kw!(:tags),
+            "string",
+            "many",
+        )];
         let update = schema.validate_and_prepare(&to_datoms(&ops)).unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(update.attributes[0].1.multival);
@@ -718,9 +767,14 @@ mod tests {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(100));
         doc.insert("db/ident".to_string(), DataType::Keyword(kw!(:name)));
-        doc.insert("db/valueType".to_string(), DataType::Keyword(kw!(:db.type/string)));
+        doc.insert(
+            "db/valueType".to_string(),
+            DataType::Keyword(kw!(:db.type/string)),
+        );
         // No db/cardinality
-        let err = schema.validate_and_prepare(&to_datoms(&[TxOp::Put(doc)])).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&[TxOp::Put(doc)]))
+            .unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));
     }
 }

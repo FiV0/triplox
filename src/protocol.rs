@@ -298,14 +298,20 @@ fn encode_f64(buf: &mut Vec<u8>, v: f64) {
 /// message-size limit before encoding, which is well below `u32::MAX` (~4 GB).
 fn encode_string(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    encode_u32(buf, u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"));
+    encode_u32(
+        buf,
+        u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"),
+    );
     buf.extend_from_slice(bytes);
 }
 
 /// # Panics
 /// Panics if `b` exceeds `u32::MAX` bytes. Unreachable — see [`encode_string`].
 fn encode_bytes(buf: &mut Vec<u8>, b: &[u8]) {
-    encode_u32(buf, u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"));
+    encode_u32(
+        buf,
+        u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"),
+    );
     buf.extend_from_slice(b);
 }
 
@@ -420,11 +426,19 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_PUT);
             encode_data_type_map(buf, doc);
         }
-        TxOp::Add { entity_id, attribute, value } => {
+        TxOp::Add {
+            entity_id,
+            attribute,
+            value,
+        } => {
             encode_u8(buf, TXOP_ADD);
             encode_eav(buf, entity_id, attribute, value);
         }
-        TxOp::Retract { entity_id, attribute, value } => {
+        TxOp::Retract {
+            entity_id,
+            attribute,
+            value,
+        } => {
             encode_u8(buf, TXOP_RETRACT);
             encode_eav(buf, entity_id, attribute, value);
         }
@@ -567,7 +581,11 @@ impl<'a> Cursor<'a> {
     fn read_string_map(&mut self) -> Result<BTreeMap<String, String>> {
         let count = self.read_u32()? as usize;
         if count > self.remaining() {
-            bail!("String map count {} exceeds remaining bytes {}", count, self.remaining());
+            bail!(
+                "String map count {} exceeds remaining bytes {}",
+                count,
+                self.remaining()
+            );
         }
         let mut map = BTreeMap::new();
         for _ in 0..count {
@@ -600,9 +618,7 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
         TAG_REF => bail!("TAG_REF is not currently supported"),
         TAG_STRING => Ok(DataType::String(cursor.read_string()?)),
         TAG_TUPLE => Ok(DataType::Tuple(decode_data_type_vec(cursor)?)),
-        TAG_UUID => {
-            Ok(DataType::Uuid(Uuid::from_bytes(cursor.read_array()?)))
-        }
+        TAG_UUID => Ok(DataType::Uuid(Uuid::from_bytes(cursor.read_array()?))),
         TAG_VECTOR => Ok(DataType::Vector(decode_data_type_vec(cursor)?)),
         TAG_MAP => Ok(DataType::Map(decode_data_type_map(cursor)?)),
         TAG_KEYWORD => {
@@ -616,7 +632,11 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
 fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!("Vec<DataType> count {} exceeds remaining bytes {}", count, cursor.remaining());
+        bail!(
+            "Vec<DataType> count {} exceeds remaining bytes {}",
+            count,
+            cursor.remaining()
+        );
     }
     let mut vec = Vec::with_capacity(count);
     for _ in 0..count {
@@ -628,7 +648,11 @@ fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
 fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!("Map count {} exceeds remaining bytes {}", count, cursor.remaining());
+        bail!(
+            "Map count {} exceeds remaining bytes {}",
+            count,
+            cursor.remaining()
+        );
     }
     let mut map = BTreeMap::new();
     for _ in 0..count {
@@ -659,11 +683,19 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
         }
         TXOP_ADD => {
             let (entity_id, attribute, value) = decode_eav(cursor)?;
-            Ok(TxOp::Add { entity_id, attribute, value })
+            Ok(TxOp::Add {
+                entity_id,
+                attribute,
+                value,
+            })
         }
         TXOP_RETRACT => {
             let (entity_id, attribute, value) = decode_eav(cursor)?;
-            Ok(TxOp::Retract { entity_id, attribute, value })
+            Ok(TxOp::Retract {
+                entity_id,
+                attribute,
+                value,
+            })
         }
         TXOP_DELETE => Ok(TxOp::Delete(cursor.read_i64()?)),
         TXOP_ERASE => Ok(TxOp::Erase(cursor.read_i64()?)),
@@ -674,7 +706,11 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
 fn decode_tx_ops(cursor: &mut Cursor) -> Result<Vec<TxOp>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!("Vec<TxOp> count {} exceeds remaining bytes {}", count, cursor.remaining());
+        bail!(
+            "Vec<TxOp> count {} exceeds remaining bytes {}",
+            count,
+            cursor.remaining()
+        );
     }
     let mut ops = Vec::with_capacity(count);
     for _ in 0..count {
@@ -827,10 +863,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
     }
 }
 
-fn decode_backend_payload(
-    msg_type: u8,
-    cursor: &mut Cursor,
-) -> Result<BackendMessage> {
+fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
     match msg_type {
         MSG_AUTHENTICATION_OK => Ok(BackendMessage::AuthenticationOk {
             server_version: cursor.read_string()?,
@@ -845,7 +878,11 @@ fn decode_backend_payload(
         MSG_ROW_DESCRIPTION => {
             let count = cursor.read_u32()? as usize;
             if count > cursor.remaining() {
-                bail!("RowDescription column count {} exceeds remaining bytes {}", count, cursor.remaining());
+                bail!(
+                    "RowDescription column count {} exceeds remaining bytes {}",
+                    count,
+                    cursor.remaining()
+                );
             }
             let mut columns = Vec::with_capacity(count);
             for _ in 0..count {
@@ -1047,8 +1084,8 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use edn::kw;
     use super::*;
+    use edn::kw;
     use std::collections::BTreeMap;
 
     // Helper: encode a frontend message to bytes and decode it back.
@@ -1192,7 +1229,10 @@ mod tests {
         inner_map.insert("x".to_string(), DataType::Long(1));
         let dt = DataType::Vector(vec![
             DataType::Map(inner_map),
-            DataType::Tuple(vec![DataType::String("hello".to_string()), DataType::Boolean(false)]),
+            DataType::Tuple(vec![
+                DataType::String("hello".to_string()),
+                DataType::Boolean(false),
+            ]),
         ]);
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
@@ -1297,10 +1337,7 @@ mod tests {
         map.insert("db/id".to_string(), DataType::Long(1));
         map.insert("name".to_string(), DataType::String("alice".to_string()));
         let msg = FrontendMessage::Execute {
-            ops: vec![
-                TxOp::Put(map),
-                TxOp::Delete(99),
-            ],
+            ops: vec![TxOp::Put(map), TxOp::Delete(99)],
             await_indexing: true,
         };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
@@ -1376,10 +1413,7 @@ mod tests {
     #[tokio::test]
     async fn test_data_row_query_mode_roundtrip() {
         let msg = BackendMessage::DataRow {
-            values: vec![
-                DataType::Long(1),
-                DataType::String("alice".to_string()),
-            ],
+            values: vec![DataType::Long(1), DataType::String("alice".to_string())],
         };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }

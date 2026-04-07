@@ -14,7 +14,9 @@ pub struct Config {
 pub enum StorageConfig {
     Dev,
     Memory,
-    Local { path: PathBuf },
+    Local {
+        path: PathBuf,
+    },
     Remote {
         #[serde(flatten)]
         _extra: toml::Table,
