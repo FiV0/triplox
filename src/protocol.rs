@@ -467,15 +467,15 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_PUT);
             encode_keyword_tx_value_map(buf, map);
         }
-        TxOp::Add { entity_id, attribute, value } => {
+        TxOp::Add { entity, attribute, value } => {
             encode_u8(buf, TXOP_ADD);
-            encode_entity_ref(buf, entity_id);
+            encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
             encode_tx_value(buf, value);
         }
-        TxOp::Retract { entity_id, attribute, value } => {
+        TxOp::Retract { entity, attribute, value } => {
             encode_u8(buf, TXOP_RETRACT);
-            encode_entity_ref(buf, entity_id);
+            encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
             encode_tx_value(buf, value);
         }
@@ -744,16 +744,16 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
             Ok(TxOp::Put(map))
         }
         TXOP_ADD => {
-            let entity_id = decode_entity_ref(cursor)?;
+            let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
             let value = decode_tx_value(cursor)?;
-            Ok(TxOp::Add { entity_id, attribute, value })
+            Ok(TxOp::Add { entity, attribute, value })
         }
         TXOP_RETRACT => {
-            let entity_id = decode_entity_ref(cursor)?;
+            let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
             let value = decode_tx_value(cursor)?;
-            Ok(TxOp::Retract { entity_id, attribute, value })
+            Ok(TxOp::Retract { entity, attribute, value })
         }
         TXOP_DELETE => Ok(TxOp::Delete(decode_entity_ref(cursor)?)),
         TXOP_ERASE => Ok(TxOp::Erase(decode_entity_ref(cursor)?)),
@@ -1327,7 +1327,7 @@ mod tests {
     #[test]
     fn test_tx_op_add() {
         let op = TxOp::Add {
-            entity_id: EntityRef::Id(42),
+            entity: EntityRef::Id(42),
             attribute: kw!(:email),
             value: TxValue::Data(DataType::String("test@example.com".to_string())),
         };
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn test_tx_op_add_with_ref_value() {
         let op = TxOp::Add {
-            entity_id: EntityRef::Id(42),
+            entity: EntityRef::Id(42),
             attribute: kw!(:friend),
             value: TxValue::Ref(EntityRef::TempId("temp-2".to_string())),
         };
@@ -1347,7 +1347,7 @@ mod tests {
     #[test]
     fn test_tx_op_retract() {
         let op = TxOp::Retract {
-            entity_id: EntityRef::Id(42),
+            entity: EntityRef::Id(42),
             attribute: kw!(:email),
             value: TxValue::Data(DataType::String("old@example.com".to_string())),
         };

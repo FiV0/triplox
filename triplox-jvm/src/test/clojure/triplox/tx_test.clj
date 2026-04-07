@@ -19,7 +19,7 @@
     (let [ops (tx/tx-data->ops [[:db/add 42 :email "test@example.com"]])
           op (first ops)]
       (is (instance? TxOp$Add op))
-      (is (= 42 (.id ^EntityRef$Id (.entityId ^TxOp$Add op))))
+      (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Add op))))
       (is (= :email (.attribute ^TxOp$Add op)))
       (is (= "test@example.com" (.value ^TxValue$Data (.value ^TxOp$Add op)))))))
 
@@ -28,7 +28,7 @@
     (let [ops (tx/tx-data->ops [[:db/retract 42 :email "old@example.com"]])
           op (first ops)]
       (is (instance? TxOp$Retract op))
-      (is (= 42 (.id ^EntityRef$Id (.entityId ^TxOp$Retract op))))
+      (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Retract op))))
       (is (= :email (.attribute ^TxOp$Retract op)))
       (is (= "old@example.com" (.value ^TxValue$Data (.value ^TxOp$Retract op)))))))
 
@@ -37,14 +37,14 @@
     (let [ops (tx/tx-data->ops [[:db/delete 99]])
           op (first ops)]
       (is (instance? TxOp$Delete op))
-      (is (= 99 (.id ^EntityRef$Id (.entityId ^TxOp$Delete op)))))))
+      (is (= 99 (.id ^EntityRef$Id (.entity ^TxOp$Delete op)))))))
 
 (deftest vec-to-erase
   (testing "[:db/erase eid] -> TxOp.Erase"
     (let [ops (tx/tx-data->ops [[:db/erase 100]])
           op (first ops)]
       (is (instance? TxOp$Erase op))
-      (is (= 100 (.id ^EntityRef$Id (.entityId ^TxOp$Erase op)))))))
+      (is (= 100 (.id ^EntityRef$Id (.entity ^TxOp$Erase op)))))))
 
 (deftest mixed-tx-data
   (testing "Mixed tx-data forms"
@@ -64,15 +64,15 @@
   (testing "String entity becomes TempId"
     (let [ops (tx/tx-data->ops [[:db/add "tempid-1" :name "alice"]])
           op (first ops)]
-      (is (instance? EntityRef$TempId (.entityId ^TxOp$Add op)))
-      (is (= "tempid-1" (.tempId ^EntityRef$TempId (.entityId ^TxOp$Add op)))))))
+      (is (instance? EntityRef$TempId (.entity ^TxOp$Add op)))
+      (is (= "tempid-1" (.tempId ^EntityRef$TempId (.entity ^TxOp$Add op)))))))
 
 (deftest ident-entity-ref
   (testing "Keyword entity becomes Ident"
     (let [ops (tx/tx-data->ops [[:db/add :person/alice :name "Alice"]])
           op (first ops)]
-      (is (instance? EntityRef$Ident (.entityId ^TxOp$Add op)))
-      (is (= :person/alice (.ident ^EntityRef$Ident (.entityId ^TxOp$Add op)))))))
+      (is (instance? EntityRef$Ident (.entity ^TxOp$Add op)))
+      (is (= :person/alice (.ident ^EntityRef$Ident (.entity ^TxOp$Add op)))))))
 
 (deftest invalid-form-throws
   (testing "Invalid form throws"

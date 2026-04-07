@@ -893,7 +893,7 @@ mod tests {
         // First tx: assert tags="rust" for entity 2000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: EntityRef::Id(2000),
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "rust".into(),
         }];
@@ -902,7 +902,7 @@ mod tests {
         // Second tx: assert tags="database" for same entity — should NOT retract "rust"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: EntityRef::Id(2000),
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "database".into(),
         }];
@@ -942,7 +942,7 @@ mod tests {
         // First tx: assert tags="rust" for entity 2000
         let tx1 = TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) };
         let tx_ops1 = vec![TxOp::Add {
-            entity_id: EntityRef::Id(2000),
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "rust".into(),
         }];
@@ -951,7 +951,7 @@ mod tests {
         // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
         let tx_ops2 = vec![TxOp::Add {
-            entity_id: EntityRef::Id(2000),
+            entity: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "rust".into(),
         }];

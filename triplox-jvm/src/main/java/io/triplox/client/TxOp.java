@@ -9,8 +9,8 @@ import java.util.Map;
  */
 public sealed interface TxOp {
     record Put(Map<Keyword, TxValue> document) implements TxOp {}
-    record Add(EntityRef entityId, Keyword attribute, TxValue value) implements TxOp {}
-    record Retract(EntityRef entityId, Keyword attribute, TxValue value) implements TxOp {}
-    record Delete(EntityRef entityId) implements TxOp {}
-    record Erase(EntityRef entityId) implements TxOp {}
+    record Add(EntityRef entity, Keyword attribute, TxValue value) implements TxOp {}
+    record Retract(EntityRef entity, Keyword attribute, TxValue value) implements TxOp {}
+    record Delete(EntityRef entity) implements TxOp {}
+    record Erase(EntityRef entity) implements TxOp {}
 }

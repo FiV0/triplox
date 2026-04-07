@@ -44,7 +44,7 @@ class TxOpCodecTest {
                 new TxValue.Data("test@example.com"))));
         assertEquals(1, result.size());
         var add = (TxOp.Add) result.get(0);
-        assertEquals(42, ((EntityRef.Id) add.entityId()).id());
+        assertEquals(42, ((EntityRef.Id) add.entity()).id());
         assertEquals(Keyword.intern("email"), add.attribute());
         assertEquals("test@example.com", ((TxValue.Data) add.value()).value());
     }
@@ -57,7 +57,7 @@ class TxOpCodecTest {
                 new TxValue.Data("old@example.com"))));
         assertEquals(1, result.size());
         var ret = (TxOp.Retract) result.get(0);
-        assertEquals(42, ((EntityRef.Id) ret.entityId()).id());
+        assertEquals(42, ((EntityRef.Id) ret.entity()).id());
         assertEquals(Keyword.intern("email"), ret.attribute());
         assertEquals("old@example.com", ((TxValue.Data) ret.value()).value());
     }
@@ -108,10 +108,10 @@ class TxOpCodecTest {
         );
         var result = roundtrip(ops);
         assertEquals(4, result.size());
-        assertEquals(new EntityRef.Id(42), ((TxOp.Delete) result.get(0)).entityId());
-        assertEquals(new EntityRef.TempId("temp-1"), ((TxOp.Delete) result.get(1)).entityId());
-        assertEquals(new EntityRef.Ident(Keyword.intern("db", "ident")), ((TxOp.Delete) result.get(2)).entityId());
-        assertEquals(new EntityRef.LookupRef(Keyword.intern("email"), "test@example.com"), ((TxOp.Delete) result.get(3)).entityId());
+        assertEquals(new EntityRef.Id(42), ((TxOp.Delete) result.get(0)).entity());
+        assertEquals(new EntityRef.TempId("temp-1"), ((TxOp.Delete) result.get(1)).entity());
+        assertEquals(new EntityRef.Ident(Keyword.intern("db", "ident")), ((TxOp.Delete) result.get(2)).entity());
+        assertEquals(new EntityRef.LookupRef(Keyword.intern("email"), "test@example.com"), ((TxOp.Delete) result.get(3)).entity());
     }
 
     @Test
