@@ -589,7 +589,7 @@ mod tests {
 
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
-    use crate::ops::{EntityRef, TxValue};
+    use crate::ops::{DataType, EntityRef};
     use crate::schema::test_schema_tx;
     use crate::slate::in_memory_slate;
 
@@ -991,7 +991,7 @@ mod tests {
             .transact_tx(
                 tx2,
                 vec![TxOp::put(vec![
-                    (kw!(:db/id), TxValue::Ref(entity_id.into())),
+                    (kw!(:db/id), DataType::Long(entity_id)),
                     (kw!(:name), "bob".into()),
                 ])],
             )
@@ -1075,7 +1075,7 @@ mod tests {
             .transact_tx(
                 tx2,
                 vec![TxOp::put(vec![
-                    (kw!(:db/id), TxValue::Ref(entity_id.into())),
+                    (kw!(:db/id), DataType::Long(entity_id)),
                     (kw!(:name), "alice".into()),
                 ])],
             )

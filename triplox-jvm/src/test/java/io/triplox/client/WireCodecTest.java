@@ -302,8 +302,8 @@ class WireCodecTest {
 
     @Test
     void testExecuteFraming() throws IOException {
-        var doc = new TreeMap<Keyword, TxValue>();
-        doc.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(1)));
+        var doc = new TreeMap<Keyword, Object>();
+        doc.put(Keyword.intern("db", "id"), 1L);
         var ops = List.<TxOp>of(new TxOp.Put(doc));
 
         var baos = new ByteArrayOutputStream();

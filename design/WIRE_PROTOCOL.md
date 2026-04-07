@@ -667,30 +667,21 @@ An `EntityRef` value is encoded as a 1-byte variant tag followed by the variant 
 | 0x92   | Ident     | `String` (keyword as string)             |
 | 0x93   | LookupRef | `String` (keyword) + `DataType`          |
 
-### 11.9 TxValue Encoding
-
-A `TxValue` value is encoded as a 1-byte variant tag followed by the variant payload:
-
-| Tag    | Name | Payload                                     |
-|--------|------|---------------------------------------------|
-| 0x94   | Data | `DataType`                                  |
-| 0x95   | Ref  | `EntityRef`                                 |
-
-### 11.10 TxOp Encoding
+### 11.9 TxOp Encoding
 
 A `TxOp` value is encoded as a 1-byte variant tag followed by the variant payload:
 
-| Tag | Name     | Payload                                           |
-|-----|----------|---------------------------------------------------|
-| 0   | Put      | `Map<Keyword, TxValue>` (`:db/id` key holds entity ref) |
-| 1   | Add      | `EntityRef` + `String` (keyword) + `TxValue`       |
-| 2   | Retract  | `EntityRef` + `String` (keyword) + `TxValue`       |
-| 3   | Delete   | `EntityRef`                                        |
-| 4   | Erase    | `EntityRef`                                        |
+| Tag | Name    | Payload                                                              |
+|-----|---------|----------------------------------------------------------------------|
+| 0   | Put     | `Map<Keyword, DataType>` (`:db/id` key holds entity ID/tempid/ident) |
+| 1   | Add     | `EntityRef` + `String` (keyword) + `DataType`                        |
+| 2   | Retract | `EntityRef` + `String` (keyword) + `DataType`                        |
+| 3   | Delete  | `EntityRef`                                                          |
+| 4   | Erase   | `EntityRef`                                                          |
 
-**Put encoding**: a map of `Keyword` keys (encoded as `String`) to `TxValue` values (u32 count + entries). The `:db/id` key holds `TxValue::Ref(EntityRef)` for the entity identity; if absent, an internal tempid is auto-allocated during expansion.
+**Put encoding**: a map of `Keyword` keys (encoded as `String`) to `DataType` values (u32 count + entries). The `:db/id` key identifies the entity: `Long` for explicit ID, `String` for tempid, `Keyword` for ident. If absent, an internal tempid is auto-allocated during expansion. Values for ref-typed attributes are resolved server-side based on the schema.
 
-### 11.11 Message Payloads
+### 11.10 Message Payloads
 
 Each message payload is the concatenation of its fields in declaration order, encoded using the types above.
 

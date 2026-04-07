@@ -5,9 +5,9 @@ use edn::kw;
 use edn::symbols::Keyword;
 
 use crate::metadata::PartitionMap;
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp, TxValue};
+use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
-use crate::schema::Schema;
+use crate::schema::{Schema, ValueType};
 
 /// Entity reference after ident resolution: either a concrete ID or an unresolved tempid.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -48,29 +48,59 @@ fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<IdOrTempId> {
     }
 }
 
-/// Resolve a TxValue to ValueWithTempIds, resolving idents via schema.
-fn resolve_tx_value(val: &TxValue, schema: &Schema) -> Result<ValueWithTempIds> {
+/// Resolve a :db/id DataType value to IdOrTempId.
+fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<IdOrTempId> {
     match val {
-        TxValue::Data(d) => Ok(ValueWithTempIds::Data(d.clone())),
-        TxValue::Ref(EntityRef::Id(id)) => Ok(ValueWithTempIds::Data(DataType::Long(*id))),
-        TxValue::Ref(EntityRef::TempId(s)) => Ok(ValueWithTempIds::TempRef(s.clone())),
-        TxValue::Ref(EntityRef::Ident(kw)) => {
+        DataType::Long(id) => Ok(IdOrTempId::Id(*id)),
+        DataType::String(s) => Ok(IdOrTempId::TempId(s.clone())),
+        DataType::Keyword(kw) => {
             let eid = schema
                 .ident_map
                 .get(kw)
-                .ok_or_else(|| anyhow::anyhow!("Unknown ident in value position: {}", kw))?;
-            Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
+                .ok_or_else(|| anyhow::anyhow!("Unknown ident for :db/id: {}", kw))?;
+            Ok(IdOrTempId::Id(*eid))
         }
-        TxValue::Ref(EntityRef::LookupRef(_, _)) => {
-            Err(anyhow::anyhow!("Lookup refs not yet supported"))
-        }
+        other => Err(anyhow::anyhow!(
+            ":db/id must be Long, String, or Keyword, got {:?}",
+            other
+        )),
     }
 }
 
-/// Expand TxOps into DatomWithTempids, resolving idents via schema.
+/// Resolve a value using the schema to determine if the attribute is ref-typed.
+fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<ValueWithTempIds> {
+    let is_ref = schema
+        .get_attribute(attr)
+        .map(|(_, a)| a.value_type == ValueType::Ref)
+        .unwrap_or(false);
+
+    if is_ref {
+        match val {
+            DataType::Long(id) => Ok(ValueWithTempIds::Data(DataType::Long(*id))),
+            DataType::Keyword(kw) => {
+                let eid = schema
+                    .ident_map
+                    .get(kw)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown ident in ref value position: {}", kw))?;
+                Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
+            }
+            DataType::String(s) => Ok(ValueWithTempIds::TempRef(s.clone())),
+            other => Err(anyhow::anyhow!(
+                "Invalid value for ref-typed attribute {}: {:?}",
+                attr,
+                other
+            )),
+        }
+    } else {
+        Ok(ValueWithTempIds::Data(val.clone()))
+    }
+}
+
+/// Expand TxOps into DatomWithTempids, resolving idents and ref-typed values via schema.
 ///
 /// - `Put(map)` -> N DatomWithTempids (one per non-`:db/id` attr). The `:db/id` key
-///   must map to `TxValue::Ref(EntityRef)`. If absent, generates an internal tempid.
+///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
+///   an internal tempid.
 /// - `Add/Retract` -> 1 DatomWithTempids
 /// - `Delete/Erase` -> panics (not yet implemented)
 pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempids>> {
@@ -82,13 +112,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
         match op {
             TxOp::Put(map) => {
                 let entity = match map.get(&db_id_kw) {
-                    Some(TxValue::Ref(eref)) => resolve_entity_ref(eref, schema)?,
-                    Some(other) => {
-                        return Err(anyhow::anyhow!(
-                            "Put :db/id must be TxValue::Ref(EntityRef), got {:?}",
-                            other
-                        ))
-                    }
+                    Some(val) => resolve_db_id(val, schema)?,
                     None => {
                         let tempid = format!("__auto_{}", auto_counter);
                         auto_counter += 1;
@@ -99,7 +123,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     datoms.push(DatomWithTempids {
                         entity: entity.clone(),
                         attribute: attr.clone(),
-                        value: resolve_tx_value(value, schema)?,
+                        value: resolve_value(value, attr, schema)?,
                         op: DatomOp::Assert,
                     });
                 }
@@ -112,7 +136,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
-                    value: resolve_tx_value(value, schema)?,
+                    value: resolve_value(value, attribute, schema)?,
                     op: DatomOp::Assert,
                 });
             }
@@ -124,7 +148,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
-                    value: resolve_tx_value(value, schema)?,
+                    value: resolve_value(value, attribute, schema)?,
                     op: DatomOp::Retract,
                 });
             }
@@ -209,12 +233,26 @@ mod tests {
         schema
     }
 
+    fn schema_with_ref_attr(attr_kw: Keyword, attr_eid: i64) -> Schema {
+        use crate::schema::Attribute;
+        let mut schema = Schema::default();
+        schema.ident_map.insert(attr_kw, attr_eid);
+        schema.attribute_map.insert(
+            attr_eid,
+            Attribute {
+                value_type: ValueType::Ref,
+                multival: false,
+            },
+        );
+        schema
+    }
+
     // --- expand_tx_ops tests ---
 
     #[test]
     fn test_expand_put_with_id() {
         let ops = vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])];
@@ -254,7 +292,7 @@ mod tests {
         let ops = vec![TxOp::Add {
             entity: EntityRef::Id(200),
             attribute: kw!(:name),
-            value: TxValue::Data(DataType::String("bob".to_string())),
+            value: DataType::String("bob".to_string()),
         }];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 1);
@@ -272,7 +310,7 @@ mod tests {
         let ops = vec![TxOp::Retract {
             entity: EntityRef::Id(200),
             attribute: kw!(:name),
-            value: TxValue::Data(DataType::String("bob".to_string())),
+            value: DataType::String("bob".to_string()),
         }];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 1);
@@ -285,7 +323,7 @@ mod tests {
         let ops = vec![TxOp::Add {
             entity: EntityRef::Ident(kw!(:person/name)),
             attribute: kw!(:some/attr),
-            value: TxValue::Data(DataType::Long(1)),
+            value: DataType::Long(1),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].entity, IdOrTempId::Id(42));
@@ -296,7 +334,7 @@ mod tests {
         let ops = vec![TxOp::Add {
             entity: EntityRef::Ident(kw!(:unknown/ident)),
             attribute: kw!(:some/attr),
-            value: TxValue::Data(DataType::Long(1)),
+            value: DataType::Long(1),
         }];
         let result = expand_tx_ops(&ops, &empty_schema());
         assert!(result.is_err());
@@ -308,7 +346,7 @@ mod tests {
         let ops = vec![TxOp::Add {
             entity: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())),
             attribute: kw!(:name),
-            value: TxValue::Data(DataType::Long(1)),
+            value: DataType::Long(1),
         }];
         let result = expand_tx_ops(&ops, &empty_schema());
         assert!(result.is_err());
@@ -317,12 +355,13 @@ mod tests {
 
     #[test]
     fn test_expand_value_ref_tempid() {
+        let schema = schema_with_ref_attr(kw!(:follows), 999);
         let ops = vec![TxOp::Add {
             entity: EntityRef::Id(100),
             attribute: kw!(:follows),
-            value: TxValue::Ref(EntityRef::TempId("friend".to_string())),
+            value: DataType::String("friend".to_string()),
         }];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(
             datoms[0].value,
             ValueWithTempIds::TempRef("friend".to_string())
@@ -331,22 +370,25 @@ mod tests {
 
     #[test]
     fn test_expand_value_ref_id() {
+        let schema = schema_with_ref_attr(kw!(:follows), 999);
         let ops = vec![TxOp::Add {
             entity: EntityRef::Id(100),
             attribute: kw!(:follows),
-            value: TxValue::Ref(EntityRef::Id(200)),
+            value: DataType::Long(200),
         }];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(200)));
     }
 
     #[test]
     fn test_expand_value_ref_ident() {
-        let schema = schema_with_ident(kw!(:person/bob), 99);
+        let mut schema = schema_with_ref_attr(kw!(:follows), 999);
+        schema.ident_map.insert(kw!(:person/bob), 99);
+        schema.entid_map.insert(99, kw!(:person/bob));
         let ops = vec![TxOp::Add {
             entity: EntityRef::Id(100),
             attribute: kw!(:follows),
-            value: TxValue::Ref(EntityRef::Ident(kw!(:person/bob))),
+            value: DataType::Keyword(kw!(:person/bob)),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(99)));

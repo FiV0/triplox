@@ -7,7 +7,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
-use triplox::ops::{DataType, TxOp, TxValue};
+use triplox::ops::{DataType, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
@@ -53,7 +53,7 @@ async fn test_execute_tx_and_query() {
     // Insert a document
     let result = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -86,7 +86,7 @@ async fn test_submit_tx() {
 
     let tx_key = client
         .submit_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -106,7 +106,7 @@ async fn test_multiple_transactions_and_query() {
     // Insert two documents in separate transactions
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -114,7 +114,7 @@ async fn test_multiple_transactions_and_query() {
 
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200_i64.into())),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -150,7 +150,7 @@ async fn test_open_close_multiple_dbs() {
     // Insert data
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -187,7 +187,7 @@ async fn test_two_connections() {
     define_base_schema(&client1).await;
     client1
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -216,7 +216,7 @@ async fn test_execute_tx_returns_tx_key() {
 
     let result = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -242,7 +242,7 @@ async fn test_db_as_of() {
     // First transaction
     let result1 = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -255,7 +255,7 @@ async fn test_db_as_of() {
     // Second transaction
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200_i64.into())),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -308,7 +308,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     client1
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -342,7 +342,7 @@ async fn test_dev_server_connections_are_isolated() {
 async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(id.into())),
+            (kw!(:db/id), DataType::Long(id.into())),
             (
                 kw!(:db/ident),
                 DataType::Keyword(Keyword::plain(name)).into(),
@@ -389,7 +389,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
             ])])
@@ -438,7 +438,7 @@ async fn test_aggregates_and_or() {
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:last-name), last.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
@@ -511,7 +511,7 @@ async fn test_aggregate_set_semantics() {
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:city), city.into()),
             ])])
@@ -544,7 +544,7 @@ async fn test_datascript_aggregates() {
     for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:heads), (heads as i64).into()),
             ])])
             .await
@@ -580,7 +580,7 @@ async fn test_aggregate_avg() {
     for (id, age) in [(100, 21), (101, 22), (102, 23)] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:age), (age as i64).into()),
             ])])
             .await
@@ -609,7 +609,7 @@ async fn test_aggregate_min_max_strings() {
     for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
             ])])
             .await
@@ -671,7 +671,7 @@ async fn test_order_and_limit() {
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(id.into())),
+                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:age), (age as i64).into()),
             ])])
@@ -753,7 +753,7 @@ async fn test_aggregate_min_incompatible_types() {
     // Insert entity with both name (string) and age (long)
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100_i64.into())),
             (kw!(:name), "Alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])

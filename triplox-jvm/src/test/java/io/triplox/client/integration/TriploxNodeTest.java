@@ -24,17 +24,17 @@ class TriploxNodeTest {
     void testConnectTransactQueryClose() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
-            var schema = new TreeMap<Keyword, TxValue>();
-            schema.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(200)));
-            schema.put(Keyword.intern("db", "ident"), new TxValue.Data(Keyword.intern("name")));
-            schema.put(Keyword.intern("db", "valueType"), new TxValue.Data(Keyword.intern("db.type", "string")));
-            schema.put(Keyword.intern("db", "cardinality"), new TxValue.Data(Keyword.intern("db.cardinality", "one")));
+            var schema = new TreeMap<Keyword, Object>();
+            schema.put(Keyword.intern("db", "id"), 200L);
+            schema.put(Keyword.intern("db", "ident"), Keyword.intern("name"));
+            schema.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", "string"));
+            schema.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
             node.executeTx(List.of(new TxOp.Put(schema)));
 
             // Data
-            var data = new TreeMap<Keyword, TxValue>();
-            data.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(1000)));
-            data.put(Keyword.intern("name"), new TxValue.Data("alice"));
+            var data = new TreeMap<Keyword, Object>();
+            data.put(Keyword.intern("db", "id"), 1000L);
+            data.put(Keyword.intern("name"), "alice");
             var txResult = node.executeTx(List.of(new TxOp.Put(data)));
             assertTrue(txResult.isCommitted());
 

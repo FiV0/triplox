@@ -24,16 +24,14 @@ class TxOpCodecTest {
 
     @Test
     void testPut() throws IOException {
-        var doc = new TreeMap<Keyword, TxValue>();
-        doc.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(1)));
-        doc.put(Keyword.intern("name"), new TxValue.Data("alice"));
+        var doc = new TreeMap<Keyword, Object>();
+        doc.put(Keyword.intern("db", "id"), 1L);
+        doc.put(Keyword.intern("name"), "alice");
         var result = roundtrip(List.of(new TxOp.Put(doc)));
         assertEquals(1, result.size());
         var put = (TxOp.Put) result.get(0);
-        var idVal = (TxValue.Ref) put.document().get(Keyword.intern("db", "id"));
-        assertEquals(1L, ((EntityRef.Id) idVal.ref()).id());
-        var nameVal = (TxValue.Data) put.document().get(Keyword.intern("name"));
-        assertEquals("alice", nameVal.value());
+        assertEquals(1L, put.document().get(Keyword.intern("db", "id")));
+        assertEquals("alice", put.document().get(Keyword.intern("name")));
     }
 
     @Test
@@ -41,12 +39,12 @@ class TxOpCodecTest {
         var result = roundtrip(List.of(new TxOp.Add(
                 new EntityRef.Id(42),
                 Keyword.intern("email"),
-                new TxValue.Data("test@example.com"))));
+                "test@example.com")));
         assertEquals(1, result.size());
         var add = (TxOp.Add) result.get(0);
         assertEquals(42, ((EntityRef.Id) add.entity()).id());
         assertEquals(Keyword.intern("email"), add.attribute());
-        assertEquals("test@example.com", ((TxValue.Data) add.value()).value());
+        assertEquals("test@example.com", add.value());
     }
 
     @Test
@@ -54,12 +52,12 @@ class TxOpCodecTest {
         var result = roundtrip(List.of(new TxOp.Retract(
                 new EntityRef.Id(42),
                 Keyword.intern("email"),
-                new TxValue.Data("old@example.com"))));
+                "old@example.com")));
         assertEquals(1, result.size());
         var ret = (TxOp.Retract) result.get(0);
         assertEquals(42, ((EntityRef.Id) ret.entity()).id());
         assertEquals(Keyword.intern("email"), ret.attribute());
-        assertEquals("old@example.com", ((TxValue.Data) ret.value()).value());
+        assertEquals("old@example.com", ret.value());
     }
 
     @Test
@@ -78,14 +76,14 @@ class TxOpCodecTest {
 
     @Test
     void testMultipleOps() throws IOException {
-        var doc = new TreeMap<Keyword, TxValue>();
-        doc.put(Keyword.intern("db", "id"), new TxValue.Ref(new EntityRef.Id(1)));
-        doc.put(Keyword.intern("name"), new TxValue.Data("bob"));
+        var doc = new TreeMap<Keyword, Object>();
+        doc.put(Keyword.intern("db", "id"), 1L);
+        doc.put(Keyword.intern("name"), "bob");
 
         var ops = List.<TxOp>of(
                 new TxOp.Put(doc),
-                new TxOp.Add(new EntityRef.Id(1), Keyword.intern("age"), new TxValue.Data(30L)),
-                new TxOp.Retract(new EntityRef.Id(1), Keyword.intern("name"), new TxValue.Data("old-bob")),
+                new TxOp.Add(new EntityRef.Id(1), Keyword.intern("age"), 30L),
+                new TxOp.Retract(new EntityRef.Id(1), Keyword.intern("name"), "old-bob"),
                 new TxOp.Delete(new EntityRef.Id(99)),
                 new TxOp.Erase(new EntityRef.Id(100))
         );
@@ -115,14 +113,14 @@ class TxOpCodecTest {
     }
 
     @Test
-    void testTxValueRef() throws IOException {
+    void testRefValueAsLong() throws IOException {
+        // Ref values are now just DataType values (Long for entity IDs)
         var result = roundtrip(List.of(new TxOp.Add(
                 new EntityRef.Id(1),
                 Keyword.intern("friend"),
-                new TxValue.Ref(new EntityRef.Id(2)))));
+                2L)));
         assertEquals(1, result.size());
         var add = (TxOp.Add) result.get(0);
-        var ref = (TxValue.Ref) add.value();
-        assertEquals(new EntityRef.Id(2), ref.ref());
+        assertEquals(2L, add.value());
     }
 }

@@ -1,6 +1,6 @@
 (ns triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident TxValue$Data TxValue$Ref
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (defn- ->entity-ref
@@ -12,25 +12,17 @@
     (keyword? v)  (EntityRef$Ident. v)
     :else (throw (ex-info "Cannot convert to EntityRef" {:value v}))))
 
-(defn- ->tx-value
-  "Convert a Clojure value to a TxValue.
-   The :db/id key is special: its value becomes a TxValue.Ref(EntityRef)."
-  [k v]
-  (if (= k :db/id)
-    (TxValue$Ref. (->entity-ref v))
-    (TxValue$Data. v)))
-
 (defn- map->put
   "Convert a Clojure map to a TxOp.Put."
   [m]
-  (TxOp$Put. (into {} (map (fn [[k v]] [k (->tx-value k v)])) m)))
+  (TxOp$Put. (into {} m)))
 
 (defn- vec->tx-op
   "Convert a Datomic-style tx-data vector to a TxOp."
   [[op :as v]]
   (case op
-    :db/add     (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) a (TxValue$Data. val)))
-    :db/retract (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) a (TxValue$Data. val)))
+    :db/add     (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) a val))
+    :db/retract (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) a val))
     :db/delete  (let [[_ eid] v] (TxOp$Delete. (->entity-ref eid)))
     :db/erase   (let [[_ eid] v] (TxOp$Erase. (->entity-ref eid)))
     (throw (ex-info (str "Unknown tx-data op: " op) {:op op :form v}))))

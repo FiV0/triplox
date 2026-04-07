@@ -1,7 +1,7 @@
 (ns triplox.tx-test
   (:require [clojure.test :refer [deftest is testing]]
             [triplox.tx :as tx])
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident TxValue$Data TxValue$Ref
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (deftest map-to-put
@@ -10,9 +10,8 @@
           op (first ops)]
       (is (instance? TxOp$Put op))
       (let [doc (.document ^TxOp$Put op)]
-        (is (instance? TxValue$Ref (.get doc :db/id)))
-        (is (= 1 (.id ^EntityRef$Id (.ref ^TxValue$Ref (.get doc :db/id)))))
-        (is (= "alice" (.value ^TxValue$Data (.get doc :person/name))))))))
+        (is (= 1 (.get doc :db/id)))
+        (is (= "alice" (.get doc :person/name)))))))
 
 (deftest vec-to-add
   (testing "[:db/add e a v] -> TxOp.Add"
@@ -21,7 +20,7 @@
       (is (instance? TxOp$Add op))
       (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Add op))))
       (is (= :email (.attribute ^TxOp$Add op)))
-      (is (= "test@example.com" (.value ^TxValue$Data (.value ^TxOp$Add op)))))))
+      (is (= "test@example.com" (.value ^TxOp$Add op))))))
 
 (deftest vec-to-retract
   (testing "[:db/retract e a v] -> TxOp.Retract"
@@ -30,7 +29,7 @@
       (is (instance? TxOp$Retract op))
       (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Retract op))))
       (is (= :email (.attribute ^TxOp$Retract op)))
-      (is (= "old@example.com" (.value ^TxValue$Data (.value ^TxOp$Retract op)))))))
+      (is (= "old@example.com" (.value ^TxOp$Retract op))))))
 
 (deftest vec-to-delete
   (testing "[:db/delete eid] -> TxOp.Delete"

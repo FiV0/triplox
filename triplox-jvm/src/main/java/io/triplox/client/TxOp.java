@@ -8,9 +8,9 @@ import java.util.Map;
  * Transaction operations for the Triplox wire protocol.
  */
 public sealed interface TxOp {
-    record Put(Map<Keyword, TxValue> document) implements TxOp {}
-    record Add(EntityRef entity, Keyword attribute, TxValue value) implements TxOp {}
-    record Retract(EntityRef entity, Keyword attribute, TxValue value) implements TxOp {}
+    record Put(Map<Keyword, Object> document) implements TxOp {}
+    record Add(EntityRef entity, Keyword attribute, Object value) implements TxOp {}
+    record Retract(EntityRef entity, Keyword attribute, Object value) implements TxOp {}
     record Delete(EntityRef entity) implements TxOp {}
     record Erase(EntityRef entity) implements TxOp {}
 }
