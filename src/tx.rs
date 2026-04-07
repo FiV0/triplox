@@ -163,6 +163,7 @@ pub fn resolve_tempids(
             IdOrTempId::TempId(s) => *tempid_map.get(s.as_str()).unwrap(),
         };
         let value = match &d.value {
+            // TODO: get rid of the clone()
             ValueWithTempIds::Data(data) => data.clone(),
             ValueWithTempIds::TempRef(s) => DataType::Long(*tempid_map.get(s.as_str()).unwrap()),
         };
