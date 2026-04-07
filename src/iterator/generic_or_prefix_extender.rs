@@ -105,8 +105,7 @@ mod tests {
         // Constrained by even numbers => {2,4}
         let or_ext1 = SingleLevelExtender::new(vec![bi(1), bi(2), bi(3)], 0);
         let or_ext2 = SingleLevelExtender::new(vec![bi(3), bi(4), bi(5)], 0);
-        let or_extender =
-            GenericOrPrefixExtender::new(vec![Box::new(or_ext1), Box::new(or_ext2)]);
+        let or_extender = GenericOrPrefixExtender::new(vec![Box::new(or_ext1), Box::new(or_ext2)]);
         let even_extender = SingleLevelExtender::new(vec![bi(2), bi(4), bi(6)], 0);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&or_extender, &even_extender];

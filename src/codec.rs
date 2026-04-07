@@ -11,9 +11,8 @@ use crate::clock::Instant;
 use crate::index::IndexType;
 use crate::ops::DataType;
 use crate::protocol::{
-    data_type_tag, micros_to_datetime, TAG_BIG_INT, TAG_BOOLEAN, TAG_BYTES, TAG_DOUBLE,
-    TAG_FLOAT, TAG_INSTANT, TAG_KEYWORD, TAG_LONG, TAG_MAP, TAG_STRING, TAG_TUPLE, TAG_UUID,
-    TAG_VECTOR,
+    data_type_tag, micros_to_datetime, TAG_BIG_INT, TAG_BOOLEAN, TAG_BYTES, TAG_DOUBLE, TAG_FLOAT,
+    TAG_INSTANT, TAG_KEYWORD, TAG_LONG, TAG_MAP, TAG_STRING, TAG_TUPLE, TAG_UUID, TAG_VECTOR,
 };
 
 // ---------------------------------------------------------------------------
@@ -273,9 +272,7 @@ pub fn decode_bytes(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError> {
                     0x01 => result.push(0x00),
                     0x02 => result.push(0x01),
                     _ => {
-                        return Err(
-                            format!("invalid escape sequence: 0x01 0x{:02x}", next).into()
-                        );
+                        return Err(format!("invalid escape sequence: 0x01 0x{:02x}", next).into());
                     }
                 }
             }
@@ -556,20 +553,26 @@ impl Decode for DataType {
 
 #[cfg(test)]
 mod tests {
-    use edn::kw;
     use super::*;
     use chrono::TimeZone;
+    use edn::kw;
 
     // --- Spec value table tests ---
 
     #[test]
     fn i64_encoding_table() {
         let cases: Vec<(i64, Vec<u8>)> = vec![
-            (i64::MIN, vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+            (
+                i64::MIN,
+                vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
             (-1, vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             (0, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
             (1, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]),
-            (i64::MAX, vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            (
+                i64::MAX,
+                vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
         ];
         for (value, expected) in cases {
             let mut buf = Vec::new();
@@ -631,7 +634,15 @@ mod tests {
 
     #[test]
     fn roundtrip_f64() {
-        for &v in &[f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY, f64::NAN] {
+        for &v in &[
+            f64::NEG_INFINITY,
+            -1.5,
+            -0.0,
+            0.0,
+            1.5,
+            f64::INFINITY,
+            f64::NAN,
+        ] {
             let mut buf = Vec::new();
             encode_f64(v, &mut buf);
             let mut cursor = buf.as_slice();
@@ -639,7 +650,12 @@ mod tests {
             if v.is_nan() {
                 assert!(decoded.is_nan());
             } else {
-                assert_eq!(decoded.to_bits(), v.to_bits(), "f64 {} round-trip failed", v);
+                assert_eq!(
+                    decoded.to_bits(),
+                    v.to_bits(),
+                    "f64 {} round-trip failed",
+                    v
+                );
             }
             assert!(cursor.is_empty());
         }
@@ -647,7 +663,15 @@ mod tests {
 
     #[test]
     fn roundtrip_f32() {
-        for &v in &[f32::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f32::INFINITY, f32::NAN] {
+        for &v in &[
+            f32::NEG_INFINITY,
+            -1.5,
+            -0.0,
+            0.0,
+            1.5,
+            f32::INFINITY,
+            f32::NAN,
+        ] {
             let mut buf = Vec::new();
             encode_f32(v, &mut buf);
             let mut cursor = buf.as_slice();
@@ -655,7 +679,12 @@ mod tests {
             if v.is_nan() {
                 assert!(decoded.is_nan());
             } else {
-                assert_eq!(decoded.to_bits(), v.to_bits(), "f32 {} round-trip failed", v);
+                assert_eq!(
+                    decoded.to_bits(),
+                    v.to_bits(),
+                    "f32 {} round-trip failed",
+                    v
+                );
             }
             assert!(cursor.is_empty());
         }
@@ -736,11 +765,7 @@ mod tests {
 
     #[test]
     fn roundtrip_keyword() {
-        let keywords = vec![
-            kw!(:foo),
-            kw!(:db/ident),
-            kw!(:my.ns/attr),
-        ];
+        let keywords = vec![kw!(:foo), kw!(:db/ident), kw!(:my.ns/attr)];
         for v in keywords {
             let mut buf = Vec::new();
             encode_keyword(&v, &mut buf);
@@ -760,7 +785,7 @@ mod tests {
             DataType::Boolean(true),
             DataType::Boolean(false),
             DataType::Bytes(vec![0x00, 0x01, 0xFF]),
-            DataType::Double(3.14),
+            DataType::Double(3.15),
             DataType::Float(2.5),
             DataType::Instant(Utc.timestamp_opt(1_000_000, 0).unwrap()),
             DataType::Keyword(kw!(:foo)),
@@ -804,7 +829,10 @@ mod tests {
     #[test]
     fn roundtrip_datatype_nested_composite() {
         let nested = DataType::Vector(vec![
-            DataType::Tuple(vec![DataType::Long(1), DataType::String("inner".to_string())]),
+            DataType::Tuple(vec![
+                DataType::Long(1),
+                DataType::String("inner".to_string()),
+            ]),
             DataType::Map({
                 let mut m = BTreeMap::new();
                 m.insert("k".to_string(), DataType::Boolean(true));
@@ -820,7 +848,7 @@ mod tests {
 
     #[test]
     fn order_i64() {
-        let values = vec![i64::MIN, -1_000, -1, 0, 1, 1_000, i64::MAX];
+        let values = [i64::MIN, -1_000, -1, 0, 1, 1_000, i64::MAX];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -837,7 +865,7 @@ mod tests {
 
     #[test]
     fn order_i128() {
-        let values = vec![i128::MIN, -1, 0, 1, i128::MAX];
+        let values = [i128::MIN, -1, 0, 1, i128::MAX];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -849,7 +877,7 @@ mod tests {
 
     #[test]
     fn order_u64() {
-        let values = vec![0u64, 1, 100, u64::MAX];
+        let values = [0u64, 1, 100, u64::MAX];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -864,7 +892,7 @@ mod tests {
         // Uses <= because -0.0 and 0.0 encode to the same bytes (IEEE 754 sortable
         // encoding collapses them). Round-trip preserves the sign bit, but byte
         // ordering treats them as equal.
-        let values = vec![f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY];
+        let values = [f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -881,7 +909,7 @@ mod tests {
 
     #[test]
     fn order_f32() {
-        let values = vec![f32::NEG_INFINITY, -1.5, 0.0, 1.5, f32::INFINITY];
+        let values = [f32::NEG_INFINITY, -1.5, 0.0, 1.5, f32::INFINITY];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -902,7 +930,7 @@ mod tests {
 
     #[test]
     fn order_string() {
-        let values = vec!["", "a", "aa", "ab", "b"];
+        let values = ["", "a", "aa", "ab", "b"];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -919,7 +947,8 @@ mod tests {
 
     #[test]
     fn order_bytes() {
-        let values: Vec<Vec<u8>> = vec![vec![], vec![0x00], vec![0x00, 0x00], vec![0x01], vec![0xFF]];
+        let values: Vec<Vec<u8>> =
+            vec![vec![], vec![0x00], vec![0x00, 0x00], vec![0x01], vec![0xFF]];
         for window in values.windows(2) {
             let mut a_buf = Vec::new();
             let mut b_buf = Vec::new();
@@ -936,8 +965,8 @@ mod tests {
 
     #[test]
     fn order_keyword() {
-        let values = vec![
-            kw!(:a),        // empty ns sorts first
+        let values = [
+            kw!(:a), // empty ns sorts first
             kw!(:b),
             kw!(:a/a),
             kw!(:a/b),
@@ -1013,7 +1042,7 @@ mod tests {
             DataType::BigInt(1),
             DataType::Boolean(true),
             DataType::Bytes(vec![0, 1, 2]),
-            DataType::Double(3.14),
+            DataType::Double(3.15),
             DataType::Float(2.5),
             DataType::Instant(Utc.timestamp_opt(1_000_000, 0).unwrap()),
             DataType::Keyword(kw!(:db/id)),
@@ -1055,4 +1084,3 @@ mod tests {
         assert!(DataType::decode(&buf).is_err());
     }
 }
-

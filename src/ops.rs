@@ -1,3 +1,4 @@
+use anyhow::Result;
 #[allow(unused_imports)]
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
@@ -9,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use uuid::Uuid;
-use anyhow::Result;
 
 pub type Entid = i64;
 
@@ -26,7 +26,7 @@ pub enum DataType {
     Instant(DateTime<Utc>), // Timestamps or instants
     Keyword(Keyword),       // Keywords
     Long(i64),              // Long integers (also used for Ref values; see ValueType::Ref)
-    String(String), // Strings
+    String(String),         // Strings
     // Symbol(NamespacedSymbol),                  // Symbols (can be represented as strings)
     Tuple(Vec<DataType>), // Tuples (can be represented as a vector of DataTypes)
     Uuid(Uuid),           // Universally unique identifier
@@ -39,7 +39,6 @@ pub enum DataType {
     //Set(BTreeSet<DataType>),         // Set (BTreeSet of DataTypes)
     Map(BTreeMap<String, DataType>), // Map (BTreeMap of string keys and DataType values)
 }
-
 
 impl Eq for DataType {}
 
@@ -113,7 +112,9 @@ impl DataType {
             (Float(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
             (Double(a), Float(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
             _ => Err(anyhow::anyhow!(
-                "cannot compare {:?} with {:?}", self.value_type(), other.value_type()
+                "cannot compare {:?} with {:?}",
+                self.value_type(),
+                other.value_type()
             )),
         }
     }
@@ -150,8 +151,16 @@ impl_from_for_enum!(
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(BTreeMap<String, DataType>),
-    Add { entity_id: Entid, attribute: Keyword, value: DataType },
-    Retract { entity_id: Entid, attribute: Keyword, value: DataType },
+    Add {
+        entity_id: Entid,
+        attribute: Keyword,
+        value: DataType,
+    },
+    Retract {
+        entity_id: Entid,
+        attribute: Keyword,
+        value: DataType,
+    },
     Delete(Entid),
     Erase(Entid),
 }
@@ -193,8 +202,9 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
                     // hot path just to feed it to `Keyword::from_str`, which strips the `:`
                     // and splits again. Could be replaced with a direct split-and-construct
                     // once the Put doc key type is revisited (see client-side Keyword TODO).
-                    let kw = Keyword::from_str(&format!(":{}", attr))
-                        .map_err(|e| anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, e))?;
+                    let kw = Keyword::from_str(&format!(":{}", attr)).map_err(|e| {
+                        anyhow::anyhow!("Invalid attribute ident {:?}: {}", attr, e)
+                    })?;
                     datoms.push(Datom {
                         entity,
                         attribute: kw,
@@ -204,7 +214,11 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
                     });
                 }
             }
-            TxOp::Add { entity_id, attribute, value } => {
+            TxOp::Add {
+                entity_id,
+                attribute,
+                value,
+            } => {
                 datoms.push(Datom {
                     entity: *entity_id,
                     attribute: attribute.clone(),
@@ -213,7 +227,11 @@ pub fn tx_ops_to_datoms(ops: &[TxOp], tx: i64) -> Result<Vec<Datom>> {
                     op: DatomOp::Assert,
                 });
             }
-            TxOp::Retract { entity_id, attribute, value } => {
+            TxOp::Retract {
+                entity_id,
+                attribute,
+                value,
+            } => {
                 datoms.push(Datom {
                     entity: *entity_id,
                     attribute: attribute.clone(),
@@ -239,20 +257,41 @@ mod tests {
     #[test]
     fn test_partial_compare_same_type() {
         use std::cmp::Ordering;
-        assert_eq!(DataType::Long(1).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Less);
-        assert_eq!(DataType::Long(2).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Equal);
-        assert_eq!(DataType::Long(3).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Greater);
+        assert_eq!(
+            DataType::Long(1)
+                .partial_compare(&DataType::Long(2))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::Long(2)
+                .partial_compare(&DataType::Long(2))
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            DataType::Long(3)
+                .partial_compare(&DataType::Long(2))
+                .unwrap(),
+            Ordering::Greater
+        );
 
         assert_eq!(
-            DataType::String("a".into()).partial_compare(&DataType::String("b".into())).unwrap(),
+            DataType::String("a".into())
+                .partial_compare(&DataType::String("b".into()))
+                .unwrap(),
             Ordering::Less,
         );
         assert_eq!(
-            DataType::Boolean(false).partial_compare(&DataType::Boolean(true)).unwrap(),
+            DataType::Boolean(false)
+                .partial_compare(&DataType::Boolean(true))
+                .unwrap(),
             Ordering::Less,
         );
         assert_eq!(
-            DataType::Double(1.5).partial_compare(&DataType::Double(2.5)).unwrap(),
+            DataType::Double(1.5)
+                .partial_compare(&DataType::Double(2.5))
+                .unwrap(),
             Ordering::Less,
         );
     }
@@ -260,39 +299,117 @@ mod tests {
     #[test]
     fn test_partial_compare_cross_numeric() {
         use std::cmp::Ordering;
-        assert_eq!(DataType::Long(10).partial_compare(&DataType::BigInt(20)).unwrap(), Ordering::Less);
-        assert_eq!(DataType::BigInt(20).partial_compare(&DataType::Long(10)).unwrap(), Ordering::Greater);
-        assert_eq!(DataType::Long(5).partial_compare(&DataType::Double(5.0)).unwrap(), Ordering::Equal);
-        assert_eq!(DataType::Double(3.0).partial_compare(&DataType::Long(4)).unwrap(), Ordering::Less);
+        assert_eq!(
+            DataType::Long(10)
+                .partial_compare(&DataType::BigInt(20))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::BigInt(20)
+                .partial_compare(&DataType::Long(10))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::Long(5)
+                .partial_compare(&DataType::Double(5.0))
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            DataType::Double(3.0)
+                .partial_compare(&DataType::Long(4))
+                .unwrap(),
+            Ordering::Less
+        );
 
         // Float cross-numeric
-        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::Long(2)).unwrap(), Ordering::Less);
-        assert_eq!(DataType::Long(2).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
-        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::Double(1.0)).unwrap(), Ordering::Equal);
-        assert_eq!(DataType::Double(2.0).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
-        assert_eq!(DataType::Float(1.0).partial_compare(&DataType::BigInt(2)).unwrap(), Ordering::Less);
-        assert_eq!(DataType::BigInt(2).partial_compare(&DataType::Float(1.0)).unwrap(), Ordering::Greater);
-        assert_eq!(DataType::BigInt(1).partial_compare(&DataType::Double(2.0)).unwrap(), Ordering::Less);
-        assert_eq!(DataType::Double(2.0).partial_compare(&DataType::BigInt(1)).unwrap(), Ordering::Greater);
+        assert_eq!(
+            DataType::Float(1.0)
+                .partial_compare(&DataType::Long(2))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::Long(2)
+                .partial_compare(&DataType::Float(1.0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::Float(1.0)
+                .partial_compare(&DataType::Double(1.0))
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            DataType::Double(2.0)
+                .partial_compare(&DataType::Float(1.0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::Float(1.0)
+                .partial_compare(&DataType::BigInt(2))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::BigInt(2)
+                .partial_compare(&DataType::Float(1.0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::BigInt(1)
+                .partial_compare(&DataType::Double(2.0))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::Double(2.0)
+                .partial_compare(&DataType::BigInt(1))
+                .unwrap(),
+            Ordering::Greater
+        );
     }
 
     #[test]
     fn test_partial_compare_incompatible() {
-        assert!(DataType::Long(1).partial_compare(&DataType::String("a".into())).is_err());
-        assert!(DataType::Boolean(true).partial_compare(&DataType::Long(1)).is_err());
+        assert!(DataType::Long(1)
+            .partial_compare(&DataType::String("a".into()))
+            .is_err());
+        assert!(DataType::Boolean(true)
+            .partial_compare(&DataType::Long(1))
+            .is_err());
     }
 
     #[test]
     fn test_partial_compare_nan() {
         // Same-type NaN
-        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::Double(1.0)).is_err());
-        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Float(1.0)).is_err());
+        assert!(DataType::Double(f64::NAN)
+            .partial_compare(&DataType::Double(1.0))
+            .is_err());
+        assert!(DataType::Float(f32::NAN)
+            .partial_compare(&DataType::Float(1.0))
+            .is_err());
         // Cross-type NaN
-        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Long(1)).is_err());
-        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::Double(1.0)).is_err());
-        assert!(DataType::Float(f32::NAN).partial_compare(&DataType::BigInt(1)).is_err());
-        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::Long(1)).is_err());
-        assert!(DataType::Double(f64::NAN).partial_compare(&DataType::BigInt(1)).is_err());
+        assert!(DataType::Float(f32::NAN)
+            .partial_compare(&DataType::Long(1))
+            .is_err());
+        assert!(DataType::Float(f32::NAN)
+            .partial_compare(&DataType::Double(1.0))
+            .is_err());
+        assert!(DataType::Float(f32::NAN)
+            .partial_compare(&DataType::BigInt(1))
+            .is_err());
+        assert!(DataType::Double(f64::NAN)
+            .partial_compare(&DataType::Long(1))
+            .is_err());
+        assert!(DataType::Double(f64::NAN)
+            .partial_compare(&DataType::BigInt(1))
+            .is_err());
     }
 
     #[test]
@@ -423,7 +540,10 @@ mod tests {
     fn test_tx_ops_to_datoms_put_wrong_id_type() {
         let tx = 1000_i64;
         let mut doc = BTreeMap::new();
-        doc.insert("db/id".to_string(), DataType::String("not-a-long".to_string()));
+        doc.insert(
+            "db/id".to_string(),
+            DataType::String("not-a-long".to_string()),
+        );
         doc.insert("name".to_string(), DataType::String("alice".to_string()));
         let ops = vec![TxOp::Put(doc)];
 

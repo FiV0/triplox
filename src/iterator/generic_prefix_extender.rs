@@ -21,7 +21,7 @@ pub struct GenericPrefixExtender {
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
-    as_of: i64,                   // temporal filter: only see facts at or before this time
+    as_of: i64,                       // temporal filter: only see facts at or before this time
 }
 
 impl GenericPrefixExtender {
@@ -90,24 +90,25 @@ impl GenericPrefixExtender {
         extractor: Extractor,
     ) -> Box<dyn Index> {
         match index_type {
-            IndexType::AE | IndexType::AV => {
-                Box::new(
-                    SlateIterator::new(slate_prefix, self.slate.as_ref(), self.handle.clone(), extractor)
-                        .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
+            IndexType::AE | IndexType::AV => Box::new(
+                SlateIterator::new(
+                    slate_prefix,
+                    self.slate.as_ref(),
+                    self.handle.clone(),
+                    extractor,
                 )
-            }
-            IndexType::EAV | IndexType::AVE | IndexType::AEV => {
-                Box::new(
-                    TemporalFilterIterator::new(
-                        slate_prefix,
-                        self.slate.as_ref(),
-                        self.handle.clone(),
-                        extractor,
-                        self.as_of,
-                    )
-                    .unwrap_or_else(|e| panic!("Failed to create TemporalFilterIterator: {}", e)),
+                .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
+            ),
+            IndexType::EAV | IndexType::AVE | IndexType::AEV => Box::new(
+                TemporalFilterIterator::new(
+                    slate_prefix,
+                    self.slate.as_ref(),
+                    self.handle.clone(),
+                    extractor,
+                    self.as_of,
                 )
-            }
+                .unwrap_or_else(|e| panic!("Failed to create TemporalFilterIterator: {}", e)),
+            ),
         }
     }
 

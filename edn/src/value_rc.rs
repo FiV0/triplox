@@ -16,7 +16,10 @@ pub trait FromRc<T> {
     fn from_arc(val: Arc<T>) -> Self;
 }
 
-impl<T> FromRc<T> for Rc<T> where T: Sized + Clone {
+impl<T> FromRc<T> for Rc<T>
+where
+    T: Sized + Clone,
+{
     fn from_rc(val: Rc<T>) -> Self {
         val.clone()
     }
@@ -29,7 +32,10 @@ impl<T> FromRc<T> for Rc<T> where T: Sized + Clone {
     }
 }
 
-impl<T> FromRc<T> for Arc<T> where T: Sized + Clone {
+impl<T> FromRc<T> for Arc<T>
+where
+    T: Sized + Clone,
+{
     fn from_rc(val: Rc<T>) -> Self {
         match Rc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
@@ -42,7 +48,10 @@ impl<T> FromRc<T> for Arc<T> where T: Sized + Clone {
     }
 }
 
-impl<T> FromRc<T> for Box<T> where T: Sized + Clone {
+impl<T> FromRc<T> for Box<T>
+where
+    T: Sized + Clone,
+{
     fn from_rc(val: Rc<T>) -> Self {
         match Rc::<T>::try_unwrap(val) {
             Ok(v) => Self::new(v),
@@ -64,7 +73,10 @@ pub trait Cloned<T> {
     fn to_value_rc(&self) -> ValueRc<T>;
 }
 
-impl<T: Clone> Cloned<T> for Rc<T> where T: Sized + Clone {
+impl<T: Clone> Cloned<T> for Rc<T>
+where
+    T: Sized + Clone,
+{
     fn cloned(&self) -> T {
         (*self.as_ref()).clone()
     }
@@ -74,7 +86,10 @@ impl<T: Clone> Cloned<T> for Rc<T> where T: Sized + Clone {
     }
 }
 
-impl<T: Clone> Cloned<T> for Arc<T> where T: Sized + Clone {
+impl<T: Clone> Cloned<T> for Arc<T>
+where
+    T: Sized + Clone,
+{
     fn cloned(&self) -> T {
         (*self.as_ref()).clone()
     }
@@ -84,7 +99,10 @@ impl<T: Clone> Cloned<T> for Arc<T> where T: Sized + Clone {
     }
 }
 
-impl<T: Clone> Cloned<T> for Box<T> where T: Sized + Clone {
+impl<T: Clone> Cloned<T> for Box<T>
+where
+    T: Sized + Clone,
+{
     fn cloned(&self) -> T {
         self.as_ref().clone()
     }

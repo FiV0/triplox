@@ -93,8 +93,10 @@ mod tests {
     #[test]
     fn test_intersect_removes_matching_extensions() {
         // NOT child: values divisible by 3 at level 1
-        let div3_extender: Box<dyn PrefixExtender> =
-            Box::new(SingleLevelExtender::new(vec![bi(3), bi(6), bi(9), bi(12)], 1));
+        let div3_extender: Box<dyn PrefixExtender> = Box::new(SingleLevelExtender::new(
+            vec![bi(3), bi(6), bi(9), bi(12)],
+            1,
+        ));
 
         let not_ext = GenericNotPrefixExtender::new(vec![div3_extender], 1);
 
@@ -119,10 +121,14 @@ mod tests {
     fn test_intersect_with_two_children_conjunction() {
         // NOT with two children: even numbers at level 0, divisible by 3 at level 1
         // NOT removes extensions where BOTH conditions are met (conjunction inside NOT)
-        let even_extender: Box<dyn PrefixExtender> =
-            Box::new(SingleLevelExtender::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10)], 0));
-        let div3_extender: Box<dyn PrefixExtender> =
-            Box::new(SingleLevelExtender::new(vec![bi(3), bi(6), bi(9), bi(12)], 1));
+        let even_extender: Box<dyn PrefixExtender> = Box::new(SingleLevelExtender::new(
+            vec![bi(2), bi(4), bi(6), bi(8), bi(10)],
+            0,
+        ));
+        let div3_extender: Box<dyn PrefixExtender> = Box::new(SingleLevelExtender::new(
+            vec![bi(3), bi(6), bi(9), bi(12)],
+            1,
+        ));
 
         let not_ext = GenericNotPrefixExtender::new(vec![even_extender, div3_extender], 1);
 

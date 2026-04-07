@@ -15,10 +15,7 @@ use std::fmt;
 
 use crate::value_rc::ValueRc;
 
-use crate::symbols::{
-    Keyword,
-    PlainSymbol,
-};
+use crate::symbols::{Keyword, PlainSymbol};
 
 use crate::types::ValueAndSpan;
 
@@ -52,7 +49,7 @@ impl TempId {
 impl fmt::Display for TempId {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match self {
-            &TempId::External(ref s) => write!(f, "{}", s),
+            TempId::External(s) => write!(f, "{}", s),
             &TempId::Internal(x) => write!(f, "<tempid {}>", x),
         }
     }
@@ -80,7 +77,7 @@ impl EntidOrIdent {
     pub fn unreversed(&self) -> Option<EntidOrIdent> {
         match self {
             &EntidOrIdent::Entid(_) => None,
-            &EntidOrIdent::Ident(ref a) => a.unreversed().map(EntidOrIdent::Ident),
+            EntidOrIdent::Ident(a) => a.unreversed().map(EntidOrIdent::Ident),
         }
     }
 }

@@ -434,14 +434,8 @@ mod tests {
 
     #[test]
     fn test_two_indexes_with_even_and_divisible_by_three() {
-        let even_index = SingleLevelIndex::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_index = SingleLevelIndex::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_index = SingleLevelIndex::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_index = SingleLevelIndex::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         let indexes: Vec<Box<dyn LeapfrogIndex>> =
             vec![Box::new(even_index), Box::new(divisible_by_three_index)];
@@ -496,12 +490,17 @@ mod tests {
                 if self.at_end() {
                     None
                 } else {
-                    Some(self.level_data[self.current_level][self.index_per_level[self.current_level]].clone())
+                    Some(
+                        self.level_data[self.current_level]
+                            [self.index_per_level[self.current_level]]
+                            .clone(),
+                    )
                 }
             }
 
             fn at_end(&self) -> bool {
-                self.index_per_level[self.current_level] >= self.level_data[self.current_level].len()
+                self.index_per_level[self.current_level]
+                    >= self.level_data[self.current_level].len()
             }
         }
 
@@ -539,14 +538,14 @@ mod tests {
 
         // index1: level 0 = even numbers 2-12, level 1 = multiples of 4 (4-40)
         let index1 = MultiLevelIndex::new(vec![
-            (1..=6).map(|i| bi(i * 2)).collect(),      // 2, 4, 6, 8, 10, 12
-            (1..=10).map(|i| bi(i * 4)).collect(),    // 4, 8, 12, ..., 40
+            (1..=6).map(|i| bi(i * 2)).collect(),  // 2, 4, 6, 8, 10, 12
+            (1..=10).map(|i| bi(i * 4)).collect(), // 4, 8, 12, ..., 40
         ]);
 
         // index2: level 0 = multiples of 3 (3-12), level 1 = multiples of 5 (5-40)
         let index2 = MultiLevelIndex::new(vec![
-            (1..=4).map(|i| bi(i * 3)).collect(),     // 3, 6, 9, 12
-            (1..=8).map(|i| bi(i * 5)).collect(),    // 5, 10, 15, ..., 40
+            (1..=4).map(|i| bi(i * 3)).collect(), // 3, 6, 9, 12
+            (1..=8).map(|i| bi(i * 5)).collect(), // 5, 10, 15, ..., 40
         ]);
 
         let indexes: Vec<Box<dyn LeapfrogIndex>> = vec![Box::new(index1), Box::new(index2)];
@@ -789,14 +788,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_with_filter_excludes_matching_tuples() {
-        let even_index = SingleLevelIndex::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_index = SingleLevelIndex::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_index = SingleLevelIndex::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_index = SingleLevelIndex::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         // Exclude multiples of 4 (which includes 4, 8, 12)
         let not_filter = SimpleNotFilter::new(vec![bi(4), bi(8), bi(12)], 0);
@@ -816,14 +809,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_with_filter_that_excludes_nothing() {
-        let even_index = SingleLevelIndex::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_index = SingleLevelIndex::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_index = SingleLevelIndex::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_index = SingleLevelIndex::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         // Disjoint set, excludes nothing from the intersection
         let not_filter = SimpleNotFilter::new(vec![bi(100), bi(200), bi(300)], 0);
@@ -843,14 +830,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_with_filter_that_excludes_all() {
-        let even_index = SingleLevelIndex::new(
-            vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)],
-            0,
-        );
-        let divisible_by_three_index = SingleLevelIndex::new(
-            vec![bi(3), bi(6), bi(9), bi(12)],
-            0,
-        );
+        let even_index = SingleLevelIndex::new(vec![bi(2), bi(4), bi(6), bi(8), bi(10), bi(12)], 0);
+        let divisible_by_three_index = SingleLevelIndex::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
 
         // Includes both 6 and 12
         let not_filter = SimpleNotFilter::new(vec![bi(6), bi(12)], 0);

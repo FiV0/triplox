@@ -4,11 +4,11 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use edn::kw;
+use edn::symbols::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, TxOp};
-use edn::kw;
-use edn::symbols::Keyword;
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
@@ -66,7 +66,10 @@ async fn test_execute_tx_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+    assert_eq!(
+        result[0],
+        vec![DataType::Long(100), DataType::String("alice".to_string())]
+    );
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -113,8 +116,14 @@ async fn test_multiple_transactions_and_query() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.contains(&vec![DataType::Long(100), DataType::String("alice".to_string())]));
-    assert!(result.contains(&vec![DataType::Long(200), DataType::String("bob".to_string())]));
+    assert!(result.contains(&vec![
+        DataType::Long(100),
+        DataType::String("alice".to_string())
+    ]));
+    assert!(result.contains(&vec![
+        DataType::Long(200),
+        DataType::String("bob".to_string())
+    ]));
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -138,8 +147,14 @@ async fn test_open_close_multiple_dbs() {
     let db2 = client.db().await.unwrap();
 
     // Both should return same data
-    let r1 = db1.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
-    let r2 = db2.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
+    let r1 = db1
+        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .await
+        .unwrap();
+    let r2 = db2
+        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .await
+        .unwrap();
     assert_eq!(r1.len(), 1);
     assert_eq!(r2.len(), 1);
 
@@ -164,7 +179,10 @@ async fn test_two_connections() {
     // Connection 2 can see the data
     let client2 = ClientNode::connect(&addr).await.unwrap();
     let db = client2.db().await.unwrap();
-    let result = db.query_edn("{:find [?e] :where [[?e :name \"alice\"]]}").await.unwrap();
+    let result = db
+        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .await
+        .unwrap();
     assert_eq!(result.len(), 1);
 
     db.close().await.unwrap();
@@ -225,7 +243,10 @@ async fn test_db_as_of() {
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], vec![DataType::Long(100), DataType::String("alice".to_string())]);
+    assert_eq!(
+        result[0],
+        vec![DataType::Long(100), DataType::String("alice".to_string())]
+    );
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -292,9 +313,18 @@ async fn test_dev_server_connections_are_isolated() {
 async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
     let mut doc = BTreeMap::new();
     doc.insert("db/id".to_string(), DataType::Long(id));
-    doc.insert("db/ident".to_string(), DataType::Keyword(Keyword::plain(name)));
-    doc.insert("db/valueType".to_string(), DataType::Keyword(Keyword::namespaced("db.type", vtype)));
-    doc.insert("db/cardinality".to_string(), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")));
+    doc.insert(
+        "db/ident".to_string(),
+        DataType::Keyword(Keyword::plain(name)),
+    );
+    doc.insert(
+        "db/valueType".to_string(),
+        DataType::Keyword(Keyword::namespaced("db.type", vtype)),
+    );
+    doc.insert(
+        "db/cardinality".to_string(),
+        DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
+    );
     client.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
 }
 
@@ -319,8 +349,12 @@ async fn test_query_keyword_value_comparison_via_wire() {
     define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
-    for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
-                             (102, "Doris", "female"), (103, "Jane", "female")] {
+    for (id, name, sex) in [
+        (100, "Ivan", "male"),
+        (101, "Petr", "male"),
+        (102, "Doris", "female"),
+        (103, "Jane", "female"),
+    ] {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(id));
         doc.insert("name".to_string(), DataType::String(name.to_string()));
@@ -336,7 +370,12 @@ async fn test_query_keyword_value_comparison_via_wire() {
         .await
         .unwrap();
 
-    assert_eq!(result.len(), 2, "expected only Ivan and Petr, got {:?}", result);
+    assert_eq!(
+        result.len(),
+        2,
+        "expected only Ivan and Petr, got {:?}",
+        result
+    );
     assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
     assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
 
@@ -389,14 +428,18 @@ async fn test_aggregates_and_or() {
 
     // count with top-level OR: Lovelace OR male → 3
     let result = db
-        .query_edn("{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}")
+        .query_edn(
+            "{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}",
+        )
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
 
     // Grouped: gender, count, sum
     let result = db
-        .query_edn("{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}")
+        .query_edn(
+            "{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}",
+        )
         .await
         .unwrap();
     assert_eq!(result.len(), 2, "expected 2 groups, got {:?}", result);
@@ -423,7 +466,11 @@ async fn test_aggregate_set_semantics() {
     define_base_schema(&client).await;
     define_people_schema(&client).await;
 
-    for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
+    for (id, name, city) in [
+        (100, "Alice", "NYC"),
+        (101, "Bob", "NYC"),
+        (102, "Carol", "LA"),
+    ] {
         let mut doc = BTreeMap::new();
         doc.insert("db/id".to_string(), DataType::Long(id));
         doc.insert("name".to_string(), DataType::String(name.to_string()));
@@ -587,9 +634,18 @@ async fn test_order_and_limit() {
         .await
         .unwrap();
     assert_eq!(result.len(), 3);
-    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
-    assert_eq!(result[1], vec![DataType::String("Bob".to_string()), DataType::Long(20)]);
-    assert_eq!(result[2], vec![DataType::String("Alice".to_string()), DataType::Long(30)]);
+    assert_eq!(
+        result[0],
+        vec![DataType::String("Dave".to_string()), DataType::Long(10)]
+    );
+    assert_eq!(
+        result[1],
+        vec![DataType::String("Bob".to_string()), DataType::Long(20)]
+    );
+    assert_eq!(
+        result[2],
+        vec![DataType::String("Alice".to_string()), DataType::Long(30)]
+    );
 
     // ORDER BY age descending, LIMIT 2 → oldest 2
     let result = db
@@ -597,8 +653,14 @@ async fn test_order_and_limit() {
         .await
         .unwrap();
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
-    assert_eq!(result[1], vec![DataType::String("Carol".to_string()), DataType::Long(40)]);
+    assert_eq!(
+        result[0],
+        vec![DataType::String("Eve".to_string()), DataType::Long(50)]
+    );
+    assert_eq!(
+        result[1],
+        vec![DataType::String("Carol".to_string()), DataType::Long(40)]
+    );
 
     // LIMIT only (no order) — should return exactly 2 rows
     let result = db
@@ -609,12 +671,20 @@ async fn test_order_and_limit() {
 
     // ORDER BY only (no limit) — all 5 rows, sorted
     let result = db
-        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}")
+        .query_edn(
+            "{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}",
+        )
         .await
         .unwrap();
     assert_eq!(result.len(), 5);
-    assert_eq!(result[0], vec![DataType::String("Dave".to_string()), DataType::Long(10)]);
-    assert_eq!(result[4], vec![DataType::String("Eve".to_string()), DataType::Long(50)]);
+    assert_eq!(
+        result[0],
+        vec![DataType::String("Dave".to_string()), DataType::Long(10)]
+    );
+    assert_eq!(
+        result[4],
+        vec![DataType::String("Eve".to_string()), DataType::Long(50)]
+    );
 
     db.close().await.unwrap();
     client.close().await.unwrap();

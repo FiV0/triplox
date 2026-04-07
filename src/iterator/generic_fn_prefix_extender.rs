@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use bytes::Bytes;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
-use crate::codec::{Encode, Decode};
-use edn::query::{ToVariable, Variable};
+use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, EvalContext, Expr};
 use crate::ops::DataType;
+use edn::query::{ToVariable, Variable};
 
 /// A prefix extender that evaluates a function expression and produces a new binding.
 ///
@@ -27,11 +27,7 @@ pub struct GenericFnPrefixExtender {
 }
 
 impl GenericFnPrefixExtender {
-    pub fn new(
-        expr: Expr,
-        prefix_vars: Vec<(Variable, usize)>,
-        output_level: usize,
-    ) -> Self {
+    pub fn new(expr: Expr, prefix_vars: Vec<(Variable, usize)>, output_level: usize) -> Self {
         Self {
             expr,
             prefix_vars,
@@ -45,8 +41,7 @@ impl GenericFnPrefixExtender {
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx])
-                    .expect("failed to decode prefix variable");
+                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
                 (var.clone(), dt)
             })
             .collect();
@@ -103,21 +98,13 @@ mod tests {
 
     #[test]
     fn test_count_returns_one() {
-        let ext = GenericFnPrefixExtender::new(
-            Expr::Literal(DataType::Long(42)),
-            vec![],
-            0,
-        );
+        let ext = GenericFnPrefixExtender::new(Expr::Literal(DataType::Long(42)), vec![], 0);
         assert_eq!(ext.count(&vec![]), 1);
     }
 
     #[test]
     fn test_participates_in_level() {
-        let ext = GenericFnPrefixExtender::new(
-            Expr::Literal(DataType::Long(42)),
-            vec![],
-            2,
-        );
+        let ext = GenericFnPrefixExtender::new(Expr::Literal(DataType::Long(42)), vec![], 2);
         assert!(!ext.participates_in_level(0));
         assert!(!ext.participates_in_level(1));
         assert!(ext.participates_in_level(2));
@@ -127,17 +114,10 @@ mod tests {
     #[test]
     fn test_propose_constant_expr() {
         // Expression that evaluates to a constant (no variables)
-        let ext = GenericFnPrefixExtender::new(
-            Expr::Literal(DataType::Long(42)),
-            vec![],
-            0,
-        );
+        let ext = GenericFnPrefixExtender::new(Expr::Literal(DataType::Long(42)), vec![], 0);
         let result = ext.propose(&vec![]);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(42)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(42));
     }
 
     #[test]
@@ -156,10 +136,7 @@ mod tests {
         let prefix = vec![serialize(&DataType::Long(-5))];
         let result = ext.propose(&prefix);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(5)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(5));
     }
 
     #[test]
@@ -170,19 +147,12 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
-        let ext = GenericFnPrefixExtender::new(
-            expr,
-            vec![("?x".to_var(), 0)],
-            1,
-        );
+        let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::Long(25))];
         let result = ext.propose(&prefix);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(35)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(35));
     }
 
     #[test]
@@ -205,10 +175,7 @@ mod tests {
         ];
         let result = ext.propose(&prefix);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(30)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(30));
     }
 
     #[test]
@@ -219,11 +186,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
-        let ext = GenericFnPrefixExtender::new(
-            expr,
-            vec![("?x".to_var(), 0)],
-            1,
-        );
+        let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::String("hello".to_string()))];
         let result = ext.propose(&prefix);
@@ -238,11 +201,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
-        let ext = GenericFnPrefixExtender::new(
-            expr,
-            vec![("?x".to_var(), 0)],
-            1,
-        );
+        let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::Long(25))];
         let extensions = vec![
@@ -253,10 +212,7 @@ mod tests {
 
         let result = ext.intersect(&prefix, &extensions);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(35)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(35));
     }
 
     #[test]
@@ -267,11 +223,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
-        let ext = GenericFnPrefixExtender::new(
-            expr,
-            vec![("?x".to_var(), 0)],
-            1,
-        );
+        let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::Long(25))];
         let extensions = vec![
@@ -299,11 +251,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(1))),
         });
-        let fn_ext = GenericFnPrefixExtender::new(
-            fn_expr,
-            vec![("?x".to_var(), 0)],
-            1,
-        );
+        let fn_ext = GenericFnPrefixExtender::new(fn_expr, vec![("?x".to_var(), 0)], 1);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &fn_ext];
         let join = GenericJoin::new(extenders, 2);
@@ -343,11 +291,7 @@ mod tests {
             op: BinaryOp::Add,
             right: Box::new(Expr::Literal(DataType::Long(1))),
         });
-        let fn_ext = GenericFnPrefixExtender::new(
-            fn_expr,
-            vec![("?age".to_var(), 0)],
-            2,
-        );
+        let fn_ext = GenericFnPrefixExtender::new(fn_expr, vec![("?age".to_var(), 0)], 2);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &level1, &fn_ext];
         let join = GenericJoin::new(extenders, 3);
@@ -373,9 +317,6 @@ mod tests {
 
         let result = ext.propose(&vec![]);
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            DataType::decode(&result[0]).unwrap(),
-            DataType::Long(3)
-        );
+        assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(3));
     }
 }

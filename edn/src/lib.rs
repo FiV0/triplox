@@ -12,19 +12,15 @@ pub mod entities;
 pub mod intern_set;
 pub use intern_set::InternSet;
 // Intentionally not pub.
+pub mod matcher;
 mod namespaceable_name;
+pub mod pretty_print;
 pub mod query;
 pub mod symbols;
 pub mod types;
-pub mod pretty_print;
 pub mod utils;
-pub mod matcher;
 pub mod value_rc;
-pub use value_rc::{
-    Cloned,
-    FromRc,
-    ValueRc,
-};
+pub use value_rc::{Cloned, FromRc, ValueRc};
 
 pub mod parse;
 
@@ -36,20 +32,9 @@ pub use uuid::Uuid;
 
 // Export from our modules.
 pub use parse::ParseError;
-pub use uuid::Error as UuidParseError;
 pub use types::{
-    FromMicros,
-    FromMillis,
-    Span,
-    SpannedValue,
-    ToMicros,
-    ToMillis,
-    Value,
-    ValueAndSpan,
+    FromMicros, FromMillis, Span, SpannedValue, ToMicros, ToMillis, Value, ValueAndSpan,
 };
+pub use uuid::Error as UuidParseError;
 
-pub use symbols::{
-    Keyword,
-    NamespacedSymbol,
-    PlainSymbol,
-};
+pub use symbols::{Keyword, NamespacedSymbol, PlainSymbol};

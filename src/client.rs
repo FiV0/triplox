@@ -12,11 +12,11 @@ use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use edn::query::ParsedQuery;
 use crate::node::{Database, QueryNode, SubmitNode, TransactionResult, TxKey};
 use crate::ops::{DataType, TxOp};
 use crate::protocol::*;
 use crate::query::QueryResult;
+use edn::query::ParsedQuery;
 
 // ---------------------------------------------------------------------------
 // ClientNode
@@ -66,7 +66,9 @@ impl ClientNode {
         // Expect ReadyForQuery
         let msg = read_backend_message(&mut reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
         match msg {
-            BackendMessage::ReadyForQuery { status: STATUS_IDLE } => {}
+            BackendMessage::ReadyForQuery {
+                status: STATUS_IDLE,
+            } => {}
             other => bail!("Expected ReadyForQuery, got {:?}", other),
         }
 
@@ -79,10 +81,7 @@ impl ClientNode {
         let mut conn = self.conn.lock().await;
         let (tx_id, system_time) = match &tx_key {
             None => (None, None),
-            Some(tk) => (
-                Some(tk.tx_id),
-                Some(tk.system_time.timestamp_micros()),
-            ),
+            Some(tk) => (Some(tk.tx_id), Some(tk.system_time.timestamp_micros())),
         };
         write_frontend_message(
             &mut conn.writer,
@@ -142,7 +141,10 @@ impl SubmitNode for ClientNode {
         let tx_key = match msg {
             BackendMessage::TxKey { tx_id, system_time } => {
                 let dt = crate::protocol::micros_to_datetime(system_time)?;
-                TxKey { tx_id, system_time: dt }
+                TxKey {
+                    tx_id,
+                    system_time: dt,
+                }
             }
             BackendMessage::ErrorResponse { message, .. } => {
                 // TODO: fatal errors may not be followed by ReadyForQuery
@@ -183,7 +185,10 @@ impl SubmitNode for ClientNode {
                 error_message,
             } => {
                 let dt = crate::protocol::micros_to_datetime(system_time)?;
-                let tx_key = TxKey { tx_id, system_time: dt };
+                let tx_key = TxKey {
+                    tx_id,
+                    system_time: dt,
+                };
                 if status == 0 {
                     TransactionResult::TxCommited(tx_key)
                 } else {
@@ -264,11 +269,8 @@ impl ClientDb {
                 // Collect DataRows until ReadyForQuery
                 let mut rows = Vec::new();
                 loop {
-                    let msg = read_backend_message(
-                        &mut conn.reader,
-                        DEFAULT_MAX_MESSAGE_SIZE,
-                    )
-                    .await?;
+                    let msg =
+                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
                     match msg {
                         BackendMessage::DataRow { values } => {
                             rows.push(values);
@@ -293,9 +295,7 @@ impl ClientDb {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::CloseDb {
-                db_id: self.db_id,
-            },
+            &FrontendMessage::CloseDb { db_id: self.db_id },
         )
         .await?;
         conn.writer.flush().await?;
@@ -328,5 +328,3 @@ impl Database for ClientDb {
         self.query_edn(&edn).await
     }
 }
-
-

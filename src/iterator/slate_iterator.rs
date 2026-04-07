@@ -266,7 +266,9 @@ mod tests {
             assert_eq!(iter.next().unwrap(), Some(Bytes::from("cc")));
             assert_eq!(iter.next().unwrap(), None);
             assert!(!iter.has_next());
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -288,7 +290,9 @@ mod tests {
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
             assert_eq!(iter.next().unwrap(), Some(Bytes::from("ee")));
             assert_eq!(iter.next().unwrap(), None);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -305,7 +309,9 @@ mod tests {
             let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -325,6 +331,8 @@ mod tests {
             let count = iter.count().unwrap();
             // TODO: count() currently returns 100 as estimate_key_count is not on DbSnapshot
             assert_eq!(count, 100);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 }

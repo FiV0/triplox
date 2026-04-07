@@ -2,12 +2,12 @@
 #![allow(unused)]
 use std::sync::Arc;
 
-use chrono::{DateTime, Timelike, Utc, TimeZone};
+use chrono::{DateTime, TimeZone, Timelike, Utc};
 
 pub type Instant = DateTime<Utc>;
 
-pub(crate) trait SystemTimeSource : Send + Sync + 'static {
-    fn now(& mut self) -> Instant;
+pub trait SystemTimeSource: Send + Sync + 'static {
+    fn now(&mut self) -> Instant;
 }
 
 pub struct SystemClock;
@@ -24,7 +24,7 @@ impl SystemTimeSource for SystemClock {
 }
 
 pub struct MockClock {
-    sys_times : Vec<Instant>
+    sys_times: Vec<Instant>,
 }
 
 impl MockClock {
@@ -35,7 +35,7 @@ impl MockClock {
 
 impl SystemTimeSource for MockClock {
     fn now(&mut self) -> Instant {
-        if self.sys_times.len() == 0 {
+        if self.sys_times.is_empty() {
             panic!("No more instants in the mock clock");
         }
         let res = self.sys_times[0];
@@ -80,25 +80,35 @@ mod tests {
     fn test_mock_clock() {
         let base_instant = st_from_unix_epoch(0);
         let mut clock = MockClock {
-            sys_times: vec![base_instant,
-                            base_instant + std::time::Duration::from_secs(1),
-                            base_instant + std::time::Duration::from_secs(2)]
+            sys_times: vec![
+                base_instant,
+                base_instant + std::time::Duration::from_secs(1),
+                base_instant + std::time::Duration::from_secs(2),
+            ],
         };
 
         assert_eq!(clock.now(), base_instant);
-        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(1));
-        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(2));
+        assert_eq!(
+            clock.now(),
+            base_instant + std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            clock.now(),
+            base_instant + std::time::Duration::from_secs(2)
+        );
     }
 
     #[test]
     fn test_fn_mock_clock() {
         let base_instant = st_from_unix_epoch(0);
-        let mut sys_times = vec![base_instant,
-                                 base_instant + std::time::Duration::from_secs(1),
-                                 base_instant + std::time::Duration::from_secs(2)];
+        let mut sys_times = vec![
+            base_instant,
+            base_instant + std::time::Duration::from_secs(1),
+            base_instant + std::time::Duration::from_secs(2),
+        ];
 
         let mut clock = FnMockClock::new(Box::new(move || {
-            if sys_times.len() == 0 {
+            if sys_times.is_empty() {
                 panic!("No more instants in the mock clock");
             }
             let res = sys_times[0];
@@ -107,7 +117,13 @@ mod tests {
         }));
 
         assert_eq!(clock.now(), base_instant);
-        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(1));
-        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(2));
+        assert_eq!(
+            clock.now(),
+            base_instant + std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            clock.now(),
+            base_instant + std::time::Duration::from_secs(2)
+        );
     }
 }

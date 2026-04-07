@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use edn::query::{ToVariable, Variable};
 use crate::ops::DataType;
+use edn::query::{ToVariable, Variable};
 
 /// Operators for binary expressions (inspired by DataFusion's Operator enum).
 #[derive(Debug, Clone, PartialEq)]
@@ -129,24 +129,31 @@ pub fn evaluate<'a>(expr: &'a Expr, ctx: &'a EvalContext<'a>) -> Option<Cow<'a, 
 
 /// Entry point for predicate evaluation — returns true/false directly.
 pub fn evaluate_as_bool(expr: &Expr, ctx: &EvalContext) -> bool {
-    matches!(evaluate(expr, ctx).as_deref(), Some(DataType::Boolean(true)))
+    matches!(
+        evaluate(expr, ctx).as_deref(),
+        Some(DataType::Boolean(true))
+    )
 }
 
 fn eval_binary_op(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<DataType> {
     match op {
-        BinaryOp::Lt => {
-            Some(DataType::Boolean(left.partial_compare(right).ok()? == Ordering::Less))
-        }
+        BinaryOp::Lt => Some(DataType::Boolean(
+            left.partial_compare(right).ok()? == Ordering::Less,
+        )),
         BinaryOp::LtEq => {
             let ord = left.partial_compare(right).ok()?;
-            Some(DataType::Boolean(ord == Ordering::Less || ord == Ordering::Equal))
+            Some(DataType::Boolean(
+                ord == Ordering::Less || ord == Ordering::Equal,
+            ))
         }
-        BinaryOp::Gt => {
-            Some(DataType::Boolean(left.partial_compare(right).ok()? == Ordering::Greater))
-        }
+        BinaryOp::Gt => Some(DataType::Boolean(
+            left.partial_compare(right).ok()? == Ordering::Greater,
+        )),
         BinaryOp::GtEq => {
             let ord = left.partial_compare(right).ok()?;
-            Some(DataType::Boolean(ord == Ordering::Greater || ord == Ordering::Equal))
+            Some(DataType::Boolean(
+                ord == Ordering::Greater || ord == Ordering::Equal,
+            ))
         }
         BinaryOp::Eq => Some(DataType::Boolean(left == right)),
         BinaryOp::NotEq => Some(DataType::Boolean(left != right)),
@@ -311,14 +318,8 @@ mod tests {
         let ctx_young = EvalContext::new(HashMap::from([("?age".to_var(), &young)]));
         let old = DataType::Long(35);
         let ctx_old = EvalContext::new(HashMap::from([("?age".to_var(), &old)]));
-        assert_eq!(
-            eval(&expr, &ctx_young),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&expr, &ctx_old),
-            Some(DataType::Boolean(false))
-        );
+        assert_eq!(eval(&expr, &ctx_young), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&expr, &ctx_old), Some(DataType::Boolean(false)));
     }
 
     #[test]
@@ -330,18 +331,9 @@ mod tests {
         let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
         let ctx_less = EvalContext::new(HashMap::from([("?x".to_var(), &val_less)]));
         let ctx_greater = EvalContext::new(HashMap::from([("?x".to_var(), &val_greater)]));
-        assert_eq!(
-            eval(&expr, &ctx_eq),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&expr, &ctx_less),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&expr, &ctx_greater),
-            Some(DataType::Boolean(false))
-        );
+        assert_eq!(eval(&expr, &ctx_eq), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&expr, &ctx_less), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&expr, &ctx_greater), Some(DataType::Boolean(false)));
     }
 
     #[test]
@@ -351,24 +343,18 @@ mod tests {
 
         let five = DataType::Long(5);
         let ten = DataType::Long(10);
-        let ctx_same = EvalContext::new(HashMap::from([("?a".to_var(), &five), ("?b".to_var(), &five)]));
-        let ctx_diff = EvalContext::new(HashMap::from([("?a".to_var(), &five), ("?b".to_var(), &ten)]));
-        assert_eq!(
-            eval(&expr_eq, &ctx_same),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&expr_eq, &ctx_diff),
-            Some(DataType::Boolean(false))
-        );
-        assert_eq!(
-            eval(&expr_neq, &ctx_same),
-            Some(DataType::Boolean(false))
-        );
-        assert_eq!(
-            eval(&expr_neq, &ctx_diff),
-            Some(DataType::Boolean(true))
-        );
+        let ctx_same = EvalContext::new(HashMap::from([
+            ("?a".to_var(), &five),
+            ("?b".to_var(), &five),
+        ]));
+        let ctx_diff = EvalContext::new(HashMap::from([
+            ("?a".to_var(), &five),
+            ("?b".to_var(), &ten),
+        ]));
+        assert_eq!(eval(&expr_eq, &ctx_same), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&expr_eq, &ctx_diff), Some(DataType::Boolean(false)));
+        assert_eq!(eval(&expr_neq, &ctx_same), Some(DataType::Boolean(false)));
+        assert_eq!(eval(&expr_neq, &ctx_diff), Some(DataType::Boolean(true)));
     }
 
     #[test]
@@ -380,34 +366,19 @@ mod tests {
         let val_gt = DataType::Long(15);
         let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
         let ctx_gt = EvalContext::new(HashMap::from([("?x".to_var(), &val_gt)]));
-        assert_eq!(
-            eval(&gt, &ctx_eq),
-            Some(DataType::Boolean(false))
-        );
-        assert_eq!(
-            eval(&gt, &ctx_gt),
-            Some(DataType::Boolean(true))
-        );
-        assert_eq!(
-            eval(&gteq, &ctx_eq),
-            Some(DataType::Boolean(true))
-        );
+        assert_eq!(eval(&gt, &ctx_eq), Some(DataType::Boolean(false)));
+        assert_eq!(eval(&gt, &ctx_gt), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&gteq, &ctx_eq), Some(DataType::Boolean(true)));
     }
 
     #[test]
     fn test_evaluate_not() {
         let expr = unary(UnaryOp::Not, lit_bool(true));
         let ctx = EvalContext::new(HashMap::new());
-        assert_eq!(
-            eval(&expr, &ctx),
-            Some(DataType::Boolean(false))
-        );
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(false)));
 
         let expr2 = unary(UnaryOp::Not, lit_bool(false));
-        assert_eq!(
-            eval(&expr2, &ctx),
-            Some(DataType::Boolean(true))
-        );
+        assert_eq!(eval(&expr2, &ctx), Some(DataType::Boolean(true)));
     }
 
     #[test]
@@ -420,22 +391,13 @@ mod tests {
     #[test]
     fn test_evaluate_nested_not_lt() {
         // NOT (< ?x 10)
-        let expr = unary(
-            UnaryOp::Not,
-            binary(var("?x"), BinaryOp::Lt, lit_long(10)),
-        );
+        let expr = unary(UnaryOp::Not, binary(var("?x"), BinaryOp::Lt, lit_long(10)));
         let low = DataType::Long(5);
         let high = DataType::Long(15);
         let ctx_low = EvalContext::new(HashMap::from([("?x".to_var(), &low)]));
         let ctx_high = EvalContext::new(HashMap::from([("?x".to_var(), &high)]));
-        assert_eq!(
-            eval(&expr, &ctx_low),
-            Some(DataType::Boolean(false))
-        );
-        assert_eq!(
-            eval(&expr, &ctx_high),
-            Some(DataType::Boolean(true))
-        );
+        assert_eq!(eval(&expr, &ctx_low), Some(DataType::Boolean(false)));
+        assert_eq!(eval(&expr, &ctx_high), Some(DataType::Boolean(true)));
     }
 
     #[test]
@@ -476,10 +438,7 @@ mod tests {
     #[test]
     fn test_expr_variables_nested() {
         // NOT (< ?x 10) — variable inside nested expression
-        let expr = unary(
-            UnaryOp::Not,
-            binary(var("?x"), BinaryOp::Lt, lit_long(10)),
-        );
+        let expr = unary(UnaryOp::Not, binary(var("?x"), BinaryOp::Lt, lit_long(10)));
         assert_eq!(expr_variables(&expr), vec!["?x".to_var()]);
     }
 
@@ -618,9 +577,9 @@ mod tests {
 
     #[test]
     fn test_abs_double() {
-        let expr = unary(UnaryOp::Abs, lit_double(-3.14));
+        let expr = unary(UnaryOp::Abs, lit_double(-3.15));
         let ctx = EvalContext::new(HashMap::new());
-        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(3.14)));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Double(3.15)));
     }
 
     #[test]
@@ -668,19 +627,16 @@ mod tests {
     fn test_str_from_long() {
         let expr = unary(UnaryOp::Str, lit_long(42));
         let ctx = EvalContext::new(HashMap::new());
-        assert_eq!(
-            eval(&expr, &ctx),
-            Some(DataType::String("42".to_string()))
-        );
+        assert_eq!(eval(&expr, &ctx), Some(DataType::String("42".to_string())));
     }
 
     #[test]
     fn test_str_from_double() {
-        let expr = unary(UnaryOp::Str, lit_double(3.14));
+        let expr = unary(UnaryOp::Str, lit_double(3.15));
         let ctx = EvalContext::new(HashMap::new());
         assert_eq!(
             eval(&expr, &ctx),
-            Some(DataType::String("3.14".to_string()))
+            Some(DataType::String("3.15".to_string()))
         );
     }
 

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 
-use crate::query::AggregateFunc;
 use crate::ops::DataType;
+use crate::query::AggregateFunc;
 
 // TODO: loses precision for i64 values > 2^53
 /// Convert a DataType to an f64 for numeric aggregation.
@@ -13,7 +13,10 @@ fn datatype_to_f64(dt: &DataType) -> Result<f64> {
         DataType::Double(n) => Ok(*n),
         DataType::Float(n) => Ok(*n as f64),
         DataType::BigInt(n) => Ok(*n as f64),
-        other => Err(anyhow!("cannot convert {:?} to numeric for aggregation", other)),
+        other => Err(anyhow!(
+            "cannot convert {:?} to numeric for aggregation",
+            other
+        )),
     }
 }
 
@@ -110,7 +113,10 @@ impl Accumulator for SumAccumulator {
                 }
             }
             (_, other) => {
-                return Err(anyhow!("sum: cannot aggregate non-numeric value {:?}", other));
+                return Err(anyhow!(
+                    "sum: cannot aggregate non-numeric value {:?}",
+                    other
+                ));
             }
         }
         Ok(())
