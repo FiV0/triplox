@@ -320,7 +320,10 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into()), (kw!(:age), 30_i64.into())])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])]).await.unwrap();
         node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])]).await.unwrap();
 
         let query = parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").unwrap();
@@ -383,9 +386,18 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into()), (kw!(:age), 30_i64.into())])]).await.unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into()), (kw!(:age), 25_i64.into())])]).await.unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "charlie".into()), (kw!(:age), 35_i64.into())])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "bob".into()),
+            (kw!(:age), 25_i64.into()),
+        ])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "charlie".into()),
+            (kw!(:age), 35_i64.into()),
+        ])]).await.unwrap();
 
         let query = parse_query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).unwrap();
 
@@ -402,9 +414,18 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into()), (kw!(:age), 30_i64.into())])]).await.unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into()), (kw!(:age), 25_i64.into())])]).await.unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "charlie".into()), (kw!(:age), 35_i64.into())])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "bob".into()),
+            (kw!(:age), 25_i64.into()),
+        ])]).await.unwrap();
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "charlie".into()),
+            (kw!(:age), 35_i64.into()),
+        ])]).await.unwrap();
 
         let query = parse_query(r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#).unwrap();
 
@@ -504,7 +525,10 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
 
-        let result = node.execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])]).await.unwrap();
+        let result = node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])]).await.unwrap();
         let tx_key = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("expected commit"),
@@ -807,8 +831,14 @@ mod tests {
 
         // Insert entity 200 and entity 201 with last-names
         node.execute_tx(vec![
-            TxOp::put(vec![(kw!(:db/id), TxValue::Ref(2200_i64.into())), (kw!(:last-name), "Ivannotov".into())]),
-            TxOp::put(vec![(kw!(:db/id), TxValue::Ref(1201_i64.into())), (kw!(:last-name), "Bobnev".into())]),
+            TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(2200_i64.into())),
+                (kw!(:last-name), "Ivannotov".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(1201_i64.into())),
+                (kw!(:last-name), "Bobnev".into()),
+            ]),
         ]).await.unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position

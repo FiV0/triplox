@@ -803,7 +803,10 @@ mod tests {
 
         // Second tx: assert name="bob" for same entity — should auto-retract "alice"
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
-        indexer.transact_tx(tx2, vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(entity_id.into())), (kw!(:name), "bob".into())])]).await?;
+        indexer.transact_tx(tx2, vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(entity_id.into())),
+            (kw!(:name), "bob".into()),
+        ])]).await?;
 
         // Scan EAV for entity — expect: alice ADD, alice RETRACT, bob ADD
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
@@ -861,7 +864,10 @@ mod tests {
 
         // Second tx: assert same name="alice" — datom should be dropped entirely
         let tx2 = TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) };
-        indexer.transact_tx(tx2, vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(entity_id.into())), (kw!(:name), "alice".into())])]).await?;
+        indexer.transact_tx(tx2, vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(entity_id.into())),
+            (kw!(:name), "alice".into()),
+        ])]).await?;
 
         // Count EAV entries for entity, name attr — should be 1 ADD, 0 RETRACTs
         let mut iter = slate.scan_prefix_with_options(&[codec::EAV], &ScanOptions::default()).await?;
