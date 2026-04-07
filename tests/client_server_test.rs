@@ -52,7 +52,10 @@ async fn test_execute_tx_and_query() {
 
     // Insert a document
     let result = client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -79,7 +82,10 @@ async fn test_submit_tx() {
     define_base_schema(&client).await;
 
     let tx_key = client
-        .submit_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "bob".into())])])
+        .submit_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
         .await
         .unwrap();
     assert!(tx_key.tx_id >= 0);
@@ -96,12 +102,18 @@ async fn test_multiple_transactions_and_query() {
 
     // Insert two documents in separate transactions
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
 
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(200_i64.into())), (kw!(:name), "bob".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
         .await
         .unwrap();
 
@@ -128,7 +140,10 @@ async fn test_open_close_multiple_dbs() {
 
     // Insert data
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
 
@@ -156,7 +171,10 @@ async fn test_two_connections() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
     client1
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
 
@@ -179,7 +197,10 @@ async fn test_execute_tx_returns_tx_key() {
     define_base_schema(&client).await;
 
     let result = client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
 
@@ -202,7 +223,10 @@ async fn test_db_as_of() {
 
     // First transaction
     let result1 = client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
     let tx_key1 = match result1 {
@@ -212,7 +236,10 @@ async fn test_db_as_of() {
 
     // Second transaction
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(200_i64.into())), (kw!(:name), "bob".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:name), "bob".into()),
+        ])])
         .await
         .unwrap();
 
@@ -259,7 +286,10 @@ async fn test_dev_server_connections_are_isolated() {
     define_base_schema(&client1).await;
 
     client1
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), (kw!(:name), "alice".into())])])
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:name), "alice".into()),
+        ])])
         .await
         .unwrap();
 
@@ -290,7 +320,8 @@ async fn test_dev_server_connections_are_isolated() {
 
 async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(id.into())),
             (kw!(:db/ident), DataType::Keyword(Keyword::plain(name)).into()),
             (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", vtype)).into()),
             (kw!(:db/cardinality), DataType::Keyword(Keyword::namespaced("db.cardinality", "one")).into()),
@@ -320,10 +351,15 @@ async fn test_query_keyword_value_comparison_via_wire() {
     define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
-    for (id, name, sex) in [(100, "Ivan", "male"), (101, "Petr", "male"),
-                             (102, "Doris", "female"), (103, "Jane", "female")] {
+    for (id, name, sex) in [
+        (100, "Ivan", "male"),
+        (101, "Petr", "male"),
+        (102, "Doris", "female"),
+        (103, "Jane", "female"),
+    ] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
             ])])
@@ -366,7 +402,8 @@ async fn test_aggregates_and_or() {
         (102, "Adam", "Smith", "male", 23),
     ] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:last-name), last.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
@@ -378,21 +415,21 @@ async fn test_aggregates_and_or() {
 
     let db = client.db().await.unwrap();
 
-    // count with OR: Lovelace AND (name=Ada OR sex=male) → 1 (only Ada)
+    // count with OR: Lovelace AND (name=Ada OR sex=male) -> 1 (only Ada)
     let result = db
         .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :male])]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
-    // count with OR: Lovelace AND (name=Ada OR sex=female) → 1
+    // count with OR: Lovelace AND (name=Ada OR sex=female) -> 1
     let result = db
         .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :female])]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
-    // count with top-level OR: Lovelace OR male → 3
+    // count with top-level OR: Lovelace OR male -> 3
     let result = db
         .query_edn("{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}")
         .await
@@ -430,7 +467,8 @@ async fn test_aggregate_set_semantics() {
 
     for (id, name, city) in [(100, "Alice", "NYC"), (101, "Bob", "NYC"), (102, "Carol", "LA")] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:city), city.into()),
             ])])
@@ -440,7 +478,7 @@ async fn test_aggregate_set_semantics() {
 
     let db = client.db().await.unwrap();
 
-    // TODO: do we want Datomic (set → 2) or XTDB (bag → 3) semantics here?
+    // TODO: do we want Datomic (set -> 2) or XTDB (bag -> 3) semantics here?
     let result = db
         .query_edn("{:find [(count ?city)] :where [[?p :city ?city]]}")
         .await
@@ -462,7 +500,8 @@ async fn test_datascript_aggregates() {
     // Insert monsters with heads
     for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:heads), (heads as i64).into()),
             ])])
             .await
@@ -497,7 +536,8 @@ async fn test_aggregate_avg() {
 
     for (id, age) in [(100, 21), (101, 22), (102, 23)] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:age), (age as i64).into()),
             ])])
             .await
@@ -525,7 +565,8 @@ async fn test_aggregate_min_max_strings() {
 
     for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:name), name.into()),
             ])])
             .await
@@ -586,7 +627,8 @@ async fn test_order_and_limit() {
         (104, "Eve", 50),
     ] {
         client
-            .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(id.into())), 
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), TxValue::Ref(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:age), (age as i64).into()),
             ])])
@@ -596,7 +638,7 @@ async fn test_order_and_limit() {
 
     let db = client.db().await.unwrap();
 
-    // ORDER BY age ascending, LIMIT 3 → youngest 3
+    // ORDER BY age ascending, LIMIT 3 -> youngest 3
     let result = db
         .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]] :limit 3}")
         .await
@@ -606,7 +648,7 @@ async fn test_order_and_limit() {
     assert_eq!(result[1], vec![DataType::String("Bob".to_string()), DataType::Long(20)]);
     assert_eq!(result[2], vec![DataType::String("Alice".to_string()), DataType::Long(30)]);
 
-    // ORDER BY age descending, LIMIT 2 → oldest 2
+    // ORDER BY age descending, LIMIT 2 -> oldest 2
     let result = db
         .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :desc]] :limit 2}")
         .await
@@ -644,7 +686,8 @@ async fn test_aggregate_min_incompatible_types() {
 
     // Insert entity with both name (string) and age (long)
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:db/id), TxValue::Ref(100_i64.into())), 
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), TxValue::Ref(100_i64.into())),
             (kw!(:name), "Alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
@@ -653,7 +696,7 @@ async fn test_aggregate_min_incompatible_types() {
 
     let db = client.db().await.unwrap();
 
-    // OR binds ?v to both string and long values → min should error on incomparable types
+    // OR binds ?v to both string and long values -> min should error on incomparable types
     let result = db
         .query_edn("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
         .await;
