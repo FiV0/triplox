@@ -68,10 +68,10 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
         None => {
             // Fresh DB — bootstrap schema (ops have explicit db/id values)
             let tx_ops = bootstrap_schema_tx();
-            let schema = Schema::default();
-            let expanded = tx::expand_tx_ops(&tx_ops, &schema).unwrap();
+            let empty_schema = Schema::default();
+            let expanded = tx::expand_tx_ops(&tx_ops, &empty_schema).unwrap();
             let mut boot_pm = PartitionMap::new();
-            let datoms = tx::resolve_tempids(&expanded, &mut boot_pm, &schema).unwrap();
+            let datoms = tx::resolve_tempids(&expanded, &mut boot_pm).unwrap();
             let mut schema = Schema::default();
             let update = schema.validate_and_prepare(&datoms).unwrap();
             // TODO: We should bootstrap the schema properly and do the validation in the same manner as the indexer

@@ -531,7 +531,7 @@ mod tests {
     fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
-        tx::resolve_tempids(&expanded, &mut pm, schema).unwrap()
+        tx::resolve_tempids(&expanded, &mut pm).unwrap()
     }
 
     fn bootstrapped_schema() -> Schema {
@@ -539,7 +539,7 @@ mod tests {
         let tx_ops = bootstrap_schema_tx();
         let expanded = tx::expand_tx_ops(&tx_ops, &schema).unwrap();
         let mut pm = PartitionMap::new();
-        let datoms = tx::resolve_tempids(&expanded, &mut pm, &schema).unwrap();
+        let datoms = tx::resolve_tempids(&expanded, &mut pm).unwrap();
         let update = schema.validate_and_prepare(&datoms).unwrap();
         schema.apply_schema_update(update);
         schema

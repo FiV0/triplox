@@ -213,7 +213,7 @@ impl Indexer {
         let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
 
         // 3. Resolve tempids + build tx entity datoms
-        let mut datoms = tx::resolve_tempids(&expanded, &mut pending_pm, &self.metadata.schema)?;
+        let mut datoms = tx::resolve_tempids(&expanded, &mut pending_pm)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 4. Validate + prepare schema update (single pass, pre-commit, fallible)

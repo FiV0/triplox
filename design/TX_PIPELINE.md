@@ -23,7 +23,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - EntityRef::LookupRef → error (not yet supported)
    - Put without :db/id key → generates internal tempid (__auto_N)
                                 ↓
-3. Resolve tempids              tx::resolve_tempids(datoms, &mut pending_pm, &schema)
+3. Resolve tempids              tx::resolve_tempids(datoms, &mut pending_pm)
    - Pre-scan: tempids with :db/ident → DB_PARTITION, others → USER_PARTITION
    - Allocate entids from PartitionMap (same tempid string → same entid)
    - Map DatomWithTempids → Datom (IdOrTempId→i64, ValueWithTempIds→DataType)

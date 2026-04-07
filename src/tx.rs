@@ -128,7 +128,6 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
 pub fn resolve_tempids(
     datoms: &[DatomWithTempids],
     partition_map: &mut PartitionMap,
-    _schema: &Schema,
 ) -> Result<Vec<Datom>> {
     // Pre-scan: determine partition for each tempid
     let mut tempid_partitions: HashMap<&str, u32> = HashMap::new();
@@ -363,7 +362,7 @@ mod tests {
                 op: DatomOp::Assert,
             },
         ];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         assert_eq!(resolved[0].entity, resolved[1].entity);
     }
 
@@ -384,7 +383,7 @@ mod tests {
                 op: DatomOp::Assert,
             },
         ];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         assert_ne!(resolved[0].entity, resolved[1].entity);
     }
 
@@ -405,7 +404,7 @@ mod tests {
                 op: DatomOp::Assert,
             },
         ];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         let alice_eid = resolved[0].entity;
         assert_eq!(resolved[1].value, DataType::Long(alice_eid));
     }
@@ -419,7 +418,7 @@ mod tests {
             value: ValueWithTempIds::Data(DataType::Keyword(kw!(:my/attr))),
             op: DatomOp::Assert,
         }];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         assert_eq!(extract_partition(resolved[0].entity), DB_PARTITION);
     }
 
@@ -432,7 +431,7 @@ mod tests {
             value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
             op: DatomOp::Assert,
         }];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         assert_eq!(extract_partition(resolved[0].entity), USER_PARTITION);
     }
 
@@ -445,7 +444,7 @@ mod tests {
             value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
             op: DatomOp::Assert,
         }];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         assert_eq!(resolved[0].entity, 42);
         assert!(pm.is_empty(), "no allocation for explicit IDs");
     }
@@ -467,7 +466,7 @@ mod tests {
                 op: DatomOp::Assert,
             },
         ];
-        let resolved = resolve_tempids(&datoms, &mut pm, &empty_schema()).unwrap();
+        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
         let mut counters: Vec<i64> = resolved.iter().map(|d| extract_counter(d.entity)).collect();
         counters.sort();
         assert_eq!(counters, vec![5, 6]);

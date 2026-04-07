@@ -217,8 +217,6 @@ impl TxOp {
     pub fn put(attrs: Vec<(Keyword, TxValue)>) -> Self {
         TxOp::Put(attrs.into_iter().collect())
     }
-
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
