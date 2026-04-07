@@ -252,7 +252,7 @@ mod tests {
 
         // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity_id: EntityRef::Id(2000),
             attribute: kw!(:email),
             value: "test@example.com".into(),
         }];
@@ -864,14 +864,14 @@ mod tests {
 
         // Insert entity 2000 with tags="rust"
         node.execute_tx(vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity_id: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "rust".into(),
         }]).await.unwrap();
 
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity_id: EntityRef::Id(2000),
             attribute: kw!(:tags),
             value: "database".into(),
         }]).await.unwrap();

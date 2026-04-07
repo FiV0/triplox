@@ -113,23 +113,23 @@ public final class TxOpCodec {
             }
             case TxOp.Add add -> {
                 out.writeByte(TXOP_ADD);
-                encodeEntityRef(out, add.entity());
+                encodeEntityRef(out, add.entityId());
                 DataTypeCodec.encodeString(out, add.attribute().toString());
                 encodeTxValue(out, add.value());
             }
             case TxOp.Retract ret -> {
                 out.writeByte(TXOP_RETRACT);
-                encodeEntityRef(out, ret.entity());
+                encodeEntityRef(out, ret.entityId());
                 DataTypeCodec.encodeString(out, ret.attribute().toString());
                 encodeTxValue(out, ret.value());
             }
             case TxOp.Delete del -> {
                 out.writeByte(TXOP_DELETE);
-                encodeEntityRef(out, del.entity());
+                encodeEntityRef(out, del.entityId());
             }
             case TxOp.Erase erase -> {
                 out.writeByte(TXOP_ERASE);
-                encodeEntityRef(out, erase.entity());
+                encodeEntityRef(out, erase.entityId());
             }
         }
     }

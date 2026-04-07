@@ -206,8 +206,8 @@ impl_from_for_enum!(
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
     Put(BTreeMap<Keyword, TxValue>),
-    Add { entity: EntityRef, attribute: Keyword, value: TxValue },
-    Retract { entity: EntityRef, attribute: Keyword, value: TxValue },
+    Add { entity_id: EntityRef, attribute: Keyword, value: TxValue },
+    Retract { entity_id: EntityRef, attribute: Keyword, value: TxValue },
     Delete(EntityRef),
     Erase(EntityRef),
 }
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_op_add_bincode() {
         let op = TxOp::Add {
-            entity: EntityRef::Id(1),
+            entity_id: EntityRef::Id(1),
             attribute: kw!(:string),
             value: TxValue::Data(DataType::String("string_value".to_string())),
         };
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_op_retract_bincode() {
         let op = TxOp::Retract {
-            entity: EntityRef::Id(1),
+            entity_id: EntityRef::Id(1),
             attribute: kw!(:string),
             value: TxValue::Data(DataType::String("string_value".to_string())),
         };

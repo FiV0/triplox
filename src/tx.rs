@@ -97,17 +97,17 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     });
                 }
             }
-            TxOp::Add { entity, attribute, value } => {
+            TxOp::Add { entity_id, attribute, value } => {
                 datoms.push(DatomWithTempids {
-                    entity: resolve_entity_ref(entity, schema)?,
+                    entity: resolve_entity_ref(entity_id, schema)?,
                     attribute: attribute.clone(),
                     value: resolve_tx_value(value, schema)?,
                     op: DatomOp::Assert,
                 });
             }
-            TxOp::Retract { entity, attribute, value } => {
+            TxOp::Retract { entity_id, attribute, value } => {
                 datoms.push(DatomWithTempids {
-                    entity: resolve_entity_ref(entity, schema)?,
+                    entity: resolve_entity_ref(entity_id, schema)?,
                     attribute: attribute.clone(),
                     value: resolve_tx_value(value, schema)?,
                     op: DatomOp::Retract,
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn test_expand_add() {
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(200),
+            entity_id: EntityRef::Id(200),
             attribute: kw!(:name),
             value: TxValue::Data(DataType::String("bob".to_string())),
         }];
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn test_expand_retract() {
         let ops = vec![TxOp::Retract {
-            entity: EntityRef::Id(200),
+            entity_id: EntityRef::Id(200),
             attribute: kw!(:name),
             value: TxValue::Data(DataType::String("bob".to_string())),
         }];
@@ -263,7 +263,7 @@ mod tests {
     fn test_expand_ident_resolution() {
         let schema = schema_with_ident(kw!(:person/name), 42);
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Ident(kw!(:person/name)),
+            entity_id: EntityRef::Ident(kw!(:person/name)),
             attribute: kw!(:some/attr),
             value: TxValue::Data(DataType::Long(1)),
         }];
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn test_expand_unknown_ident_errors() {
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Ident(kw!(:unknown/ident)),
+            entity_id: EntityRef::Ident(kw!(:unknown/ident)),
             attribute: kw!(:some/attr),
             value: TxValue::Data(DataType::Long(1)),
         }];
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_expand_lookup_ref_errors() {
         let ops = vec![TxOp::Add {
-            entity: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())),
+            entity_id: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())),
             attribute: kw!(:name),
             value: TxValue::Data(DataType::Long(1)),
         }];
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn test_expand_value_ref_tempid() {
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
+            entity_id: EntityRef::Id(100),
             attribute: kw!(:follows),
             value: TxValue::Ref(EntityRef::TempId("friend".to_string())),
         }];
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_expand_value_ref_id() {
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
+            entity_id: EntityRef::Id(100),
             attribute: kw!(:follows),
             value: TxValue::Ref(EntityRef::Id(200)),
         }];
@@ -321,7 +321,7 @@ mod tests {
     fn test_expand_value_ref_ident() {
         let schema = schema_with_ident(kw!(:person/bob), 99);
         let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
+            entity_id: EntityRef::Id(100),
             attribute: kw!(:follows),
             value: TxValue::Ref(EntityRef::Ident(kw!(:person/bob))),
         }];
