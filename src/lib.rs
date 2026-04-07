@@ -31,4 +31,4 @@ pub mod node;
 pub mod protocol;
 pub mod server;
 
-pub use node::{Database, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};
+pub use node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};

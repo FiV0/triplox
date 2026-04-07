@@ -11,7 +11,7 @@ use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use crate::node::{Database, QueryNode, SubmitNode, TransactionResult, TxKey};
+use crate::node::{Database, IntoQuery, QueryNode, SubmitNode, TransactionResult, TxKey};
 use crate::ops::{DataType, TxOp};
 use crate::protocol::*;
 use crate::query::QueryResult;
@@ -280,7 +280,8 @@ impl ClientDb {
 }
 
 impl Database for ClientDb {
-    async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error> {
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let query = query.into_query()?;
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,

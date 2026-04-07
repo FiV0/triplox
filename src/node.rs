@@ -24,9 +24,32 @@ pub trait SubmitNode {
     async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error>;
 }
 
+pub trait IntoQuery {
+    fn into_query(self) -> Result<ParsedQuery, Error>;
+}
+
+impl IntoQuery for ParsedQuery {
+    fn into_query(self) -> Result<ParsedQuery, Error> {
+        Ok(self)
+    }
+}
+
+impl IntoQuery for &ParsedQuery {
+    fn into_query(self) -> Result<ParsedQuery, Error> {
+        Ok(self.clone())
+    }
+}
+
+impl IntoQuery for &str {
+    fn into_query(self) -> Result<ParsedQuery, Error> {
+        self.parse()
+            .map_err(|e| anyhow::anyhow!("EDN parse error: {}", e))
+    }
+}
+
 #[allow(async_fn_in_trait)]
 pub trait Database {
-    async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error>;
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -90,13 +113,13 @@ impl DB {
 impl Database for DB {
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    async fn query(&self, query: &ParsedQuery) -> Result<QueryResult, Error> {
-        validate_query(query)?;
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let query = query.into_query()?;
+        validate_query(&query)?;
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
         let ident_map = self.ident_map.clone();
-        let query = query.clone();
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
@@ -270,7 +293,6 @@ mod tests {
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
-    use edn::query::ParsedQuery;
     use edn::Keyword;
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
@@ -300,10 +322,10 @@ mod tests {
 
         // Verify data is queryable after async indexing
         let db = node.db().await.unwrap();
-        let query = "[:find ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
+        let result = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
             .unwrap();
-        let result = db.query(&query).await.unwrap();
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
 
@@ -368,12 +390,11 @@ mod tests {
             .await
             .unwrap();
 
-        let query = "[:find ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("alice".to_string())]));
@@ -392,10 +413,11 @@ mod tests {
             .await
             .unwrap();
 
-        let query: ParsedQuery = r#"[:find ?e :where [?e :name "alice"]]"#.parse().unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query(r#"[:find ?e :where [?e :name "alice"]]"#)
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
     }
@@ -415,12 +437,11 @@ mod tests {
             .await
             .unwrap();
 
-        let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(
@@ -450,12 +471,12 @@ mod tests {
         .unwrap();
 
         // ?friend is in value position of :follows and entity position of :name
-        let query = "[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :follows ?friend] [?friend :name ?name]]")
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("bob".to_string())]);
@@ -476,13 +497,13 @@ mod tests {
             .await
             .unwrap();
 
-        let query: ParsedQuery =
-            r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#
-                .parse()
-                .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query(
+                r#"[:find ?name :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name]]"#,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("alice".to_string())]));
@@ -514,10 +535,8 @@ mod tests {
         .await
         .unwrap();
 
-        let query: ParsedQuery = r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#.parse().unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![
@@ -554,10 +573,8 @@ mod tests {
         .await
         .unwrap();
 
-        let query: ParsedQuery = r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#.parse().unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query(r#"[:find ?name :where (or (and [?e :name "alice"] [?e :age 30]) (and [?e :name "charlie"] [?e :age 35])) [?e :name ?name]]"#).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("alice".to_string())]));
@@ -590,19 +607,21 @@ mod tests {
             _ => panic!("Tx2 should commit"),
         };
 
-        let query = "[:find ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         // db_as_of(tx_key1): should only see alice
         let db1 = node.db_as_of(tx_key1).await.unwrap();
-        let result1 = db1.query(&query).await.unwrap();
+        let result1 = db1
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(result1.len(), 1);
         assert_eq!(result1[0], vec![DataType::String("alice".to_string())]);
 
         // db_as_of(tx_key2): should see both
         let db2 = node.db_as_of(tx_key2).await.unwrap();
-        let result2 = db2.query(&query).await.unwrap();
+        let result2 = db2
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::String("bob".to_string())]));
@@ -612,10 +631,6 @@ mod tests {
     async fn test_local_node_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
-
-        let query = "[:find ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         // First node: insert data
         let node = Node::local_node(&root_path).await.unwrap();
@@ -628,7 +643,10 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
-        let results = db.query(&query).await.unwrap();
+        let results = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
@@ -638,7 +656,10 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
 
         let db = node.db().await.unwrap();
-        let results = db.query(&query).await.unwrap();
+        let results = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
@@ -649,7 +670,10 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
-        let results = db.query(&query).await.unwrap();
+        let results = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![DataType::String("alice".to_string())]));
         assert!(results.contains(&vec![DataType::String("bob".to_string())]));
@@ -724,10 +748,10 @@ mod tests {
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
-        let query = "[:find ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
+        let results = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
             .unwrap();
-        let results = db.query(&query).await.unwrap();
         assert_eq!(
             results.len(),
             1,
@@ -738,7 +762,10 @@ mod tests {
 
         // latest db should see both
         let db_latest = node.db().await.unwrap();
-        let results_latest = db_latest.query(&query).await.unwrap();
+        let results_latest = db_latest
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
         assert_eq!(results_latest.len(), 2);
 
         node.close().await;
@@ -774,12 +801,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(< ?age 50)]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(< ?age 50)]]")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
         assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
@@ -791,12 +817,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(>= ?age 50)]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(>= ?age 50)]]")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("Dominic".to_string())]);
     }
@@ -807,12 +832,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name :where [?e :name ?name] [?e :age ?age] [(= 30 ?age)]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(= 30 ?age)]]")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("Ivan".to_string())]);
     }
@@ -823,12 +847,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query: ParsedQuery = r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#
-            .parse()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query(r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
     }
 
@@ -838,10 +861,8 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name1 ?name2 :where [?e1 :name ?name1] [?e1 :age ?age1] [?e2 :name ?name2] [?e2 :age ?age2] [(<= ?age1 ?age2)]]".parse::<ParsedQuery>().unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query("[:find ?name1 ?name2 :where [?e1 :name ?name1] [?e1 :age ?age1] [?e2 :name ?name2] [?e2 :age ?age2] [(<= ?age1 ?age2)]]").await.unwrap();
         // 3 people → 6 pairs where age1 <= age2:
         // (Ivan,Ivan), (Ivan,Bob), (Ivan,Dominic), (Bob,Bob), (Bob,Dominic), (Dominic,Dominic)
         assert_eq!(result.len(), 6);
@@ -853,13 +874,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query: ParsedQuery =
-            "[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half]]"
-                .parse()
-                .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half]]")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 3);
         assert!(result.contains(&vec![
             DataType::String("Ivan".to_string()),
@@ -881,10 +900,8 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]".parse::<ParsedQuery>().unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]").await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(
             result[0],
@@ -898,13 +915,8 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query: ParsedQuery =
-            "[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]"
-                .parse()
-                .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query("[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]").await.unwrap();
         assert_eq!(result.len(), 3);
         assert!(result.contains(&vec![
             DataType::String("Ivan".to_string()),
@@ -926,12 +938,11 @@ mod tests {
         define_test_schema(&node).await;
         insert_three_people(&node).await;
 
-        let query = "[:find ?name :where [?e :name ?name] (not [?e :age 50])]"
-            .parse::<ParsedQuery>()
-            .unwrap();
-
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] (not [?e :age 50])]")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
         assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
@@ -973,12 +984,12 @@ mod tests {
         }
 
         // find ?name where [?e :sex :male] [?e :name ?name]
-        let query = "[:find ?name :where [?e :sex :male] [?e :name ?name]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :sex :male] [?e :name ?name]]")
+            .await
+            .unwrap();
 
         // Only Ivan and Petr are male
         assert_eq!(result.len(), 2);
@@ -1023,12 +1034,12 @@ mod tests {
         }
 
         // Same clause order as Clojure: name first (binds ?e), sex filter second
-        let query = "[:find ?name :where [?e :name ?name] [?e :sex :male]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :sex :male]]")
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
@@ -1072,12 +1083,12 @@ mod tests {
         .unwrap();
 
         // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
-        let query = "[:find ?ln :where [2200 :last-name ?ln]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?ln :where [2200 :last-name ?ln]]")
+            .await
+            .unwrap();
 
         // Should return exactly one row: "Ivannotov"
         assert_eq!(result.len(), 1);
@@ -1159,12 +1170,12 @@ mod tests {
         .unwrap();
 
         // Query: find all tags for entity 2000
-        let query = "[:find ?tag :where [2000 :tags ?tag]]"
-            .parse::<ParsedQuery>()
-            .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db
+            .query("[:find ?tag :where [2000 :tags ?tag]]")
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 2, "Expected both tags, got {:?}", result);
         assert!(result.contains(&vec![DataType::String("rust".to_string())]));
@@ -1202,10 +1213,10 @@ mod tests {
 
         // Query all (entity, name) pairs and verify contiguous counter values
         let db = node.db().await.unwrap();
-        let query = "[:find ?e ?name :where [?e :name ?name]]"
-            .parse::<ParsedQuery>()
+        let result = db
+            .query("[:find ?e ?name :where [?e :name ?name]]")
+            .await
             .unwrap();
-        let result = db.query(&query).await.unwrap();
 
         assert_eq!(result.len(), 2);
         let mut eids: Vec<i64> = result
@@ -1244,8 +1255,7 @@ mod tests {
             "[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]",
             tx_key.tx_id
         );
-        let query = query_str.parse::<ParsedQuery>().unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query(query_str.as_str()).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
@@ -1269,8 +1279,7 @@ mod tests {
         // Query for the aborted tx entity
         let db = node.db().await.unwrap();
         let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
-        let query = query_str.parse::<ParsedQuery>().unwrap();
-        let result = db.query(&query).await.unwrap();
+        let result = db.query(query_str.as_str()).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
