@@ -21,7 +21,7 @@ impl FileLog {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(path)?;
 
         Ok(FileLog {
