@@ -1,6 +1,6 @@
 # Triplox Transaction Pipeline
 
-Version 0.2
+Version 0.1
 
 ## Overview
 
@@ -21,7 +21,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - EntityRef::Id → IdOrTempId::Id (passthrough)
    - EntityRef::TempId → IdOrTempId::TempId (deferred)
    - EntityRef::LookupRef → error (not yet supported)
-   - Put with id: None → generates internal tempid (__auto_N)
+   - Put without :db/id key → generates internal tempid (__auto_N)
                                 ↓
 3. Resolve tempids              tx::resolve_tempids(datoms, &mut pending_pm, &schema)
    - Pre-scan: tempids with :db/ident → DB_PARTITION, others → USER_PARTITION
