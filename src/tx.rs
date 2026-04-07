@@ -38,7 +38,9 @@ fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<IdOrTempId> {
         EntityRef::Id(id) => Ok(IdOrTempId::Id(*id)),
         EntityRef::TempId(s) => Ok(IdOrTempId::TempId(s.clone())),
         EntityRef::Ident(kw) => {
-            let eid = schema.ident_map.get(kw)
+            let eid = schema
+                .ident_map
+                .get(kw)
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident: {}", kw))?;
             Ok(IdOrTempId::Id(*eid))
         }
@@ -53,7 +55,9 @@ fn resolve_tx_value(val: &TxValue, schema: &Schema) -> Result<ValueWithTempIds> 
         TxValue::Ref(EntityRef::Id(id)) => Ok(ValueWithTempIds::Data(DataType::Long(*id))),
         TxValue::Ref(EntityRef::TempId(s)) => Ok(ValueWithTempIds::TempRef(s.clone())),
         TxValue::Ref(EntityRef::Ident(kw)) => {
-            let eid = schema.ident_map.get(kw)
+            let eid = schema
+                .ident_map
+                .get(kw)
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident in value position: {}", kw))?;
             Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
         }
@@ -79,9 +83,12 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
             TxOp::Put(map) => {
                 let entity = match map.get(&db_id_kw) {
                     Some(TxValue::Ref(eref)) => resolve_entity_ref(eref, schema)?,
-                    Some(other) => return Err(anyhow::anyhow!(
-                        "Put :db/id must be TxValue::Ref(EntityRef), got {:?}", other
-                    )),
+                    Some(other) => {
+                        return Err(anyhow::anyhow!(
+                            "Put :db/id must be TxValue::Ref(EntityRef), got {:?}",
+                            other
+                        ))
+                    }
                     None => {
                         let tempid = format!("__auto_{}", auto_counter);
                         auto_counter += 1;
@@ -97,7 +104,11 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     });
                 }
             }
-            TxOp::Add { entity, attribute, value } => {
+            TxOp::Add {
+                entity,
+                attribute,
+                value,
+            } => {
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
@@ -105,7 +116,11 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     op: DatomOp::Assert,
                 });
             }
-            TxOp::Retract { entity, attribute, value } => {
+            TxOp::Retract {
+                entity,
+                attribute,
+                value,
+            } => {
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
@@ -245,7 +260,10 @@ mod tests {
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].entity, IdOrTempId::Id(200));
         assert_eq!(datoms[0].attribute, kw!(:name));
-        assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::String("bob".to_string())));
+        assert_eq!(
+            datoms[0].value,
+            ValueWithTempIds::Data(DataType::String("bob".to_string()))
+        );
         assert_eq!(datoms[0].op, DatomOp::Assert);
     }
 
@@ -305,7 +323,10 @@ mod tests {
             value: TxValue::Ref(EntityRef::TempId("friend".to_string())),
         }];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
-        assert_eq!(datoms[0].value, ValueWithTempIds::TempRef("friend".to_string()));
+        assert_eq!(
+            datoms[0].value,
+            ValueWithTempIds::TempRef("friend".to_string())
+        );
     }
 
     #[test]
@@ -345,7 +366,7 @@ mod tests {
 
     // --- resolve_tempids tests ---
 
-    use crate::partition::{extract_partition, extract_counter};
+    use crate::partition::{extract_counter, extract_partition};
 
     #[test]
     fn test_resolve_same_tempid_same_entid() {

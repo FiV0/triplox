@@ -186,10 +186,14 @@ impl AttributeBuilder {
     /// Validate that all required fields are present for a new attribute.
     pub fn validate_install_attribute(&self) -> Result<()> {
         if self.value_type.is_none() {
-            return Err(anyhow::anyhow!("db/valueType is required for schema attribute"));
+            return Err(anyhow::anyhow!(
+                "db/valueType is required for schema attribute"
+            ));
         }
         if self.multival.is_none() {
-            return Err(anyhow::anyhow!("db/cardinality is required for schema attribute"));
+            return Err(anyhow::anyhow!(
+                "db/cardinality is required for schema attribute"
+            ));
         }
         Ok(())
     }
@@ -256,7 +260,9 @@ impl Schema {
             // Reject modifications to existing schema entities
             if let Some(ident) = self.entid_map.get(&datom.entity) {
                 return Err(anyhow::anyhow!(
-                    "Cannot modify schema entity {} ({})", datom.entity, ident
+                    "Cannot modify schema entity {} ({})",
+                    datom.entity,
+                    ident
                 ));
             }
 
@@ -269,7 +275,9 @@ impl Schema {
                 if !attr.value_type.matches(&datom.value) {
                     return Err(anyhow::anyhow!(
                         "Type mismatch for attribute {}: expected {}, got {:?}",
-                        datom.attribute, attr.value_type, datom.value
+                        datom.attribute,
+                        attr.value_type,
+                        datom.value
                     ));
                 }
             } else if !matches!(
@@ -299,7 +307,8 @@ impl Schema {
                 ("db", "cardinality") => match &datom.value {
                     DataType::Keyword(kw) => {
                         let card = Cardinality::from_keyword(kw)?;
-                        builders.entry(datom.entity).or_default().multival = Some(card == Cardinality::Many);
+                        builders.entry(datom.entity).or_default().multival =
+                            Some(card == Cardinality::Many);
                     }
                     _ => return Err(anyhow::anyhow!("db/cardinality must be a Keyword")),
                 },
@@ -315,7 +324,8 @@ impl Schema {
             // but that's the correct behavior.
             builder.validate_install_attribute().map_err(|e| {
                 // Find the ident for better error messages
-                let ident = ident_updates.iter()
+                let ident = ident_updates
+                    .iter()
                     .find(|(eid, _)| *eid == entity_id)
                     .map(|(_, kw)| kw.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string());
@@ -356,8 +366,19 @@ impl Schema {
 fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
     TxOp::put(vec![
         (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
-        (kw!(:db/valueType), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.type", value_type)))),
-        (kw!(:db/cardinality), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)))),
+        (
+            kw!(:db/valueType),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.type", value_type,
+            ))),
+        ),
+        (
+            kw!(:db/cardinality),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.cardinality",
+                cardinality,
+            ))),
+        ),
     ])
 }
 
@@ -378,8 +399,19 @@ fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp
     TxOp::put(vec![
         (kw!(:db/id), TxValue::Ref(id.into())),
         (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
-        (kw!(:db/valueType), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.type", value_type)))),
-        (kw!(:db/cardinality), TxValue::Data(DataType::Keyword(Keyword::namespaced("db.cardinality", "one")))),
+        (
+            kw!(:db/valueType),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.type", value_type,
+            ))),
+        ),
+        (
+            kw!(:db/cardinality),
+            TxValue::Data(DataType::Keyword(Keyword::namespaced(
+                "db.cardinality",
+                "one",
+            ))),
+        ),
     ])
 }
 
@@ -440,15 +472,20 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let handle = Handle::current();
 
     // Query 1: all entities with db/ident (populates ident_map/entid_map)
-    let ident_query = parse_query(
-        "[:find ?e ?ident :where [?e :db/ident ?ident]]"
-    ).expect("Ident query parse failed");
+    let ident_query = parse_query("[:find ?e ?ident :where [?e :db/ident ?ident]]")
+        .expect("Ident query parse failed");
 
     let snap_clone = snapshot.clone();
     let handle_clone = handle.clone();
     let ident_map_clone = bootstrap_ident_map.clone();
     let ident_results = tokio::task::spawn_blocking(move || {
-        execute_query(&ident_query, snap_clone, handle_clone, &ident_map_clone, i64::MAX)
+        execute_query(
+            &ident_query,
+            snap_clone,
+            handle_clone,
+            &ident_map_clone,
+            i64::MAX,
+        )
     })
     .await
     .expect("Ident query task failed")
@@ -460,7 +497,13 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     ).expect("Attribute query parse failed");
 
     let attr_results = tokio::task::spawn_blocking(move || {
-        execute_query(&attr_query, snapshot, handle, &bootstrap_ident_map, i64::MAX)
+        execute_query(
+            &attr_query,
+            snapshot,
+            handle,
+            &bootstrap_ident_map,
+            i64::MAX,
+        )
     })
     .await
     .expect("Attribute query task failed")
@@ -500,10 +543,13 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             other => panic!("Expected Keyword for cardinality, got {:?}", other),
         };
 
-        schema.attribute_map.insert(entity_id, Attribute {
-            value_type,
-            multival: cardinality == Cardinality::Many,
-        });
+        schema.attribute_map.insert(
+            entity_id,
+            Attribute {
+                value_type,
+                multival: cardinality == Cardinality::Many,
+            },
+        );
     }
 
     schema
@@ -548,7 +594,9 @@ mod tests {
     fn bootstrapped_schema_with_person_name() -> Schema {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         schema.apply_schema_update(update);
         schema
     }
@@ -601,7 +649,9 @@ mod tests {
             (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:name), "Alice".into()),
         ])];
-        assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .is_ok());
     }
 
     #[test]
@@ -611,7 +661,9 @@ mod tests {
             (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:person/age), 30_i64.into()),
         ])];
-        let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
 
@@ -622,7 +674,9 @@ mod tests {
             (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:name), 42_i64.into()),
         ])];
-        let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
 
@@ -630,7 +684,9 @@ mod tests {
     fn test_validate_and_prepare_schema_defining_tx() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .is_ok());
     }
 
     #[test]
@@ -641,10 +697,18 @@ mod tests {
         let ops = [TxOp::put(vec![
             (kw!(:db/id), TxValue::Ref(name_id.into())),
             (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
-            (kw!(:db/valueType), TxValue::Data(DataType::Keyword(kw!(:db.type/long)))),
-            (kw!(:db/cardinality), TxValue::Data(DataType::Keyword(kw!(:db.cardinality/one)))),
+            (
+                kw!(:db/valueType),
+                TxValue::Data(DataType::Keyword(kw!(:db.type/long))),
+            ),
+            (
+                kw!(:db/cardinality),
+                TxValue::Data(DataType::Keyword(kw!(:db.cardinality/one))),
+            ),
         ])];
-        let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
 
@@ -661,14 +725,19 @@ mod tests {
     // TODO(#165): replace with from_entity_id test once db/valueType switches to ref
     #[test]
     fn test_value_type_from_keyword_ref() {
-        assert_eq!(ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(), ValueType::Ref);
+        assert_eq!(
+            ValueType::from_keyword(&kw!(:db.type/ref)).unwrap(),
+            ValueType::Ref
+        );
     }
 
     #[test]
     fn test_schema_ref_attribute_validation() {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:follows), "ref")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         schema.apply_schema_update(update);
 
         let (_eid, attr) = schema.get_attribute(&kw!(:follows)).unwrap();
@@ -679,21 +748,31 @@ mod tests {
             (kw!(:db/id), TxValue::Ref(200_i64.into())),
             (kw!(:follows), 201_i64.into()),
         ])];
-        assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_ok());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .is_ok());
 
         // String value rejected for ref-typed attribute
         let ops = [TxOp::put(vec![
             (kw!(:db/id), TxValue::Ref(300_i64.into())),
             (kw!(:follows), "not-a-ref".into()),
         ])];
-        assert!(schema.validate_and_prepare(&to_datoms(&ops, &schema)).is_err());
+        assert!(schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .is_err());
     }
 
     #[test]
     fn test_validate_and_prepare_parses_cardinality_many() {
         let schema = bootstrapped_schema();
-        let ops = [schema_attribute_with_cardinality(kw!(:tags), "string", "many")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap();
+        let ops = [schema_attribute_with_cardinality(
+            kw!(:tags),
+            "string",
+            "many",
+        )];
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(update.attributes[0].1.multival);
     }
@@ -702,7 +781,9 @@ mod tests {
     fn test_validate_and_prepare_parses_cardinality_one() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap();
+        let update = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(!update.attributes[0].1.multival);
     }
@@ -713,10 +794,15 @@ mod tests {
         let ops = [TxOp::put(vec![
             (kw!(:db/id), TxValue::Ref(100_i64.into())),
             (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
-            (kw!(:db/valueType), TxValue::Data(DataType::Keyword(kw!(:db.type/string)))),
+            (
+                kw!(:db/valueType),
+                TxValue::Data(DataType::Keyword(kw!(:db.type/string))),
+            ),
             // No db/cardinality
         ])];
-        let err = schema.validate_and_prepare(&to_datoms(&ops, &schema)).unwrap_err();
+        let err = schema
+            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));
     }
 }
