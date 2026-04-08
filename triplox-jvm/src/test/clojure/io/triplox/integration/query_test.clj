@@ -375,7 +375,8 @@
                            :where [[?e :last-name ?last-name]
                                    [?e :age ?age]
                                    [(= "Ivanov" ?last-name)]
-                                   [(= 30 ?age)]]})))))))
+                                   [(= 30 ?age)]]}))))))
+
 
   ;; re-find tests commented out — see triplox-bwi
   #_(testing "Several variables with re-find"
