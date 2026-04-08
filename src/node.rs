@@ -431,14 +431,14 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(2000_i64.into())),
+            (kw!(:db/id), DataType::Long(2000)),
             (kw!(:name), "alice".into()),
             (kw!(:follows), 2001_i64.into()),
         ])])
         .await
         .unwrap();
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(2001_i64.into())),
+            (kw!(:db/id), DataType::Long(2001)),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -662,7 +662,7 @@ mod tests {
 
         let result = node
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(100_i64.into())),
+                (kw!(:db/id), DataType::Long(100)),
                 (kw!(:name), "alice".into()),
             ])])
             .await
@@ -1042,11 +1042,11 @@ mod tests {
         // Insert entity 200 and entity 201 with last-names
         node.execute_tx(vec![
             TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(2200_i64.into())),
+                (kw!(:db/id), DataType::Long(2200)),
                 (kw!(:last-name), "Ivannotov".into()),
             ]),
             TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(1201_i64.into())),
+                (kw!(:db/id), DataType::Long(1201)),
                 (kw!(:last-name), "Bobnev".into()),
             ]),
         ])

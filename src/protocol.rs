@@ -104,7 +104,6 @@ pub const ENTITY_REF_TEMPID: u8 = 0x91;
 pub const ENTITY_REF_IDENT: u8 = 0x92;
 pub const ENTITY_REF_LOOKUP: u8 = 0x93;
 
-
 // ---------------------------------------------------------------------------
 // Error Codes
 // ---------------------------------------------------------------------------
@@ -1410,7 +1409,6 @@ mod tests {
             EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".to_string())),
         );
     }
-
 
     // -- Frontend message round-trip tests --
 

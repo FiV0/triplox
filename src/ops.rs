@@ -40,7 +40,6 @@ impl From<&str> for EntityRef {
     }
 }
 
-
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {
@@ -451,5 +450,4 @@ mod tests {
             EntityRef::TempId("temp-1".to_string())
         );
     }
-
 }

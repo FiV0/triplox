@@ -395,6 +395,20 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_value_ref_rejects_invalid_type() {
+        let schema = schema_with_ref_attr(kw!(:follows), 999);
+        let ops = vec![TxOp::Add {
+            entity: EntityRef::Id(100),
+            attribute: kw!(:follows),
+            value: DataType::Boolean(true),
+        }];
+        let result = expand_tx_ops(&ops, &schema);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Invalid value for ref-typed attribute"));
+    }
+
+    #[test]
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_expand_delete_panics() {
         expand_tx_ops(&[TxOp::Delete(EntityRef::Id(100))], &empty_schema()).unwrap();

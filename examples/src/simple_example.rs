@@ -50,12 +50,12 @@ async fn main() -> Result<()> {
     // 2. Insert some data
     let data_ops = vec![
         TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ]),
         TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(101_i64.into())),
+            (kw!(:db/id), DataType::Long(101)),
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ]),

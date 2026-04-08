@@ -53,7 +53,7 @@ async fn test_execute_tx_and_query() {
     // Insert a document
     let result = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -86,7 +86,7 @@ async fn test_submit_tx() {
 
     let tx_key = client
         .submit_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -106,7 +106,7 @@ async fn test_multiple_transactions_and_query() {
     // Insert two documents in separate transactions
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -114,7 +114,7 @@ async fn test_multiple_transactions_and_query() {
 
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -150,7 +150,7 @@ async fn test_open_close_multiple_dbs() {
     // Insert data
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -187,7 +187,7 @@ async fn test_two_connections() {
     define_base_schema(&client1).await;
     client1
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -216,7 +216,7 @@ async fn test_execute_tx_returns_tx_key() {
 
     let result = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -242,7 +242,7 @@ async fn test_db_as_of() {
     // First transaction
     let result1 = client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -255,7 +255,7 @@ async fn test_db_as_of() {
     // Second transaction
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -308,7 +308,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     client1
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
         ])])
         .await
@@ -753,7 +753,7 @@ async fn test_aggregate_min_incompatible_types() {
     // Insert entity with both name (string) and age (long)
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "Alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
