@@ -6,7 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::ops::{DataType, Datom, DatomOp, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
 
@@ -468,7 +468,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 
     let mut ops = Vec::new();
 
-    // Schema attribute entities (those in V1_ATTRIBUTES)
+    // Schema attribute entities
     for (ident, vt_ident, card_ident) in attrs {
         let eid = idents.iter().find(|(kw, _)| kw == ident).unwrap().1;
         ops.push(TxOp::put(vec![
@@ -482,15 +482,16 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         ]));
     }
 
-    // Enum entities (no schema properties, just db/ident)
+    // Enum entities
     for (ident, eid) in idents {
         if attr_idents.contains(&ident) {
             continue;
         }
-        ops.push(TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(*eid)),
-            (kw!(:db/ident), DataType::Keyword(ident.clone())),
-        ]));
+        ops.push(TxOp::Add {
+            entity: EntityRef::Id(*eid),
+            attribute: kw!(:db/ident),
+            value: DataType::Keyword(ident.clone()),
+        });
     }
 
     ops
