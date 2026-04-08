@@ -293,10 +293,12 @@ impl Database for ClientDb {
         .await?;
         conn.writer.flush().await?;
 
+        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
         let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
 
         match msg {
             BackendMessage::RowDescription { .. } => {
+                // Collect DataRows until ReadyForQuery
                 let mut rows = Vec::new();
                 loop {
                     let msg =
