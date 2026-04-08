@@ -34,6 +34,7 @@ impl IntoQuery for ParsedQuery {
     }
 }
 
+// TODO: consider using Cow or a lifetime on the trait to avoid cloning
 impl IntoQuery for &ParsedQuery {
     fn into_query(self) -> Result<ParsedQuery, Error> {
         Ok(self.clone())
@@ -44,6 +45,12 @@ impl IntoQuery for &str {
     fn into_query(self) -> Result<ParsedQuery, Error> {
         self.parse()
             .map_err(|e| anyhow::anyhow!("EDN parse error: {}", e))
+    }
+}
+
+impl IntoQuery for String {
+    fn into_query(self) -> Result<ParsedQuery, Error> {
+        self.as_str().into_query()
     }
 }
 
@@ -1255,7 +1262,7 @@ mod tests {
             "[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]",
             tx_key.tx_id
         );
-        let result = db.query(query_str.as_str()).await.unwrap();
+        let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
@@ -1279,7 +1286,7 @@ mod tests {
         // Query for the aborted tx entity
         let db = node.db().await.unwrap();
         let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
-        let result = db.query(query_str.as_str()).await.unwrap();
+        let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
