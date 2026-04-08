@@ -16,9 +16,8 @@ use triplox::ops::{DataType, TxOp};
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
-fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
+fn schema_attribute(name: &str, value_type: &str) -> TxOp {
     TxOp::put(vec![
-        (kw!(:db/id), DataType::Long(id)),
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
         (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
         (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
@@ -32,10 +31,10 @@ async fn main() -> Result<()> {
     let node = ClientNode::connect(addr).await?;
     println!("Connected.");
 
-    // 1. Define schema attributes (entity IDs 50-51, above bootstrap range 1-31)
+    // 1. Define schema attributes
     let schema_ops = vec![
-        schema_attribute(50, "name", "string"),
-        schema_attribute(51, "age", "long"),
+        schema_attribute("name", "string"),
+        schema_attribute("age", "long"),
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {
@@ -50,12 +49,10 @@ async fn main() -> Result<()> {
     // 2. Insert some data
     let data_ops = vec![
         TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ]),
         TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(101)),
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ]),

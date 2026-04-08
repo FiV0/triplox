@@ -457,23 +457,22 @@ mod tests {
         );
     }
 
-    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(2000)),
-            (kw!(:name), "alice".into()),
-            (kw!(:follows), 2001_i64.into()),
-        ])])
-        .await
-        .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(2001)),
-            (kw!(:name), "bob".into()),
-        ])])
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".to_string())),
+                (kw!(:name), "alice".into()),
+                (kw!(:follows), DataType::String("bob".to_string())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".to_string())),
+                (kw!(:name), "bob".into()),
+            ]),
+        ])
         .await
         .unwrap();
 
@@ -702,10 +701,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(100)),
-                (kw!(:name), "alice".into()),
-            ])])
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
             .await
             .unwrap();
         let tx_key = match result {
@@ -774,6 +770,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results_latest.len(), 2);
+
+        node.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_upsert_with_resolved_entity_id() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Insert entity with auto-assigned ID
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Discover the auto-assigned entity ID
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?e :where [?e :name "alice"]]"#)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        let entity_id = match &result[0][0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID, got {:?}", other),
+        };
+
+        // Upsert: update age using the discovered entity ID
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), DataType::Long(entity_id)),
+            (kw!(:age), 31_i64.into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Verify: alice should now have age 31 (cardinality-one retracted 30)
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            vec![DataType::String("alice".to_string()), DataType::Long(31)]
+        );
 
         node.close().await;
     }
@@ -1075,25 +1119,29 @@ mod tests {
         .await
         .unwrap();
 
-        // Insert entity 200 and entity 201 with last-names
+        // Insert two entities with last-names
         node.execute_tx(vec![
-            TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(2200)),
-                (kw!(:last-name), "Ivannotov".into()),
-            ]),
-            TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(1201)),
-                (kw!(:last-name), "Bobnev".into()),
-            ]),
+            TxOp::put(vec![(kw!(:last-name), "Ivannotov".into())]),
+            TxOp::put(vec![(kw!(:last-name), "Bobnev".into())]),
         ])
         .await
         .unwrap();
 
-        // find ?ln where [200 :last-name ?ln] — literal entity ID in entity position
-
+        // Discover the entity ID for "Ivannotov"
         let db = node.db().await.unwrap();
+        let ids = db
+            .query(r#"[:find ?e :where [?e :last-name "Ivannotov"]]"#)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), 1);
+        let entity_id = match &ids[0][0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID, got {:?}", other),
+        };
+
+        // Use literal entity ID in entity position of a query
         let result = db
-            .query("[:find ?ln :where [2200 :last-name ?ln]]")
+            .query(format!("[:find ?ln :where [{entity_id} :last-name ?ln]]"))
             .await
             .unwrap();
 
