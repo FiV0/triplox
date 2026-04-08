@@ -288,6 +288,7 @@
                                 [?e :last-name "Ivanov"]]})
           ivan-id (ffirst ivan-ids)
           ;; Exclude entities whose :name matches Ivan's :name
+          ;; TODO replace with :in
           query-str (format "{:find [?e] :where [[?e :name ?name] (not [%d :name ?name])]}" ivan-id)]
       (is (= 0 (count (q query-str)))))
 
@@ -296,6 +297,7 @@
                              :where [[?e :last-name "Ivannotov"]]})
           ivannotov-id (ffirst ivannotov-ids)
           ;; Only entities whose last-name differs from Ivannotov's
+          ;; TODO replace with :in
           query-str (format "{:find [?e] :where [[?e :last-name ?last-name] (not [%d :last-name ?last-name])]}" ivannotov-id)]
       (is (= 2 (count (q query-str))))))
 
@@ -364,6 +366,7 @@
     (let [ivan-id (ffirst (q '{:find [?e]
                                :where [[?e :name "Ivan"]]}))]
       (is (= #{["Ivan"]}
+             ;; TODO replace with :in
              (q (format "{:find [?name] :where [[?e :name ?name] [(= %d ?e)]]}" ivan-id)))))
 
     (testing "Filtered by value"
