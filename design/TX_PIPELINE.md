@@ -50,8 +50,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 ### User-facing (src/ops.rs)
 
 - `EntityRef` — how to identify an entity: `Id(i64)`, `TempId(String)`, `Ident(Keyword)`, `LookupRef(Keyword, DataType)`
-- `TxValue` — a value: `Data(DataType)` or `Ref(EntityRef)`
-- `TxOp` — transaction operation: `Put`, `Add`, `Retract`, `Delete`, `Erase`
+- `TxOp` — transaction operation: `Put`, `Add`, `Retract`, `Delete`, `Erase`. Values are `DataType`; ref-typed attribute values are resolved server-side based on the schema.
 
 ### Intermediate (src/tx.rs)
 

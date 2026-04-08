@@ -40,55 +40,6 @@ impl From<&str> for EntityRef {
     }
 }
 
-/// A transaction value: either concrete data or an entity reference.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub enum TxValue {
-    Data(DataType),
-    Ref(EntityRef),
-}
-
-impl From<DataType> for TxValue {
-    fn from(v: DataType) -> Self {
-        TxValue::Data(v)
-    }
-}
-
-impl From<EntityRef> for TxValue {
-    fn from(v: EntityRef) -> Self {
-        TxValue::Ref(v)
-    }
-}
-
-impl From<i64> for TxValue {
-    fn from(v: i64) -> Self {
-        TxValue::Data(DataType::Long(v))
-    }
-}
-
-impl From<String> for TxValue {
-    fn from(v: String) -> Self {
-        TxValue::Data(DataType::String(v))
-    }
-}
-
-impl From<&str> for TxValue {
-    fn from(v: &str) -> Self {
-        TxValue::Data(DataType::String(v.to_string()))
-    }
-}
-
-impl From<bool> for TxValue {
-    fn from(v: bool) -> Self {
-        TxValue::Data(DataType::Boolean(v))
-    }
-}
-
-impl From<f64> for TxValue {
-    fn from(v: f64) -> Self {
-        TxValue::Data(DataType::Double(v))
-    }
-}
-
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {
@@ -216,6 +167,7 @@ impl_from_for_enum!(
     (Double, f64),
     (Float, f32),
     (Instant, DateTime<Utc>),
+    (Keyword, Keyword),
     (Long, i64),
     (String, String),
     (Uuid, Uuid),
@@ -224,18 +176,24 @@ impl_from_for_enum!(
     (Map, BTreeMap<String, DataType>)
 );
 
+impl From<&str> for DataType {
+    fn from(v: &str) -> Self {
+        DataType::String(v.to_string())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum TxOp {
-    Put(BTreeMap<Keyword, TxValue>),
+    Put(BTreeMap<Keyword, DataType>),
     Add {
         entity: EntityRef,
         attribute: Keyword,
-        value: TxValue,
+        value: DataType,
     },
     Retract {
         entity: EntityRef,
         attribute: Keyword,
-        value: TxValue,
+        value: DataType,
     },
     Delete(EntityRef),
     Erase(EntityRef),
@@ -243,7 +201,7 @@ pub enum TxOp {
 
 impl TxOp {
     /// Build a Put without explicit entity ID (auto-allocated).
-    pub fn put(attrs: Vec<(Keyword, TxValue)>) -> Self {
+    pub fn put(attrs: Vec<(Keyword, DataType)>) -> Self {
         TxOp::Put(attrs.into_iter().collect())
     }
 }
@@ -432,11 +390,8 @@ mod tests {
     #[test]
     fn test_op_put_bincode() {
         let op = TxOp::put(vec![
-            (
-                kw!(:string),
-                TxValue::Data("string_value".to_string().into()),
-            ),
-            (kw!(:int), TxValue::Data(1i64.into())),
+            (kw!(:string), "string_value".into()),
+            (kw!(:int), 1i64.into()),
         ]);
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -448,7 +403,7 @@ mod tests {
         let op = TxOp::Add {
             entity: EntityRef::Id(1),
             attribute: kw!(:string),
-            value: TxValue::Data(DataType::String("string_value".to_string())),
+            value: DataType::String("string_value".to_string()),
         };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -460,7 +415,7 @@ mod tests {
         let op = TxOp::Retract {
             entity: EntityRef::Id(1),
             attribute: kw!(:string),
-            value: TxValue::Data(DataType::String("string_value".to_string())),
+            value: DataType::String("string_value".to_string()),
         };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
@@ -493,20 +448,6 @@ mod tests {
         assert_eq!(
             EntityRef::from("temp-1"),
             EntityRef::TempId("temp-1".to_string())
-        );
-    }
-
-    #[test]
-    fn test_tx_value_from_impls() {
-        assert_eq!(TxValue::from(42_i64), TxValue::Data(DataType::Long(42)));
-        assert_eq!(
-            TxValue::from("hello"),
-            TxValue::Data(DataType::String("hello".to_string()))
-        );
-        assert_eq!(TxValue::from(true), TxValue::Data(DataType::Boolean(true)));
-        assert_eq!(
-            TxValue::from(3.14_f64),
-            TxValue::Data(DataType::Double(3.14))
         );
     }
 }

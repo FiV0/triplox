@@ -266,7 +266,7 @@ mod tests {
     use crate::indexer::{
         ae_key_to_parts, aev_key_to_parts, av_key_to_parts, ave_key_to_parts, eav_key_to_parts,
     };
-    use crate::ops::{DataType, EntityRef, TxOp, TxValue};
+    use crate::ops::{DataType, EntityRef, TxOp};
     use crate::parse::parse_query;
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
@@ -431,14 +431,14 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(2000_i64.into())),
+            (kw!(:db/id), DataType::Long(2000)),
             (kw!(:name), "alice".into()),
             (kw!(:follows), 2001_i64.into()),
         ])])
         .await
         .unwrap();
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(2001_i64.into())),
+            (kw!(:db/id), DataType::Long(2001)),
             (kw!(:name), "bob".into()),
         ])])
         .await
@@ -662,7 +662,7 @@ mod tests {
 
         let result = node
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(100_i64.into())),
+                (kw!(:db/id), DataType::Long(100)),
                 (kw!(:name), "alice".into()),
             ])])
             .await
@@ -745,7 +745,7 @@ mod tests {
 
     /// Insert 3 people: Ivan (age=30), Bob (age=40), Dominic (age=50) with auto-assigned IDs.
     async fn insert_three_people(node: &impl SubmitNode) {
-        let people = vec![("Ivan", 30), ("Bob", 40), ("Dominic", 50)];
+        let people: Vec<(&str, i64)> = vec![("Ivan", 30), ("Bob", 40), ("Dominic", 50)];
         for (name, age) in people {
             node.execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
@@ -1042,11 +1042,11 @@ mod tests {
         // Insert entity 200 and entity 201 with last-names
         node.execute_tx(vec![
             TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(2200_i64.into())),
+                (kw!(:db/id), DataType::Long(2200)),
                 (kw!(:last-name), "Ivannotov".into()),
             ]),
             TxOp::put(vec![
-                (kw!(:db/id), TxValue::Ref(1201_i64.into())),
+                (kw!(:db/id), DataType::Long(1201)),
                 (kw!(:last-name), "Bobnev".into()),
             ]),
         ])

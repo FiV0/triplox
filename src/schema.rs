@@ -6,7 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp, TxValue};
+use crate::ops::{DataType, Datom, DatomOp, TxOp};
 use crate::parse::parse_query;
 use crate::query::execute_query;
 
@@ -365,19 +365,14 @@ impl Schema {
 /// Build a Put for a schema attribute without explicit db/id.
 fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
     TxOp::put(vec![
-        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+        (kw!(:db/ident), DataType::Keyword(ident)),
         (
             kw!(:db/valueType),
-            TxValue::Data(DataType::Keyword(Keyword::namespaced(
-                "db.type", value_type,
-            ))),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
         ),
         (
             kw!(:db/cardinality),
-            TxValue::Data(DataType::Keyword(Keyword::namespaced(
-                "db.cardinality",
-                cardinality,
-            ))),
+            DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
         ),
     ])
 }
@@ -389,28 +384,23 @@ fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
 /// Build a bootstrap Put with an explicit entity ID.
 fn bootstrap_put(id: i64, ident: Keyword) -> TxOp {
     TxOp::put(vec![
-        (kw!(:db/id), TxValue::Ref(id.into())),
-        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+        (kw!(:db/id), DataType::Long(id)),
+        (kw!(:db/ident), DataType::Keyword(ident)),
     ])
 }
 
 /// Build a bootstrap Put for a schema attribute with an explicit entity ID.
 fn bootstrap_schema_attribute(id: i64, ident: Keyword, value_type: &str) -> TxOp {
     TxOp::put(vec![
-        (kw!(:db/id), TxValue::Ref(id.into())),
-        (kw!(:db/ident), TxValue::Data(DataType::Keyword(ident))),
+        (kw!(:db/id), DataType::Long(id)),
+        (kw!(:db/ident), DataType::Keyword(ident)),
         (
             kw!(:db/valueType),
-            TxValue::Data(DataType::Keyword(Keyword::namespaced(
-                "db.type", value_type,
-            ))),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
         ),
         (
             kw!(:db/cardinality),
-            TxValue::Data(DataType::Keyword(Keyword::namespaced(
-                "db.cardinality",
-                "one",
-            ))),
+            DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
         ),
     ])
 }
@@ -646,7 +636,7 @@ mod tests {
     fn test_validate_and_prepare_valid() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:name), "Alice".into()),
         ])];
         assert!(schema
@@ -658,7 +648,7 @@ mod tests {
     fn test_validate_and_prepare_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:person/age), 30_i64.into()),
         ])];
         let err = schema
@@ -671,7 +661,7 @@ mod tests {
     fn test_validate_and_prepare_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:name), 42_i64.into()),
         ])];
         let err = schema
@@ -695,15 +685,15 @@ mod tests {
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
 
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(name_id.into())),
-            (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
+            (kw!(:db/id), DataType::Long(name_id)),
+            (kw!(:db/ident), DataType::Keyword(kw!(:name))),
             (
                 kw!(:db/valueType),
-                TxValue::Data(DataType::Keyword(kw!(:db.type/long))),
+                DataType::Keyword(kw!(:db.type/long)),
             ),
             (
                 kw!(:db/cardinality),
-                TxValue::Data(DataType::Keyword(kw!(:db.cardinality/one))),
+                DataType::Keyword(kw!(:db.cardinality/one)),
             ),
         ])];
         let err = schema
@@ -745,21 +735,22 @@ mod tests {
 
         // Long value accepted for ref-typed attribute
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(200_i64.into())),
+            (kw!(:db/id), DataType::Long(200)),
             (kw!(:follows), 201_i64.into()),
         ])];
         assert!(schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
 
-        // String value rejected for ref-typed attribute
+        // String in ref position is interpreted as tempid (resolved to Long)
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(300_i64.into())),
-            (kw!(:follows), "not-a-ref".into()),
+            (kw!(:db/id), DataType::Long(300)),
+            (kw!(:follows), DataType::String("some-tempid".to_string())),
         ])];
-        assert!(schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .is_err());
+        let datoms = to_datoms(&ops, &schema);
+        // After expand_tx_ops, the string becomes a TempRef which resolves to a Long,
+        // so validate_and_prepare should accept it.
+        assert!(schema.validate_and_prepare(&datoms).is_ok());
     }
 
     #[test]
@@ -792,11 +783,11 @@ mod tests {
     fn test_validate_and_prepare_missing_cardinality_errors() {
         let schema = bootstrapped_schema();
         let ops = [TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
-            (kw!(:db/ident), TxValue::Data(DataType::Keyword(kw!(:name)))),
+            (kw!(:db/id), DataType::Long(100)),
+            (kw!(:db/ident), DataType::Keyword(kw!(:name))),
             (
                 kw!(:db/valueType),
-                TxValue::Data(DataType::Keyword(kw!(:db.type/string))),
+                DataType::Keyword(kw!(:db.type/string)),
             ),
             // No db/cardinality
         ])];

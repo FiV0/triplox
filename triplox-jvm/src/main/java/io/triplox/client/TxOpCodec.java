@@ -76,32 +76,6 @@ public final class TxOpCodec {
     }
 
     // ---------------------------------------------------------------
-    // TxValue
-    // ---------------------------------------------------------------
-
-    static void encodeTxValue(DataOutputStream out, TxValue tv) throws IOException {
-        switch (tv) {
-            case TxValue.Data data -> {
-                out.writeByte(TXVALUE_DATA);
-                DataTypeCodec.encode(out, data.value());
-            }
-            case TxValue.Ref ref -> {
-                out.writeByte(TXVALUE_REF);
-                encodeEntityRef(out, ref.ref());
-            }
-        }
-    }
-
-    static TxValue decodeTxValue(DataInputStream in) throws IOException {
-        byte tag = in.readByte();
-        return switch (tag) {
-            case TXVALUE_DATA -> new TxValue.Data(DataTypeCodec.decode(in));
-            case TXVALUE_REF -> new TxValue.Ref(decodeEntityRef(in));
-            default -> throw new IOException("Unknown TxValue tag: 0x" + Integer.toHexString(tag & 0xFF));
-        };
-    }
-
-    // ---------------------------------------------------------------
     // TxOp
     // ---------------------------------------------------------------
 
@@ -109,19 +83,19 @@ public final class TxOpCodec {
         switch (op) {
             case TxOp.Put put -> {
                 out.writeByte(TXOP_PUT);
-                encodeKeywordTxValueMap(out, put.document());
+                encodeKeywordObjectMap(out, put.document());
             }
             case TxOp.Add add -> {
                 out.writeByte(TXOP_ADD);
                 encodeEntityRef(out, add.entity());
                 DataTypeCodec.encodeString(out, add.attribute().toString());
-                encodeTxValue(out, add.value());
+                DataTypeCodec.encode(out, add.value());
             }
             case TxOp.Retract ret -> {
                 out.writeByte(TXOP_RETRACT);
                 encodeEntityRef(out, ret.entity());
                 DataTypeCodec.encodeString(out, ret.attribute().toString());
-                encodeTxValue(out, ret.value());
+                DataTypeCodec.encode(out, ret.value());
             }
             case TxOp.Delete del -> {
                 out.writeByte(TXOP_DELETE);
@@ -138,19 +112,19 @@ public final class TxOpCodec {
         byte tag = in.readByte();
         return switch (tag) {
             case TXOP_PUT -> {
-                var map = decodeKeywordTxValueMap(in);
+                var map = decodeKeywordObjectMap(in);
                 yield new TxOp.Put(map);
             }
             case TXOP_ADD -> {
                 var entity = decodeEntityRef(in);
                 var attribute = DataTypeCodec.parseKeyword(DataTypeCodec.decodeString(in));
-                var value = decodeTxValue(in);
+                var value = DataTypeCodec.decode(in);
                 yield new TxOp.Add(entity, attribute, value);
             }
             case TXOP_RETRACT -> {
                 var entity = decodeEntityRef(in);
                 var attribute = DataTypeCodec.parseKeyword(DataTypeCodec.decodeString(in));
-                var value = decodeTxValue(in);
+                var value = DataTypeCodec.decode(in);
                 yield new TxOp.Retract(entity, attribute, value);
             }
             case TXOP_DELETE -> new TxOp.Delete(decodeEntityRef(in));
@@ -160,24 +134,24 @@ public final class TxOpCodec {
     }
 
     // ---------------------------------------------------------------
-    // Keyword → TxValue map
+    // Keyword → Object map
     // ---------------------------------------------------------------
 
-    private static void encodeKeywordTxValueMap(DataOutputStream out, Map<Keyword, TxValue> map) throws IOException {
+    private static void encodeKeywordObjectMap(DataOutputStream out, Map<Keyword, Object> map) throws IOException {
         var sorted = new TreeMap<>(map);
         out.writeInt(sorted.size());
         for (var entry : sorted.entrySet()) {
             DataTypeCodec.encodeString(out, entry.getKey().toString());
-            encodeTxValue(out, entry.getValue());
+            DataTypeCodec.encode(out, entry.getValue());
         }
     }
 
-    private static Map<Keyword, TxValue> decodeKeywordTxValueMap(DataInputStream in) throws IOException {
+    private static Map<Keyword, Object> decodeKeywordObjectMap(DataInputStream in) throws IOException {
         int count = in.readInt();
-        var map = new TreeMap<Keyword, TxValue>();
+        var map = new TreeMap<Keyword, Object>();
         for (int i = 0; i < count; i++) {
             var key = DataTypeCodec.parseKeyword(DataTypeCodec.decodeString(in));
-            var value = decodeTxValue(in);
+            var value = DataTypeCodec.decode(in);
             map.put(key, value);
         }
         return map;

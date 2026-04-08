@@ -12,16 +12,16 @@ use edn::kw;
 use edn::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{QueryNode, SubmitNode, TransactionResult};
-use triplox::ops::{DataType, TxOp, TxValue};
+use triplox::ops::{DataType, TxOp};
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
 fn schema_attribute(id: i64, name: &str, value_type: &str) -> TxOp {
     TxOp::put(vec![
-        (kw!(:db/id), TxValue::Ref(id.into())),
-        (kw!(:db/ident), DataType::Keyword(Keyword::plain(name)).into()),
-        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type)).into()),
-        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one)).into()),
+        (kw!(:db/id), DataType::Long(id)),
+        (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
+        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
+        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
     ])
 }
 
@@ -50,12 +50,12 @@ async fn main() -> Result<()> {
     // 2. Insert some data
     let data_ops = vec![
         TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(100_i64.into())),
+            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ]),
         TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(101_i64.into())),
+            (kw!(:db/id), DataType::Long(101)),
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ]),

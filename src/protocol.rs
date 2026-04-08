@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use std::str::FromStr;
 
-use crate::ops::{DataType, EntityRef, TxOp, TxValue};
+use crate::ops::{DataType, EntityRef, TxOp};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,10 +103,6 @@ pub const ENTITY_REF_ID: u8 = 0x90;
 pub const ENTITY_REF_TEMPID: u8 = 0x91;
 pub const ENTITY_REF_IDENT: u8 = 0x92;
 pub const ENTITY_REF_LOOKUP: u8 = 0x93;
-
-// TxValue tag bytes
-pub const TXVALUE_DATA: u8 = 0x94;
-pub const TXVALUE_REF: u8 = 0x95;
 
 // ---------------------------------------------------------------------------
 // Error Codes
@@ -421,7 +417,7 @@ fn encode_data_type_map(buf: &mut Vec<u8>, map: &BTreeMap<String, DataType>) {
 }
 
 // ---------------------------------------------------------------------------
-// Wire Encoding: EntityRef / TxValue / TxOp
+// Wire Encoding: EntityRef / TxOp
 // ---------------------------------------------------------------------------
 
 fn encode_entity_ref(buf: &mut Vec<u8>, er: &EntityRef) {
@@ -446,24 +442,11 @@ fn encode_entity_ref(buf: &mut Vec<u8>, er: &EntityRef) {
     }
 }
 
-fn encode_tx_value(buf: &mut Vec<u8>, tv: &TxValue) {
-    match tv {
-        TxValue::Data(dt) => {
-            encode_u8(buf, TXVALUE_DATA);
-            encode_data_type(buf, dt);
-        }
-        TxValue::Ref(er) => {
-            encode_u8(buf, TXVALUE_REF);
-            encode_entity_ref(buf, er);
-        }
-    }
-}
-
-fn encode_keyword_tx_value_map(buf: &mut Vec<u8>, map: &BTreeMap<Keyword, TxValue>) {
+fn encode_keyword_datatype_map(buf: &mut Vec<u8>, map: &BTreeMap<Keyword, DataType>) {
     encode_u32(buf, map.len() as u32);
     for (k, v) in map {
         encode_string(buf, &k.to_string());
-        encode_tx_value(buf, v);
+        encode_data_type(buf, v);
     }
 }
 
@@ -471,7 +454,7 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
     match op {
         TxOp::Put(map) => {
             encode_u8(buf, TXOP_PUT);
-            encode_keyword_tx_value_map(buf, map);
+            encode_keyword_datatype_map(buf, map);
         }
         TxOp::Add {
             entity,
@@ -481,7 +464,7 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_ADD);
             encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
-            encode_tx_value(buf, value);
+            encode_data_type(buf, value);
         }
         TxOp::Retract {
             entity,
@@ -491,7 +474,7 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_RETRACT);
             encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
-            encode_tx_value(buf, value);
+            encode_data_type(buf, value);
         }
         TxOp::Delete(er) => {
             encode_u8(buf, TXOP_DELETE);
@@ -715,7 +698,7 @@ fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType
 }
 
 // ---------------------------------------------------------------------------
-// Wire Decoding: EntityRef / TxValue / TxOp
+// Wire Decoding: EntityRef / TxOp
 // ---------------------------------------------------------------------------
 
 fn decode_entity_ref(cursor: &mut Cursor) -> Result<EntityRef> {
@@ -737,20 +720,11 @@ fn decode_entity_ref(cursor: &mut Cursor) -> Result<EntityRef> {
     }
 }
 
-fn decode_tx_value(cursor: &mut Cursor) -> Result<TxValue> {
-    let tag = cursor.read_u8()?;
-    match tag {
-        TXVALUE_DATA => Ok(TxValue::Data(decode_data_type(cursor)?)),
-        TXVALUE_REF => Ok(TxValue::Ref(decode_entity_ref(cursor)?)),
-        _ => bail!("Unknown TxValue tag: 0x{:02x}", tag),
-    }
-}
-
-fn decode_keyword_tx_value_map(cursor: &mut Cursor) -> Result<BTreeMap<Keyword, TxValue>> {
+fn decode_keyword_datatype_map(cursor: &mut Cursor) -> Result<BTreeMap<Keyword, DataType>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
         bail!(
-            "Keyword-TxValue map count {} exceeds remaining bytes {}",
+            "Keyword-DataType map count {} exceeds remaining bytes {}",
             count,
             cursor.remaining()
         );
@@ -758,8 +732,8 @@ fn decode_keyword_tx_value_map(cursor: &mut Cursor) -> Result<BTreeMap<Keyword, 
     let mut map = BTreeMap::new();
     for _ in 0..count {
         let kw = Keyword::from_str(&cursor.read_string()?)?;
-        let tv = decode_tx_value(cursor)?;
-        map.insert(kw, tv);
+        let val = decode_data_type(cursor)?;
+        map.insert(kw, val);
     }
     Ok(map)
 }
@@ -768,13 +742,13 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
     let tag = cursor.read_u8()?;
     match tag {
         TXOP_PUT => {
-            let map = decode_keyword_tx_value_map(cursor)?;
+            let map = decode_keyword_datatype_map(cursor)?;
             Ok(TxOp::Put(map))
         }
         TXOP_ADD => {
             let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
-            let value = decode_tx_value(cursor)?;
+            let value = decode_data_type(cursor)?;
             Ok(TxOp::Add {
                 entity,
                 attribute,
@@ -784,7 +758,7 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
         TXOP_RETRACT => {
             let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
-            let value = decode_tx_value(cursor)?;
+            let value = decode_data_type(cursor)?;
             Ok(TxOp::Retract {
                 entity,
                 attribute,
@@ -1179,7 +1153,7 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{EntityRef, TxValue};
+    use crate::ops::EntityRef;
     use edn::kw;
     use std::collections::BTreeMap;
 
@@ -1344,11 +1318,8 @@ mod tests {
     #[test]
     fn test_tx_op_put() {
         let op = TxOp::put(vec![
-            (
-                kw!(:name),
-                TxValue::Data(DataType::String("alice".to_string())),
-            ),
-            (kw!(:age), TxValue::Data(DataType::Long(30))),
+            (kw!(:name), DataType::String("alice".to_string())),
+            (kw!(:age), DataType::Long(30)),
         ]);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1356,11 +1327,8 @@ mod tests {
     #[test]
     fn test_tx_op_put_with_id() {
         let op = TxOp::put(vec![
-            (kw!(:db/id), TxValue::Ref(EntityRef::Id(1))),
-            (
-                kw!(:name),
-                TxValue::Data(DataType::String("alice".to_string())),
-            ),
+            (kw!(:db/id), DataType::Long(1)),
+            (kw!(:name), DataType::String("alice".to_string())),
         ]);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1368,14 +1336,8 @@ mod tests {
     #[test]
     fn test_tx_op_put_with_tempid() {
         let op = TxOp::put(vec![
-            (
-                kw!(:db/id),
-                TxValue::Ref(EntityRef::TempId("temp-1".to_string())),
-            ),
-            (
-                kw!(:name),
-                TxValue::Data(DataType::String("bob".to_string())),
-            ),
+            (kw!(:db/id), DataType::String("temp-1".to_string())),
+            (kw!(:name), DataType::String("bob".to_string())),
         ]);
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1385,7 +1347,7 @@ mod tests {
         let op = TxOp::Add {
             entity: EntityRef::Id(42),
             attribute: kw!(:email),
-            value: TxValue::Data(DataType::String("test@example.com".to_string())),
+            value: DataType::String("test@example.com".to_string()),
         };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1395,7 +1357,7 @@ mod tests {
         let op = TxOp::Add {
             entity: EntityRef::Id(42),
             attribute: kw!(:friend),
-            value: TxValue::Ref(EntityRef::TempId("temp-2".to_string())),
+            value: DataType::String("temp-2".to_string()),
         };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1405,7 +1367,7 @@ mod tests {
         let op = TxOp::Retract {
             entity: EntityRef::Id(42),
             attribute: kw!(:email),
-            value: TxValue::Data(DataType::String("old@example.com".to_string())),
+            value: DataType::String("old@example.com".to_string()),
         };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
@@ -1446,20 +1408,6 @@ mod tests {
             )),
             EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".to_string())),
         );
-    }
-
-    #[test]
-    fn test_tx_value_roundtrip() {
-        fn roundtrip_tv(tv: &TxValue) -> TxValue {
-            let mut buf = Vec::new();
-            encode_tx_value(&mut buf, tv);
-            let mut cursor = Cursor::new(&buf);
-            decode_tx_value(&mut cursor).unwrap()
-        }
-        let data = TxValue::Data(DataType::Long(42));
-        assert_eq!(roundtrip_tv(&data), data);
-        let refv = TxValue::Ref(EntityRef::TempId("t-1".to_string()));
-        assert_eq!(roundtrip_tv(&refv), refv);
     }
 
     // -- Frontend message round-trip tests --
@@ -1512,7 +1460,7 @@ mod tests {
             ops: vec![
                 TxOp::put(vec![(
                     kw!(:name),
-                    TxValue::Data(DataType::String("alice".to_string())),
+                    DataType::String("alice".to_string()),
                 )]),
                 TxOp::Delete(EntityRef::Id(99)),
             ],
