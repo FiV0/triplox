@@ -14,7 +14,6 @@ pub mod logging;
 mod memory_log;
 pub(crate) mod metadata;
 pub mod ops;
-mod parse;
 pub mod partition;
 mod query;
 #[cfg(any(test, feature = "test-helpers"))]
@@ -32,4 +31,4 @@ pub mod node;
 pub mod protocol;
 pub mod server;
 
-pub use node::{Database, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};
+pub use node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};

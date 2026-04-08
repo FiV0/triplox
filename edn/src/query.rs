@@ -1511,6 +1511,14 @@ impl std::fmt::Display for Limit {
     }
 }
 
+impl std::str::FromStr for ParsedQuery {
+    type Err = peg::error::ParseError<peg::str::LineCol>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        crate::parse::parse_query(s)
+    }
+}
+
 impl std::fmt::Display for ParsedQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{{:find [{}]", self.find_spec)?;

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
-use triplox::node::{Node, QueryNode, SubmitNode};
+use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
@@ -63,7 +63,7 @@ async fn test_execute_tx_and_query() {
     // Open a DB and query
     let db = client.db().await.unwrap();
     let result = db
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
@@ -122,7 +122,7 @@ async fn test_multiple_transactions_and_query() {
 
     let db = client.db().await.unwrap();
     let result = db
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
@@ -162,11 +162,11 @@ async fn test_open_close_multiple_dbs() {
 
     // Both should return same data
     let r1 = db1
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
         .await
         .unwrap();
     let r2 = db2
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
         .await
         .unwrap();
     assert_eq!(r1.len(), 1);
@@ -197,7 +197,7 @@ async fn test_two_connections() {
     let client2 = ClientNode::connect(&addr).await.unwrap();
     let db = client2.db().await.unwrap();
     let result = db
-        .query_edn("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
@@ -264,7 +264,7 @@ async fn test_db_as_of() {
     // Open DB pinned to tx_key after first tx — should only see alice
     let db = client.db_as_of(tx_key1).await.unwrap();
     let result = db
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
@@ -316,7 +316,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     let db1 = client1.db().await.unwrap();
     let result1 = db1
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
     assert_eq!(result1.len(), 1, "client1 should see its own data");
@@ -327,7 +327,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     let db2 = client2.db().await.unwrap();
     let result2 = db2
-        .query_edn("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
     assert_eq!(result2.len(), 0, "client2 should not see client1's data");
@@ -372,7 +372,7 @@ async fn define_heads_schema(client: &ClientNode) {
 }
 
 /// Mirror of Clojure test-query-using-keywords, exercised through the full
-/// client-server wire protocol via query_edn.
+/// client-server wire protocol.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_query_keyword_value_comparison_via_wire() {
     let (addr, token) = start_test_server().await;
@@ -401,7 +401,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
 
     // Same clause order as Clojure: name first (binds ?e), sex filter second
     let result = db
-        .query_edn("{:find [?name] :where [[?e :name ?name] [?e :sex :male]]}")
+        .query("{:find [?name] :where [[?e :name ?name] [?e :sex :male]]}")
         .await
         .unwrap();
 
@@ -452,32 +452,28 @@ async fn test_aggregates_and_or() {
 
     // count with OR: Lovelace AND (name=Ada OR sex=male) -> 1 (only Ada)
     let result = db
-        .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :male])]}")
+        .query(r#"{:find [(count ?p)] :where [[?p :last-name "Lovelace"] (or [?p :name "Ada"] [?p :sex :male])]}"#)
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
     // count with OR: Lovelace AND (name=Ada OR sex=female) -> 1
     let result = db
-        .query_edn("{:find [(count ?p)] :where [[?p :last-name \"Lovelace\"] (or [?p :name \"Ada\"] [?p :sex :female])]}")
+        .query(r#"{:find [(count ?p)] :where [[?p :last-name "Lovelace"] (or [?p :name "Ada"] [?p :sex :female])]}"#)
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(1)]]);
 
     // count with top-level OR: Lovelace OR male -> 3
     let result = db
-        .query_edn(
-            "{:find [(count ?p)] :where [(or [?p :last-name \"Lovelace\"] [?p :sex :male])]}",
-        )
+        .query(r#"{:find [(count ?p)] :where [(or [?p :last-name "Lovelace"] [?p :sex :male])]}"#)
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
 
     // Grouped: gender, count, sum
     let result = db
-        .query_edn(
-            "{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}",
-        )
+        .query("{:find [?gender (count ?p) (sum ?age)] :where [[?p :sex ?gender] [?p :age ?age]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 2, "expected 2 groups, got {:?}", result);
@@ -523,7 +519,7 @@ async fn test_aggregate_set_semantics() {
 
     // TODO: do we want Datomic (set -> 2) or XTDB (bag -> 3) semantics here?
     let result = db
-        .query_edn("{:find [(count ?city)] :where [[?p :city ?city]]}")
+        .query("{:find [(count ?city)] :where [[?p :city ?city]]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
@@ -555,7 +551,7 @@ async fn test_datascript_aggregates() {
 
     // All aggregate functions at once
     let result = db
-        .query_edn("{:find [(sum ?heads) (min ?heads) (max ?heads) (count ?heads) (count-distinct ?heads)] :where [[?monster :heads ?heads]]}")
+        .query("{:find [(sum ?heads) (min ?heads) (max ?heads) (count ?heads) (count-distinct ?heads)] :where [[?monster :heads ?heads]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 1, "expected single row, got {:?}", result);
@@ -590,7 +586,7 @@ async fn test_aggregate_avg() {
     let db = client.db().await.unwrap();
 
     let result = db
-        .query_edn("{:find [(avg ?age)] :where [[?e :age ?age]]}")
+        .query("{:find [(avg ?age)] :where [[?e :age ?age]]}")
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Double(22.0)]]);
@@ -619,7 +615,7 @@ async fn test_aggregate_min_max_strings() {
     let db = client.db().await.unwrap();
 
     let result = db
-        .query_edn("{:find [(min ?name) (max ?name)] :where [[?e :name ?name]]}")
+        .query("{:find [(min ?name) (max ?name)] :where [[?e :name ?name]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
@@ -641,7 +637,7 @@ async fn test_aggregate_empty_result() {
     let db = client.db().await.unwrap();
 
     let result = db
-        .query_edn("{:find [(count ?e)] :where [[?e :name \"nobody\"]]}")
+        .query(r#"{:find [(count ?e)] :where [[?e :name "nobody"]]}"#)
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(0)]]);
@@ -683,7 +679,7 @@ async fn test_order_and_limit() {
 
     // ORDER BY age ascending, LIMIT 3 -> youngest 3
     let result = db
-        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]] :limit 3}")
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]] :limit 3}")
         .await
         .unwrap();
     assert_eq!(result.len(), 3);
@@ -702,7 +698,7 @@ async fn test_order_and_limit() {
 
     // ORDER BY age descending, LIMIT 2 -> oldest 2
     let result = db
-        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :desc]] :limit 2}")
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :desc]] :limit 2}")
         .await
         .unwrap();
     assert_eq!(result.len(), 2);
@@ -717,16 +713,14 @@ async fn test_order_and_limit() {
 
     // LIMIT only (no order) — should return exactly 2 rows
     let result = db
-        .query_edn("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :limit 2}")
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :limit 2}")
         .await
         .unwrap();
     assert_eq!(result.len(), 2);
 
     // ORDER BY only (no limit) — all 5 rows, sorted
     let result = db
-        .query_edn(
-            "{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}",
-        )
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]] :order [[?age :asc]]}")
         .await
         .unwrap();
     assert_eq!(result.len(), 5);
@@ -764,7 +758,7 @@ async fn test_aggregate_min_incompatible_types() {
 
     // OR binds ?v to both string and long values -> min should error on incomparable types
     let result = db
-        .query_edn("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
+        .query("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
         .await;
     assert!(result.is_err(), "min over incompatible types should error");
 
