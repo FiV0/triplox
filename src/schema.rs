@@ -482,7 +482,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
         ]));
     }
 
-    // Ident-only entities (enum entities not in V1_ATTRIBUTES)
+    // Ident-only entities (those without schema properties in V1_ATTRIBUTES)
     for (ident, eid) in idents {
         if attr_idents.contains(&ident) {
             continue;
