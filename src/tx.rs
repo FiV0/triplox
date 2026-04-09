@@ -78,10 +78,9 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
         match val {
             DataType::Long(id) => Ok(ValueWithTempIds::Data(DataType::Long(*id))),
             DataType::Keyword(kw) => {
-                let eid = schema
-                    .ident_map
-                    .get(kw)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown ident in ref value position: {}", kw))?;
+                let eid = schema.ident_map.get(kw).ok_or_else(|| {
+                    anyhow::anyhow!("Unknown ident in ref value position: {}", kw)
+                })?;
                 Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
             }
             DataType::String(s) => Ok(ValueWithTempIds::TempRef(s.clone())),

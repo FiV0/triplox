@@ -40,6 +40,12 @@ impl From<&str> for EntityRef {
     }
 }
 
+impl From<String> for EntityRef {
+    fn from(v: String) -> Self {
+        EntityRef::TempId(v)
+    }
+}
+
 // TODO maybe use also clock::Instant here
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataType {

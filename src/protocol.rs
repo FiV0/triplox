@@ -1458,10 +1458,7 @@ mod tests {
     async fn test_execute_roundtrip() {
         let msg = FrontendMessage::Execute {
             ops: vec![
-                TxOp::put(vec![(
-                    kw!(:name),
-                    DataType::String("alice".to_string()),
-                )]),
+                TxOp::put(vec![(kw!(:name), DataType::String("alice".to_string()))]),
                 TxOp::Delete(EntityRef::Id(99)),
             ],
             await_indexing: true,

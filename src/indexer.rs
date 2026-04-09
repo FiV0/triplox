@@ -1030,7 +1030,6 @@ mod tests {
         Ok(())
     }
 
-    // TODO(triplox-qj0): replace explicit entity IDs with query-based verification
     #[tokio::test]
     async fn test_same_value_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
@@ -1104,23 +1103,44 @@ mod tests {
         Ok(())
     }
 
-    // TODO(triplox-qj0): replace explicit entity IDs with query-based verification
+    /// Find the first user-partition entity ID by scanning the EAV index.
+    async fn find_first_user_entity(slate: &Arc<slatedb::Db>) -> Result<i64, Error> {
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base {
+                    return Ok(id);
+                }
+            }
+        }
+        panic!("No user-partition entity found in EAV index");
+    }
+
     #[tokio::test]
     async fn test_cardinality_many_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // First tx: assert tags="rust" for entity 2000
+        // First tx: assert tags="rust" for a new entity (auto-assigned ID)
         let tx1 = TxKey {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops1 = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
-            attribute: kw!(:tags),
-            value: "rust".into(),
-        }];
+        let tx_ops1 = vec![TxOp::put(vec![(kw!(:tags), "rust".into())])];
         indexer.transact_tx(tx1, tx_ops1).await?;
+
+        // Discover auto-assigned entity ID
+        let entity_id = find_first_user_entity(&slate).await?;
+        let tags_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:tags))
+            .unwrap()
+            .0;
 
         // Second tx: assert tags="database" for same entity — should NOT retract "rust"
         let tx2 = TxKey {
@@ -1128,27 +1148,21 @@ mod tests {
             system_time: st_from_unix_epoch(200),
         };
         let tx_ops2 = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity: EntityRef::Id(entity_id),
             attribute: kw!(:tags),
             value: "database".into(),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
-        // Scan EAV for entity 2000, tags attr (entity_id 1000) — expect 2 ADDs, 0 RETRACTs
-        let tags_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:tags))
-            .unwrap()
-            .0;
+        // Scan EAV for entity, tags attr — expect 2 ADDs, 0 RETRACTs
         let mut iter = slate
             .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
             .await?;
         let mut add_count = 0;
         let mut retract_count = 0;
         while let Some(kv) = iter.next().await? {
-            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(2000) || attribute != tags_id {
+            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != tags_id {
                 continue;
             }
             match op {
@@ -1169,23 +1183,27 @@ mod tests {
     // NOTE: Currently cardinality-many has bag semantics (duplicate values are stored).
     // Datomic uses set semantics where asserting the same value twice is a no-op.
     // We may want to switch to set semantics in the future.
-    // TODO(triplox-qj0): replace explicit entity IDs with query-based verification
     #[tokio::test]
     async fn test_cardinality_many_same_value() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
-        // First tx: assert tags="rust" for entity 2000
+        // First tx: assert tags="rust" for a new entity (auto-assigned ID)
         let tx1 = TxKey {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops1 = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
-            attribute: kw!(:tags),
-            value: "rust".into(),
-        }];
+        let tx_ops1 = vec![TxOp::put(vec![(kw!(:tags), "rust".into())])];
         indexer.transact_tx(tx1, tx_ops1).await?;
+
+        // Discover auto-assigned entity ID
+        let entity_id = find_first_user_entity(&slate).await?;
+        let tags_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:tags))
+            .unwrap()
+            .0;
 
         // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
         let tx2 = TxKey {
@@ -1193,26 +1211,20 @@ mod tests {
             system_time: st_from_unix_epoch(200),
         };
         let tx_ops2 = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity: EntityRef::Id(entity_id),
             attribute: kw!(:tags),
             value: "rust".into(),
         }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
-        // Scan EAV for entity 2000, tags attr — expect 2 ADDs (both written)
-        let tags_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:tags))
-            .unwrap()
-            .0;
+        // Scan EAV for entity, tags attr — expect 2 ADDs (both written)
         let mut iter = slate
             .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
             .await?;
         let mut add_count = 0;
         while let Some(kv) = iter.next().await? {
-            let (entity_id, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if entity_id != DataType::Long(2000) || attribute != tags_id {
+            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != tags_id {
                 continue;
             }
             if op == codec::ADD {

@@ -52,10 +52,7 @@ async fn test_execute_tx_and_query() {
 
     // Insert a document
     let result = client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -63,15 +60,12 @@ async fn test_execute_tx_and_query() {
     // Open a DB and query
     let db = client.db().await.unwrap();
     let result = db
-        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        vec![DataType::Long(100), DataType::String("alice".to_string())]
-    );
+    assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -85,10 +79,7 @@ async fn test_submit_tx() {
     define_base_schema(&client).await;
 
     let tx_key = client
-        .submit_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "bob".into()),
-        ])])
+        .submit_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
         .await
         .unwrap();
     assert!(tx_key.tx_id >= 0);
@@ -105,36 +96,24 @@ async fn test_multiple_transactions_and_query() {
 
     // Insert two documents in separate transactions
     client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
 
     client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(200)),
-            (kw!(:name), "bob".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
         .await
         .unwrap();
 
     let db = client.db().await.unwrap();
     let result = db
-        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.contains(&vec![
-        DataType::Long(100),
-        DataType::String("alice".to_string())
-    ]));
-    assert!(result.contains(&vec![
-        DataType::Long(200),
-        DataType::String("bob".to_string())
-    ]));
+    assert!(result.contains(&vec![DataType::String("alice".to_string())]));
+    assert!(result.contains(&vec![DataType::String("bob".to_string())]));
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -149,10 +128,7 @@ async fn test_open_close_multiple_dbs() {
 
     // Insert data
     client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
 
@@ -186,10 +162,7 @@ async fn test_two_connections() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
     client1
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
 
@@ -215,10 +188,7 @@ async fn test_execute_tx_returns_tx_key() {
     define_base_schema(&client).await;
 
     let result = client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
 
@@ -241,10 +211,7 @@ async fn test_db_as_of() {
 
     // First transaction
     let result1 = client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
     let tx_key1 = match result1 {
@@ -254,25 +221,19 @@ async fn test_db_as_of() {
 
     // Second transaction
     client
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(200)),
-            (kw!(:name), "bob".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
         .await
         .unwrap();
 
     // Open DB pinned to tx_key after first tx — should only see alice
     let db = client.db_as_of(tx_key1).await.unwrap();
     let result = db
-        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        vec![DataType::Long(100), DataType::String("alice".to_string())]
-    );
+    assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
     client.close().await.unwrap();
@@ -307,16 +268,13 @@ async fn test_dev_server_connections_are_isolated() {
     define_base_schema(&client1).await;
 
     client1
-        .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
-            (kw!(:name), "alice".into()),
-        ])])
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
         .await
         .unwrap();
 
     let db1 = client1.db().await.unwrap();
     let result1 = db1
-        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
     assert_eq!(result1.len(), 1, "client1 should see its own data");
@@ -327,7 +285,7 @@ async fn test_dev_server_connections_are_isolated() {
 
     let db2 = client2.db().await.unwrap();
     let result2 = db2
-        .query("{:find [?e ?name] :where [[?e :name ?name]]}")
+        .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
         .unwrap();
     assert_eq!(result2.len(), 0, "client2 should not see client1's data");
@@ -339,10 +297,9 @@ async fn test_dev_server_connections_are_isolated() {
     token.cancel();
 }
 
-async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &str) {
+async fn define_schema_attr(client: &ClientNode, name: &str, vtype: &str) {
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(id.into())),
             (
                 kw!(:db/ident),
                 DataType::Keyword(Keyword::plain(name)).into(),
@@ -361,14 +318,14 @@ async fn define_schema_attr(client: &ClientNode, id: i64, name: &str, vtype: &st
 }
 
 async fn define_people_schema(client: &ClientNode) {
-    define_schema_attr(client, 54, "last-name", "string").await;
-    define_schema_attr(client, 55, "sex", "keyword").await;
-    define_schema_attr(client, 56, "salary", "long").await;
-    define_schema_attr(client, 57, "city", "string").await;
+    define_schema_attr(client, "last-name", "string").await;
+    define_schema_attr(client, "sex", "keyword").await;
+    define_schema_attr(client, "salary", "long").await;
+    define_schema_attr(client, "city", "string").await;
 }
 
 async fn define_heads_schema(client: &ClientNode) {
-    define_schema_attr(client, 58, "heads", "long").await;
+    define_schema_attr(client, "heads", "long").await;
 }
 
 /// Mirror of Clojure test-query-using-keywords, exercised through the full
@@ -381,15 +338,14 @@ async fn test_query_keyword_value_comparison_via_wire() {
     define_people_schema(&client).await;
 
     // Insert 4 people with keyword sex values
-    for (id, name, sex) in [
-        (100, "Ivan", "male"),
-        (101, "Petr", "male"),
-        (102, "Doris", "female"),
-        (103, "Jane", "female"),
+    for (name, sex) in [
+        ("Ivan", "male"),
+        ("Petr", "male"),
+        ("Doris", "female"),
+        ("Jane", "female"),
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
             ])])
@@ -431,14 +387,13 @@ async fn test_aggregates_and_or() {
     define_people_schema(&client).await;
 
     // Insert Ada, Alan, Adam
-    for (id, name, last, sex, age) in [
-        (100, "Ada", "Lovelace", "female", 21),
-        (101, "Alan", "Turing", "male", 22),
-        (102, "Adam", "Smith", "male", 23),
+    for (name, last, sex, age) in [
+        ("Ada", "Lovelace", "female", 21),
+        ("Alan", "Turing", "male", 22),
+        ("Adam", "Smith", "male", 23),
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:last-name), last.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
@@ -500,14 +455,9 @@ async fn test_aggregate_set_semantics() {
     define_base_schema(&client).await;
     define_people_schema(&client).await;
 
-    for (id, name, city) in [
-        (100, "Alice", "NYC"),
-        (101, "Bob", "NYC"),
-        (102, "Carol", "LA"),
-    ] {
+    for (name, city) in [("Alice", "NYC"), ("Bob", "NYC"), ("Carol", "LA")] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:city), city.into()),
             ])])
@@ -537,12 +487,9 @@ async fn test_datascript_aggregates() {
     define_heads_schema(&client).await;
 
     // Insert monsters with heads
-    for (id, heads) in [(100, 3), (101, 1), (102, 1), (103, 1)] {
+    for heads in [3, 1, 1, 1] {
         client
-            .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
-                (kw!(:heads), (heads as i64).into()),
-            ])])
+            .execute_tx(vec![TxOp::put(vec![(kw!(:heads), (heads as i64).into())])])
             .await
             .unwrap();
     }
@@ -573,12 +520,9 @@ async fn test_aggregate_avg() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    for (id, age) in [(100, 21), (101, 22), (102, 23)] {
+    for age in [21, 22, 23] {
         client
-            .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
-                (kw!(:age), (age as i64).into()),
-            ])])
+            .execute_tx(vec![TxOp::put(vec![(kw!(:age), (age as i64).into())])])
             .await
             .unwrap();
     }
@@ -602,12 +546,9 @@ async fn test_aggregate_min_max_strings() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    for (id, name) in [(100, "Charlie"), (101, "Alice"), (102, "Bob")] {
+    for name in ["Charlie", "Alice", "Bob"] {
         client
-            .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
-                (kw!(:name), name.into()),
-            ])])
+            .execute_tx(vec![TxOp::put(vec![(kw!(:name), name.into())])])
             .await
             .unwrap();
     }
@@ -658,16 +599,15 @@ async fn test_order_and_limit() {
     define_base_schema(&client).await;
 
     // Insert 5 people with different ages
-    for (id, name, age) in [
-        (100, "Alice", 30),
-        (101, "Bob", 20),
-        (102, "Carol", 40),
-        (103, "Dave", 10),
-        (104, "Eve", 50),
+    for (name, age) in [
+        ("Alice", 30),
+        ("Bob", 20),
+        ("Carol", 40),
+        ("Dave", 10),
+        ("Eve", 50),
     ] {
         client
             .execute_tx(vec![TxOp::put(vec![
-                (kw!(:db/id), DataType::Long(id.into())),
                 (kw!(:name), name.into()),
                 (kw!(:age), (age as i64).into()),
             ])])
@@ -747,7 +687,6 @@ async fn test_aggregate_min_incompatible_types() {
     // Insert entity with both name (string) and age (long)
     client
         .execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "Alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
@@ -761,6 +700,60 @@ async fn test_aggregate_min_incompatible_types() {
         .query("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
         .await;
     assert!(result.is_err(), "min over incompatible types should error");
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_upsert_with_resolved_entity_id() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    // Insert entity with auto-assigned ID
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "alice".into()),
+            (kw!(:age), 30_i64.into()),
+        ])])
+        .await
+        .unwrap();
+
+    // Discover the auto-assigned entity ID
+    let db = client.db().await.unwrap();
+    let result = db
+        .query("{:find [?e] :where [[?e :name \"alice\"]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    let entity_id = match &result[0][0] {
+        DataType::Long(id) => *id,
+        other => panic!("Expected Long entity ID, got {:?}", other),
+    };
+    db.close().await.unwrap();
+
+    // Upsert: update age using the discovered entity ID
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/id), DataType::Long(entity_id)),
+            (kw!(:age), 31_i64.into()),
+        ])])
+        .await
+        .unwrap();
+
+    // Verify: alice should now have age 31 (cardinality-one retracted 30)
+    let db = client.db().await.unwrap();
+    let result = db
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0],
+        vec![DataType::String("alice".to_string()), DataType::Long(31)]
+    );
 
     db.close().await.unwrap();
     client.close().await.unwrap();
