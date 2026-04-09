@@ -1381,10 +1381,11 @@ mod tests {
             _ => panic!("Expected committed"),
         };
 
-        // Query for the tx entity matching this tx_id
+        // Query for the tx entity matching this tx_id, resolving the ref to its ident
         let db = node.db().await.unwrap();
         let query_str = format!(
-            "[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]",
+            "[:find ?ident \
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident]]",
             tx_key.tx_id
         );
         let result = db.query(query_str).await.unwrap();
@@ -1412,9 +1413,13 @@ mod tests {
             _ => panic!("Expected aborted, got {:?}", result),
         };
 
-        // Query for the aborted tx entity
+        // Query for the aborted tx entity, resolving the ref to its ident
         let db = node.db().await.unwrap();
-        let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
+        let query_str = format!(
+            "[:find ?ident ?error \
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db.tx/error ?error]]",
+            tx_key.tx_id
+        );
         let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);

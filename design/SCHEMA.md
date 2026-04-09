@@ -23,11 +23,11 @@ them or changing their constraints. We call this deprecation guided schema evolu
 
 A **schema attribute** defines a named attribute that can appear on data entities. It is itself an entity with three required properties:
 
-| Property    | Key                | Value Type       | Description                                  |
-|-------------|--------------------|------------------|----------------------------------------------|
-| Ident       | `db/ident`         | Keyword          | The attribute's name, e.g. `:person/name`    |
-| Value type  | `db/valueType`     | Keyword          | The type of values, e.g. `:db.type/string`   |
-| Cardinality | `db/cardinality`   | Long (entity ref) | `30` (one) or `31` (many)                   |
+| Property    | Key                | Value Type | Description                                                    |
+|-------------|--------------------|------------|----------------------------------------------------------------|
+| Ident       | `db/ident`         | Keyword    | The attribute's name, e.g. `:person/name`                      |
+| Value type  | `db/valueType`     | Ref        | Entity reference to a value type enum, e.g. `:db.type/string`  |
+| Cardinality | `db/cardinality`   | Ref        | Entity reference to `:db.cardinality/one` or `:db.cardinality/many` |
 
 An entity becomes a schema attribute when all three properties (`db/ident`, `db/valueType`, `db/cardinality`) are present.
 Initially the 3 attributes need to be asserted in the same transaction. In later stages we might want to allow for more
@@ -54,10 +54,10 @@ granular schema evolvement. This will require more work in the indexer so likely
 
 ### 1.2 Cardinality
 
-| Entity ID | Keyword                | Meaning                                               |
-|-----------|------------------------|-------------------------------------------------------|
-| 30        | `:db.cardinality/one`  | An entity has at most one value for this attribute     |
-| 31        | `:db.cardinality/many` | An entity may have multiple values for this attribute  |
+| Keyword                | Meaning                                               |
+|------------------------|-------------------------------------------------------|
+| `:db.cardinality/one`  | An entity has at most one value for this attribute     |
+| `:db.cardinality/many` | An entity may have multiple values for this attribute  |
 
 ---
 
@@ -65,44 +65,34 @@ granular schema evolvement. This will require more work in the indexer so likely
 
 A fresh database is initialized with a bootstrap transaction (tx_id=0) that installs the three meta-attributes that describe schema itself:
 
-| Entity ID | Ident              | Value Type | Cardinality |
-|-----------|--------------------|------------|-------------|
-| 1         | `db/ident`         | keyword    | one         |
-| 2         | `db/valueType`     | keyword    | one         |
-| 3         | `db/cardinality`   | long       | one         |
-| 32        | `db.tx/instant`    | instant    | one         |
-| 33        | `db.tx/result`     | keyword    | one         |
-| 34        | `db.tx/id`         | long       | one         |
-| 35        | `db.tx/error`      | string     | one         |
+| Ident              | Value Type | Cardinality |
+|--------------------|------------|-------------|
+| `db/ident`         | keyword    | one         |
+| `db/valueType`     | ref        | one         |
+| `db/cardinality`   | ref        | one         |
+| `db.tx/instant`    | instant    | one         |
+| `db.tx/result`     | ref        | one         |
+| `db.tx/id`         | long       | one         |
+| `db.tx/error`      | string     | one         |
 
 The first three attributes are self-referential: they describe themselves. They are the minimal set needed to define any further schema attributes. Attributes 32–35 are used on transaction entities (see `PARTITIONS.md`).
 
-The bootstrap transaction also installs enum entities for value types (IDs 10–23) and cardinalities (IDs 30–31). These are regular entities with `db/ident` but no `db/valueType` — they are **not** schema attributes.
-
-Reserved entity ID ranges:
-
-| Range | Purpose                      |
-|-------|------------------------------|
-| 1–3   | Core schema attributes (db/) |
-| 32–35 | Transaction schema attributes (db.tx/) |
-| 10–23 | Value type enum entities     |
-| 30–31 | Cardinality enum entities    |
-| 40–41 | Transaction result enum entities |
+The bootstrap transaction also installs enum entities for value types (`:db.type/*`) and cardinalities (`:db.cardinality/*`). These are regular entities with `db/ident` but no `db/valueType` — they are **not** schema attributes.
 
 ### 2.1 Transaction Result Enums
 
 The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db.tx/result` attribute on transaction entities (see `PARTITIONS.md`):
 
-| Entity ID | Ident               |
-|-----------|---------------------|
-| 40        | `:db.tx/committed`  |
-| 41        | `:db.tx/aborted`    |
+| Ident               |
+|---------------------|
+| `:db.tx/committed`  |
+| `:db.tx/aborted`    |
 
 ### 2.2 Enums and References
 
 `ValueType::Ref` is a supported schema type. Ref values are stored as `DataType::Long` with the same byte-level encoding (same tag). The schema is the sole authority on whether a Long value is an entity reference — this allows ref values and entity IDs to unify at the byte level in the generic join algorithm without special-casing.
 
-Several bootstrap attributes (e.g. `db/cardinality`, `db/valueType`, `db.tx/result`) reference enum entities by keyword. Currently these are stored as keyword values, not as entity references (`db.type/ref`). In the future these attributes could become `ref`-typed with their values being entity IDs rather than keywords.
+`db/valueType`, `db/cardinality`, and `db.tx/result` are ref-typed attributes whose values are entity IDs pointing to the enum entities defined in the bootstrap transaction (e.g. the entity for `:db.type/string`, `:db.cardinality/one`, or `:db.tx/committed`).
 
 ---
 
