@@ -41,3 +41,9 @@
           │                                                                      │
           └──────────────────────────────────────────────────────────────────────┘
 ```
+
+### Licence
+
+Triplox is licensed under the Apache License, Version 2.0.
+
+The [edn](edn/) crate was orginally copied from [mentat](https://github.com/mozilla/mentat) and is also licenced under Apache Licence, Version 2.0.
