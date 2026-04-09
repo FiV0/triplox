@@ -8,11 +8,10 @@
 (def conn (tc/connect host port))
 
 ;; 1. Transact a schema
-(tc/transact conn [{:db/id 200
-                    :db/ident :name
+(tc/transact conn [{:db/ident :name
                     :db/valueType :db.type/string
                     :db/cardinality :db.cardinality/one}
-                   {:db/id 201 :db/ident :age
+                   {:db/ident :age
                     :db/valueType :db.type/long
                     :db/cardinality :db.cardinality/one}])
 ;; => {:tx-id 0,
@@ -21,8 +20,8 @@
 ;;     :error-message nil}
 
 ;; 2. Transact some data
-(tc/transact conn [{:db/id 100 :name "alice" :age 30}
-                   {:db/id 101 :name "bob" :age 25}])
+(tc/transact conn [{:name "alice" :age 30}
+                   {:name "bob" :age 25}])
 ;; => {:tx-id 1,
 ;;     :system-time 1775733942779513,
 ;;     :committed? true,
@@ -35,4 +34,4 @@
   (tc/q db '{:find [?e ?name ?age]
              :where [[?e :name ?name]
                      [?e :age ?age]]}))
-;; => [[101 "bob" 25] [100 "alice" 30]]
+;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]
