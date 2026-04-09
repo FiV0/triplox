@@ -54,7 +54,7 @@
 (deftest test-sanity-check
   (tc/transact *conn* [{:name "Ivan"}])
   (is (= 1 (count (q '{:find [?e]
-                        :where [[?e :name "Ivan"]]})))))
+                       :where [[?e :name "Ivan"]]})))))
 
 (deftest test-basic-query
   (tc/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
@@ -94,12 +94,12 @@
 
   (testing "Can query across fields for same value"
     (is (= 1 (count (q '{:find [?p1] :where [[?p1 :name ?name]
-                                              [?p1 :last-name ?name]]})))))
+                                             [?p1 :last-name ?name]]})))))
 
   (testing "Can query across fields for same value when value is passed in"
     (is (= 1 (count (q '{:find [?p1] :where [[?p1 :name ?name]
-                                              [?p1 :last-name ?name]
-                                              [?p1 :name "Smith"]]}))))))
+                                             [?p1 :last-name ?name]
+                                             [?p1 :name "Smith"]]}))))))
 
 (deftest test-multiple-results
   (tc/transact *conn* [{:name "Ivan" :last-name "1"}
@@ -196,7 +196,7 @@
                                [?e :name "Ivan"]))]})))
 
   (is (= 1 (count (q '{:find [?e]
-                        :where [(or [?e :name "Ivan"])]}))))
+                       :where [(or [?e :name "Ivan"])]}))))
 
   (is (= #{}
          (q '{:find [?name]
@@ -288,16 +288,16 @@
                                        [?e :last-name "Ivanov"]]}))]
       ;; Exclude entities whose :name matches Ivan's :name
       (is (= 0 (count (q {:find  '[?e]
-                           :where [['?e :name '?name]
-                                   (list 'not [ivan-id :name '?name])]})))))
+                          :where [['?e :name '?name]
+                                  (list 'not [ivan-id :name '?name])]})))))
 
     ;; Discover entity with last-name "Ivannotov"
     (let [ivannotov-id (ffirst (q '{:find [?e]
                                     :where [[?e :last-name "Ivannotov"]]}))]
       ;; Only entities whose last-name differs from Ivannotov's
       (is (= 2 (count (q {:find  '[?e]
-                           :where [['?e :last-name '?last-name]
-                                   (list 'not [ivannotov-id :last-name '?last-name])]}))))))
+                          :where [['?e :last-name '?last-name]
+                                  (list 'not [ivannotov-id :last-name '?last-name])]}))))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
