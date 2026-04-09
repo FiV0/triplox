@@ -1344,13 +1344,21 @@ mod tests {
 
     #[test]
     fn test_tx_op_add() {
-        let op = TxOp::Add { entity: EntityRef::Id(42), attribute: kw!(:email), value: DataType::String("test@example.com".to_string()) };
+        let op = TxOp::Add {
+            entity: EntityRef::Id(42),
+            attribute: kw!(:email),
+            value: DataType::String("test@example.com".to_string()),
+        };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 
     #[test]
     fn test_tx_op_add_with_ref_value() {
-        let op = TxOp::Add { entity: EntityRef::Id(42), attribute: kw!(:friend), value: DataType::String("temp-2".to_string()) };
+        let op = TxOp::Add {
+            entity: EntityRef::Id(42),
+            attribute: kw!(:friend),
+            value: DataType::String("temp-2".to_string()),
+        };
         assert_eq!(roundtrip_tx_op(&op), op);
     }
 

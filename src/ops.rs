@@ -406,7 +406,11 @@ mod tests {
 
     #[test]
     fn test_op_add_bincode() {
-        let op = TxOp::Add { entity: EntityRef::Id(1), attribute: kw!(:string), value: DataType::String("string_value".to_string()) };
+        let op = TxOp::Add {
+            entity: EntityRef::Id(1),
+            attribute: kw!(:string),
+            value: DataType::String("string_value".to_string()),
+        };
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);

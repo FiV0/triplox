@@ -1103,6 +1103,23 @@ mod tests {
         Ok(())
     }
 
+    /// Find the first user-partition entity ID by scanning the EAV index.
+    async fn find_first_user_entity(slate: &Arc<slatedb::Db>) -> Result<i64, Error> {
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base {
+                    return Ok(id);
+                }
+            }
+        }
+        panic!("No user-partition entity found in EAV index");
+    }
+
     #[tokio::test]
     async fn test_cardinality_many_no_retract() -> Result<(), Error> {
         let slate = Arc::new(in_memory_slate().await);
@@ -1117,34 +1134,24 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops1).await?;
 
         // Discover auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let entity_id = find_first_user_entity(&slate).await?;
         let tags_id = indexer
             .metadata()
             .schema
             .get_attribute(&kw!(:tags))
             .unwrap()
             .0;
-        let mut entity_id: i64 = 0;
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    entity_id = id;
-                    break;
-                }
-            }
-        }
-        assert!(entity_id >= user_base, "Should have found user entity");
 
         // Second tx: assert tags="database" for same entity — should NOT retract "rust"
         let tx2 = TxKey {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let tx_ops2 = vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:tags), value: "database".into() }];
+        let tx_ops2 = vec![TxOp::Add {
+            entity: EntityRef::Id(entity_id),
+            attribute: kw!(:tags),
+            value: "database".into(),
+        }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs, 0 RETRACTs
@@ -1190,34 +1197,24 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops1).await?;
 
         // Discover auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let entity_id = find_first_user_entity(&slate).await?;
         let tags_id = indexer
             .metadata()
             .schema
             .get_attribute(&kw!(:tags))
             .unwrap()
             .0;
-        let mut entity_id: i64 = 0;
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    entity_id = id;
-                    break;
-                }
-            }
-        }
-        assert!(entity_id >= user_base, "Should have found user entity");
 
         // Second tx: assert same tags="rust" again — should still be written (unlike card-one)
         let tx2 = TxKey {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let tx_ops2 = vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:tags), value: "rust".into() }];
+        let tx_ops2 = vec![TxOp::Add {
+            entity: EntityRef::Id(entity_id),
+            attribute: kw!(:tags),
+            value: "rust".into(),
+        }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs (both written)
