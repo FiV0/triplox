@@ -1144,11 +1144,7 @@ mod tests {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let tx_ops2 = vec![TxOp::Add {
-            entity: EntityRef::Id(entity_id),
-            attribute: kw!(:tags),
-            value: "database".into(),
-        }];
+        let tx_ops2 = vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:tags), value: "database".into() }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs, 0 RETRACTs
@@ -1221,11 +1217,7 @@ mod tests {
             tx_id: 2,
             system_time: st_from_unix_epoch(200),
         };
-        let tx_ops2 = vec![TxOp::Add {
-            entity: EntityRef::Id(entity_id),
-            attribute: kw!(:tags),
-            value: "rust".into(),
-        }];
+        let tx_ops2 = vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:tags), value: "rust".into() }];
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs (both written)

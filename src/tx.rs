@@ -288,11 +288,7 @@ mod tests {
 
     #[test]
     fn test_expand_add() {
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(200),
-            attribute: kw!(:name),
-            value: DataType::String("bob".to_string()),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Id(200), attribute: kw!(:name), value: DataType::String("bob".to_string()) }];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].entity, IdOrTempId::Id(200));
@@ -319,22 +315,14 @@ mod tests {
     #[test]
     fn test_expand_ident_resolution() {
         let schema = schema_with_ident(kw!(:person/name), 42);
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Ident(kw!(:person/name)),
-            attribute: kw!(:some/attr),
-            value: DataType::Long(1),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Ident(kw!(:person/name)), attribute: kw!(:some/attr), value: DataType::Long(1) }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].entity, IdOrTempId::Id(42));
     }
 
     #[test]
     fn test_expand_unknown_ident_errors() {
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Ident(kw!(:unknown/ident)),
-            attribute: kw!(:some/attr),
-            value: DataType::Long(1),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Ident(kw!(:unknown/ident)), attribute: kw!(:some/attr), value: DataType::Long(1) }];
         let result = expand_tx_ops(&ops, &empty_schema());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown ident"));
@@ -342,11 +330,7 @@ mod tests {
 
     #[test]
     fn test_expand_lookup_ref_errors() {
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())),
-            attribute: kw!(:name),
-            value: DataType::Long(1),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())), attribute: kw!(:name), value: DataType::Long(1) }];
         let result = expand_tx_ops(&ops, &empty_schema());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Lookup refs"));
@@ -355,11 +339,7 @@ mod tests {
     #[test]
     fn test_expand_value_ref_tempid() {
         let schema = schema_with_ref_attr(kw!(:follows), 999);
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
-            attribute: kw!(:follows),
-            value: DataType::String("friend".to_string()),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Id(100), attribute: kw!(:follows), value: DataType::String("friend".to_string()) }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(
             datoms[0].value,
@@ -370,11 +350,7 @@ mod tests {
     #[test]
     fn test_expand_value_ref_id() {
         let schema = schema_with_ref_attr(kw!(:follows), 999);
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
-            attribute: kw!(:follows),
-            value: DataType::Long(200),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Id(100), attribute: kw!(:follows), value: DataType::Long(200) }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(200)));
     }
@@ -384,11 +360,7 @@ mod tests {
         let mut schema = schema_with_ref_attr(kw!(:follows), 999);
         schema.ident_map.insert(kw!(:person/bob), 99);
         schema.entid_map.insert(99, kw!(:person/bob));
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
-            attribute: kw!(:follows),
-            value: DataType::Keyword(kw!(:person/bob)),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Id(100), attribute: kw!(:follows), value: DataType::Keyword(kw!(:person/bob)) }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(99)));
     }
@@ -396,11 +368,7 @@ mod tests {
     #[test]
     fn test_expand_value_ref_rejects_invalid_type() {
         let schema = schema_with_ref_attr(kw!(:follows), 999);
-        let ops = vec![TxOp::Add {
-            entity: EntityRef::Id(100),
-            attribute: kw!(:follows),
-            value: DataType::Boolean(true),
-        }];
+        let ops = vec![TxOp::Add { entity: EntityRef::Id(100), attribute: kw!(:follows), value: DataType::Boolean(true) }];
         let result = expand_tx_ops(&ops, &schema);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
