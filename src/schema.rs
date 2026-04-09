@@ -741,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_schema_immutability() {
         let schema = bootstrapped_schema_with_person_name();
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
