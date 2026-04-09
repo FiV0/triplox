@@ -5,7 +5,7 @@
 //!   cargo run                     (from project root, uses config/triplox.toml)
 //!
 //! Then run this example:
-//!   cargo run --bin simple-example  (from examples/)
+//!   cargo run --bin simple-example  (from examples/rust/)
 
 use anyhow::Result;
 use edn::kw;
