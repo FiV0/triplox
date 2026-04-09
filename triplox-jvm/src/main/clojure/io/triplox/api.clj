@@ -22,7 +22,7 @@
   "Execute a Datalog query. Returns a vector of vectors."
   [db query]
   (mapv (fn [row] (mapv types/wire->clj row))
-        (.query ^Db db (pr-str query))))
+        (.query ^Db db (if (string? query) query (pr-str query)))))
 
 (defn transact
   "Execute a transaction and wait for indexing. Returns result map."
