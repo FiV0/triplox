@@ -283,23 +283,21 @@
 
   (testing "literal entities — use discovered entity IDs"
     ;; Discover the entity ID for one of the "Ivan"/"Ivanov" entities
-    (let [ivan-ids (q '{:find [?e]
-                        :where [[?e :name "Ivan"]
-                                [?e :last-name "Ivanov"]]})
-          ivan-id (ffirst ivan-ids)
-          ;; Exclude entities whose :name matches Ivan's :name
-          ;; TODO replace with :in
-          query-str (format "{:find [?e] :where [[?e :name ?name] (not [%d :name ?name])]}" ivan-id)]
-      (is (= 0 (count (q query-str)))))
+    (let [ivan-id (ffirst (q '{:find [?e]
+                               :where [[?e :name "Ivan"]
+                                       [?e :last-name "Ivanov"]]}))]
+      ;; Exclude entities whose :name matches Ivan's :name
+      (is (= 0 (count (q {:find  '[?e]
+                           :where [['?e :name '?name]
+                                   (list 'not [ivan-id :name '?name])]})))))
 
     ;; Discover entity with last-name "Ivannotov"
-    (let [ivannotov-ids (q '{:find [?e]
-                             :where [[?e :last-name "Ivannotov"]]})
-          ivannotov-id (ffirst ivannotov-ids)
-          ;; Only entities whose last-name differs from Ivannotov's
-          ;; TODO replace with :in
-          query-str (format "{:find [?e] :where [[?e :last-name ?last-name] (not [%d :last-name ?last-name])]}" ivannotov-id)]
-      (is (= 2 (count (q query-str))))))
+    (let [ivannotov-id (ffirst (q '{:find [?e]
+                                    :where [[?e :last-name "Ivannotov"]]}))]
+      ;; Only entities whose last-name differs from Ivannotov's
+      (is (= 2 (count (q {:find  '[?e]
+                           :where [['?e :last-name '?last-name]
+                                   (list 'not [ivannotov-id :last-name '?last-name])]}))))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
@@ -366,8 +364,9 @@
     (let [ivan-id (ffirst (q '{:find [?e]
                                :where [[?e :name "Ivan"]]}))]
       (is (= #{["Ivan"]}
-             ;; TODO replace with :in
-             (q (format "{:find [?name] :where [[?e :name ?name] [(= %d ?e)]]}" ivan-id)))))
+             (q {:find  '[?name]
+                 :where [['?e :name '?name]
+                         [(list '= ivan-id '?e)]]}))))
 
     (testing "Filtered by value"
       (is (= 2 (count (q '{:find [?e]
