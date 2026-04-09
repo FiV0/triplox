@@ -29,11 +29,19 @@ Then run the examples as shown below. The Docker image binds to `0.0.0.0:5490`, 
 
 ## Running
 
-In a separate terminal, from the `examples/` directory:
+### Rust
+
+From the `examples/rust/` directory:
 
 ```bash
 cargo run --bin simple-example
 ```
+
+### Clojure
+
+See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
+with the server.
+
 
 ### simple-example
 
