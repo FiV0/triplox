@@ -679,10 +679,7 @@ mod tests {
         let ops = [TxOp::put(vec![
             (kw!(:db/id), DataType::Long(name_id)),
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
-            (
-                kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/long)),
-            ),
+            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/long))),
             (
                 kw!(:db/cardinality),
                 DataType::Keyword(kw!(:db.cardinality/one)),
@@ -773,10 +770,7 @@ mod tests {
         let schema = bootstrapped_schema();
         let ops = [TxOp::put(vec![
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
-            (
-                kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/string)),
-            ),
+            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/string))),
             // No db/cardinality
         ])];
         let err = schema

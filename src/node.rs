@@ -289,14 +289,8 @@ impl<L: TxLog> QueryNode for Node<L> {
 
 #[cfg(test)]
 mod tests {
-    use slatedb::config::ScanOptions;
-
     use super::*;
-    use crate::codec;
-    use crate::indexer::{
-        ae_key_to_parts, aev_key_to_parts, av_key_to_parts, ave_key_to_parts, eav_key_to_parts,
-    };
-    use crate::ops::{DataType, EntityRef, TxOp};
+    use crate::ops::{DataType, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -313,7 +307,11 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "bob".into())])];
+        let tx_ops = vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }];
 
         let waiter = node.indexer.read().await.tx_waiter();
 
@@ -336,15 +334,13 @@ mod tests {
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
 
-    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     #[tokio::test]
     async fn test_execute_tx_with_add_triple() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Use entity ID 1000 to avoid reserved bootstrap range (1-31)
         let tx_ops = vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity: "e".into(),
             attribute: kw!(:email),
             value: "test@example.com".into(),
         }];
@@ -352,35 +348,16 @@ mod tests {
         let result = node.execute_tx(tx_ops).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
-        let slate = node.slatedb.clone();
-        let email_id = node
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:email))
-            .unwrap()
-            .0;
-
-        // Check EAV index — find entry for entity 2000
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?email :where [?e :email ?email]]"#)
             .await
             .unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (entity_id, attribute, value, _timestamp, suffix) =
-                eav_key_to_parts(kv.key).unwrap();
-            if entity_id == DataType::Long(2000) {
-                assert_eq!(attribute, email_id);
-                assert_eq!(value, DataType::String("test@example.com".to_string()));
-                assert_eq!(suffix, codec::ADD);
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Expected EAV entry for entity 2000");
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            vec![DataType::String("test@example.com".to_string())]
+        );
     }
 
     // End-to-end query tests
@@ -390,12 +367,20 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
-            .await
-            .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
-            .await
-            .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db
@@ -413,12 +398,20 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
-            .await
-            .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
-            .await
-            .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db
@@ -440,9 +433,13 @@ mod tests {
         ])])
         .await
         .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
-            .await
-            .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db
@@ -493,15 +490,27 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
-            .await
-            .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
-            .await
-            .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "charlie".into())])])
-            .await
-            .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "charlie".into(),
+            attribute: kw!(:name),
+            value: "charlie".into(),
+        }])
+        .await
+        .unwrap();
 
         let db = node.db().await.unwrap();
         let result = db
@@ -596,7 +605,11 @@ mod tests {
         define_test_schema(&node).await;
 
         let tx_key1 = match node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap()
         {
@@ -605,7 +618,11 @@ mod tests {
         };
 
         let tx_key2 = match node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            }])
             .await
             .unwrap()
         {
@@ -643,7 +660,11 @@ mod tests {
         define_test_schema(&node).await;
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -670,7 +691,11 @@ mod tests {
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            }])
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -701,7 +726,11 @@ mod tests {
         define_test_schema(&node).await;
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap();
         let tx_key = match result {
@@ -736,7 +765,11 @@ mod tests {
 
         // First transaction: insert alice
         let result1 = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap();
         let tx_key1 = match result1 {
@@ -745,9 +778,13 @@ mod tests {
         };
 
         // Second transaction: insert bob
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
-            .await
-            .unwrap();
+        node.execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
@@ -800,10 +837,11 @@ mod tests {
         };
 
         // Upsert: update age using the discovered entity ID
-        node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/id), DataType::Long(entity_id)),
-            (kw!(:age), 31_i64.into()),
-        ])])
+        node.execute_tx(vec![TxOp::Add {
+            entity: entity_id.into(),
+            attribute: kw!(:age),
+            value: 31_i64.into(),
+        }])
         .await
         .unwrap();
 
@@ -1121,8 +1159,16 @@ mod tests {
 
         // Insert two entities with last-names
         node.execute_tx(vec![
-            TxOp::put(vec![(kw!(:last-name), "Ivannotov".into())]),
-            TxOp::put(vec![(kw!(:last-name), "Bobnev".into())]),
+            TxOp::Add {
+                entity: "ivannotov".into(),
+                attribute: kw!(:last-name),
+                value: "Ivannotov".into(),
+            },
+            TxOp::Add {
+                entity: "bobnev".into(),
+                attribute: kw!(:last-name),
+                value: "Bobnev".into(),
+            },
         ])
         .await
         .unwrap();
@@ -1158,7 +1204,11 @@ mod tests {
         // Submit a tx with unknown attribute — should fail with TxAborted
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::put(vec![(kw!(:nonexistent/attr), "x".into())])]),
+            node.execute_tx(vec![TxOp::Add {
+                entity: "e".into(),
+                attribute: kw!(:nonexistent/attr),
+                value: "x".into(),
+            }]),
         )
         .await
         .expect("Should not hang")
@@ -1186,7 +1236,11 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            node.execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])]),
+            node.execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }]),
         )
         .await
         .expect("Should not hang")
@@ -1199,36 +1253,48 @@ mod tests {
         );
     }
 
-    // TODO(triplox-6s6): convert to auto-assigned IDs once tempids are implemented
     /// Cardinality-many attributes accumulate values without retracting old ones.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_cardinality_many_attribute() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        // Insert entity 2000 with tags="rust"
+        // Insert entity with tags="rust"
         node.execute_tx(vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity: "e".into(),
             attribute: kw!(:tags),
             value: "rust".into(),
         }])
         .await
         .unwrap();
 
+        // Discover the auto-assigned entity ID
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?e :where [?e :tags "rust"]]"#)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        let entity_id = match &result[0][0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID, got {:?}", other),
+        };
+
         // Add another tag to the same entity — should NOT retract "rust"
         node.execute_tx(vec![TxOp::Add {
-            entity: EntityRef::Id(2000),
+            entity: entity_id.into(),
             attribute: kw!(:tags),
             value: "database".into(),
         }])
         .await
         .unwrap();
 
-        // Query: find all tags for entity 2000
-
+        // Query: find all tags for the entity
         let db = node.db().await.unwrap();
         let result = db
-            .query("[:find ?tag :where [2000 :tags ?tag]]")
+            .query(format!(
+                "[:find ?tag :where [{entity_id} :tags ?tag]]"
+            ))
             .await
             .unwrap();
 
@@ -1244,24 +1310,33 @@ mod tests {
 
         // tx1: valid insert — allocates first user entity
         let result1 = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap();
         assert!(matches!(result1, TransactionResult::TxCommited(_)));
 
         // tx2: insert with unknown attribute — should fail
         let result2 = node
-            .execute_tx(vec![TxOp::put(vec![(
-                kw!(:nonexistent_attr),
-                "oops".into(),
-            )])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "e".into(),
+                attribute: kw!(:nonexistent_attr),
+                value: "oops".into(),
+            }])
             .await
             .unwrap();
         assert!(matches!(result2, TransactionResult::TxAborted(_, _)));
 
         // tx3: valid insert — should get the next contiguous entity ID
         let result3 = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "bob".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            }])
             .await
             .unwrap();
         assert!(matches!(result3, TransactionResult::TxCommited(_)));
@@ -1296,7 +1371,11 @@ mod tests {
         define_test_schema(&node).await;
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:name), "alice".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
             .await
             .unwrap();
         let tx_key = match result {
@@ -1323,7 +1402,11 @@ mod tests {
 
         // Submit a transaction with an unknown attribute to trigger abort
         let result = node
-            .execute_tx(vec![TxOp::put(vec![(kw!(:nonexistent), "x".into())])])
+            .execute_tx(vec![TxOp::Add {
+                entity: "e".into(),
+                attribute: kw!(:nonexistent),
+                value: "x".into(),
+            }])
             .await
             .unwrap();
         let tx_key = match &result {
