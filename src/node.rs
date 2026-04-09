@@ -291,6 +291,7 @@ impl<L: TxLog> QueryNode for Node<L> {
 mod tests {
     use super::*;
     use crate::ops::{DataType, TxOp};
+    use crate::schema;
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -1390,7 +1391,7 @@ mod tests {
         let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
+        assert_eq!(result[0][0], DataType::Long(schema::DB_TX_COMMITTED));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1418,7 +1419,7 @@ mod tests {
         let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
+        assert_eq!(result[0][0], DataType::Long(schema::DB_TX_ABORTED));
         if let DataType::String(s) = &result[0][1] {
             assert!(
                 s.contains("nonexistent"),

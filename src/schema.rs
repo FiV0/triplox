@@ -95,7 +95,7 @@ static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword)>> = LazyLock::new
         (kw!(:db/cardinality), kw!(:db.type/ref), kw!(:db.cardinality/one)),
         (kw!(:db/txInstant), kw!(:db.type/instant), kw!(:db.cardinality/one)),
         (kw!(:db/txId), kw!(:db.type/long), kw!(:db.cardinality/one)),
-        (kw!(:db/txResult), kw!(:db.type/keyword), kw!(:db.cardinality/one)),
+        (kw!(:db/txResult), kw!(:db.type/ref), kw!(:db.cardinality/one)),
         (kw!(:db.tx/error), kw!(:db.type/string), kw!(:db.cardinality/one)),
     ]
 });
@@ -323,7 +323,7 @@ impl Schema {
         let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
         let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
 
-        // TODO: Schema immutability should be enforced in apply_schema_update,
+        // TODO(#179): Schema immutability should be enforced in apply_schema_update,
         // similar to Mentat's approach where validation and schema mutation are
         // separate concerns.
         for datom in datoms {

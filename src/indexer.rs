@@ -18,7 +18,7 @@ use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, TxOp};
 use crate::partition::{partition_entity_prefix, TX_PARTITION};
-use crate::schema::Schema;
+use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::transaction::TxKey;
 use crate::tx;
@@ -202,10 +202,10 @@ fn build_tx_entity_datoms(
     error: Option<String>,
 ) -> Vec<Datom> {
     let st = tx_key.system_time;
-    let result_kw = if committed {
-        kw!(:db.tx/committed)
+    let result_eid = if committed {
+        DB_TX_COMMITTED
     } else {
-        kw!(:db.tx/aborted)
+        DB_TX_ABORTED
     };
     let mut datoms = vec![
         Datom {
@@ -223,7 +223,7 @@ fn build_tx_entity_datoms(
         Datom {
             entity: tx_eid,
             attribute: kw!(:db/txResult),
-            value: DataType::Keyword(result_kw),
+            value: DataType::Long(result_eid),
             op: DatomOp::Assert,
         },
     ];
