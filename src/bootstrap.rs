@@ -76,29 +76,29 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
         }
         None => {
             // Fresh DB — build schema from constants, then bootstrap
-            let bootstrap = bootstrap_schema();
+            let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
-            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
+            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
             let mut boot_pm = PartitionMap::new();
             let datoms = tx::resolve_tempids(&expanded, &mut boot_pm).unwrap();
 
             // Validate against pre-built schema (type-checking works, no fallback needed)
-            let update = bootstrap.validate_and_prepare(&datoms).unwrap();
+            let update = bootstrap_schema.validate_and_prepare(&datoms).unwrap();
 
             // Verify: tx-derived schema changes must match pre-built schema
             let mut schema_from_tx = Schema::default();
             schema_from_tx.apply_schema_update(update);
             assert_eq!(
-                schema_from_tx.ident_map, bootstrap.ident_map,
+                schema_from_tx.ident_map, bootstrap_schema.ident_map,
                 "bootstrap ident_map mismatch"
             );
             assert_eq!(
-                schema_from_tx.attribute_map, bootstrap.attribute_map,
+                schema_from_tx.attribute_map, bootstrap_schema.attribute_map,
                 "bootstrap attribute_map mismatch"
             );
 
             let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
-            write_index_entries(&txn, &datoms, &bootstrap, 0_i64).unwrap();
+            write_index_entries(&txn, &datoms, &bootstrap_schema, 0_i64).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             txn.put(&version_key, version.as_bytes()).unwrap();
@@ -108,7 +108,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
 
             // Derive counters from the just-written index
             let pm = scan_partition_counters(&slatedb).await;
-            Metadata::new(bootstrap, pm)
+            Metadata::new(bootstrap_schema, pm)
         }
     }
 }
