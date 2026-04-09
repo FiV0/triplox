@@ -1,4 +1,4 @@
-(ns triplox.tx
+(ns io.triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
   (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))

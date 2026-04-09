@@ -54,9 +54,9 @@ java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
 publishing {
     publications {
         create<MavenPublication>("maven") {
-            groupId = "com.github.fiv0"
+            groupId = "xyz.triplox"
             artifactId = "triplox"
-            version = project.version.toString()
+            version = "0.1.0-alpha"
 
             from(components["java"])
 
@@ -67,9 +67,8 @@ publishing {
 
                 licenses {
                     license {
-                        // TODO: choose a license
-                        name.set("TODO")
-                        url.set("TODO")
+                        name.set("Apache License, Version 2.0")
+                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
                     }
                 }
 

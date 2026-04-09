@@ -1,4 +1,4 @@
-(ns triplox.types
+(ns io.triplox.types
   "Conversion between Triplox wire types and Clojure types."
   (:import [java.util Map]
            [io.triplox.client DataTypeCodec$TaggedTuple]))

@@ -1,7 +1,7 @@
-(ns triplox.api
+(ns io.triplox.api
   "Clojure client API for Triplox."
-  (:require [triplox.types :as types]
-            [triplox.tx :as tx])
+  (:require [io.triplox.types :as types]
+            [io.triplox.tx :as tx])
   (:import [io.triplox.client TriploxNode Db TxKeyResult TxResultValue]))
 
 (defn connect
