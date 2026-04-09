@@ -1,6 +1,6 @@
-(ns triplox.tx-test
+(ns io.triplox.tx-test
   (:require [clojure.test :refer [deftest is testing]]
-            [triplox.tx :as tx])
+            [io.triplox.tx :as tx])
   (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 

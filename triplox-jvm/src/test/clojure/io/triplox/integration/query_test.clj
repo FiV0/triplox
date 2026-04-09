@@ -1,6 +1,6 @@
-(ns triplox.integration.query-test
+(ns io.triplox.integration.query-test
   (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
-            [triplox.api :as tc])
+            [io.triplox.api :as tc])
   (:import (io.triplox.client TriploxException)))
 
 ;; ---------------------------------------------------------------------------

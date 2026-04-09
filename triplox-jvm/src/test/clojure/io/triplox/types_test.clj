@@ -1,6 +1,6 @@
-(ns triplox.types-test
+(ns io.triplox.types-test
   (:require [clojure.test :refer [deftest is testing]]
-            [triplox.types :as types])
+            [io.triplox.types :as types])
   (:import [java.util TreeMap ArrayList]
            [io.triplox.client DataTypeCodec$TaggedTuple]))
 
