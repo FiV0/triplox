@@ -624,7 +624,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
         };
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alan".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alan".into(), attribute: kw!(:name), value: "alan".into() }];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // The entity was auto-assigned an ID in USER_PARTITION
@@ -663,7 +663,7 @@ mod tests {
             system_time: st_from_unix_epoch(2),
         };
 
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alan".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alan".into(), attribute: kw!(:name), value: "alan".into() }];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
         // Verify an EAV entry in USER_PARTITION exists
@@ -732,7 +732,7 @@ mod tests {
             system_time: st_from_unix_epoch(1000),
         };
 
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -764,7 +764,7 @@ mod tests {
                 tx_id,
                 system_time: st_from_unix_epoch(tx_id as u64 * 100),
             };
-            let tx_ops = vec![TxOp::put(vec![(kw!(:name), format!("user{}", i).into())])];
+            let tx_ops = vec![TxOp::Add { entity: format!("user{}", i).into(), attribute: kw!(:name), value: format!("user{}", i).into() }];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -784,7 +784,7 @@ mod tests {
             system_time: st_from_unix_epoch(1000),
         };
 
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
@@ -821,7 +821,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
         };
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         indexer.tx_waiter().await_tx(tx_key).await?;
@@ -845,7 +845,7 @@ mod tests {
 
         {
             let mut guard = indexer.write().await;
-            let tx_ops = vec![TxOp::put(vec![(kw!(:name), "bob".into())])];
+            let tx_ops = vec![TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() }];
 
             guard.transact_tx(tx_key_1, tx_ops).await?;
         }
@@ -893,7 +893,7 @@ mod tests {
                 tx_id,
                 system_time: st_from_unix_epoch(tx_id as u64 * 100),
             };
-            let tx_ops = vec![TxOp::put(vec![(kw!(:name), format!("user{}", i).into())])];
+            let tx_ops = vec![TxOp::Add { entity: format!("user{}", i).into(), attribute: kw!(:name), value: format!("user{}", i).into() }];
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
@@ -932,7 +932,7 @@ mod tests {
         // Index the transaction
         {
             let mut guard = indexer.write().await;
-            let tx_ops = vec![TxOp::put(vec![(kw!(:name), "shared".into())])];
+            let tx_ops = vec![TxOp::Add { entity: "shared".into(), attribute: kw!(:name), value: "shared".into() }];
 
             guard.transact_tx(tx_key, tx_ops).await?;
         }
@@ -962,7 +962,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }];
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find the auto-assigned entity ID
@@ -990,10 +990,7 @@ mod tests {
         indexer
             .transact_tx(
                 tx2,
-                vec![TxOp::put(vec![
-                    (kw!(:db/id), DataType::Long(entity_id)),
-                    (kw!(:name), "bob".into()),
-                ])],
+                vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:name), value: "bob".into() }],
             )
             .await?;
 
@@ -1046,7 +1043,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops = vec![TxOp::put(vec![(kw!(:name), "alice".into())])];
+        let tx_ops = vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }];
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find auto-assigned entity ID
@@ -1073,10 +1070,7 @@ mod tests {
         indexer
             .transact_tx(
                 tx2,
-                vec![TxOp::put(vec![
-                    (kw!(:db/id), DataType::Long(entity_id)),
-                    (kw!(:name), "alice".into()),
-                ])],
+                vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:name), value: "alice".into() }],
             )
             .await?;
 
@@ -1130,7 +1124,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops1 = vec![TxOp::put(vec![(kw!(:tags), "rust".into())])];
+        let tx_ops1 = vec![TxOp::Add { entity: "tagged".into(), attribute: kw!(:tags), value: "rust".into() }];
         indexer.transact_tx(tx1, tx_ops1).await?;
 
         // Discover auto-assigned entity ID
@@ -1193,7 +1187,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let tx_ops1 = vec![TxOp::put(vec![(kw!(:tags), "rust".into())])];
+        let tx_ops1 = vec![TxOp::Add { entity: "tagged".into(), attribute: kw!(:tags), value: "rust".into() }];
         indexer.transact_tx(tx1, tx_ops1).await?;
 
         // Discover auto-assigned entity ID

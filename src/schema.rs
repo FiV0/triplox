@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_valid() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put(vec![(kw!(:name), "Alice".into())])];
+        let ops = [TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "Alice".into() }];
         assert!(schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put(vec![(kw!(:person/age), 30_i64.into())])];
+        let ops = [TxOp::Add { entity: "person".into(), attribute: kw!(:person/age), value: 30_i64.into() }];
         let err = schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::put(vec![(kw!(:name), 42_i64.into())])];
+        let ops = [TxOp::Add { entity: "person".into(), attribute: kw!(:name), value: 42_i64.into() }];
         let err = schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
@@ -723,16 +723,17 @@ mod tests {
         assert_eq!(attr.value_type, ValueType::Ref);
 
         // Long value accepted for ref-typed attribute
-        let ops = [TxOp::put(vec![(kw!(:follows), 201_i64.into())])];
+        let ops = [TxOp::Add { entity: "follower".into(), attribute: kw!(:follows), value: 201_i64.into() }];
         assert!(schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
 
         // String in ref position is interpreted as tempid (resolved to Long)
-        let ops = [TxOp::put(vec![(
-            kw!(:follows),
-            DataType::String("some-tempid".to_string()),
-        )])];
+        let ops = [TxOp::Add {
+            entity: "follower".into(),
+            attribute: kw!(:follows),
+            value: DataType::String("some-tempid".to_string()),
+        }];
         let datoms = to_datoms(&ops, &schema);
         // After expand_tx_ops, the string becomes a TempRef which resolves to a Long,
         // so validate_and_prepare should accept it.
