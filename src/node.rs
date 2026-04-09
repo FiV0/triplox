@@ -291,7 +291,6 @@ impl<L: TxLog> QueryNode for Node<L> {
 mod tests {
     use super::*;
     use crate::ops::{DataType, TxOp};
-    use crate::schema;
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -1382,16 +1381,17 @@ mod tests {
             _ => panic!("Expected committed"),
         };
 
-        // Query for the tx entity matching this tx_id
+        // Query for the tx entity matching this tx_id, resolving the ref to its ident
         let db = node.db().await.unwrap();
         let query_str = format!(
-            "[:find ?result :where [?tx :db/txId {}] [?tx :db/txResult ?result]]",
+            "[:find ?ident \
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident]]",
             tx_key.tx_id
         );
         let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Long(schema::DB_TX_COMMITTED));
+        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/committed)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1413,13 +1413,17 @@ mod tests {
             _ => panic!("Expected aborted, got {:?}", result),
         };
 
-        // Query for the aborted tx entity
+        // Query for the aborted tx entity, resolving the ref to its ident
         let db = node.db().await.unwrap();
-        let query_str = format!("[:find ?result ?error :where [?tx :db/txId {}] [?tx :db/txResult ?result] [?tx :db.tx/error ?error]]", tx_key.tx_id);
+        let query_str = format!(
+            "[:find ?ident ?error \
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db.tx/error ?error]]",
+            tx_key.tx_id
+        );
         let result = db.query(query_str).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0][0], DataType::Long(schema::DB_TX_ABORTED));
+        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
         if let DataType::String(s) = &result[0][1] {
             assert!(
                 s.contains("nonexistent"),
