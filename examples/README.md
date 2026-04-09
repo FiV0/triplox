@@ -39,11 +39,9 @@ cargo run --bin simple-example
 
 ### Clojure
 
-From the `examples/clojure/` directory:
+See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
+with the server.
 
-```bash
-clj -M src/simple_example.clj
-```
 
 ### simple-example
 
