@@ -42,7 +42,7 @@ cargo run --bin simple-example
 From the `examples/clojure/` directory:
 
 ```bash
-clj -M -m simple-example
+clj -M src/simple_example.clj
 ```
 
 ### simple-example
