@@ -509,10 +509,10 @@
   (tc/transact *conn* [{:db/ident :heads
                         :db/valueType :db.type/long
                         :db/cardinality :db.cardinality/one}])
-  (tc/transact *conn* [{:heads 3}
-                       {:heads 1}
-                       {:heads 1}
-                       {:heads 1}])
+  (tc/transact *conn* [{:db/id "cerberus" :heads 3}
+                       {:db/id "medusa" :heads 1}
+                       {:db/id "cyclops" :heads 1}
+                       {:db/id "chimera" :heads 1}])
 
   (testing "Multiple aggregates, correct grouping"
     (is (= #{[6 1 3 4 2]}
