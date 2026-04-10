@@ -20,14 +20,14 @@
 
 (defn q
   "Execute a Datalog query. Returns a vector of vectors.
-  Optionally accepts :in binding arguments."
-  ([db query]
-   (mapv (fn [row] (mapv types/wire->clj row))
-         (.query ^Db db (pr-str query))))
-  ([db query args]
-   (let [query-args (mapv (fn [a] (QueryArg$Scalar. a)) args)]
-     (mapv (fn [row] (mapv types/wire->clj row))
-           (.query ^Db db (pr-str query) query-args)))))
+  Additional arguments bind `:in` variables as scalars."
+  [db query & args]
+  (if (seq args)
+    (let [query-args (mapv (fn [a] (QueryArg$Scalar. a)) args)]
+      (mapv (fn [row] (mapv types/wire->clj row))
+            (.query ^Db db (pr-str query) query-args)))
+    (mapv (fn [row] (mapv types/wire->clj row))
+          (.query ^Db db (pr-str query)))))
 
 (defn transact
   "Execute a transaction and wait for indexing. Returns result map."
