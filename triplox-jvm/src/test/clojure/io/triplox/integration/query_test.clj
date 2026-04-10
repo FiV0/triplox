@@ -287,17 +287,21 @@
                                :where [[?e :name "Ivan"]
                                        [?e :last-name "Ivanov"]]}))]
       ;; Exclude entities whose :name matches Ivan's :name
-      (is (= 0 (count (q {:find  '[?e]
-                          :where [['?e :name '?name]
-                                  (list 'not [ivan-id :name '?name])]})))))
+      (is (= 0 (count (q '{:find [?e]
+                           :in [?ivan-id]
+                           :where [[?e :name ?name]
+                                   (not [?ivan-id :name ?name])]}
+                         ivan-id)))))
 
     ;; Discover entity with last-name "Ivannotov"
     (let [ivannotov-id (ffirst (q '{:find [?e]
                                     :where [[?e :last-name "Ivannotov"]]}))]
       ;; Only entities whose last-name differs from Ivannotov's
-      (is (= 2 (count (q {:find  '[?e]
-                          :where [['?e :last-name '?last-name]
-                                  (list 'not [ivannotov-id :last-name '?last-name])]}))))))
+      (is (= 2 (count (q '{:find [?e]
+                           :in [?ivannotov-id]
+                           :where [[?e :last-name ?last-name]
+                                   (not [?ivannotov-id :last-name ?last-name])]}
+                         ivannotov-id))))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
@@ -364,9 +368,11 @@
     (let [ivan-id (ffirst (q '{:find [?e]
                                :where [[?e :name "Ivan"]]}))]
       (is (= #{["Ivan"]}
-             (q {:find  '[?name]
-                 :where [['?e :name '?name]
-                         [(list '= ivan-id '?e)]]}))))
+             (q '{:find [?name]
+                  :in [?ivan-id]
+                  :where [[?e :name ?name]
+                          [(= ?ivan-id ?e)]]}
+                ivan-id))))
 
     (testing "Filtered by value"
       (is (= 2 (count (q '{:find [?e]
