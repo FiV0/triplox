@@ -31,6 +31,13 @@ public class Db implements AutoCloseable {
     }
 
     /**
+     * Execute a Datalog query with input binding arguments.
+     */
+    public List<List<Object>> query(String edn, List<QueryArg> args) throws IOException {
+        return node.queryInternal(this, edn, args).rows();
+    }
+
+    /**
      * Release this DB snapshot on the server.
      */
     @Override

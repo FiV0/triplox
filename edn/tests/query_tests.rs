@@ -404,3 +404,39 @@ fn round_trip_multiple_predicates() {
 fn round_trip_or_and() {
     assert_round_trip("[:find ?x :where (or (and [?x :foo/bar _] [?x :foo/baz _]) [?x _ 10])]");
 }
+
+#[test]
+fn can_parse_map_form_in_vars() {
+    // Single :in variable in map form
+    let single = "{:find [?e] :in [?name] :where [[?e :name ?name]]}";
+    let parsed = parse_query(single).expect("map-form :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var()]);
+
+    // Multiple :in variables in map form
+    let multi = "{:find [?e] :in [?name ?age] :where [[?e :name ?name] [?e :age ?age]]}";
+    let parsed = parse_query(multi).expect("map-form multi :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var(), "?age".to_var()]);
+
+    // Empty :in in map form
+    let empty = "{:find [?e] :in [] :where [[?e :name ?name]]}";
+    let parsed = parse_query(empty).expect("map-form empty :in should parse");
+    assert!(parsed.in_vars.is_empty());
+}
+
+#[test]
+fn can_parse_list_form_in_vars() {
+    // Single :in variable in list form
+    let single = "[:find ?e :in ?name :where [?e :name ?name]]";
+    let parsed = parse_query(single).expect("list-form :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var()]);
+
+    // Multiple :in variables in list form
+    let multi = "[:find ?e :in ?name ?age :where [?e :name ?name] [?e :age ?age]]";
+    let parsed = parse_query(multi).expect("list-form multi :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var(), "?age".to_var()]);
+
+    // Empty :in in list form (no variables between :in and the next clause)
+    let empty = "[:find ?e :in :where [?e :name ?name]]";
+    let parsed = parse_query(empty).expect("list-form empty :in should parse");
+    assert!(parsed.in_vars.is_empty());
+}

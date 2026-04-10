@@ -212,6 +212,16 @@ impl TxOp {
     }
 }
 
+/// A query input argument corresponding to an `:in` binding form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueryArg {
+    Scalar(DataType),
+    // TODO: Collection, Tuple, Relation are not yet supported in the EDN parser
+    Collection(Vec<DataType>),
+    Tuple(Vec<DataType>),
+    Relation(Vec<Vec<DataType>>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatomOp {
     Assert,

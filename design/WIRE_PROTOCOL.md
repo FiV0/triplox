@@ -147,17 +147,24 @@ Sent after: AuthenticationOk, DbOpened, DbClosed, DataRow (end of query results)
 
 Execute a one-shot Datalog query against an open DB snapshot.
 
-| Field        | Type   | Description                          |
-|--------------|--------|--------------------------------------|
-| query_string | String | Datalog query in EDN text            |
-| db_id        | u32    | DB snapshot handle to query against  |
+| Field        | Type              | Description                             |
+|--------------|-------------------|-----------------------------------------|
+| query_string | String            | Datalog query in EDN text               |
+| db_id        | u32               | DB snapshot handle to query against     |
+| args         | Vec\<QueryArg\>   | Input binding arguments (see §11.10)    |
 
-The client must open a DB with OpenDb before issuing a Query.
+The client must open a DB with OpenDb before issuing a Query. The `args` field provides values for variables declared in the query's `:in` clause. The number and order of args must match the `:in` variables. For queries without `:in`, pass an empty vector (count = 0).
 
 Example query string:
 ```edn
 {:find [?name ?age] :where [[?e :person/name ?name] [?e :person/age ?age]]}
 ```
+
+Example with `:in` binding:
+```edn
+[:find ?e ?name :in ?name :where [?e :person/name ?name]]
+```
+with args: `["alice"]`
 
 ### 4.9 RowDescription (Backend, `T`)
 
@@ -243,10 +250,11 @@ Returned for awaited transactions (Execute with `await_indexing = true`). Maps d
 
 Start a live push subscription. Blocks the connection until cancelled.
 
-| Field        | Type   | Description                                                    |
-|--------------|--------|----------------------------------------------------------------|
-| query_string | String | Datalog query in EDN text                                      |
-| db_id        | u32    | DB snapshot; subscription streams changes after this point     |
+| Field        | Type              | Description                                                    |
+|--------------|-------------------|----------------------------------------------------------------|
+| query_string | String            | Datalog query in EDN text                                      |
+| db_id        | u32               | DB snapshot; subscription streams changes after this point     |
+| args         | Vec\<QueryArg\>   | Input binding arguments (see §11.10)                           |
 
 The client must open a DB with OpenDb before subscribing. The subscription uses the DB's tx_id as the starting point: initial results are computed from that snapshot, and subsequent pushes contain changes from later transactions.
 
@@ -706,6 +714,7 @@ status : u8
 ```
 query_string : String
 db_id        : u32
+args         : Vec<QueryArg>
 ```
 
 **RowDescription** (`T`):
@@ -755,6 +764,7 @@ error_message : Option<String>
 ```
 query_string : String
 db_id        : u32
+args         : Vec<QueryArg>
 ```
 
 **DataBatchComplete** (`B`):
@@ -790,6 +800,28 @@ hint     : Option<String>
 ```
 (empty)
 ```
+
+### 11.10 QueryArg Encoding
+
+A `QueryArg` value is encoded as a 1-byte variant tag followed by the variant payload:
+
+| Tag | Name       | Payload                                              |
+|-----|------------|------------------------------------------------------|
+| 0   | Scalar     | `DataType` (one tagged value)                        |
+| 1   | Collection | `Vec<DataType>` (u32 count + elements)               |
+| 2   | Tuple      | `Vec<DataType>` (u32 count + elements)               |
+| 3   | Relation   | `u32` row count + `Vec<DataType>` per row            |
+
+**Binding forms:**
+
+| QueryArg   | EDN `:in` syntax | Description                           |
+|------------|------------------|---------------------------------------|
+| Scalar     | `?x`             | Single value for one variable         |
+| Collection | `[?x ...]`       | Multiple values for one variable      |
+| Tuple      | `[?x ?y]`        | One row of multiple variables         |
+| Relation   | `[[?x ?y]]`      | Multiple rows of multiple variables   |
+
+> **Note**: Only Scalar bindings are currently implemented. Collection, Tuple, and Relation are reserved for future use.
 
 ---
 

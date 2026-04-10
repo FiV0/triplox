@@ -71,4 +71,9 @@ public final class MessageTypes {
     public static final byte ENTITY_REF_IDENT   = (byte) 0x92;
     public static final byte ENTITY_REF_LOOKUP  = (byte) 0x93;
 
+    // QueryArg tag bytes
+    public static final byte QUERY_ARG_SCALAR     = 0;
+    public static final byte QUERY_ARG_COLLECTION = 1;
+    public static final byte QUERY_ARG_TUPLE      = 2;
+    public static final byte QUERY_ARG_RELATION   = 3;
 }

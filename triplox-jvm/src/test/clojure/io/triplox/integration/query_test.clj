@@ -34,11 +34,11 @@
 (use-fixtures :each with-conn with-people-schema)
 
 (defn q
-  "Open a DB, run query, close DB, return results as a set."
-  ([query-edn] (q *conn* query-edn))
-  ([conn query-edn]
-   (with-open [db (tc/db conn)]
-     (set (tc/q db query-edn)))))
+  "Open a DB, run query, close DB, return results as a set.
+  Additional arguments bind `:in` variables as scalars."
+  [query-edn & args]
+  (with-open [db (tc/db *conn*)]
+    (set (apply tc/q db query-edn args))))
 
 (defn q-ordered
   "Open a DB, run query, close DB, return results as a vector (preserves order)."
@@ -287,17 +287,21 @@
                                :where [[?e :name "Ivan"]
                                        [?e :last-name "Ivanov"]]}))]
       ;; Exclude entities whose :name matches Ivan's :name
-      (is (= 0 (count (q {:find  '[?e]
-                          :where [['?e :name '?name]
-                                  (list 'not [ivan-id :name '?name])]})))))
+      (is (= 0 (count (q '{:find [?e]
+                           :in [?ivan-id]
+                           :where [[?e :name ?name]
+                                   (not [?ivan-id :name ?name])]}
+                         ivan-id)))))
 
     ;; Discover entity with last-name "Ivannotov"
     (let [ivannotov-id (ffirst (q '{:find [?e]
                                     :where [[?e :last-name "Ivannotov"]]}))]
       ;; Only entities whose last-name differs from Ivannotov's
-      (is (= 2 (count (q {:find  '[?e]
-                          :where [['?e :last-name '?last-name]
-                                  (list 'not [ivannotov-id :last-name '?last-name])]}))))))
+      (is (= 2 (count (q '{:find [?e]
+                           :in [?ivannotov-id]
+                           :where [[?e :last-name ?last-name]
+                                   (not [?ivannotov-id :last-name ?last-name])]}
+                         ivannotov-id))))))
 
   (testing "not can come before positive clauses"
     (is (= 2 (count (q '{:find [?e]
@@ -364,9 +368,11 @@
     (let [ivan-id (ffirst (q '{:find [?e]
                                :where [[?e :name "Ivan"]]}))]
       (is (= #{["Ivan"]}
-             (q {:find  '[?name]
-                 :where [['?e :name '?name]
-                         [(list '= ivan-id '?e)]]}))))
+             (q '{:find [?name]
+                  :in [?ivan-id]
+                  :where [[?e :name ?name]
+                          [(= ?ivan-id ?e)]]}
+                ivan-id))))
 
     (testing "Filtered by value"
       (is (= 2 (count (q '{:find [?e]
@@ -577,3 +583,140 @@
       (is (= 5 (count result)))
       (is (= ["Dave" 10] (first result)))
       (is (= ["Eve" 50] (last result))))))
+
+(deftest test-query-with-arguments
+  (tc/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
+                       {:name "Petr" :last-name "Petrov"}])
+
+  (testing "Can query entity by single field"
+    (is (= #{["Ivan" "Ivanov"]}
+           (q '{:find [?name ?last-name]
+                :in [?name]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              "Ivan")))
+
+    (is (= #{["Petr" "Petrov"]}
+           (q '{:find [?name ?last-name]
+                :in [?name]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              "Petr"))))
+
+  (testing "Can query entity by entity position"
+    ;; Collection binding `[[?e ...]]` — not yet supported.
+    #_
+    (is (= #{["Ivan"]
+             ["Petr"]}
+           (q '{:find [?name]
+                :in [[?e ...]]
+                :where [[?e :name ?name]]}
+              [:ivan :petr])))
+
+    #_
+    (is (= #{["Ivan" "Ivanov"]
+             ["Petr" "Petrov"]}
+           (q '{:find [?name ?last-name]
+                :in [[?e ...]]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              [:ivan :petr]))))
+
+  (testing "Can match on both entity and value position"
+    (is (= #{["Ivan" "Ivanov"]}
+           (q '{:find [?name ?last-name]
+                :in [?name ?last-name]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              "Ivan" "Ivanov")))
+
+    ;; Inline `:args` clause — not yet supported.
+    #_
+    (is (= #{}
+           (q '{:find [?name]
+                :in [?e ?name]
+                :where [[?e :name ?name]]
+                :args [{:e :ivan :name "Petr"}]}
+              :ivan "Petr"))))
+
+  (testing "Can query entity by single field with several arguments"
+    ;; Collection binding `[[?name ...]]` — not yet supported.
+    #_
+    (is (= #{["Ivan"] ["Petr"]}
+           (q '{:find [?name]
+                :in [[?name ...]]
+                :where [[?e :name ?name]]}
+              ["Ivan" "Petr"]))))
+
+  (testing "Can query entity by single field with literals"
+    ;; Collection bindings — not yet supported.
+    #_
+    (is (= #{["Ivan"]}
+           (q '{:find [?name]
+                :in [[?name ...]]
+                :where [[?e :name ?name]
+                        [?e :last-name "Ivanov"]]}
+              ["Ivan" "Petr"]))))
+
+  (testing "Can query entity by non existent argument"
+    (is (= #{}
+           (q '{:find [?name]
+                :in [?name]
+                :where [[?e :name ?name]]}
+              "Bob"))))
+
+  (testing "Can query entity with empty arguments"
+    (is (= #{["Ivan"] ["Petr"]}
+           (q '{:find [?name]
+                :in []
+                :where [[?e :name ?name]]}))))
+
+  (testing "Can query entity with tuple arguments"
+    ;; Tuple binding `[[?name ?last-name]]` — not yet supported.
+    #_
+    (is (= #{["Ivan"]}
+           (q '{:find [?name]
+                :in [[?name ?last-name]]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              ["Ivan" "Ivanov"]))))
+
+  (testing "Can query entity with collection arguments"
+    ;; Relation binding `[[[?name ?last-name]]]` — not yet supported.
+    #_
+    (is (= #{["Ivan"] ["Petr"]}
+           (q '{:find [?name]
+                :in [[[?name ?last-name]]]
+                :where [[?e :name ?name]
+                        [?e :last-name ?last-name]]}
+              [["Ivan" "Ivanov"] ["Petr" "Petrov"]]))))
+
+  (testing "Can query predicates based on arguments alone"
+    ;; Inline `:args` clause — not yet supported.
+    #_
+    (is (= #{["Ivan"]}
+           (q '{:find [?name]
+                :where [[(re-find #"I" ?name)]]
+                :args [{:name "Ivan"} {:name "Petr"}]})))
+
+    ;; Collection binding — not yet supported.
+    #_
+    (is (= #{["Ivan"] ["Petr"]}
+           (q '{:find [?name]
+                :in [[?name ...]]
+                :where [[(string? ?name)]]}
+              ["Ivan" "Petr"])))
+
+    ;; Range constraints on a scalar `:in` binding — supported.
+    (testing "Can use range constraints on arguments"
+      (is (= #{}
+             (q '{:find [?age]
+                  :in [?age]
+                  :where [[(>= ?age 21)]]}
+                20)))
+
+      (is (= #{[22]}
+             (q '{:find [?age]
+                  :in [?age]
+                  :where [[(>= ?age 21)]]}
+                22))))))

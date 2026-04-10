@@ -9,7 +9,7 @@ use crate::file_log::FileLog;
 use crate::indexer::{latest_tx_key_from_snapshot, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use crate::memory_log::MemoryLog;
-use crate::ops::{Entid, TxOp};
+use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
 use crate::slate::{in_memory_slate, local_slate};
@@ -57,6 +57,12 @@ impl IntoQuery for String {
 #[allow(async_fn_in_trait)]
 pub trait Database {
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
+
+    async fn query_with_args(
+        &self,
+        query: &ParsedQuery,
+        args: &[QueryArg],
+    ) -> Result<QueryResult, Error>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -118,19 +124,29 @@ impl DB {
 }
 
 impl Database for DB {
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let parsed = query.into_query()?;
+        self.query_with_args(&parsed, &[]).await
+    }
+
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let query = query.into_query()?;
-        validate_query(&query)?;
+    async fn query_with_args(
+        &self,
+        query: &ParsedQuery,
+        args: &[QueryArg],
+    ) -> Result<QueryResult, Error> {
+        validate_query(query, args)?;
 
         let snapshot = self.snapshot.clone();
         let handle = self.handle.clone();
         let ident_map = self.ident_map.clone();
+        let query = query.clone();
+        let args = args.to_vec();
         let as_of = self.tx_eid;
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, snapshot, handle, &ident_map, as_of)
+            execute_query(&query, &args, snapshot, handle, &ident_map, as_of)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -486,6 +502,168 @@ mod tests {
             assert_eq!(row.len(), 2);
             assert_eq!(row[0], row[1], "?a and ?b should be equal in {:?}", row);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_with_scalar_in_bindings() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("ivan".to_string())),
+                (kw!(:name), "Ivan".into()),
+                (kw!(:email), "ivan@example.com".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("petr".to_string())),
+                (kw!(:name), "Petr".into()),
+                (kw!(:email), "petr@example.com".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let parsed = edn::parse::parse_query(
+            "[:find ?name ?email :in ?name :where [?e :name ?name] [?e :email ?email]]",
+        )
+        .unwrap();
+
+        // Bind ?name to "Petr": only Petr's row should match.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Petr".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![
+                DataType::String("Petr".to_string()),
+                DataType::String("petr@example.com".to_string()),
+            ]]
+        );
+
+        // Bind ?name to "Ivan": only Ivan's row.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Ivan".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![
+                DataType::String("Ivan".to_string()),
+                DataType::String("ivan@example.com".to_string()),
+            ]]
+        );
+
+        // A name with no match yields no rows.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Bob".into())])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Multiple scalar bindings: constrain on both name and email.
+        let parsed = edn::parse::parse_query(
+            "[:find ?e :in ?name ?email :where [?e :name ?name] [?e :email ?email]]",
+        )
+        .unwrap();
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[
+                    QueryArg::Scalar("Petr".into()),
+                    QueryArg::Scalar("petr@example.com".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Mismatched pair: no rows.
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[
+                    QueryArg::Scalar("Petr".into()),
+                    QueryArg::Scalar("ivan@example.com".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_with_variable_limit_in_binding() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Insert three named entities so LIMIT can actually truncate.
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("a".to_string())),
+                (kw!(:name), "Alice".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("b".to_string())),
+                (kw!(:name), "Bob".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("c".to_string())),
+                (kw!(:name), "Carol".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let parsed = edn::parse::parse_query(
+            "[:find ?name :in ?limit :where [?e :name ?name] :order [?name :asc] :limit ?limit]",
+        )
+        .unwrap();
+
+        // Variable limit resolved to 2.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(2))])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                vec![DataType::String("Alice".to_string())],
+                vec![DataType::String("Bob".to_string())],
+            ]
+        );
+
+        // Zero limit yields an empty result.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(0))])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Non-Long binding for a variable limit is rejected.
+        let err = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("two".into())])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be bound to a Long"),
+            "unexpected error: {}",
+            err
+        );
+
+        // Negative limit is rejected.
+        let err = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(-1))])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("non-negative"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -456,8 +456,9 @@ async fn handle_connection<L: TxLog + 'static>(
             FrontendMessage::Query {
                 query_string,
                 db_id,
+                args,
             } => {
-                match handle_query(&conn_state, &query_string, db_id).await {
+                match handle_query(&conn_state, &query_string, db_id, &args).await {
                     Ok((result, find_vars)) => {
                         // Send RowDescription
                         let columns: Vec<ColumnDescription> = find_vars
@@ -600,6 +601,7 @@ async fn handle_query(
     conn_state: &ConnectionState,
     query_string: &str,
     db_id: u32,
+    args: &[crate::ops::QueryArg],
 ) -> Result<(QueryResult, Vec<String>)> {
     let db = conn_state
         .get_db(db_id)
@@ -613,7 +615,7 @@ async fn handle_query(
         _ => vec![],
     };
 
-    let result = db.query(&parsed).await?;
+    let result = db.query_with_args(&parsed, args).await?;
     Ok((result, find_vars))
 }
 
