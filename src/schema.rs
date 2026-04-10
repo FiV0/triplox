@@ -594,7 +594,10 @@ impl Schema {
     fn add_retract_conflicts(&self, aev: &AevValidationMap) -> Vec<ValidationConflict> {
         let mut conflicts = Vec::new();
 
-        for ((attribute_id, _attribute), evs) in aev {
+        for ((attribute_id, attribute), evs) in aev {
+            if attribute.multival {
+                continue;
+            }
             let attribute_ident = self
                 .entid_map
                 .get(attribute_id)
@@ -1207,5 +1210,33 @@ mod tests {
             .validate_datoms(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("multiple values"));
+    }
+
+    #[test]
+    fn test_validate_datoms_allows_add_retract_overlap_for_cardinality_many() {
+        let mut schema = bootstrapped_schema();
+        let ops = [schema_attribute_with_cardinality(
+            kw!(:tags),
+            "string",
+            "many",
+        )];
+        let datoms = to_datoms(&ops, &schema);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+
+        let ops = [
+            TxOp::Add {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:tags),
+                value: "rust".into(),
+            },
+            TxOp::Retract {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:tags),
+                value: "rust".into(),
+            },
+        ];
+        let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
+        assert!(!validation.schema_changes_detected);
     }
 }
