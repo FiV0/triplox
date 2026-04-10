@@ -25,9 +25,6 @@ pub struct GenericPrefixExtender {
 }
 
 impl GenericPrefixExtender {
-    /// `participating_levels` must be sorted strictly ascending. `build_slate_prefix`
-    /// iterates it and breaks at the first not-yet-bound level; out-of-order levels
-    /// would silently drop bound components from the seek key.
     pub fn new(
         slate: Arc<slatedb::DbSnapshot>,
         handle: Handle,

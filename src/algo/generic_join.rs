@@ -127,11 +127,6 @@ pub struct FromPrefixExtender {
 }
 
 impl FromPrefixExtender {
-    /// `participating_levels` must be sorted strictly ascending, and `partial_prefix`
-    /// must be indexed in the same order (i.e. `partial_prefix[i]` is the value at
-    /// `participating_levels[i]`). `is_prefix_matching` / `next_level_index` break at
-    /// the first not-yet-bound level, so an out-of-order list would silently skip
-    /// earlier bound positions.
     pub fn new(participating_levels: Vec<usize>, partial_prefix: Prefix) -> Self {
         debug_assert!(
             participating_levels.windows(2).all(|w| w[0] < w[1]),
@@ -216,9 +211,6 @@ pub struct FromPrefixesExtender {
 }
 
 impl FromPrefixesExtender {
-    /// `participating_levels` must be sorted strictly ascending, and every entry in
-    /// `partial_prefixes` must be indexed in that same order. See `FromPrefixExtender::new`
-    /// for the rationale.
     pub fn new(participating_levels: Vec<usize>, partial_prefixes: Vec<Prefix>) -> Self {
         debug_assert!(
             participating_levels.windows(2).all(|w| w[0] < w[1]),
