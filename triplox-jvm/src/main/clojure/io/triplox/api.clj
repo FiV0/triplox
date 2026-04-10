@@ -19,8 +19,7 @@
    (.openDb ^TriploxNode conn (when tx-id (long tx-id)))))
 
 (defn q
-  "Execute a Datalog query. Returns a vector of vectors.
-  Additional arguments bind `:in` variables as scalars."
+  "Execute a Datalog query. Returns a vector of vectors."
   [db query & args]
   (if (seq args)
     (let [query-args (mapv (fn [a] (QueryArg$Scalar. a)) args)]
