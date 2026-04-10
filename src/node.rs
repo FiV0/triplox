@@ -595,6 +595,78 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_with_variable_limit_in_binding() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Insert three named entities so LIMIT can actually truncate.
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("a".to_string())),
+                (kw!(:name), "Alice".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("b".to_string())),
+                (kw!(:name), "Bob".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("c".to_string())),
+                (kw!(:name), "Carol".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let parsed = edn::parse::parse_query(
+            "[:find ?name :in ?limit :where [?e :name ?name] :order [?name :asc] :limit ?limit]",
+        )
+        .unwrap();
+
+        // Variable limit resolved to 2.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(2))])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                vec![DataType::String("Alice".to_string())],
+                vec![DataType::String("Bob".to_string())],
+            ]
+        );
+
+        // Zero limit yields an empty result.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(0))])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Non-Long binding for a variable limit is rejected.
+        let err = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("two".into())])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be bound to a Long"),
+            "unexpected error: {}",
+            err
+        );
+
+        // Negative limit is rejected.
+        let err = db
+            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(-1))])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("non-negative"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;

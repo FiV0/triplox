@@ -446,7 +446,7 @@ peg::parser! {
 
         rule query_part() -> query::QueryPart
             = __() ":find" fs:find_spec() { query::QueryPart::FindSpec(fs) }
-            / __() ":in" in_vars:variable()+ { query::QueryPart::InVars(in_vars) }
+            / __() ":in" in_vars:variable()* { query::QueryPart::InVars(in_vars) }
             / __() ":limit" l:limit() { query::QueryPart::Limit(l) }
             / __() ":order" os:order()+ { query::QueryPart::Order(os) }
             / __() ":where" ws:where_clause()+ { query::QueryPart::WhereClauses(ws) }

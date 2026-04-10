@@ -429,3 +429,21 @@ fn can_parse_map_form_with_vars() {
     let parsed = parse_query(s).expect("map-form :with should parse");
     assert_eq!(parsed.with, vec!["?name".to_var()]);
 }
+
+#[test]
+fn can_parse_list_form_in_vars() {
+    // Single :in variable in list form
+    let single = "[:find ?e :in ?name :where [?e :name ?name]]";
+    let parsed = parse_query(single).expect("list-form :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var()]);
+
+    // Multiple :in variables in list form
+    let multi = "[:find ?e :in ?name ?age :where [?e :name ?name] [?e :age ?age]]";
+    let parsed = parse_query(multi).expect("list-form multi :in should parse");
+    assert_eq!(parsed.in_vars, vec!["?name".to_var(), "?age".to_var()]);
+
+    // Empty :in in list form (no variables between :in and the next clause)
+    let empty = "[:find ?e :in :where [?e :name ?name]]";
+    let parsed = parse_query(empty).expect("list-form empty :in should parse");
+    assert!(parsed.in_vars.is_empty());
+}

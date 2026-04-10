@@ -1066,14 +1066,24 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
         resolve_order_columns(orders, &query.find_spec)?;
     }
 
-    // Variable limits: resolve from :in bindings if possible
+    // Variable limits must be bound in :in to a non-negative Long.
     if let Limit::Variable(v) = &query.limit {
-        let in_idx = query.in_vars.iter().position(|iv| iv == v);
-        if in_idx.is_none() {
-            return Err(anyhow::anyhow!(
-                "Variable limit {} is not bound in :in clause",
-                v
-            ));
+        let idx = query.in_vars.iter().position(|iv| iv == v).ok_or_else(|| {
+            anyhow::anyhow!("Variable limit {} is not bound in :in clause", v)
+        })?;
+        match &args[idx] {
+            QueryArg::Scalar(DataType::Long(n)) => {
+                if *n < 0 {
+                    return Err(anyhow::anyhow!("Limit must be non-negative, got {}", n));
+                }
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Variable limit {} must be bound to a Long, got {:?}",
+                    v,
+                    other
+                ));
+            }
         }
     }
 
@@ -1167,27 +1177,22 @@ fn compile_where_clause(
 }
 
 /// Resolve a variable limit from :in bindings.
-fn resolve_limit(limit: &Limit, in_vars: &[Variable], args: &[QueryArg]) -> Result<Limit, Error> {
+///
+/// `validate_query` guarantees the variable is present in `in_vars` and bound
+/// to a non-negative `Long`, so this is infallible for validated queries.
+fn resolve_limit(limit: &Limit, in_vars: &[Variable], args: &[QueryArg]) -> Limit {
     match limit {
         Limit::Variable(v) => {
-            let idx = in_vars.iter().position(|iv| iv == v).ok_or_else(|| {
-                anyhow::anyhow!("Variable limit {} is not bound in :in clause", v)
-            })?;
+            let idx = in_vars
+                .iter()
+                .position(|iv| iv == v)
+                .expect("validate_query ensures variable limit is in :in");
             match &args[idx] {
-                QueryArg::Scalar(DataType::Long(n)) => {
-                    if *n < 0 {
-                        return Err(anyhow::anyhow!("Limit must be non-negative, got {}", n));
-                    }
-                    Ok(Limit::Fixed(*n as u64))
-                }
-                other => Err(anyhow::anyhow!(
-                    "Variable limit {} must be bound to a Long, got {:?}",
-                    v,
-                    other
-                )),
+                QueryArg::Scalar(DataType::Long(n)) => Limit::Fixed(*n as u64),
+                _ => unreachable!("validate_query ensures variable limit binds to a Long"),
             }
         }
-        other => Ok(other.clone()),
+        other => other.clone(),
     }
 }
 
@@ -1210,20 +1215,15 @@ pub fn execute_query(
 
     for (in_var, arg) in query.in_vars.iter().zip(args.iter()) {
         let level = *var_index.get(in_var).expect("in_var must be in join order");
-        match arg {
-            QueryArg::Scalar(dt) => {
-                let encoded = dt.encode();
-                extenders.push(Box::new(SingleLevelExtender::new(
-                    vec![bytes::Bytes::from(encoded)],
-                    level,
-                )));
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Only scalar bindings are currently supported"
-                ));
-            }
-        }
+        // validate_query ensures every arg is a Scalar; non-scalars are rejected there.
+        let QueryArg::Scalar(dt) = arg else {
+            unreachable!("validate_query ensures only scalar bindings reach execute_query");
+        };
+        let encoded = dt.encode();
+        extenders.push(Box::new(SingleLevelExtender::new(
+            vec![bytes::Bytes::from(encoded)],
+            level,
+        )));
     }
 
     // 3. Compile WHERE patterns into extenders
@@ -1253,7 +1253,7 @@ pub fn execute_query(
     };
 
     // 6. Resolve variable limit from :in bindings and apply ORDER BY + LIMIT
-    let resolved_limit = resolve_limit(&query.limit, &query.in_vars, args)?;
+    let resolved_limit = resolve_limit(&query.limit, &query.in_vars, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }
 
