@@ -574,7 +574,6 @@ fn determine_index_types(
     pattern: &Pattern,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
-    participating_levels: &[usize],
 ) -> Result<Vec<IndexType>, Error> {
     let pat_vars = pattern_variables(pattern);
 
@@ -654,7 +653,7 @@ pub fn compile_pattern(
         .collect();
 
     // Determine index types for each level
-    let index_types = determine_index_types(pattern, join_order, var_index, &participating_levels)?;
+    let index_types = determine_index_types(pattern, join_order, var_index)?;
 
     // Compute constant prefix (for patterns with constant entity or value)
     let constant_prefix = if !index_types.is_empty() {
