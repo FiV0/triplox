@@ -247,13 +247,8 @@ impl ClientDb {
         self.tx_id
     }
 
-    /// Execute a query using a raw EDN string.
-    pub async fn query_edn(&self, edn: &str) -> Result<QueryResult> {
-        self.query_edn_with_args(edn, vec![]).await
-    }
-
-    /// Execute a query with input binding arguments.
-    pub async fn query_edn_with_args(
+    /// Send a raw EDN query string with input binding arguments over the wire.
+    async fn query_edn_with_args(
         &self,
         edn: &str,
         args: Vec<QueryArg>,
