@@ -26,6 +26,7 @@ Prefer one-line TODOs.
 ## Git
 
 Only commit and push when explicitly asked to by the user.
+End Codex-created commits with `Co-authored-by: Codex <noreply@openai.com>`.
 
 ## Testing
 
