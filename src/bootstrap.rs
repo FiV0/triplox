@@ -82,8 +82,10 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             let mut boot_pm = PartitionMap::new();
             let datoms = tx::resolve_tempids(&expanded, &mut boot_pm).unwrap();
 
-            // Validate against pre-built schema (type-checking works, no fallback needed)
-            let update = bootstrap_schema.validate_and_prepare(&datoms).unwrap();
+            // Validate against pre-built schema, then derive the bootstrap schema delta.
+            let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();
+            assert!(validation.schema_changes_detected);
+            let update = Schema::default().prepare_schema_update(&datoms).unwrap();
 
             // Verify: tx-derived schema changes must match pre-built schema
             let mut schema_from_tx = Schema::default();
