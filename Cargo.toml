@@ -45,3 +45,8 @@ triplox = { path = ".", features = ["test-helpers"] }
 
 [lints.rust]
 unused = "allow"
+
+# debug_assertions are on by default for dev/test; enable them for bench too so
+# invariant checks run everywhere except release binaries.
+[profile.bench]
+debug-assertions = true
