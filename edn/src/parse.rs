@@ -455,7 +455,6 @@ peg::parser! {
         rule map_query_part() -> query::QueryPart
             = __() ":find" __() "[" fs:find_spec() "]" __() { query::QueryPart::FindSpec(fs) }
             / __() ":in" __() "[" __() in_vars:variable()* "]" __() { query::QueryPart::InVars(in_vars) }
-            / __() ":with" __() "[" __() with_vars:variable()* "]" __() { query::QueryPart::WithVars(with_vars) }
             / __() ":where" __() "[" ws:where_clause()+ "]" __() { query::QueryPart::WhereClauses(ws) }
             / __() ":order" __() "[" os:order()+ "]" __() { query::QueryPart::Order(os) }
             / __() ":limit" l:limit() { query::QueryPart::Limit(l) }

@@ -424,13 +424,6 @@ fn can_parse_map_form_in_vars() {
 }
 
 #[test]
-fn can_parse_map_form_with_vars() {
-    let s = "{:find [?e] :with [?name] :where [[?e :name ?name]]}";
-    let parsed = parse_query(s).expect("map-form :with should parse");
-    assert_eq!(parsed.with, vec!["?name".to_var()]);
-}
-
-#[test]
 fn can_parse_list_form_in_vars() {
     // Single :in variable in list form
     let single = "[:find ?e :in ?name :where [?e :name ?name]]";
