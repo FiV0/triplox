@@ -454,6 +454,55 @@ mod tests {
         );
     }
 
+    /// Regression: self-join on a value variable.
+    ///
+    /// Query: `[:find ?a ?b :where [?a :name ?x] [?b :name ?x]]`
+    ///
+    /// Join order resolves to `[?a, ?x, ?b]`, so for the second pattern
+    /// `[?b :name ?x]` the entity variable (`?b`, level 2) sits at a *higher*
+    /// level than the value variable (`?x`, level 1). Before the fix to
+    /// `compile_pattern`, `participating_levels` was populated in pattern
+    /// order `[2, 1]` — descending. `build_slate_prefix` iterates until it
+    /// hits an out-of-range level and then breaks, so it broke on level 2
+    /// before ever appending `?x` at level 0 of its own key, producing an
+    /// AVE seek prefix of `[AVE][attr]` rather than `[AVE][attr][value]`.
+    /// The second pattern then proposed entities for *every* `:name`
+    /// assertion instead of just those sharing `?x`, and the join emitted
+    /// cross-product garbage like `(alice, bob)` and `(bob, alice)`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_self_join_on_value_variable() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            },
+            TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            },
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?a ?b :where [?a :name ?x] [?b :name ?x]]")
+            .await
+            .unwrap();
+
+        // Only same-entity pairs should match: (alice, alice) and (bob, bob).
+        assert_eq!(result.len(), 2, "expected 2 self-pairs, got {:?}", result);
+        for row in &result {
+            assert_eq!(row.len(), 2);
+            assert_eq!(row[0], row[1], "?a and ?b should be equal in {:?}", row);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
