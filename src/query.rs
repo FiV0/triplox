@@ -646,11 +646,13 @@ pub fn compile_pattern(
 ) -> Result<GenericPrefixExtender, Error> {
     let pat_vars = pattern_variables(pattern);
 
-    // Determine participating levels
-    let participating_levels: Vec<usize> = pat_vars
+    // Determine participating levels (sorted ascending — build_slate_prefix relies on
+    // ordered iteration to append already-bound components in index-key layout order).
+    let mut participating_levels: Vec<usize> = pat_vars
         .iter()
         .filter_map(|v| var_index.get(v).copied())
         .collect();
+    participating_levels.sort_unstable();
 
     // Determine index types for each level
     let index_types = determine_index_types(pattern, join_order, var_index)?;

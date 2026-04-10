@@ -45,3 +45,6 @@ triplox = { path = ".", features = ["test-helpers"] }
 
 [lints.rust]
 unused = "allow"
+
+[profile.bench]
+debug-assertions = true

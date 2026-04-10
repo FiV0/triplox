@@ -455,6 +455,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_self_join_on_value_variable() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            },
+            TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            },
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?a ?b :where [?a :name ?x] [?b :name ?x]]")
+            .await
+            .unwrap();
+
+        // Only same-entity pairs should match: (alice, alice) and (bob, bob).
+        assert_eq!(result.len(), 2, "expected 2 self-pairs, got {:?}", result);
+        for row in &result {
+            assert_eq!(row.len(), 2);
+            assert_eq!(row[0], row[1], "?a and ?b should be equal in {:?}", row);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;

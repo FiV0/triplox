@@ -128,6 +128,11 @@ pub struct FromPrefixExtender {
 
 impl FromPrefixExtender {
     pub fn new(participating_levels: Vec<usize>, partial_prefix: Prefix) -> Self {
+        debug_assert!(
+            participating_levels.windows(2).all(|w| w[0] < w[1]),
+            "participating_levels must be sorted strictly ascending, got {:?}",
+            participating_levels
+        );
         let level_set = participating_levels.iter().cloned().collect();
         Self {
             participating_levels,
@@ -207,6 +212,11 @@ pub struct FromPrefixesExtender {
 
 impl FromPrefixesExtender {
     pub fn new(participating_levels: Vec<usize>, partial_prefixes: Vec<Prefix>) -> Self {
+        debug_assert!(
+            participating_levels.windows(2).all(|w| w[0] < w[1]),
+            "participating_levels must be sorted strictly ascending, got {:?}",
+            participating_levels
+        );
         let level_set = participating_levels.iter().cloned().collect();
         Self {
             participating_levels,

@@ -34,6 +34,12 @@ impl GenericPrefixExtender {
         participating_levels: Vec<usize>,
         as_of: i64,
     ) -> Self {
+        debug_assert!(
+            participating_levels.windows(2).all(|w| w[0] < w[1]),
+            "participating_levels must be sorted strictly ascending, got {:?}",
+            participating_levels
+        );
+
         let mut full_prefix = Vec::new();
         codec::encode_i64(attribute_id, &mut full_prefix);
         full_prefix.extend_from_slice(&constant_prefix);
