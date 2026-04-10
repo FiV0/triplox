@@ -56,16 +56,13 @@ impl IntoQuery for String {
 
 #[allow(async_fn_in_trait)]
 pub trait Database {
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
+
     async fn query_with_args(
         &self,
         query: &ParsedQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error>;
-
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let parsed = query.into_query()?;
-        self.query_with_args(&parsed, &[]).await
-    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -127,6 +124,11 @@ impl DB {
 }
 
 impl Database for DB {
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let parsed = query.into_query()?;
+        self.query_with_args(&parsed, &[]).await
+    }
+
     /// Execute a query against this database snapshot.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
     async fn query_with_args(

@@ -164,7 +164,7 @@ Example with `:in` binding:
 ```edn
 [:find ?e ?name :in ?name :where [?e :person/name ?name]]
 ```
-with args: `[Scalar("Alice")]`
+with args: `["alice"]`
 
 ### 4.9 RowDescription (Backend, `T`)
 

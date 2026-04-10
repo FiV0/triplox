@@ -331,6 +331,11 @@ impl ClientDb {
 }
 
 impl Database for ClientDb {
+    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
+        let parsed = query.into_query()?;
+        self.query_edn_with_args(&parsed.to_string(), vec![]).await
+    }
+
     async fn query_with_args(
         &self,
         query: &ParsedQuery,
