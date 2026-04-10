@@ -505,6 +505,96 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_with_scalar_in_bindings() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("ivan".to_string())),
+                (kw!(:name), "Ivan".into()),
+                (kw!(:email), "ivan@example.com".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("petr".to_string())),
+                (kw!(:name), "Petr".into()),
+                (kw!(:email), "petr@example.com".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let parsed = edn::parse::parse_query(
+            "[:find ?name ?email :in ?name :where [?e :name ?name] [?e :email ?email]]",
+        )
+        .unwrap();
+
+        // Bind ?name to "Petr": only Petr's row should match.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Petr".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![
+                DataType::String("Petr".to_string()),
+                DataType::String("petr@example.com".to_string()),
+            ]]
+        );
+
+        // Bind ?name to "Ivan": only Ivan's row.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Ivan".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![
+                DataType::String("Ivan".to_string()),
+                DataType::String("ivan@example.com".to_string()),
+            ]]
+        );
+
+        // A name with no match yields no rows.
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Scalar("Bob".into())])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Multiple scalar bindings: constrain on both name and email.
+        let parsed = edn::parse::parse_query(
+            "[:find ?e :in ?name ?email :where [?e :name ?name] [?e :email ?email]]",
+        )
+        .unwrap();
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[
+                    QueryArg::Scalar("Petr".into()),
+                    QueryArg::Scalar("petr@example.com".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Mismatched pair: no rows.
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[
+                    QueryArg::Scalar("Petr".into()),
+                    QueryArg::Scalar("ivan@example.com".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_entity_value_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
