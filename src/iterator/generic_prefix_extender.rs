@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_participates_in_level() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
 
         let extender = GenericPrefixExtender::new(
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn test_count_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_propose_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_multiple_index_types() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         // Insert into both AV and AVE indexes
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_intersect() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -392,7 +392,7 @@ mod tests {
         // but make_extractor_fn computes position = pattern_level + 1 = 1,
         // which extracts the value (position 1) instead.
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         let value_bytes = Bytes::from(DataType::String("alice".to_string()).encode());
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn test_empty_results() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate());
+        let slate = runtime.block_on(in_memory_slate()).db;
         let attr_name = 42i64;
 
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();

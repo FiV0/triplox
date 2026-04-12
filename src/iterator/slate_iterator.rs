@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_basic() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;
@@ -273,7 +273,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_seek() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;
@@ -297,7 +297,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_empty_prefix() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let handle = Handle::current();
 
         slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_count() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;

@@ -10,18 +10,50 @@ use std::sync::Arc;
 
 use crate::util::random_string;
 
-pub async fn in_memory_slate() -> Db {
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    Db::builder(format!("tmp/triplox-{}", random_string(10)), object_store)
-        .build()
-        .await
-        .unwrap()
+pub struct SlateComponents {
+    pub db: Arc<Db>,
+    pub path: String,
+    pub object_store: Arc<dyn ObjectStore>,
 }
 
-pub async fn local_slate(path: &str) -> Db {
+impl std::fmt::Debug for SlateComponents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlateComponents")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+pub async fn in_memory_slate() -> SlateComponents {
+    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let path = format!("tmp/triplox-{}", random_string(10));
+    let db = Arc::new(
+        Db::builder(path.clone(), object_store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    SlateComponents {
+        db,
+        path,
+        object_store,
+    }
+}
+
+pub async fn local_slate(path: &str) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    Db::builder("triplox", object_store).build().await.unwrap()
+    let db = Arc::new(
+        Db::builder("triplox", object_store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    SlateComponents {
+        db,
+        path: "triplox".to_string(),
+        object_store,
+    }
 }
 
 pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
