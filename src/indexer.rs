@@ -295,23 +295,21 @@ impl Indexer {
             .finalize_datoms_for_commit(&txn, tx_eid, datoms)
             .await?;
 
-        // 5. General validation and optional schema delta preparation
+        // 5. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
-        let schema_update = if validation.schema_changes_detected {
-            Some(self.metadata.schema.prepare_schema_update(&datoms)?)
-        } else {
-            None
-        };
 
         // 6. Write indices + commit
         write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
-        // 7. Apply on success only (infallible — validation already passed)
+        // 7. Apply on success only
         self.metadata.partition_map = pending_pm;
-        if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
-            self.metadata.schema.apply_schema_update(schema_update);
-            self.metadata.advance_generation();
+        if validation.schema_changes_detected {
+            let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
+            if !schema_update.is_empty() {
+                self.metadata.schema.apply_schema_update(schema_update);
+                self.metadata.advance_generation();
+            }
         }
 
         // Update latest indexed tx and broadcast completion
