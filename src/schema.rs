@@ -6,7 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
 
@@ -254,11 +254,11 @@ impl Cardinality {
 }
 
 /// ident → entity_id (ALL named entities: enums + schema attrs)
-pub type IdentMap = HashMap<Keyword, i64>;
+pub type IdentMap = HashMap<Keyword, Entid>;
 /// entity_id → ident (ALL named entities: enums + schema attrs)
-pub type EntidMap = HashMap<i64, Keyword>;
+pub type EntidMap = HashMap<Entid, Keyword>;
 /// entity_id → Attribute (only schema attributes with db/valueType)
-pub type AttributeMap = HashMap<i64, Attribute>;
+pub type AttributeMap = HashMap<Entid, Attribute>;
 
 /// A schema attribute's properties.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -305,8 +305,8 @@ impl AttributeBuilder {
 /// Pre-validated schema changes, ready to apply after commit.
 #[derive(Debug, Default)]
 pub struct SchemaUpdate {
-    pub(crate) idents: Vec<(i64, Keyword)>,
-    pub(crate) attributes: Vec<(i64, Attribute)>,
+    pub(crate) idents: Vec<(Entid, Keyword)>,
+    pub(crate) attributes: Vec<(Entid, Attribute)>,
 }
 
 impl SchemaUpdate {
@@ -335,28 +335,21 @@ impl<T> Default for AddRetractSet<T> {
     }
 }
 
-type AevValidationMap = HashMap<(i64, Attribute), HashMap<i64, AddRetractSet<DataType>>>;
-
-#[derive(Debug)]
-enum ValidationConflict {
-    AddRetractConflict {
-        entity: i64,
-        attribute: Keyword,
-        values: Vec<DataType>,
-    },
-    CardinalityOneAddConflict {
-        entity: i64,
-        attribute: Keyword,
-        values: Vec<DataType>,
-    },
-}
+type AEVValidationMap<'a> = HashMap<(Entid, &'a Attribute), HashMap<Entid, AddRetractSet<DataType>>>;
 
 #[derive(Debug)]
 struct TypeDisagreement {
-    entity: i64,
+    entity: Entid,
     attribute: Keyword,
     value: DataType,
     expected: ValueType,
+}
+
+#[derive(Debug)]
+struct DatomConflict {
+    entity: Entid,
+    attribute: Keyword,
+    values: Vec<DataType>,
 }
 
 fn is_schema_attribute(attribute: &Keyword) -> bool {
@@ -376,14 +369,14 @@ pub struct Schema {
 
 impl Schema {
     /// Two-step lookup: ident → entity_id via ident_map, then entity_id → Attribute via attribute_map.
-    pub fn get_attribute(&self, ident: &Keyword) -> Option<(i64, &Attribute)> {
+    pub fn get_attribute(&self, ident: &Keyword) -> Option<(Entid, &Attribute)> {
         let eid = self.ident_map.get(ident)?;
         let attr = self.attribute_map.get(eid)?;
         Some((*eid, attr))
     }
 
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
-    pub fn is_schema_entity(&self, entity_id: i64) -> bool {
+    pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
     }
 
@@ -392,56 +385,29 @@ impl Schema {
     /// This step does general transaction validation only. Schema-related datoms
     /// are merely witnessed so the caller can decide whether a schema delta must
     /// be prepared in a separate pass.
+    // TODO(#187): collect all errors and return structured validation errors
     pub fn validate_datoms(&self, datoms: &[Datom]) -> Result<ValidationReport> {
         let (aev, schema_changes_detected) = self.build_aev_validation_map(datoms)?;
 
-        let type_disagreements = self.type_disagreements(&aev);
-        if let Some(disagreement) = type_disagreements.first() {
+        if let Some(d) = self.find_type_disagreement(&aev) {
             return Err(anyhow::anyhow!(
                 "Type mismatch for attribute {} on entity {}: expected {}, got {:?}",
-                disagreement.attribute,
-                disagreement.entity,
-                disagreement.expected,
-                disagreement.value
+                d.attribute, d.entity, d.expected, d.value
             ));
         }
 
-        let add_retract_conflicts = self.add_retract_conflicts(&aev);
-        if let Some(conflict) = add_retract_conflicts.first() {
-            return Err(match conflict {
-                ValidationConflict::AddRetractConflict {
-                    entity,
-                    attribute,
-                    values,
-                } => anyhow::anyhow!(
-                    "Transaction cannot both assert and retract {:?} for attribute {} on entity {}",
-                    values,
-                    attribute,
-                    entity
-                ),
-                ValidationConflict::CardinalityOneAddConflict { .. } => {
-                    unreachable!("cardinality conflict returned from add_retract_conflicts")
-                }
-            });
+        if let Some(c) = self.find_add_retract_conflict(&aev) {
+            return Err(anyhow::anyhow!(
+                "Transaction cannot both assert and retract {:?} for attribute {} on entity {}",
+                c.values, c.attribute, c.entity
+            ));
         }
 
-        let cardinality_conflicts = self.cardinality_conflicts(&aev);
-        if let Some(conflict) = cardinality_conflicts.first() {
-            return Err(match conflict {
-                ValidationConflict::CardinalityOneAddConflict {
-                    entity,
-                    attribute,
-                    values,
-                } => anyhow::anyhow!(
-                    "Transaction cannot assert multiple values {:?} for cardinality-one attribute {} on entity {}",
-                    values,
-                    attribute,
-                    entity
-                ),
-                ValidationConflict::AddRetractConflict { .. } => {
-                    unreachable!("add/retract conflict returned from cardinality_conflicts")
-                }
-            });
+        if let Some(c) = self.find_cardinality_conflict(&aev) {
+            return Err(anyhow::anyhow!(
+                "Transaction cannot assert multiple values {:?} for cardinality-one attribute {} on entity {}",
+                c.values, c.attribute, c.entity
+            ));
         }
 
         Ok(ValidationReport {
@@ -454,8 +420,8 @@ impl Schema {
     /// This step is responsible only for schema-related assertions and mutation
     /// rules. It assumes general datom validation has already succeeded.
     pub fn prepare_schema_update(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
-        let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
-        let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
+        let mut ident_updates: Vec<(Entid, Keyword)> = Vec::new();
+        let mut builders: HashMap<Entid, AttributeBuilder> = HashMap::new();
 
         for datom in datoms {
             if !is_schema_attribute(&datom.attribute) {
@@ -533,8 +499,8 @@ impl Schema {
         })
     }
 
-    fn build_aev_validation_map(&self, datoms: &[Datom]) -> Result<(AevValidationMap, bool)> {
-        let mut aev: AevValidationMap = HashMap::new();
+    fn build_aev_validation_map(&self, datoms: &[Datom]) -> Result<(AEVValidationMap<'_>, bool)> {
+        let mut aev: AEVValidationMap<'_> = HashMap::new();
         let mut schema_changes_detected = false;
 
         for datom in datoms {
@@ -547,7 +513,7 @@ impl Schema {
             }
 
             let entry = aev
-                .entry((attribute_id, attr.clone()))
+                .entry((attribute_id, attr))
                 .or_default()
                 .entry(datom.entity)
                 .or_default();
@@ -565,9 +531,7 @@ impl Schema {
         Ok((aev, schema_changes_detected))
     }
 
-    fn type_disagreements(&self, aev: &AevValidationMap) -> Vec<TypeDisagreement> {
-        let mut disagreements = Vec::new();
-
+    fn find_type_disagreement(&self, aev: &AEVValidationMap<'_>) -> Option<TypeDisagreement> {
         for ((attribute_id, attribute), evs) in aev {
             let attribute_ident = self
                 .entid_map
@@ -577,9 +541,9 @@ impl Schema {
             for (entity, values) in evs {
                 for value in values.adds.iter().chain(values.retracts.iter()) {
                     if !attribute.value_type.matches(value) {
-                        disagreements.push(TypeDisagreement {
+                        return Some(TypeDisagreement {
                             entity: *entity,
-                            attribute: attribute_ident.clone(),
+                            attribute: attribute_ident,
                             value: value.clone(),
                             expected: attribute.value_type,
                         });
@@ -587,13 +551,10 @@ impl Schema {
                 }
             }
         }
-
-        disagreements
+        None
     }
 
-    fn add_retract_conflicts(&self, aev: &AevValidationMap) -> Vec<ValidationConflict> {
-        let mut conflicts = Vec::new();
-
+    fn find_add_retract_conflict(&self, aev: &AEVValidationMap<'_>) -> Option<DatomConflict> {
         for ((attribute_id, attribute), evs) in aev {
             if attribute.multival {
                 continue;
@@ -610,26 +571,22 @@ impl Schema {
                     .cloned()
                     .collect();
                 if !overlap.is_empty() {
-                    conflicts.push(ValidationConflict::AddRetractConflict {
+                    return Some(DatomConflict {
                         entity: *entity,
-                        attribute: attribute_ident.clone(),
+                        attribute: attribute_ident,
                         values: overlap,
                     });
                 }
             }
         }
-
-        conflicts
+        None
     }
 
-    fn cardinality_conflicts(&self, aev: &AevValidationMap) -> Vec<ValidationConflict> {
-        let mut conflicts = Vec::new();
-
+    fn find_cardinality_conflict(&self, aev: &AEVValidationMap<'_>) -> Option<DatomConflict> {
         for ((attribute_id, attribute), evs) in aev {
             if attribute.multival {
                 continue;
             }
-
             let attribute_ident = self
                 .entid_map
                 .get(attribute_id)
@@ -637,16 +594,15 @@ impl Schema {
                 .unwrap_or_else(|| kw!(:db/unknown));
             for (entity, values) in evs {
                 if values.adds.len() > 1 {
-                    conflicts.push(ValidationConflict::CardinalityOneAddConflict {
+                    return Some(DatomConflict {
                         entity: *entity,
-                        attribute: attribute_ident.clone(),
+                        attribute: attribute_ident,
                         values: values.adds.iter().cloned().collect(),
                     });
                 }
             }
         }
-
-        conflicts
+        None
     }
 
     /// Apply pre-validated schema changes (post-commit, infallible).
