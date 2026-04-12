@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_single_version() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
 
         slate
@@ -235,7 +235,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_skips_future() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
         let t2 = 2000;
 
@@ -264,7 +264,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_before_all() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 2000;
 
         slate
@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_temporal_filter_multiple_logical_keys() {
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
         let t2 = 2000;
 
@@ -325,7 +325,7 @@ mod tests {
         // as-of T1: alice visible
         // as-of T2: alice hidden (retracted)
         // as-of T3: alice visible again (re-added)
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t0 = 500;
         let t1 = 1000;
         let t2 = 2000;
@@ -396,7 +396,7 @@ mod tests {
     async fn test_temporal_filter_seek() {
         // Three logical keys: alice, bob, charlie at T1.
         // Seek to "bob" should land on bob, then next gives charlie.
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
 
         slate
@@ -439,7 +439,7 @@ mod tests {
         // "alice" added at T1, retracted at T2. "bob" added at T1.
         // As-of T1: see alice and bob.
         // As-of T2: only bob (alice retracted).
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
         let t2 = 2000;
 
@@ -486,7 +486,7 @@ mod tests {
     async fn test_temporal_filter_retraction_then_re_add() {
         // "alice" added at T1, retracted at T2, re-added at T3.
         // As-of T2: not visible. As-of T3: visible again.
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate().await.db;
         let t1 = 1000;
         let t2 = 2000;
         let t3 = 3000;

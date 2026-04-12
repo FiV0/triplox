@@ -10,18 +10,38 @@ use std::sync::Arc;
 
 use crate::util::random_string;
 
-pub async fn in_memory_slate() -> Db {
-    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    Db::builder(format!("tmp/triplox-{}", random_string(10)), object_store)
-        .build()
-        .await
-        .unwrap()
+pub struct SlateComponents {
+    pub db: Db,
+    pub path: String,
+    pub object_store: Arc<dyn ObjectStore>,
 }
 
-pub async fn local_slate(path: &str) -> Db {
+pub async fn in_memory_slate() -> SlateComponents {
+    let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let path = format!("tmp/triplox-{}", random_string(10));
+    let db = Db::builder(path.clone(), object_store.clone())
+        .build()
+        .await
+        .unwrap();
+    SlateComponents {
+        db,
+        path,
+        object_store,
+    }
+}
+
+pub async fn local_slate(path: &str) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    Db::builder("triplox", object_store).build().await.unwrap()
+    let db = Db::builder("triplox", object_store.clone())
+        .build()
+        .await
+        .unwrap();
+    SlateComponents {
+        db,
+        path: "triplox".to_string(),
+        object_store,
+    }
 }
 
 pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
