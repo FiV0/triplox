@@ -72,4 +72,5 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     read_ahead_bytes: 1,
     cache_blocks: false,
     max_fetch_tasks: 1,
+    order: slatedb::IterationOrder::Ascending,
 };
