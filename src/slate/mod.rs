@@ -16,6 +16,13 @@ pub struct SlateComponents {
     pub object_store: Arc<dyn ObjectStore>,
 }
 
+impl std::fmt::Debug for SlateComponents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlateComponents")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
 
 pub async fn in_memory_slate() -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
