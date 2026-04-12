@@ -32,3 +32,16 @@ By default the tests connect to `localhost:5490`. Override with environment vari
 ```bash
 TRIPLOX_HOST=192.168.1.10 TRIPLOX_PORT=5491 ./gradlew integrationTest
 ```
+
+### Deploying
+To deploy an alpha version to Clojars:
+```bash
+./gradlew publishMavenPublicationToClojarsRepository
+```
+
+To deploy an alpha SNAPSHOT:
+```bash
+./gradlew publishMavenPublicationToClojarsRepository \
+    -Dorg.gradle.internal.publish.checksums.insecure=true \
+    -PtriploxVersion=0.1.0-alpha-SNAPSHOT
+```
