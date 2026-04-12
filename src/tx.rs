@@ -1,29 +1,94 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use edn::kw;
 use edn::symbols::Keyword;
 
+use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
+use crate::indexer::ave_key_to_parts;
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, ValueType};
+use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::util::concat_bytes;
 
-/// Entity reference after ident resolution: either a concrete ID or an unresolved tempid.
+// ---------------------------------------------------------------------------
+// Stage 1 types: after ident resolution, before lookup ref resolution.
+// May still contain LookupRef and TempId variants.
+// ---------------------------------------------------------------------------
+
+/// Entity reference after ident resolution, before lookup ref resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EntityExpanded {
+    Id(i64),
+    TempId(String),
+    LookupRef(i64, DataType), // (attribute_entid, value)
+}
+
+/// Value after ident resolution, before lookup ref resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueExpanded {
+    Data(DataType),
+    TempRef(String),
+    LookupRef(i64, DataType), // (attribute_entid, value)
+}
+
+/// A datom after TxOp expansion and ident resolution, before lookup ref resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatomExpanded {
+    pub entity: EntityExpanded,
+    pub attribute: Keyword,
+    pub value: ValueExpanded,
+    pub op: DatomOp,
+}
+
+/// Narrowing conversion from DatomExpanded to DatomWithTempids.
+/// Panics if any LookupRef variants remain — only use when lookup refs are known to be absent
+/// (e.g., in tests without a DB).
+impl From<DatomExpanded> for DatomWithTempids {
+    fn from(d: DatomExpanded) -> Self {
+        DatomWithTempids {
+            entity: match d.entity {
+                EntityExpanded::Id(id) => IdOrTempId::Id(id),
+                EntityExpanded::TempId(s) => IdOrTempId::TempId(s),
+                EntityExpanded::LookupRef(_, _) => {
+                    panic!("From<DatomExpanded>: unresolved lookup ref in entity position")
+                }
+            },
+            attribute: d.attribute,
+            value: match d.value {
+                ValueExpanded::Data(dt) => ValueWithTempIds::Data(dt),
+                ValueExpanded::TempRef(s) => ValueWithTempIds::TempRef(s),
+                ValueExpanded::LookupRef(_, _) => {
+                    panic!("From<DatomExpanded>: unresolved lookup ref in value position")
+                }
+            },
+            op: d.op,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 types: after lookup ref resolution, before tempid allocation.
+// Only TempId variants remain.
+// ---------------------------------------------------------------------------
+
+/// Entity reference after lookup ref resolution: either a concrete ID or an unresolved tempid.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IdOrTempId {
     Id(i64),
     TempId(String),
 }
 
-/// Value after ident resolution: either concrete data or a tempid reference.
+/// Value after lookup ref resolution: either concrete data or a tempid reference.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueWithTempIds {
     Data(DataType),
     TempRef(String),
 }
 
-/// A datom-shaped tuple after TxOp expansion and ident resolution, but before tempid allocation.
+/// A datom after lookup ref resolution, before tempid allocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatomWithTempids {
     pub entity: IdOrTempId,
@@ -32,33 +97,40 @@ pub struct DatomWithTempids {
     pub op: DatomOp,
 }
 
-/// Resolve an EntityRef to IdOrTempId, resolving idents via schema.
-fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<IdOrTempId> {
+/// Resolve an EntityRef to EntityExpanded, resolving idents via schema.
+/// Lookup refs have their attribute keyword resolved to an entid but remain as LookupRef.
+fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<EntityExpanded> {
     match eref {
-        EntityRef::Id(id) => Ok(IdOrTempId::Id(*id)),
-        EntityRef::TempId(s) => Ok(IdOrTempId::TempId(s.clone())),
+        EntityRef::Id(id) => Ok(EntityExpanded::Id(*id)),
+        EntityRef::TempId(s) => Ok(EntityExpanded::TempId(s.clone())),
         EntityRef::Ident(kw) => {
             let eid = schema
                 .ident_map
                 .get(kw)
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident: {}", kw))?;
-            Ok(IdOrTempId::Id(*eid))
+            Ok(EntityExpanded::Id(*eid))
         }
-        EntityRef::LookupRef(_, _) => Err(anyhow::anyhow!("Lookup refs not yet supported")),
+        EntityRef::LookupRef(kw, dt) => {
+            let attr_eid = schema
+                .ident_map
+                .get(kw)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute in lookup ref: {}", kw))?;
+            Ok(EntityExpanded::LookupRef(*attr_eid, dt.clone()))
+        }
     }
 }
 
-/// Resolve a :db/id DataType value to IdOrTempId.
-fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<IdOrTempId> {
+/// Resolve a :db/id DataType value to EntityExpanded.
+fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<EntityExpanded> {
     match val {
-        DataType::Long(id) => Ok(IdOrTempId::Id(*id)),
-        DataType::String(s) => Ok(IdOrTempId::TempId(s.clone())),
+        DataType::Long(id) => Ok(EntityExpanded::Id(*id)),
+        DataType::String(s) => Ok(EntityExpanded::TempId(s.clone())),
         DataType::Keyword(kw) => {
             let eid = schema
                 .ident_map
                 .get(kw)
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident for :db/id: {}", kw))?;
-            Ok(IdOrTempId::Id(*eid))
+            Ok(EntityExpanded::Id(*eid))
         }
         other => Err(anyhow::anyhow!(
             ":db/id must be Long, String, or Keyword, got {:?}",
@@ -68,7 +140,8 @@ fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<IdOrTempId> {
 }
 
 /// Resolve a value using the schema to determine if the attribute is ref-typed.
-fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<ValueWithTempIds> {
+/// For ref-typed attributes, a 2-element vector [Keyword, Value] is treated as a lookup ref.
+fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<ValueExpanded> {
     let is_ref = schema
         .get_attribute(attr)
         .map(|(_, a)| a.value_type == ValueType::Ref)
@@ -76,14 +149,26 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
 
     if is_ref {
         match val {
-            DataType::Long(id) => Ok(ValueWithTempIds::Data(DataType::Long(*id))),
+            DataType::Long(id) => Ok(ValueExpanded::Data(DataType::Long(*id))),
             DataType::Keyword(kw) => {
                 let eid = schema.ident_map.get(kw).ok_or_else(|| {
                     anyhow::anyhow!("Unknown ident in ref value position: {}", kw)
                 })?;
-                Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
+                Ok(ValueExpanded::Data(DataType::Long(*eid)))
             }
-            DataType::String(s) => Ok(ValueWithTempIds::TempRef(s.clone())),
+            DataType::String(s) => Ok(ValueExpanded::TempRef(s.clone())),
+            DataType::Vector(v) if v.len() == 2 => match (&v[0], &v[1]) {
+                (DataType::Keyword(kw), val) => {
+                    let attr_eid = schema.ident_map.get(kw).ok_or_else(|| {
+                        anyhow::anyhow!("Unknown attribute in lookup ref: {}", kw)
+                    })?;
+                    Ok(ValueExpanded::LookupRef(*attr_eid, val.clone()))
+                }
+                _ => Err(anyhow::anyhow!(
+                    "Lookup ref must be [Keyword, Value], got {:?}",
+                    v
+                )),
+            },
             other => Err(anyhow::anyhow!(
                 "Invalid value for ref-typed attribute {}: {:?}",
                 attr,
@@ -91,18 +176,19 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
             )),
         }
     } else {
-        Ok(ValueWithTempIds::Data(val.clone()))
+        Ok(ValueExpanded::Data(val.clone()))
     }
 }
 
-/// Expand TxOps into DatomWithTempids, resolving idents and ref-typed values via schema.
+/// Expand TxOps into DatomExpanded, resolving idents and ref-typed values via schema.
+/// Lookup refs and tempids pass through as-is for later resolution stages.
 ///
-/// - `Put(map)` -> N DatomWithTempids (one per non-`:db/id` attr). The `:db/id` key
+/// - `Put(map)` -> N DatomExpanded (one per non-`:db/id` attr). The `:db/id` key
 ///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
 ///   an internal tempid.
-/// - `Add/Retract` -> 1 DatomWithTempids
+/// - `Add/Retract` -> 1 DatomExpanded
 /// - `Delete/Erase` -> panics (not yet implemented)
-pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempids>> {
+pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>> {
     let db_id_kw = Keyword::namespaced("db", "id");
     let mut datoms = Vec::new();
     let mut auto_counter: u64 = 0;
@@ -115,11 +201,11 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     None => {
                         let tempid = format!("__auto_{}", auto_counter);
                         auto_counter += 1;
-                        IdOrTempId::TempId(tempid)
+                        EntityExpanded::TempId(tempid)
                     }
                 };
                 for (attr, value) in map.iter().filter(|(k, _)| *k != &db_id_kw) {
-                    datoms.push(DatomWithTempids {
+                    datoms.push(DatomExpanded {
                         entity: entity.clone(),
                         attribute: attr.clone(),
                         value: resolve_value(value, attr, schema)?,
@@ -132,7 +218,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                 attribute,
                 value,
             } => {
-                datoms.push(DatomWithTempids {
+                datoms.push(DatomExpanded {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
                     value: resolve_value(value, attribute, schema)?,
@@ -144,7 +230,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                 attribute,
                 value,
             } => {
-                datoms.push(DatomWithTempids {
+                datoms.push(DatomExpanded {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
                     value: resolve_value(value, attribute, schema)?,
@@ -157,6 +243,96 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
         }
     }
     Ok(datoms)
+}
+
+/// Batch-resolve all lookup refs via the AVE index.
+/// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
+/// If no lookup refs are present, this is a cheap conversion with no I/O.
+pub async fn resolve_lookup_refs(
+    datoms: Vec<DatomExpanded>,
+    schema: &Schema,
+    txn: &slatedb::DbTransaction,
+) -> Result<Vec<DatomWithTempids>> {
+    // Collect all unique (attr_entid, value) lookup ref pairs.
+    let mut lookup_refs: HashSet<(i64, DataType)> = HashSet::new();
+    for d in &datoms {
+        if let EntityExpanded::LookupRef(a, v) = &d.entity {
+            lookup_refs.insert((*a, v.clone()));
+        }
+        if let ValueExpanded::LookupRef(a, v) = &d.value {
+            lookup_refs.insert((*a, v.clone()));
+        }
+    }
+
+    // Batch resolve via AVE index.
+    let mut resolved_map: HashMap<(i64, DataType), i64> = HashMap::new();
+    for (attr_eid, value) in &lookup_refs {
+        let attr_bytes = encode_i64_bytes(*attr_eid);
+        let mut value_bytes = Vec::new();
+        encode_datatype(value, &mut value_bytes);
+        let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
+
+        let mut iter = txn
+            .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
+            .await?;
+
+        match iter.next().await? {
+            Some(kv) => {
+                let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(kv.key)?;
+                match entity_dt {
+                    DataType::Long(eid) => {
+                        resolved_map.insert((*attr_eid, value.clone()), eid);
+                    }
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "Expected Long entity ID in AVE key, got {:?}",
+                            other
+                        ));
+                    }
+                }
+            }
+            None => {
+                let attr_kw = schema
+                    .entid_map
+                    .get(attr_eid)
+                    .map(|kw| kw.to_string())
+                    .unwrap_or_else(|| attr_eid.to_string());
+                return Err(anyhow::anyhow!(
+                    "No entity found for lookup ref [{} {:?}]",
+                    attr_kw,
+                    value
+                ));
+            }
+        }
+    }
+
+    // Convert DatomExpanded → DatomWithTempids, replacing lookup refs with resolved IDs.
+    let mut result = Vec::with_capacity(datoms.len());
+    for d in datoms {
+        let entity = match d.entity {
+            EntityExpanded::Id(id) => IdOrTempId::Id(id),
+            EntityExpanded::TempId(s) => IdOrTempId::TempId(s),
+            EntityExpanded::LookupRef(a, v) => {
+                let eid = resolved_map[&(a, v)];
+                IdOrTempId::Id(eid)
+            }
+        };
+        let value = match d.value {
+            ValueExpanded::Data(dt) => ValueWithTempIds::Data(dt),
+            ValueExpanded::TempRef(s) => ValueWithTempIds::TempRef(s),
+            ValueExpanded::LookupRef(a, v) => {
+                let eid = resolved_map[&(a, v)];
+                ValueWithTempIds::Data(DataType::Long(eid))
+            }
+        };
+        result.push(DatomWithTempids {
+            entity,
+            attribute: d.attribute,
+            value,
+            op: d.op,
+        });
+    }
+    Ok(result)
 }
 
 /// Resolve tempids in DatomWithTempids to produce final Datoms.
@@ -257,7 +433,7 @@ mod tests {
         ])];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 2);
-        assert!(datoms.iter().all(|d| d.entity == IdOrTempId::Id(100)));
+        assert!(datoms.iter().all(|d| d.entity == EntityExpanded::Id(100)));
         assert!(datoms.iter().all(|d| d.op == DatomOp::Assert));
     }
 
@@ -269,10 +445,9 @@ mod tests {
         ];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 2);
-        // Different auto-tempids
         assert_ne!(datoms[0].entity, datoms[1].entity);
-        assert!(matches!(datoms[0].entity, IdOrTempId::TempId(_)));
-        assert!(matches!(datoms[1].entity, IdOrTempId::TempId(_)));
+        assert!(matches!(datoms[0].entity, EntityExpanded::TempId(_)));
+        assert!(matches!(datoms[1].entity, EntityExpanded::TempId(_)));
     }
 
     #[test]
@@ -295,11 +470,11 @@ mod tests {
         }];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 1);
-        assert_eq!(datoms[0].entity, IdOrTempId::Id(200));
+        assert_eq!(datoms[0].entity, EntityExpanded::Id(200));
         assert_eq!(datoms[0].attribute, kw!(:name));
         assert_eq!(
             datoms[0].value,
-            ValueWithTempIds::Data(DataType::String("bob".to_string()))
+            ValueExpanded::Data(DataType::String("bob".to_string()))
         );
         assert_eq!(datoms[0].op, DatomOp::Assert);
     }
@@ -325,7 +500,7 @@ mod tests {
             value: DataType::Long(1),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
-        assert_eq!(datoms[0].entity, IdOrTempId::Id(42));
+        assert_eq!(datoms[0].entity, EntityExpanded::Id(42));
     }
 
     #[test]
@@ -341,15 +516,33 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_lookup_ref_errors() {
+    fn test_expand_entity_lookup_ref() {
+        let schema = schema_with_ident(kw!(:email), 42);
         let ops = vec![TxOp::Add {
             entity: EntityRef::LookupRef(kw!(:email), DataType::String("a@b.com".into())),
             attribute: kw!(:name),
             value: DataType::Long(1),
         }];
+        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        assert_eq!(
+            datoms[0].entity,
+            EntityExpanded::LookupRef(42, DataType::String("a@b.com".into()))
+        );
+    }
+
+    #[test]
+    fn test_expand_entity_lookup_ref_unknown_attr_errors() {
+        let ops = vec![TxOp::Add {
+            entity: EntityRef::LookupRef(kw!(:unknown/attr), DataType::String("a@b.com".into())),
+            attribute: kw!(:name),
+            value: DataType::Long(1),
+        }];
         let result = expand_tx_ops(&ops, &empty_schema());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Lookup refs"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute in lookup ref"));
     }
 
     #[test]
@@ -363,7 +556,7 @@ mod tests {
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
         assert_eq!(
             datoms[0].value,
-            ValueWithTempIds::TempRef("friend".to_string())
+            ValueExpanded::TempRef("friend".to_string())
         );
     }
 
@@ -376,7 +569,7 @@ mod tests {
             value: DataType::Long(200),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
-        assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(200)));
+        assert_eq!(datoms[0].value, ValueExpanded::Data(DataType::Long(200)));
     }
 
     #[test]
@@ -390,7 +583,61 @@ mod tests {
             value: DataType::Keyword(kw!(:person/bob)),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
-        assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::Long(99)));
+        assert_eq!(datoms[0].value, ValueExpanded::Data(DataType::Long(99)));
+    }
+
+    #[test]
+    fn test_expand_value_lookup_ref() {
+        let mut schema = schema_with_ref_attr(kw!(:follows), 999);
+        schema.ident_map.insert(kw!(:email), 42);
+        schema.entid_map.insert(42, kw!(:email));
+        let ops = vec![TxOp::Add {
+            entity: EntityRef::Id(100),
+            attribute: kw!(:follows),
+            value: DataType::Vector(vec![
+                DataType::Keyword(kw!(:email)),
+                DataType::String("a@b.com".into()),
+            ]),
+        }];
+        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        assert_eq!(
+            datoms[0].value,
+            ValueExpanded::LookupRef(42, DataType::String("a@b.com".into()))
+        );
+    }
+
+    #[test]
+    fn test_expand_value_lookup_ref_bad_shape_errors() {
+        let schema = schema_with_ref_attr(kw!(:follows), 999);
+        // Wrong length (3 elements)
+        let ops = vec![TxOp::Add {
+            entity: EntityRef::Id(100),
+            attribute: kw!(:follows),
+            value: DataType::Vector(vec![
+                DataType::Keyword(kw!(:email)),
+                DataType::String("a".into()),
+                DataType::String("b".into()),
+            ]),
+        }];
+        let result = expand_tx_ops(&ops, &schema);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid value for ref-typed attribute"));
+
+        // Right length but first element is not keyword
+        let ops = vec![TxOp::Add {
+            entity: EntityRef::Id(100),
+            attribute: kw!(:follows),
+            value: DataType::Vector(vec![DataType::Long(1), DataType::String("a".into())]),
+        }];
+        let result = expand_tx_ops(&ops, &schema);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Lookup ref must be [Keyword, Value]"));
     }
 
     #[test]

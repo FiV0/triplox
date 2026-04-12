@@ -335,7 +335,8 @@ impl<T> Default for AddRetractSet<T> {
     }
 }
 
-type AEVValidationMap<'a> = HashMap<(Entid, &'a Attribute), HashMap<Entid, AddRetractSet<DataType>>>;
+type AEVValidationMap<'a> =
+    HashMap<(Entid, &'a Attribute), HashMap<Entid, AddRetractSet<DataType>>>;
 
 #[derive(Debug)]
 enum ValidationConflict {
@@ -867,7 +868,9 @@ mod tests {
     fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
-        tx::resolve_tempids(&expanded, &mut pm).unwrap()
+        let with_tempids: Vec<tx::DatomWithTempids> =
+            expanded.into_iter().map(Into::into).collect();
+        tx::resolve_tempids(&with_tempids, &mut pm).unwrap()
     }
 
     fn bootstrapped_schema() -> Schema {
@@ -1057,8 +1060,10 @@ mod tests {
         let bootstrap = bootstrap_schema();
         let tx_ops = bootstrap_schema_tx();
         let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
+        let with_tempids: Vec<tx::DatomWithTempids> =
+            expanded.into_iter().map(Into::into).collect();
         let mut pm = PartitionMap::new();
-        let datoms = tx::resolve_tempids(&expanded, &mut pm).unwrap();
+        let datoms = tx::resolve_tempids(&with_tempids, &mut pm).unwrap();
         let validation = bootstrap.validate_datoms(&datoms).unwrap();
         assert!(validation.schema_changes_detected);
         let update = Schema::default().prepare_schema_update(&datoms).unwrap();

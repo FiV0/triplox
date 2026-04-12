@@ -78,9 +78,14 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             // Fresh DB — build schema from constants, then bootstrap
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
+            // Same 3-stage pipeline as the indexer
+            let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
             let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
+            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &txn)
+                .await
+                .unwrap();
             let mut boot_pm = PartitionMap::new();
-            let datoms = tx::resolve_tempids(&expanded, &mut boot_pm).unwrap();
+            let datoms = tx::resolve_tempids(&with_tempids, &mut boot_pm).unwrap();
 
             // Validate against pre-built schema, then derive the bootstrap schema delta.
             let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();
@@ -99,7 +104,6 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
                 "bootstrap attribute_map mismatch"
             );
 
-            let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
             write_index_entries(&txn, &datoms, &bootstrap_schema, 0_i64).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");

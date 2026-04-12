@@ -281,27 +281,32 @@ impl Indexer {
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
-        // 2. Expand TxOps to DatomWithTempids (resolves idents via schema)
+        // Create txn early — needed for lookup ref resolution AND finalize
+        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
+
+        // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
         let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
 
-        // 3. Resolve tempids + build tx entity datoms
-        let mut datoms = tx::resolve_tempids(&expanded, &mut pending_pm)?;
+        // 3. Resolve lookup refs via AVE index → DatomWithTempids
+        let with_tempids = tx::resolve_lookup_refs(expanded, &self.metadata.schema, &txn).await?;
+
+        // 4. Resolve tempids + build tx entity datoms
+        let mut datoms = tx::resolve_tempids(&with_tempids, &mut pending_pm)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 4. Finalize datoms (card-one rewrite) against current storage state
-        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
+        // 5. Finalize datoms (card-one rewrite) against current storage state
         let datoms = self
             .finalize_datoms_for_commit(&txn, datoms)
             .await?;
 
-        // 5. General validation
+        // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 6. Write indices + commit
+        // 7. Write indices + commit
         write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
         txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
 
-        // 7. Apply on success only
+        // 8. Apply on success only
         self.metadata.partition_map = pending_pm;
         if validation.schema_changes_detected {
             let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
