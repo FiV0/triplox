@@ -122,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_fresh() {
-        let slatedb = Arc::new(in_memory_slate().await);
+        let slatedb = Arc::new(in_memory_slate().await.db);
         let metadata = init_db(slatedb).await;
         // Bootstrap defines 7 schema attributes (3 core + 4 tx)
         assert_eq!(metadata.schema.len(), 7);
@@ -154,7 +154,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_existing() {
-        let slatedb = Arc::new(in_memory_slate().await);
+        let slatedb = Arc::new(in_memory_slate().await.db);
         let metadata1 = init_db(slatedb.clone()).await;
         // Second call takes the existing-DB path (scan EAV for counters)
         let metadata2 = init_db(slatedb).await;
@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_preserves_old_version() {
-        let slatedb = Arc::new(in_memory_slate().await);
+        let slatedb = Arc::new(in_memory_slate().await.db);
 
         // Write an older version directly (simulates existing DB without bootstrap indices)
         let key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);

@@ -163,7 +163,8 @@ pub struct Node<L: TxLog> {
 
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
-        let slatedb = Arc::new(in_memory_slate().await);
+        let components = in_memory_slate().await;
+        let slatedb = Arc::new(components.db);
         let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slatedb.clone(),
@@ -190,7 +191,8 @@ impl Node<FileLog> {
         let db_path_str = db_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
-        let slatedb = Arc::new(local_slate(db_path_str).await);
+        let components = local_slate(db_path_str).await;
+        let slatedb = Arc::new(components.db);
         let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
