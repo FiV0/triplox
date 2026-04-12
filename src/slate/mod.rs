@@ -11,18 +11,21 @@ use std::sync::Arc;
 use crate::util::random_string;
 
 pub struct SlateComponents {
-    pub db: Db,
+    pub db: Arc<Db>,
     pub path: String,
     pub object_store: Arc<dyn ObjectStore>,
 }
 
+
 pub async fn in_memory_slate() -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let path = format!("tmp/triplox-{}", random_string(10));
-    let db = Db::builder(path.clone(), object_store.clone())
-        .build()
-        .await
-        .unwrap();
+    let db = Arc::new(
+        Db::builder(path.clone(), object_store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
     SlateComponents {
         db,
         path,
@@ -33,10 +36,12 @@ pub async fn in_memory_slate() -> SlateComponents {
 pub async fn local_slate(path: &str) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
-    let db = Db::builder("triplox", object_store.clone())
-        .build()
-        .await
-        .unwrap();
+    let db = Arc::new(
+        Db::builder("triplox", object_store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
     SlateComponents {
         db,
         path: "triplox".to_string(),

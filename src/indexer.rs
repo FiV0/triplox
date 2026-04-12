@@ -624,7 +624,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let name_id = indexer
             .metadata()
@@ -672,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer_write_persisted() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey {
             tx_id: 1,
@@ -709,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer_multi_attribute_document() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey {
             tx_id: 1,
@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_tx_key_after_transact() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey {
             tx_id: 42,
@@ -769,7 +769,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_tx_key_empty_db() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let snapshot = Arc::new(slate.snapshot().await?);
         let (tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
         assert_eq!(latest.tx_id, 0, "Should return sentinel for empty DB");
@@ -779,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_tx_key_highest_wins() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
         for i in 0..3 {
@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tx_eid_for_tx_key_found() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let tx_key = TxKey {
             tx_id: 42,
@@ -831,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tx_eid_for_tx_key_not_found() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let snapshot = Arc::new(slate.snapshot().await?);
         let tx_key = TxKey {
             tx_id: 999,
@@ -846,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_await_tx_already_indexed() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
         let tx_key = TxKey {
@@ -868,7 +868,7 @@ mod tests {
     async fn test_await_tx_waits_for_future_tx() -> Result<(), Error> {
         use tokio::sync::RwLock;
 
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
 
         let tx_key_1 = TxKey {
@@ -897,7 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_await_tx_timeout() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let indexer = Indexer::new(
             slate.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
@@ -924,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_await_tx_ordering() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
         for i in 0..2 {
@@ -959,7 +959,7 @@ mod tests {
     async fn test_await_tx_multiple_waiters() -> Result<(), Error> {
         use tokio::sync::RwLock;
 
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
 
         let tx_key = TxKey {
@@ -996,7 +996,7 @@ mod tests {
     // TODO(triplox-qj0): replace explicit entity IDs with query-based verification
     #[tokio::test]
     async fn test_retract_on_overwrite() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let name_id = indexer
             .metadata()
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_value_no_retract() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let name_id = indexer
             .metadata()
@@ -1163,8 +1163,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_immutability_rejected_in_pipeline() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await);
-        let mut indexer = bootstrapped_indexer(slate).await;
+        let slate = in_memory_slate().await.db;
+        let mut indexer = bootstrapped_indexer(slate.clone()).await;
         let (name_id, attr) = indexer
             .metadata()
             .schema
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cardinality_many_no_retract() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
         // First tx: assert tags="rust" for a new entity (auto-assigned ID)
@@ -1286,7 +1286,7 @@ mod tests {
     // We may want to switch to set semantics in the future.
     #[tokio::test]
     async fn test_cardinality_many_same_value() -> Result<(), Error> {
-        let slate = Arc::new(in_memory_slate().await.db);
+        let slate = in_memory_slate().await.db;
         let mut indexer = bootstrapped_indexer(slate.clone()).await;
 
         // First tx: assert tags="rust" for a new entity (auto-assigned ID)

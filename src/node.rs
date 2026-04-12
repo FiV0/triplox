@@ -12,7 +12,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
-use crate::slate::{in_memory_slate, local_slate};
+use crate::slate::{in_memory_slate, local_slate, SlateComponents};
 pub use crate::transaction::{TransactionResult, TxKey};
 use edn::query::ParsedQuery;
 use tokio::sync::RwLock;
@@ -157,17 +157,17 @@ impl Database for DB {
 pub struct Node<L: TxLog> {
     log: Arc<RwLock<L>>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
-    slatedb: Arc<slatedb::Db>,
+    slate: SlateComponents,
     subscription: CancellationToken,
 }
 
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
-        let components = in_memory_slate().await;
-        let slatedb = Arc::new(components.db);
-        let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
+        let slate = in_memory_slate().await;
+        let db = slate.db.clone();
+        let metadata = crate::bootstrap::init_db(db.clone()).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slatedb.clone(),
+            db.clone(),
             metadata,
             None,
         )));
@@ -178,7 +178,7 @@ impl Node<MemoryLog> {
         Node {
             log,
             indexer,
-            slatedb,
+            slate,
             subscription,
         }
     }
@@ -191,13 +191,13 @@ impl Node<FileLog> {
         let db_path_str = db_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
-        let components = local_slate(db_path_str).await;
-        let slatedb = Arc::new(components.db);
-        let metadata = crate::bootstrap::init_db(slatedb.clone()).await;
+        let slate = local_slate(db_path_str).await;
+        let db = slate.db.clone();
+        let metadata = crate::bootstrap::init_db(db.clone()).await;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
-        let snapshot = Arc::new(slatedb.snapshot().await?);
+        let snapshot = Arc::new(db.snapshot().await?);
         let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
         let latest_indexed_tx = if latest_indexed.tx_id > 0 {
             Some(latest_indexed)
@@ -206,7 +206,7 @@ impl Node<FileLog> {
         };
 
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slatedb.clone(),
+            db.clone(),
             metadata,
             latest_indexed_tx,
         )));
@@ -240,7 +240,7 @@ impl Node<FileLog> {
         Ok(Node {
             log,
             indexer,
-            slatedb,
+            slate,
             subscription,
         })
     }
@@ -249,7 +249,7 @@ impl Node<FileLog> {
 impl<L: TxLog> Node<L> {
     pub async fn close(self) {
         self.subscription.cancel();
-        self.slatedb.close().await.unwrap();
+        self.slate.db.close().await.unwrap();
     }
 }
 
@@ -276,7 +276,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
-        let snapshot = self.slatedb.snapshot().await?;
+        let snapshot = self.slate.db.snapshot().await?;
         let ident_map = self
             .indexer
             .read()
@@ -290,7 +290,7 @@ impl<L: TxLog> QueryNode for Node<L> {
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
-        let snapshot = self.slatedb.snapshot().await?;
+        let snapshot = self.slate.db.snapshot().await?;
         let ident_map = self
             .indexer
             .read()
