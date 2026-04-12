@@ -56,7 +56,7 @@ publishing {
         create<MavenPublication>("maven") {
             groupId = "xyz.triplox"
             artifactId = "triplox"
-            version = "0.1.0-alpha"
+            version = (findProperty("triploxVersion") as String?) ?: "0.1.0-alpha"
 
             from(components["java"])
 
