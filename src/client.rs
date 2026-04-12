@@ -248,11 +248,7 @@ impl ClientDb {
     }
 
     /// Send a raw EDN query string with input binding arguments over the wire.
-    async fn query_edn_with_args(
-        &self,
-        edn: &str,
-        args: Vec<QueryArg>,
-    ) -> Result<QueryResult> {
+    async fn query_edn_with_args(&self, edn: &str, args: Vec<QueryArg>) -> Result<QueryResult> {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,

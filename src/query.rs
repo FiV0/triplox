@@ -1068,9 +1068,10 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
 
     // Variable limits must be bound in :in to a non-negative Long.
     if let Limit::Variable(v) = &query.limit {
-        let idx = query.in_vars.iter().position(|iv| iv == v).ok_or_else(|| {
-            anyhow::anyhow!("Variable limit {} is not bound in :in clause", v)
-        })?;
+        let idx =
+            query.in_vars.iter().position(|iv| iv == v).ok_or_else(|| {
+                anyhow::anyhow!("Variable limit {} is not bound in :in clause", v)
+            })?;
         match &args[idx] {
             QueryArg::Scalar(DataType::Long(n)) => {
                 if *n < 0 {
@@ -1561,18 +1562,14 @@ mod tests {
 
     #[test]
     fn test_validate_limit_variable_with_in_binding() {
-        let parsed = parse_query(
-            "[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]",
-        );
+        let parsed = parse_query("[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]");
         // Providing a scalar Long arg should pass validation
         assert!(validate_query(&parsed, &[QueryArg::Scalar(DataType::Long(10))]).is_ok());
     }
 
     #[test]
     fn test_validate_in_arg_count_mismatch() {
-        let parsed = parse_query(
-            "[:find ?e :in ?x :where [?e :name ?x]]",
-        );
+        let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string().contains("1 variable(s) but 0 argument(s)"),
@@ -1583,17 +1580,9 @@ mod tests {
 
     #[test]
     fn test_query_variable_order_with_in_vars() {
-        let parsed = parse_query(
-            "[:find ?e ?name :in ?name :where [?e :person/name ?name]]",
-        );
+        let parsed = parse_query("[:find ?e ?name :in ?name :where [?e :person/name ?name]]");
         let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
         // ?name from :in should come first, then ?e from WHERE
-        assert_eq!(
-            order,
-            vec![
-                "?name".to_var(),
-                "?e".to_var(),
-            ]
-        );
+        assert_eq!(order, vec!["?name".to_var(), "?e".to_var(),]);
     }
 }

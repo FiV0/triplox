@@ -52,7 +52,11 @@ async fn test_execute_tx_and_query() {
 
     // Insert a document
     let result = client
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
     assert!(matches!(result, TransactionResult::TxCommited(_)));
@@ -79,7 +83,11 @@ async fn test_submit_tx() {
     define_base_schema(&client).await;
 
     let tx_key = client
-        .submit_tx(vec![TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() }])
+        .submit_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
         .await
         .unwrap();
     assert!(tx_key.tx_id >= 0);
@@ -96,12 +104,20 @@ async fn test_multiple_transactions_and_query() {
 
     // Insert two documents in separate transactions
     client
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
 
     client
-        .execute_tx(vec![TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
         .await
         .unwrap();
 
@@ -128,7 +144,11 @@ async fn test_open_close_multiple_dbs() {
 
     // Insert data
     client
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
 
@@ -162,7 +182,11 @@ async fn test_two_connections() {
     let client1 = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client1).await;
     client1
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
 
@@ -188,7 +212,11 @@ async fn test_execute_tx_returns_tx_key() {
     define_base_schema(&client).await;
 
     let result = client
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
 
@@ -211,7 +239,11 @@ async fn test_db_as_of() {
 
     // First transaction
     let result1 = client
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
     let tx_key1 = match result1 {
@@ -221,7 +253,11 @@ async fn test_db_as_of() {
 
     // Second transaction
     client
-        .execute_tx(vec![TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
         .await
         .unwrap();
 
@@ -268,7 +304,11 @@ async fn test_dev_server_connections_are_isolated() {
     define_base_schema(&client1).await;
 
     client1
-        .execute_tx(vec![TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
         .await
         .unwrap();
 
@@ -489,7 +529,11 @@ async fn test_datascript_aggregates() {
     // Insert monsters with heads
     for heads in [3, 1, 1, 1] {
         client
-            .execute_tx(vec![TxOp::Add { entity: "monster".into(), attribute: kw!(:heads), value: (heads as i64).into() }])
+            .execute_tx(vec![TxOp::Add {
+                entity: "monster".into(),
+                attribute: kw!(:heads),
+                value: (heads as i64).into(),
+            }])
             .await
             .unwrap();
     }
@@ -522,7 +566,11 @@ async fn test_aggregate_avg() {
 
     for age in [21, 22, 23] {
         client
-            .execute_tx(vec![TxOp::Add { entity: "person".into(), attribute: kw!(:age), value: (age as i64).into() }])
+            .execute_tx(vec![TxOp::Add {
+                entity: "person".into(),
+                attribute: kw!(:age),
+                value: (age as i64).into(),
+            }])
             .await
             .unwrap();
     }
@@ -548,7 +596,11 @@ async fn test_aggregate_min_max_strings() {
 
     for name in ["Charlie", "Alice", "Bob"] {
         client
-            .execute_tx(vec![TxOp::Add { entity: name.into(), attribute: kw!(:name), value: name.into() }])
+            .execute_tx(vec![TxOp::Add {
+                entity: name.into(),
+                attribute: kw!(:name),
+                value: name.into(),
+            }])
             .await
             .unwrap();
     }
@@ -736,7 +788,11 @@ async fn test_upsert_with_resolved_entity_id() {
 
     // Upsert: update age using the discovered entity ID
     client
-        .execute_tx(vec![TxOp::Add { entity: EntityRef::Id(entity_id), attribute: kw!(:age), value: 31_i64.into() }])
+        .execute_tx(vec![TxOp::Add {
+            entity: EntityRef::Id(entity_id),
+            attribute: kw!(:age),
+            value: 31_i64.into(),
+        }])
         .await
         .unwrap();
 

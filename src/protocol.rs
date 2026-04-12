@@ -835,7 +835,11 @@ fn decode_query_arg(cursor: &mut Cursor) -> Result<QueryArg> {
         QUERY_ARG_RELATION => {
             let row_count = cursor.read_u32()? as usize;
             if row_count > cursor.remaining() {
-                bail!("Relation row count {} exceeds remaining bytes {}", row_count, cursor.remaining());
+                bail!(
+                    "Relation row count {} exceeds remaining bytes {}",
+                    row_count,
+                    cursor.remaining()
+                );
             }
             let mut rows = Vec::with_capacity(row_count);
             for _ in 0..row_count {
@@ -850,7 +854,11 @@ fn decode_query_arg(cursor: &mut Cursor) -> Result<QueryArg> {
 fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!("Vec<QueryArg> count {} exceeds remaining bytes {}", count, cursor.remaining());
+        bail!(
+            "Vec<QueryArg> count {} exceeds remaining bytes {}",
+            count,
+            cursor.remaining()
+        );
     }
     let mut args = Vec::with_capacity(count);
     for _ in 0..count {
@@ -1537,7 +1545,11 @@ mod tests {
     async fn test_execute_roundtrip() {
         let msg = FrontendMessage::Execute {
             ops: vec![
-                TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: DataType::String("alice".to_string()) },
+                TxOp::Add {
+                    entity: "alice".into(),
+                    attribute: kw!(:name),
+                    value: DataType::String("alice".to_string()),
+                },
                 TxOp::Delete(EntityRef::Id(99)),
             ],
             await_indexing: true,

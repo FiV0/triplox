@@ -90,13 +90,37 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
 /// (ident, value_type_ident, cardinality_ident)
 static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword)>> = LazyLock::new(|| {
     vec![
-        (kw!(:db/ident), kw!(:db.type/keyword), kw!(:db.cardinality/one)),
-        (kw!(:db/valueType), kw!(:db.type/ref), kw!(:db.cardinality/one)),
-        (kw!(:db/cardinality), kw!(:db.type/ref), kw!(:db.cardinality/one)),
-        (kw!(:db/txInstant), kw!(:db.type/instant), kw!(:db.cardinality/one)),
+        (
+            kw!(:db/ident),
+            kw!(:db.type/keyword),
+            kw!(:db.cardinality/one),
+        ),
+        (
+            kw!(:db/valueType),
+            kw!(:db.type/ref),
+            kw!(:db.cardinality/one),
+        ),
+        (
+            kw!(:db/cardinality),
+            kw!(:db.type/ref),
+            kw!(:db.cardinality/one),
+        ),
+        (
+            kw!(:db/txInstant),
+            kw!(:db.type/instant),
+            kw!(:db.cardinality/one),
+        ),
         (kw!(:db/txId), kw!(:db.type/long), kw!(:db.cardinality/one)),
-        (kw!(:db/txResult), kw!(:db.type/ref), kw!(:db.cardinality/one)),
-        (kw!(:db.tx/error), kw!(:db.type/string), kw!(:db.cardinality/one)),
+        (
+            kw!(:db/txResult),
+            kw!(:db.type/ref),
+            kw!(:db.cardinality/one),
+        ),
+        (
+            kw!(:db.tx/error),
+            kw!(:db.type/string),
+            kw!(:db.cardinality/one),
+        ),
     ]
 });
 
@@ -475,10 +499,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
             (kw!(:db/id), DataType::Long(eid)),
             (kw!(:db/ident), DataType::Keyword(ident.clone())),
             (kw!(:db/valueType), DataType::Keyword(vt_ident.clone())),
-            (
-                kw!(:db/cardinality),
-                DataType::Keyword(card_ident.clone()),
-            ),
+            (kw!(:db/cardinality), DataType::Keyword(card_ident.clone())),
         ]));
     }
 
@@ -707,7 +728,11 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_valid() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "Alice".into() }];
+        let ops = [TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "Alice".into(),
+        }];
         assert!(schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
@@ -716,7 +741,11 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::Add { entity: "person".into(), attribute: kw!(:person/age), value: 30_i64.into() }];
+        let ops = [TxOp::Add {
+            entity: "person".into(),
+            attribute: kw!(:person/age),
+            value: 30_i64.into(),
+        }];
         let err = schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
@@ -726,7 +755,11 @@ mod tests {
     #[test]
     fn test_validate_and_prepare_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::Add { entity: "person".into(), attribute: kw!(:name), value: 42_i64.into() }];
+        let ops = [TxOp::Add {
+            entity: "person".into(),
+            attribute: kw!(:name),
+            value: 42_i64.into(),
+        }];
         let err = schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .unwrap_err();
@@ -850,7 +883,11 @@ mod tests {
         assert_eq!(attr.value_type, ValueType::Ref);
 
         // Long value accepted for ref-typed attribute
-        let ops = [TxOp::Add { entity: "follower".into(), attribute: kw!(:follows), value: 201_i64.into() }];
+        let ops = [TxOp::Add {
+            entity: "follower".into(),
+            attribute: kw!(:follows),
+            value: 201_i64.into(),
+        }];
         assert!(schema
             .validate_and_prepare(&to_datoms(&ops, &schema))
             .is_ok());
