@@ -19,7 +19,7 @@ jobs:
 
       - name: Publish SNAPSHOT to Clojars
         env:
-          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_USERNAME: ${{ vars.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
         run: |
           cd triplox-jvm && ./gradlew publishMavenPublicationToClojarsRepository \
