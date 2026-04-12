@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{Error, Result};
@@ -6,7 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
 
@@ -126,7 +126,7 @@ static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword)>> = LazyLock::new
 
 // --- Schema types ---
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueType {
     Keyword,
     String,
@@ -254,14 +254,14 @@ impl Cardinality {
 }
 
 /// ident → entity_id (ALL named entities: enums + schema attrs)
-pub type IdentMap = HashMap<Keyword, i64>;
+pub type IdentMap = HashMap<Keyword, Entid>;
 /// entity_id → ident (ALL named entities: enums + schema attrs)
-pub type EntidMap = HashMap<i64, Keyword>;
+pub type EntidMap = HashMap<Entid, Keyword>;
 /// entity_id → Attribute (only schema attributes with db/valueType)
-pub type AttributeMap = HashMap<i64, Attribute>;
+pub type AttributeMap = HashMap<Entid, Attribute>;
 
 /// A schema attribute's properties.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Attribute {
     pub value_type: ValueType,
     pub multival: bool,
@@ -303,16 +303,65 @@ impl AttributeBuilder {
 }
 
 /// Pre-validated schema changes, ready to apply after commit.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SchemaUpdate {
-    pub(crate) idents: Vec<(i64, Keyword)>,
-    pub(crate) attributes: Vec<(i64, Attribute)>,
+    pub(crate) idents: Vec<(Entid, Keyword)>,
+    pub(crate) attributes: Vec<(Entid, Attribute)>,
 }
 
 impl SchemaUpdate {
     pub fn is_empty(&self) -> bool {
         self.idents.is_empty() && self.attributes.is_empty()
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub schema_changes_detected: bool,
+}
+
+#[derive(Debug)]
+struct AddRetractSet<T> {
+    adds: HashSet<T>,
+    retracts: HashSet<T>,
+}
+
+impl<T> Default for AddRetractSet<T> {
+    fn default() -> Self {
+        Self {
+            adds: HashSet::new(),
+            retracts: HashSet::new(),
+        }
+    }
+}
+
+type AEVValidationMap<'a> = HashMap<(Entid, &'a Attribute), HashMap<Entid, AddRetractSet<DataType>>>;
+
+#[derive(Debug)]
+enum ValidationConflict {
+    TypeMismatch {
+        entity: Entid,
+        attribute: Keyword,
+        value: DataType,
+        expected: ValueType,
+    },
+    AddRetractConflict {
+        entity: Entid,
+        attribute: Keyword,
+        values: Vec<DataType>,
+    },
+    CardinalityOneAddConflict {
+        entity: Entid,
+        attribute: Keyword,
+        values: Vec<DataType>,
+    },
+}
+
+fn is_schema_attribute(attribute: &Keyword) -> bool {
+    matches!(
+        attribute.components(),
+        ("db", "ident" | "valueType" | "cardinality")
+    )
 }
 
 /// The schema: bidirectional ident/entid maps + attribute definitions.
@@ -325,51 +374,98 @@ pub struct Schema {
 
 impl Schema {
     /// Two-step lookup: ident → entity_id via ident_map, then entity_id → Attribute via attribute_map.
-    pub fn get_attribute(&self, ident: &Keyword) -> Option<(i64, &Attribute)> {
+    pub fn get_attribute(&self, ident: &Keyword) -> Option<(Entid, &Attribute)> {
         let eid = self.ident_map.get(ident)?;
         let attr = self.attribute_map.get(eid)?;
         Some((*eid, attr))
     }
 
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
-    pub fn is_schema_entity(&self, entity_id: i64) -> bool {
+    pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
     }
 
-    /// Single-pass validation and schema change extraction (pre-commit, fallible).
+    /// Validate finalized transaction datoms against the current schema.
     ///
-    /// For each datom:
-    /// 1. Type-check value against attribute's value_type, error on unknown attributes
-    /// 2. Witness schema-related datoms into two streams:
-    ///    - Ident stream: db/ident → pending (i64, Keyword) pairs
-    ///    - Attribute stream: db/valueType, db/cardinality → AttributeBuilder per entity
-    pub fn validate_and_prepare(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
-        let mut ident_updates: Vec<(i64, Keyword)> = Vec::new();
-        let mut builders: HashMap<i64, AttributeBuilder> = HashMap::new();
+    /// This step does general transaction validation only. Schema-related datoms
+    /// are merely witnessed so the caller can decide whether a schema delta must
+    /// be prepared in a separate pass.
+    pub fn validate_datoms(&self, datoms: &[Datom]) -> Result<ValidationReport> {
+        let (aev, schema_changes_detected) = self.build_aev_validation_map(datoms)?;
 
-        // TODO(#179): Schema immutability should be enforced in apply_schema_update,
-        // similar to Mentat's approach where validation and schema mutation are
-        // separate concerns.
+        let mut conflicts = self.type_mismatches(&aev);
+        conflicts.extend(self.add_retract_conflicts(&aev));
+        conflicts.extend(self.cardinality_conflicts(&aev));
+
+        // TODO(#187): report all conflicts instead of only the first
+        if let Some(conflict) = conflicts.first() {
+            return Err(match conflict {
+                ValidationConflict::TypeMismatch {
+                    entity,
+                    attribute,
+                    value,
+                    expected,
+                } => anyhow::anyhow!(
+                    "Type mismatch for attribute {} on entity {}: expected {}, got {:?}",
+                    attribute, entity, expected, value
+                ),
+                ValidationConflict::AddRetractConflict {
+                    entity,
+                    attribute,
+                    values,
+                } => anyhow::anyhow!(
+                    "Transaction cannot both assert and retract {:?} for attribute {} on entity {}",
+                    values, attribute, entity
+                ),
+                ValidationConflict::CardinalityOneAddConflict {
+                    entity,
+                    attribute,
+                    values,
+                } => anyhow::anyhow!(
+                    "Transaction cannot assert multiple values {:?} for cardinality-one attribute {} on entity {}",
+                    values, attribute, entity
+                ),
+            });
+        }
+
+        Ok(ValidationReport {
+            schema_changes_detected,
+        })
+    }
+
+    /// Build a pre-validated schema delta from finalized transaction datoms.
+    ///
+    /// This step is responsible only for schema-related assertions and mutation
+    /// rules. It assumes general datom validation has already succeeded.
+    pub fn prepare_schema_update(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
+        let mut ident_updates: Vec<(Entid, Keyword)> = Vec::new();
+        let mut builders: HashMap<Entid, AttributeBuilder> = HashMap::new();
+
         for datom in datoms {
-            if datom.op != DatomOp::Assert {
+            if !is_schema_attribute(&datom.attribute) {
                 continue;
             }
 
-            // Type-check against known attributes
-            if let Some((_eid, attr)) = self.get_attribute(&datom.attribute) {
-                if !attr.value_type.matches(&datom.value) {
-                    return Err(anyhow::anyhow!(
-                        "Type mismatch for attribute {}: expected {}, got {:?}",
-                        datom.attribute,
-                        attr.value_type,
-                        datom.value
-                    ));
-                }
-            } else {
-                return Err(anyhow::anyhow!("Unknown attribute: {}", datom.attribute));
+            if self.is_schema_entity(datom.entity) {
+                let ident = self
+                    .entid_map
+                    .get(&datom.entity)
+                    .map(|kw| kw.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                return Err(anyhow::anyhow!(
+                    "Cannot modify schema entity {} ({})",
+                    datom.entity,
+                    ident
+                ));
             }
 
-            // Witness schema-related datoms
+            if datom.op != DatomOp::Assert {
+                return Err(anyhow::anyhow!(
+                    "Schema retractions are not supported for attribute {}",
+                    datom.attribute
+                ));
+            }
+
             match datom.attribute.components() {
                 ("db", "ident") => match &datom.value {
                     DataType::Keyword(kw) => ident_updates.push((datom.entity, kw.clone())),
@@ -402,14 +498,9 @@ impl Schema {
             }
         }
 
-        // Validate and build attributes from builders
         let mut attribute_updates: Vec<(i64, Attribute)> = Vec::new();
         for (entity_id, builder) in builders {
-            // Only require full validation if the entity has db/valueType (is a real attribute).
-            // Entities with only db/cardinality but no db/valueType would fail validation,
-            // but that's the correct behavior.
             builder.validate_install_attribute().map_err(|e| {
-                // Find the ident for better error messages
                 let ident = ident_updates
                     .iter()
                     .find(|(eid, _)| *eid == entity_id)
@@ -424,6 +515,115 @@ impl Schema {
             idents: ident_updates,
             attributes: attribute_updates,
         })
+    }
+
+    fn build_aev_validation_map(&self, datoms: &[Datom]) -> Result<(AEVValidationMap<'_>, bool)> {
+        let mut aev: AEVValidationMap<'_> = HashMap::new();
+        let mut schema_changes_detected = false;
+
+        for datom in datoms {
+            let (attribute_id, attr) = self
+                .get_attribute(&datom.attribute)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+
+            if is_schema_attribute(&datom.attribute) {
+                schema_changes_detected = true;
+            }
+
+            let entry = aev
+                .entry((attribute_id, attr))
+                .or_default()
+                .entry(datom.entity)
+                .or_default();
+
+            match datom.op {
+                DatomOp::Assert => {
+                    entry.adds.insert(datom.value.clone());
+                }
+                DatomOp::Retract => {
+                    entry.retracts.insert(datom.value.clone());
+                }
+            }
+        }
+
+        Ok((aev, schema_changes_detected))
+    }
+
+    fn type_mismatches(&self, aev: &AEVValidationMap<'_>) -> Vec<ValidationConflict> {
+        let mut conflicts = Vec::new();
+        for ((attribute_id, attribute), evs) in aev {
+            let attribute_ident = self
+                .entid_map
+                .get(attribute_id)
+                .cloned()
+                .unwrap_or_else(|| kw!(:db/unknown));
+            for (entity, values) in evs {
+                for value in values.adds.iter().chain(values.retracts.iter()) {
+                    if !attribute.value_type.matches(value) {
+                        conflicts.push(ValidationConflict::TypeMismatch {
+                            entity: *entity,
+                            attribute: attribute_ident.clone(),
+                            value: value.clone(),
+                            expected: attribute.value_type,
+                        });
+                    }
+                }
+            }
+        }
+        conflicts
+    }
+
+    fn add_retract_conflicts(&self, aev: &AEVValidationMap<'_>) -> Vec<ValidationConflict> {
+        let mut conflicts = Vec::new();
+        for ((attribute_id, attribute), evs) in aev {
+            if attribute.multival {
+                continue;
+            }
+            let attribute_ident = self
+                .entid_map
+                .get(attribute_id)
+                .cloned()
+                .unwrap_or_else(|| kw!(:db/unknown));
+            for (entity, values) in evs {
+                let overlap: Vec<_> = values
+                    .adds
+                    .intersection(&values.retracts)
+                    .cloned()
+                    .collect();
+                if !overlap.is_empty() {
+                    conflicts.push(ValidationConflict::AddRetractConflict {
+                        entity: *entity,
+                        attribute: attribute_ident.clone(),
+                        values: overlap,
+                    });
+                }
+            }
+        }
+        conflicts
+    }
+
+    fn cardinality_conflicts(&self, aev: &AEVValidationMap<'_>) -> Vec<ValidationConflict> {
+        let mut conflicts = Vec::new();
+        for ((attribute_id, attribute), evs) in aev {
+            if attribute.multival {
+                continue;
+            }
+            let attribute_ident = self
+                .entid_map
+                .get(attribute_id)
+                .cloned()
+                .unwrap_or_else(|| kw!(:db/unknown));
+            for (entity, values) in evs {
+                if values.adds.len() > 1 {
+                    conflicts.push(ValidationConflict::CardinalityOneAddConflict {
+                        entity: *entity,
+                        attribute: attribute_ident.clone(),
+                        values: values.adds.iter().cloned().collect(),
+                    });
+                }
+            }
+        }
+        conflicts
     }
 
     /// Apply pre-validated schema changes (post-commit, infallible).
@@ -677,9 +877,10 @@ mod tests {
     fn bootstrapped_schema_with_person_name() -> Schema {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
         schema.apply_schema_update(update);
         schema
     }
@@ -726,20 +927,19 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_and_prepare_valid() {
+    fn test_validate_datoms_valid() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::Add {
             entity: "alice".into(),
             attribute: kw!(:name),
             value: "Alice".into(),
         }];
-        assert!(schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .is_ok());
+        let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
+        assert!(!validation.schema_changes_detected);
     }
 
     #[test]
-    fn test_validate_and_prepare_unknown_attribute() {
+    fn test_validate_datoms_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::Add {
             entity: "person".into(),
@@ -747,13 +947,13 @@ mod tests {
             value: 30_i64.into(),
         }];
         let err = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .validate_datoms(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
 
     #[test]
-    fn test_validate_and_prepare_type_mismatch() {
+    fn test_validate_datoms_type_mismatch() {
         let schema = bootstrapped_schema_with_person_name();
         let ops = [TxOp::Add {
             entity: "person".into(),
@@ -761,22 +961,20 @@ mod tests {
             value: 42_i64.into(),
         }];
         let err = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
+            .validate_datoms(&to_datoms(&ops, &schema))
             .unwrap_err();
         assert!(err.to_string().contains("Type mismatch"));
     }
 
     #[test]
-    fn test_validate_and_prepare_schema_defining_tx() {
+    fn test_validate_datoms_schema_defining_tx_sets_flag() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        assert!(schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .is_ok());
+        let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
+        assert!(validation.schema_changes_detected);
     }
 
     #[test]
-    #[ignore]
     fn test_schema_immutability() {
         let schema = bootstrapped_schema_with_person_name();
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
@@ -784,15 +982,13 @@ mod tests {
         let ops = [TxOp::put(vec![
             (kw!(:db/id), DataType::Long(name_id)),
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
-            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/long))),
-            (
-                kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)),
-            ),
+            (kw!(:db/valueType), DataType::Long(DB_TYPE_LONG)),
+            (kw!(:db/cardinality), DataType::Long(DB_CARDINALITY_ONE)),
         ])];
-        let err = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap_err();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let err = schema.prepare_schema_update(&datoms).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
     }
 
@@ -863,7 +1059,9 @@ mod tests {
         let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
         let mut pm = PartitionMap::new();
         let datoms = tx::resolve_tempids(&expanded, &mut pm).unwrap();
-        let update = bootstrap.validate_and_prepare(&datoms).unwrap();
+        let validation = bootstrap.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = Schema::default().prepare_schema_update(&datoms).unwrap();
         let mut schema_from_tx = Schema::default();
         schema_from_tx.apply_schema_update(update);
         assert_eq!(schema_from_tx.ident_map, bootstrap.ident_map);
@@ -874,9 +1072,10 @@ mod tests {
     fn test_schema_ref_attribute_validation() {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:follows), "ref")];
-        let update = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
         schema.apply_schema_update(update);
 
         let (_eid, attr) = schema.get_attribute(&kw!(:follows)).unwrap();
@@ -888,9 +1087,8 @@ mod tests {
             attribute: kw!(:follows),
             value: 201_i64.into(),
         }];
-        assert!(schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .is_ok());
+        let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
+        assert!(!validation.schema_changes_detected);
 
         // String in ref position is interpreted as tempid (resolved to Long)
         let ops = [TxOp::Add {
@@ -900,48 +1098,122 @@ mod tests {
         }];
         let datoms = to_datoms(&ops, &schema);
         // After expand_tx_ops, the string becomes a TempRef which resolves to a Long,
-        // so validate_and_prepare should accept it.
-        assert!(schema.validate_and_prepare(&datoms).is_ok());
+        // so validate_datoms should accept it.
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(!validation.schema_changes_detected);
     }
 
     #[test]
-    fn test_validate_and_prepare_parses_cardinality_many() {
+    fn test_prepare_schema_update_parses_cardinality_many() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute_with_cardinality(
             kw!(:tags),
             "string",
             "many",
         )];
-        let update = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(update.attributes[0].1.multival);
     }
 
     #[test]
-    fn test_validate_and_prepare_parses_cardinality_one() {
+    fn test_prepare_schema_update_parses_cardinality_one() {
         let schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:name), "string")];
-        let update = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
         assert_eq!(update.attributes.len(), 1);
         assert!(!update.attributes[0].1.multival);
     }
 
     #[test]
-    fn test_validate_and_prepare_missing_cardinality_errors() {
+    fn test_prepare_schema_update_missing_cardinality_errors() {
         let schema = bootstrapped_schema();
         // Provide db/ident + db/valueType but no db/cardinality
         let ops = [TxOp::put(vec![
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
-            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/string))),
+            (kw!(:db/valueType), DataType::Long(DB_TYPE_STRING)),
             // No db/cardinality
         ])];
-        let err = schema
-            .validate_and_prepare(&to_datoms(&ops, &schema))
-            .unwrap_err();
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let err = schema.prepare_schema_update(&datoms).unwrap_err();
         assert!(err.to_string().contains("db/cardinality is required"));
+    }
+
+    #[test]
+    fn test_validate_datoms_rejects_add_retract_conflict() {
+        let schema = bootstrapped_schema_with_person_name();
+        let ops = [
+            TxOp::Add {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:name),
+                value: "Alice".into(),
+            },
+            TxOp::Retract {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:name),
+                value: "Alice".into(),
+            },
+        ];
+        let err = schema
+            .validate_datoms(&to_datoms(&ops, &schema))
+            .unwrap_err();
+        assert!(err.to_string().contains("both assert and retract"));
+    }
+
+    #[test]
+    fn test_validate_datoms_rejects_cardinality_one_conflict() {
+        let schema = bootstrapped_schema_with_person_name();
+        let ops = [
+            TxOp::Add {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:name),
+                value: "Alice".into(),
+            },
+            TxOp::Add {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:name),
+                value: "Bob".into(),
+            },
+        ];
+        let err = schema
+            .validate_datoms(&to_datoms(&ops, &schema))
+            .unwrap_err();
+        assert!(err.to_string().contains("multiple values"));
+    }
+
+    #[test]
+    fn test_validate_datoms_allows_add_retract_overlap_for_cardinality_many() {
+        let mut schema = bootstrapped_schema();
+        let ops = [schema_attribute_with_cardinality(
+            kw!(:tags),
+            "string",
+            "many",
+        )];
+        let datoms = to_datoms(&ops, &schema);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+
+        let ops = [
+            TxOp::Add {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:tags),
+                value: "rust".into(),
+            },
+            TxOp::Retract {
+                entity: EntityRef::Id(200),
+                attribute: kw!(:tags),
+                value: "rust".into(),
+            },
+        ];
+        let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
+        assert!(!validation.schema_changes_detected);
     }
 }

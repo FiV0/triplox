@@ -289,12 +289,49 @@ impl Indexer {
         let mut datoms = tx::resolve_tempids(&expanded, &mut pending_pm)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 4. Validate + prepare schema update (single pass, pre-commit, fallible)
-        let schema_update = self.metadata.schema.validate_and_prepare(&datoms)?;
-
-        // 5. Cardinality resolution (existing EAV scan for card-one auto-retract)
+        // 4. Finalize datoms (card-one rewrite) against current storage state
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
+        let datoms = self
+            .finalize_datoms_for_commit(&txn, tx_eid, datoms)
+            .await?;
 
+        // 5. General validation
+        let validation = self.metadata.schema.validate_datoms(&datoms)?;
+
+        // 6. Write indices + commit
+        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
+        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+
+        // 7. Apply on success only
+        self.metadata.partition_map = pending_pm;
+        if validation.schema_changes_detected {
+            let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
+            if !schema_update.is_empty() {
+                self.metadata.schema.apply_schema_update(schema_update);
+                self.metadata.advance_generation();
+            }
+        }
+
+        // Update latest indexed tx and broadcast completion
+        self.latest_indexed_tx = Some(tx_key);
+
+        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
+            trace!(
+                "No receivers for indexed transaction {}: {}",
+                tx_key.tx_id,
+                e
+            );
+        }
+
+        Ok(tx_key)
+    }
+
+    async fn finalize_datoms_for_commit(
+        &self,
+        txn: &slatedb::DbTransaction,
+        tx_eid: i64,
+        datoms: Vec<Datom>,
+    ) -> Result<Vec<Datom>, Error> {
         // For each Assert datom, scan EAV for the current value of (entity, attribute).
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
@@ -306,13 +343,13 @@ impl Indexer {
                 resolved_datoms.insert(datom);
                 continue;
             }
+
             let (attribute_id, attr) = self
                 .metadata
                 .schema
                 .get_attribute(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
 
-            // Cardinality-many attributes accumulate values without retraction.
             if attr.multival {
                 resolved_datoms.insert(datom);
                 continue;
@@ -351,15 +388,13 @@ impl Indexer {
                         old_value = Some(value);
                         break;
                     }
-                    None => {
-                        // Entry is newer than as_of — skip it
-                    }
+                    None => {}
                 }
             }
 
             if let Some(old_value) = old_value {
                 if old_value == datom.value {
-                    continue; // same value, drop the datom
+                    continue;
                 }
                 resolved_datoms.insert(Datom {
                     entity: datom.entity,
@@ -370,31 +405,8 @@ impl Indexer {
             }
             resolved_datoms.insert(datom);
         }
-        let datoms: Vec<Datom> = resolved_datoms.into_iter().collect();
 
-        // 6. Write indices + commit
-        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
-        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
-
-        // 7. Apply on success only (infallible — validation already passed)
-        self.metadata.partition_map = pending_pm;
-        if !schema_update.is_empty() {
-            self.metadata.schema.apply_schema_update(schema_update);
-            self.metadata.advance_generation();
-        }
-
-        // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = Some(tx_key);
-
-        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
-            trace!(
-                "No receivers for indexed transaction {}: {}",
-                tx_key.tx_id,
-                e
-            );
-        }
-
-        Ok(tx_key)
+        Ok(resolved_datoms.into_iter().collect())
     }
 
     /// Subscribe to transaction completion notifications.
@@ -590,7 +602,7 @@ mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::ops::{DataType, EntityRef};
-    use crate::schema::test_schema_tx;
+    use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
     use crate::slate::in_memory_slate;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
@@ -1145,6 +1157,45 @@ mod tests {
         }
         assert_eq!(add_count, 1, "Expected 1 ADD entry (second tx dropped)");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_schema_immutability_rejected_in_pipeline() -> Result<(), Error> {
+        let slate = Arc::new(in_memory_slate().await);
+        let mut indexer = bootstrapped_indexer(slate).await;
+        let (name_id, attr) = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap();
+        assert_eq!(attr.value_type, crate::schema::ValueType::String);
+
+        let tx = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        let err = indexer
+            .transact_tx(
+                tx,
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), DataType::Long(name_id)),
+                    (kw!(:db/ident), DataType::Keyword(kw!(:name))),
+                    (kw!(:db/valueType), DataType::Long(DB_TYPE_LONG)),
+                    (kw!(:db/cardinality), DataType::Long(DB_CARDINALITY_ONE)),
+                ])],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Cannot modify schema entity"));
+        let (_name_id, attr) = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap();
+        assert_eq!(attr.value_type, crate::schema::ValueType::String);
 
         Ok(())
     }
