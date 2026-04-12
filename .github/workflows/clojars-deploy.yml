@@ -1,0 +1,29 @@
+name: Clojars Deploy (SNAPSHOT)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Publish SNAPSHOT to Clojars
+        env:
+          CLOJARS_USERNAME: ${{ vars.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+        run: |
+          cd triplox-jvm && ./gradlew publishMavenPublicationToClojarsRepository \
+            -Dorg.gradle.internal.publish.checksums.insecure=true \
+            -PtriploxVersion=0.1.0-alpha-SNAPSHOT \
+            -PclojarsUsername="$CLOJARS_USERNAME" \
+            -PclojarsPassword="$CLOJARS_PASSWORD"

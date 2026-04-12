@@ -56,7 +56,7 @@ publishing {
         create<MavenPublication>("maven") {
             groupId = "xyz.triplox"
             artifactId = "triplox"
-            version = "0.1.0-alpha"
+            version = (findProperty("triploxVersion") as String?) ?: "0.1.0-alpha"
 
             from(components["java"])
 
@@ -91,7 +91,7 @@ publishing {
     repositories {
         maven {
             name = "clojars"
-            url = uri("https://repo.clojars.org/")
+            url = uri("https://clojars.org/repo")
             credentials {
                 username = findProperty("clojarsUsername") as String?
                 password = findProperty("clojarsPassword") as String?
