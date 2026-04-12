@@ -2,7 +2,6 @@ use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 
 /// An AND-combinator extender that intersects results from multiple child extenders.
 ///
-/// Mirrors hooray2's GenericAndPrefixExtender:
 /// - count: minimum of all children's counts (intersection can't exceed smallest)
 /// - propose: propose from child with minimum count, intersect with all others
 /// - intersect: chain intersections through all children (sorted by count for efficiency)

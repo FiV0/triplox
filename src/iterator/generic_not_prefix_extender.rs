@@ -10,7 +10,7 @@ use crate::algo::generic_join::{
 /// that match its inner patterns. It participates at a single level (typically the last),
 /// ensuring all variables used by its children are already bound.
 ///
-/// Ported from hooray2's GenericNotPrefixExtender.
+/// Implements NOT (negation) by removing matching extensions.
 pub struct GenericNotPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
     level: usize,

@@ -12,8 +12,7 @@ use edn::query::{ToVariable, Variable};
 /// filters extensions via `intersect`. It participates at the level of its
 /// last (highest join-order) variable argument.
 ///
-/// Ported from hooray2's GenericPredicatePrefixExtender, using a DataFusion-inspired
-/// expression tree instead of flat function+args.
+/// Uses a DataFusion-inspired expression tree instead of flat function+args.
 pub struct GenericPredicatePrefixExtender {
     /// The expression tree to evaluate (must produce Boolean).
     expr: Expr,

@@ -15,8 +15,8 @@ use edn::query::{ToVariable, Variable};
 /// the output variable's join level, where all input variables are already bound in
 /// the prefix.
 ///
-/// Follows hooray2's GenericFnPrefixExtender pattern, using the same expression
-/// engine (`Expr` + `evaluate`) as GenericPredicatePrefixExtender.
+/// Uses the same expression engine (`Expr` + `evaluate`) as
+/// GenericPredicatePrefixExtender.
 pub struct GenericFnPrefixExtender {
     /// The expression tree to evaluate (produces the output value).
     expr: Expr,
