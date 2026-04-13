@@ -58,7 +58,7 @@ pub(crate) fn write_index_entries(
         };
 
         // Temporal indices include tx_eid + op
-        // TODO(triplox-7fl): concat_bytes allocates intermediate Vecs per component;
+        // TODO(#69): concat_bytes allocates intermediate Vecs per component;
         // encoding directly into a single buffer would be faster.
         txn.put(
             concat_bytes(&[
@@ -115,7 +115,7 @@ pub(crate) fn write_index_entries(
 /// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
 /// system_time from `db/txInstant` value.
 ///
-/// TODO(triplox-8mc): Return Option instead of sentinel. Needs coordination with
+/// TODO(#97): Return Option instead of sentinel. Needs coordination with
 /// the bootstrap transaction (tx_id=0).
 pub async fn latest_tx_key_from_snapshot(
     snapshot: &Arc<slatedb::DbSnapshot>,
@@ -362,7 +362,7 @@ impl Indexer {
             // Scan EAV prefix on the transaction to find the current value.
             // Uses async scan directly because TemporalFilterIterator is sync-only.
             // This duplicates the temporal resolution logic from advance_to_next_valid().
-            // TODO(triplox-vbc): unify with TemporalFilterIterator once the iterator
+            // TODO(#99): unify with TemporalFilterIterator once the iterator
             // layer becomes fully async, eliminating this duplication.
             let mut iter = txn
                 .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
@@ -464,7 +464,7 @@ impl TxWaiter {
             }
         }
 
-        // TODO(triplox-j7t): The >= check can return a different tx's result if the
+        // TODO: The >= check can return a different tx's result if the
         // broadcast channel lags. Will be revisited when the log is removed and we
         // ingest directly into Slate.
         loop {
@@ -993,7 +993,7 @@ mod tests {
         Ok(())
     }
 
-    // TODO(triplox-qj0): replace explicit entity IDs with query-based verification
+    // TODO(#96): replace explicit entity IDs with query-based verification
     #[tokio::test]
     async fn test_retract_on_overwrite() -> Result<(), Error> {
         let slate = in_memory_slate().await.db;

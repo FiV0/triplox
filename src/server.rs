@@ -48,7 +48,7 @@ impl DbCache {
 
     /// Get or create a DB snapshot for the given tx_id.
     /// The `create` future is only evaluated on cache miss.
-    // TODO(triplox-d2q): the write lock is held across create().await (disk I/O),
+    // TODO: the write lock is held across create().await (disk I/O),
     // blocking all other acquire/release calls across every connection.
     async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
     where
@@ -65,7 +65,7 @@ impl DbCache {
             if entries.len() >= self.max_open {
                 bail!("Too many open DB snapshots (max {})", self.max_open);
             }
-            // TODO(triplox-dbt): reserve a slot here so concurrent callers don't
+            // TODO: reserve a slot here so concurrent callers don't
             // all pass the max_open check, create DBs, then throw most away.
             // Drop the lock before the potentially expensive create()
         }
@@ -668,7 +668,7 @@ async fn cleanup_connection(conn_state: &ConnectionState, db_cache: &DbCache) {
     }
 }
 
-// TODO(triplox-c36): thread ErrorCode through instead of always using InternalError
+// TODO(#78): thread ErrorCode through instead of always using InternalError
 async fn write_error_response<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     severity: u8,

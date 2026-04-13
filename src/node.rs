@@ -811,7 +811,7 @@ mod tests {
         assert!(!result.contains(&vec![DataType::String("bob".to_string())]));
     }
 
-    // TODO(triplox-5ox): Once cardinality/one override is implemented, update this test to use
+    // TODO(#86): Once cardinality/one override is implemented, update this test to use
     // the same entity in both transactions and verify only the latest value is returned.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_db_as_of_time_travel() {

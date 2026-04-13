@@ -427,7 +427,7 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Uuid(*u)))
             }
 
-            // TODO(triplox-14x): review which of these types should be supported
+            // TODO(#105): review which of these types should be supported
             // in the value position of query patterns.
             crate::SpannedValue::Nil => None,
             crate::SpannedValue::NamespacedSymbol(_) => None,

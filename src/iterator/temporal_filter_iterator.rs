@@ -17,7 +17,7 @@ use super::slate_iterator::{Extractor, Index};
 /// For each distinct logical key (everything except T and op), emits only the
 /// most recent version whose tx_eid <= `as_of`.
 ///
-/// TODO(triplox-28q): Add a history mode option that iterates over all history
+/// TODO(#102): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
 pub(crate) struct TemporalFilterIterator {
     inner: slatedb::DbIterator,
