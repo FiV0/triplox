@@ -655,6 +655,7 @@ pub fn compile_pattern(
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
     as_of: i64,
+    range_stats: Arc<slatedb_estimates::RangeStats>,
 ) -> Result<GenericPrefixExtender, Error> {
     let pat_vars = pattern_variables(pattern);
 
@@ -679,6 +680,7 @@ pub fn compile_pattern(
     Ok(GenericPrefixExtender::new(
         slate,
         handle,
+        range_stats,
         index_types,
         attribute_id,
         constant_prefix,
@@ -1169,16 +1171,33 @@ fn compile_or_branch(
     handle: &Handle,
     ident_map: &IdentMap,
     as_of: i64,
+    range_stats: &Arc<slatedb_estimates::RangeStats>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
         OrWhereClause::Clause(clause) => compile_where_clause(
-            clause, join_order, var_index, slate, handle, ident_map, as_of,
+            clause,
+            join_order,
+            var_index,
+            slate,
+            handle,
+            ident_map,
+            as_of,
+            range_stats,
         ),
         OrWhereClause::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
                 .iter()
                 .map(|c| {
-                    compile_where_clause(c, join_order, var_index, slate, handle, ident_map, as_of)
+                    compile_where_clause(
+                        c,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        ident_map,
+                        as_of,
+                        range_stats,
+                    )
                 })
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericAndPrefixExtender::new(extenders)))
@@ -1195,6 +1214,7 @@ fn compile_where_clause(
     handle: &Handle,
     ident_map: &IdentMap,
     as_of: i64,
+    range_stats: &Arc<slatedb_estimates::RangeStats>,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match clause {
         WhereClause::Pattern(pattern) => {
@@ -1207,6 +1227,7 @@ fn compile_where_clause(
                 slate.clone(),
                 handle.clone(),
                 as_of,
+                range_stats.clone(),
             )?;
             Ok(Box::new(extender))
         }
@@ -1215,7 +1236,16 @@ fn compile_where_clause(
                 .clauses
                 .iter()
                 .map(|b| {
-                    compile_or_branch(b, join_order, var_index, slate, handle, ident_map, as_of)
+                    compile_or_branch(
+                        b,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        ident_map,
+                        as_of,
+                        range_stats,
+                    )
                 })
                 .collect::<Result<_, _>>()?;
             Ok(Box::new(GenericOrPrefixExtender::new(children)))
@@ -1225,7 +1255,16 @@ fn compile_where_clause(
                 .clauses
                 .iter()
                 .map(|c| {
-                    compile_where_clause(c, join_order, var_index, slate, handle, ident_map, as_of)
+                    compile_where_clause(
+                        c,
+                        join_order,
+                        var_index,
+                        slate,
+                        handle,
+                        ident_map,
+                        as_of,
+                        range_stats,
+                    )
                 })
                 .collect::<Result<_, _>>()?;
             let not_level = var_index.len() - 1;
@@ -1275,6 +1314,7 @@ pub fn execute_query(
     handle: Handle,
     ident_map: &IdentMap,
     as_of: i64,
+    range_stats: Arc<slatedb_estimates::RangeStats>,
 ) -> Result<QueryResult, Error> {
     // 1. Extract variable order (in_bindings prepended)
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
@@ -1294,6 +1334,7 @@ pub fn execute_query(
             &handle,
             ident_map,
             as_of,
+            &range_stats,
         )?);
     }
 

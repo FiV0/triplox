@@ -15,6 +15,7 @@ pub struct SlateComponents {
     pub db: Arc<Db>,
     pub path: String,
     pub object_store: Arc<dyn ObjectStore>,
+    pub range_stats: Arc<slatedb_estimates::RangeStats>,
 }
 
 impl std::fmt::Debug for SlateComponents {
@@ -34,26 +35,43 @@ pub async fn in_memory_slate() -> SlateComponents {
             .await
             .unwrap(),
     );
+    let range_stats = Arc::new(slatedb_estimates::RangeStats::new(
+        db.clone(),
+        path.clone(),
+        object_store.clone(),
+        None,
+        None,
+    ));
     SlateComponents {
         db,
         path,
         object_store,
+        range_stats,
     }
 }
 
 pub async fn local_slate(path: &str) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
+    let slate_path = "triplox".to_string();
     let db = Arc::new(
-        Db::builder("triplox", object_store.clone())
+        Db::builder(slate_path.clone(), object_store.clone())
             .build()
             .await
             .unwrap(),
     );
+    let range_stats = Arc::new(slatedb_estimates::RangeStats::new(
+        db.clone(),
+        slate_path.clone(),
+        object_store.clone(),
+        None,
+        None,
+    ));
     SlateComponents {
         db,
-        path: "triplox".to_string(),
+        path: slate_path,
         object_store,
+        range_stats,
     }
 }
 
@@ -82,10 +100,19 @@ pub async fn remote_slate(
             .await
             .unwrap(),
     );
+    let path = "triplox".to_string();
+    let range_stats = Arc::new(slatedb_estimates::RangeStats::new(
+        db.clone(),
+        path.clone(),
+        object_store.clone(),
+        None,
+        None,
+    ));
     SlateComponents {
         db,
-        path: "triplox".to_string(),
+        path,
         object_store,
+        range_stats,
     }
 }
 

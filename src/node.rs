@@ -78,6 +78,7 @@ pub struct DB {
     handle: Handle,
     tx_key: TxKey,
     tx_eid: i64,
+    range_stats: Arc<slatedb_estimates::RangeStats>,
 }
 
 #[allow(unused)]
@@ -88,6 +89,7 @@ impl DB {
         handle: Handle,
         tx_key: TxKey,
         tx_eid: i64,
+        range_stats: Arc<slatedb_estimates::RangeStats>,
     ) -> Self {
         Self {
             snapshot,
@@ -95,6 +97,7 @@ impl DB {
             handle,
             tx_key,
             tx_eid,
+            range_stats,
         }
     }
 
@@ -103,6 +106,7 @@ impl DB {
         snapshot: Arc<slatedb::DbSnapshot>,
         ident_map: IdentMap,
         handle: Handle,
+        range_stats: Arc<slatedb_estimates::RangeStats>,
     ) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
         Ok(Self {
@@ -111,6 +115,7 @@ impl DB {
             handle,
             tx_key,
             tx_eid,
+            range_stats,
         })
     }
 
@@ -144,9 +149,10 @@ impl Database for DB {
         let query = query.clone();
         let args = args.to_vec();
         let as_of = self.tx_eid;
+        let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, snapshot, handle, &ident_map, as_of)
+            execute_query(&query, &args, snapshot, handle, &ident_map, as_of, range_stats)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -164,10 +170,9 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
-        let db = slate.db.clone();
-        let metadata = crate::bootstrap::init_db(db.clone()).await;
+        let metadata = crate::bootstrap::init_db(&slate).await;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            db.clone(),
+            slate.db.clone(),
             metadata,
             None,
         )));
@@ -191,12 +196,11 @@ impl Node<FileLog> {
         slate: SlateComponents,
         log_file: &Path,
     ) -> Result<Self, Error> {
-        let db = slate.db.clone();
-        let metadata = crate::bootstrap::init_db(db.clone()).await;
+        let metadata = crate::bootstrap::init_db(&slate).await;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
-        let snapshot = Arc::new(db.snapshot().await?);
+        let snapshot = Arc::new(slate.db.snapshot().await?);
         let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
         let latest_indexed_tx = if latest_indexed.tx_id > 0 {
             Some(latest_indexed)
@@ -205,7 +209,7 @@ impl Node<FileLog> {
         };
 
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            db.clone(),
+            slate.db.clone(),
             metadata,
             latest_indexed_tx,
         )));
@@ -308,7 +312,8 @@ impl<L: TxLog> QueryNode for Node<L> {
             .ident_map
             .clone();
         let handle = Handle::current();
-        DB::from_latest_snapshot(snapshot, ident_map, handle).await
+        let range_stats = self.slate.range_stats.clone();
+        DB::from_latest_snapshot(snapshot, ident_map, handle, range_stats).await
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
@@ -322,8 +327,9 @@ impl<L: TxLog> QueryNode for Node<L> {
             .ident_map
             .clone();
         let handle = Handle::current();
+        let range_stats = self.slate.range_stats.clone();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid))
+        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid, range_stats))
     }
 }
 

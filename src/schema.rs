@@ -751,13 +751,14 @@ fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
 /// db/ident entities with optional db/valueType + db/cardinality. Query 2 re-fetches
 /// ?e and ?ident that were already retrieved in query 1. This is only run at startup
 /// so the inefficiency is minor, but a single-pass approach would be cleaner.
-pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
+pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_ident_map: IdentMap = HashMap::new();
     bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
-    let snapshot = slatedb.snapshot().await.expect("Failed to create snapshot");
+    let snapshot = slate.db.snapshot().await.expect("Failed to create snapshot");
+    let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
 
     // Query 1: all entities with db/ident (populates ident_map/entid_map)
@@ -768,6 +769,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
     let snap_clone = snapshot.clone();
     let handle_clone = handle.clone();
     let ident_map_clone = bootstrap_ident_map.clone();
+    let range_stats_clone = range_stats.clone();
     let ident_results = tokio::task::spawn_blocking(move || {
         execute_query(
             &ident_query,
@@ -776,6 +778,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             handle_clone,
             &ident_map_clone,
             i64::MAX,
+            range_stats_clone,
         )
     })
     .await
@@ -795,6 +798,7 @@ pub async fn load_schema_from_indices(slatedb: Arc<slatedb::Db>) -> Schema {
             handle,
             &bootstrap_ident_map,
             i64::MAX,
+            range_stats,
         )
     })
     .await
