@@ -298,7 +298,7 @@ mod tests {
         );
 
         let count = extender.count(&vec![]);
-        assert!(count > 0, "Expected non-zero count after flush, got {}", count);
+        assert_eq!(count, 3);
 
         Ok(())
     }

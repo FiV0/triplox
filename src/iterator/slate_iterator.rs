@@ -351,7 +351,7 @@ mod tests {
             let extractor = make_test_extractor(PFX.len());
             let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
-            assert!(count > 0, "Expected non-zero count after flush, got {}", count);
+            assert_eq!(count, 3);
         })
         .await
         .unwrap();
