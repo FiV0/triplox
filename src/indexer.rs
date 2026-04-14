@@ -291,7 +291,7 @@ impl Indexer {
         // 4. Finalize datoms (card-one rewrite) against current storage state
         let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
         let datoms = self
-            .finalize_datoms_for_commit(&txn, tx_eid, datoms)
+            .finalize_datoms_for_commit(&txn, datoms)
             .await?;
 
         // 5. General validation
@@ -328,7 +328,6 @@ impl Indexer {
     async fn finalize_datoms_for_commit(
         &self,
         txn: &slatedb::DbTransaction,
-        tx_eid: i64,
         datoms: Vec<Datom>,
     ) -> Result<Vec<Datom>, Error> {
         // For each Assert datom, scan EAV for the current value of (entity, attribute).
