@@ -230,12 +230,7 @@ pub enum OpType {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub enum Entity<V> {
     // Like [:db/add|:db/retract e a v].
-    AddOrRetract {
-        op: OpType,
-        e: EntityPlace<V>,
-        a: AttributePlace,
-        v: ValuePlace<V>,
-    },
+    AddOrRetract { op: OpType, e: EntityPlace<V>, a: AttributePlace, v: ValuePlace<V> },
     // Like {:db/id "tempid" a1 v1 a2 v2}.
     MapNotation(MapNotation<V>),
 }

@@ -187,32 +187,12 @@ pub struct ColumnDescription {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FrontendMessage {
-    Startup {
-        version_major: u16,
-        version_minor: u16,
-        params: BTreeMap<String, String>,
-    },
-    OpenDb {
-        tx_id: Option<i64>,
-        system_time: Option<i64>,
-    },
-    CloseDb {
-        db_id: u32,
-    },
-    Query {
-        query_string: String,
-        db_id: u32,
-        args: Vec<QueryArg>,
-    },
-    Execute {
-        ops: Vec<TxOp>,
-        await_indexing: bool,
-    },
-    Subscribe {
-        query_string: String,
-        db_id: u32,
-        args: Vec<QueryArg>,
-    },
+    Startup { version_major: u16, version_minor: u16, params: BTreeMap<String, String> },
+    OpenDb { tx_id: Option<i64>, system_time: Option<i64> },
+    CloseDb { db_id: u32 },
+    Query { query_string: String, db_id: u32, args: Vec<QueryArg> },
+    Execute { ops: Vec<TxOp>, await_indexing: bool },
+    Subscribe { query_string: String, db_id: u32, args: Vec<QueryArg> },
     Unsubscribe,
     Terminate,
 }
@@ -312,20 +292,14 @@ fn encode_f64(buf: &mut Vec<u8>, v: f64) {
 /// message-size limit before encoding, which is well below `u32::MAX` (~4 GB).
 fn encode_string(buf: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    encode_u32(
-        buf,
-        u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"),
-    );
+    encode_u32(buf, u32::try_from(bytes.len()).expect("string exceeds u32::MAX bytes"));
     buf.extend_from_slice(bytes);
 }
 
 /// # Panics
 /// Panics if `b` exceeds `u32::MAX` bytes. Unreachable — see [`encode_string`].
 fn encode_bytes(buf: &mut Vec<u8>, b: &[u8]) {
-    encode_u32(
-        buf,
-        u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"),
-    );
+    encode_u32(buf, u32::try_from(b.len()).expect("byte array exceeds u32::MAX bytes"));
     buf.extend_from_slice(b);
 }
 
@@ -464,21 +438,13 @@ fn encode_tx_op(buf: &mut Vec<u8>, op: &TxOp) {
             encode_u8(buf, TXOP_PUT);
             encode_keyword_datatype_map(buf, map);
         }
-        TxOp::Add {
-            entity,
-            attribute,
-            value,
-        } => {
+        TxOp::Add { entity, attribute, value } => {
             encode_u8(buf, TXOP_ADD);
             encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
             encode_data_type(buf, value);
         }
-        TxOp::Retract {
-            entity,
-            attribute,
-            value,
-        } => {
+        TxOp::Retract { entity, attribute, value } => {
             encode_u8(buf, TXOP_RETRACT);
             encode_entity_ref(buf, entity);
             encode_string(buf, &attribute.to_string());
@@ -554,11 +520,7 @@ impl<'a> Cursor<'a> {
 
     fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         if self.pos + n > self.data.len() {
-            bail!(
-                "Unexpected end of message: need {} bytes, have {}",
-                n,
-                self.remaining()
-            );
+            bail!("Unexpected end of message: need {} bytes, have {}", n, self.remaining());
         }
         let slice = &self.data[self.pos..self.pos + n];
         self.pos += n;
@@ -654,11 +616,7 @@ impl<'a> Cursor<'a> {
     fn read_string_map(&mut self) -> Result<BTreeMap<String, String>> {
         let count = self.read_u32()? as usize;
         if count > self.remaining() {
-            bail!(
-                "String map count {} exceeds remaining bytes {}",
-                count,
-                self.remaining()
-            );
+            bail!("String map count {} exceeds remaining bytes {}", count, self.remaining());
         }
         let mut map = BTreeMap::new();
         for _ in 0..count {
@@ -705,11 +663,7 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
 fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!(
-            "Vec<DataType> count {} exceeds remaining bytes {}",
-            count,
-            cursor.remaining()
-        );
+        bail!("Vec<DataType> count {} exceeds remaining bytes {}", count, cursor.remaining());
     }
     let mut vec = Vec::with_capacity(count);
     for _ in 0..count {
@@ -721,11 +675,7 @@ fn decode_data_type_vec(cursor: &mut Cursor) -> Result<Vec<DataType>> {
 fn decode_data_type_map(cursor: &mut Cursor) -> Result<BTreeMap<String, DataType>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!(
-            "Map count {} exceeds remaining bytes {}",
-            count,
-            cursor.remaining()
-        );
+        bail!("Map count {} exceeds remaining bytes {}", count, cursor.remaining());
     }
     let mut map = BTreeMap::new();
     for _ in 0..count {
@@ -788,21 +738,13 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
             let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
             let value = decode_data_type(cursor)?;
-            Ok(TxOp::Add {
-                entity,
-                attribute,
-                value,
-            })
+            Ok(TxOp::Add { entity, attribute, value })
         }
         TXOP_RETRACT => {
             let entity = decode_entity_ref(cursor)?;
             let attribute = Keyword::from_str(&cursor.read_string()?)?;
             let value = decode_data_type(cursor)?;
-            Ok(TxOp::Retract {
-                entity,
-                attribute,
-                value,
-            })
+            Ok(TxOp::Retract { entity, attribute, value })
         }
         TXOP_DELETE => Ok(TxOp::Delete(decode_entity_ref(cursor)?)),
         TXOP_ERASE => Ok(TxOp::Erase(decode_entity_ref(cursor)?)),
@@ -813,11 +755,7 @@ fn decode_tx_op(cursor: &mut Cursor) -> Result<TxOp> {
 fn decode_tx_ops(cursor: &mut Cursor) -> Result<Vec<TxOp>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!(
-            "Vec<TxOp> count {} exceeds remaining bytes {}",
-            count,
-            cursor.remaining()
-        );
+        bail!("Vec<TxOp> count {} exceeds remaining bytes {}", count, cursor.remaining());
     }
     let mut ops = Vec::with_capacity(count);
     for _ in 0..count {
@@ -854,11 +792,7 @@ fn decode_query_arg(cursor: &mut Cursor) -> Result<QueryArg> {
 fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
     let count = cursor.read_u32()? as usize;
     if count > cursor.remaining() {
-        bail!(
-            "Vec<QueryArg> count {} exceeds remaining bytes {}",
-            count,
-            cursor.remaining()
-        );
+        bail!("Vec<QueryArg> count {} exceeds remaining bytes {}", count, cursor.remaining());
     }
     let mut args = Vec::with_capacity(count);
     for _ in 0..count {
@@ -873,11 +807,7 @@ fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
 
 fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
     match msg {
-        FrontendMessage::Startup {
-            version_major,
-            version_minor,
-            params,
-        } => {
+        FrontendMessage::Startup { version_major, version_minor, params } => {
             encode_u16(buf, *version_major);
             encode_u16(buf, *version_minor);
             encode_string_map(buf, params);
@@ -889,27 +819,16 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
         FrontendMessage::CloseDb { db_id } => {
             encode_u32(buf, *db_id);
         }
-        FrontendMessage::Query {
-            query_string,
-            db_id,
-            args,
-        } => {
+        FrontendMessage::Query { query_string, db_id, args } => {
             encode_string(buf, query_string);
             encode_u32(buf, *db_id);
             encode_query_args(buf, args);
         }
-        FrontendMessage::Execute {
-            ops,
-            await_indexing,
-        } => {
+        FrontendMessage::Execute { ops, await_indexing } => {
             encode_tx_ops(buf, ops);
             encode_bool(buf, *await_indexing);
         }
-        FrontendMessage::Subscribe {
-            query_string,
-            db_id,
-            args,
-        } => {
+        FrontendMessage::Subscribe { query_string, db_id, args } => {
             encode_string(buf, query_string);
             encode_u32(buf, *db_id);
             encode_query_args(buf, args);
@@ -951,12 +870,7 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
             encode_i64(buf, *tx_id);
             encode_i64(buf, *system_time);
         }
-        BackendMessage::TxResult {
-            status,
-            tx_id,
-            system_time,
-            error_message,
-        } => {
+        BackendMessage::TxResult { status, tx_id, system_time, error_message } => {
             encode_u8(buf, *status);
             encode_i64(buf, *tx_id);
             encode_i64(buf, *system_time);
@@ -964,13 +878,7 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
         }
         BackendMessage::UnsubscribeComplete => {}
         BackendMessage::Heartbeat => {}
-        BackendMessage::ErrorResponse {
-            severity,
-            code,
-            message,
-            detail,
-            hint,
-        } => {
+        BackendMessage::ErrorResponse { severity, code, message, detail, hint } => {
             encode_u8(buf, *severity);
             encode_u16(buf, *code);
             encode_string(buf, message);
@@ -990,9 +898,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
             tx_id: cursor.read_option_i64()?,
             system_time: cursor.read_option_i64()?,
         }),
-        MSG_CLOSE_DB => Ok(FrontendMessage::CloseDb {
-            db_id: cursor.read_u32()?,
-        }),
+        MSG_CLOSE_DB => Ok(FrontendMessage::CloseDb { db_id: cursor.read_u32()? }),
         MSG_QUERY => Ok(FrontendMessage::Query {
             query_string: cursor.read_string()?,
             db_id: cursor.read_u32()?,
@@ -1001,10 +907,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
         MSG_EXECUTE => {
             let ops = decode_tx_ops(cursor)?;
             let await_indexing = cursor.read_bool()?;
-            Ok(FrontendMessage::Execute {
-                ops,
-                await_indexing,
-            })
+            Ok(FrontendMessage::Execute { ops, await_indexing })
         }
         MSG_SUBSCRIBE => Ok(FrontendMessage::Subscribe {
             query_string: cursor.read_string()?,
@@ -1019,16 +922,13 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
 
 fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
     match msg_type {
-        MSG_AUTHENTICATION_OK => Ok(BackendMessage::AuthenticationOk {
-            server_version: cursor.read_string()?,
-        }),
-        MSG_DB_OPENED => Ok(BackendMessage::DbOpened {
-            db_id: cursor.read_u32()?,
-            tx_id: cursor.read_i64()?,
-        }),
-        MSG_DB_CLOSED => Ok(BackendMessage::DbClosed {
-            db_id: cursor.read_u32()?,
-        }),
+        MSG_AUTHENTICATION_OK => {
+            Ok(BackendMessage::AuthenticationOk { server_version: cursor.read_string()? })
+        }
+        MSG_DB_OPENED => {
+            Ok(BackendMessage::DbOpened { db_id: cursor.read_u32()?, tx_id: cursor.read_i64()? })
+        }
+        MSG_DB_CLOSED => Ok(BackendMessage::DbClosed { db_id: cursor.read_u32()? }),
         MSG_ROW_DESCRIPTION => {
             let count = cursor.read_u32()? as usize;
             if count > cursor.remaining() {
@@ -1051,16 +951,13 @@ fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMe
             let values = decode_data_type_vec(cursor)?;
             Ok(BackendMessage::DataRow { values })
         }
-        MSG_DATA_BATCH_COMPLETE => Ok(BackendMessage::DataBatchComplete {
-            tx_id: cursor.read_i64()?,
-        }),
-        MSG_READY_FOR_QUERY => Ok(BackendMessage::ReadyForQuery {
-            status: cursor.read_u8()?,
-        }),
-        MSG_TX_KEY => Ok(BackendMessage::TxKey {
-            tx_id: cursor.read_i64()?,
-            system_time: cursor.read_i64()?,
-        }),
+        MSG_DATA_BATCH_COMPLETE => {
+            Ok(BackendMessage::DataBatchComplete { tx_id: cursor.read_i64()? })
+        }
+        MSG_READY_FOR_QUERY => Ok(BackendMessage::ReadyForQuery { status: cursor.read_u8()? }),
+        MSG_TX_KEY => {
+            Ok(BackendMessage::TxKey { tx_id: cursor.read_i64()?, system_time: cursor.read_i64()? })
+        }
         MSG_TX_RESULT => Ok(BackendMessage::TxResult {
             status: cursor.read_u8()?,
             tx_id: cursor.read_i64()?,
@@ -1108,11 +1005,7 @@ pub async fn read_frontend_message<R: AsyncRead + Unpin>(
         let version_major = cursor.read_u16()?;
         let version_minor = cursor.read_u16()?;
         let params = cursor.read_string_map()?;
-        Ok(FrontendMessage::Startup {
-            version_major,
-            version_minor,
-            params,
-        })
+        Ok(FrontendMessage::Startup { version_major, version_minor, params })
     } else {
         let msg_type = reader.read_u8().await?;
         let length = reader.read_u32().await?;
@@ -1250,9 +1143,7 @@ mod tests {
 
         let is_startup = matches!(msg, FrontendMessage::Startup { .. });
         let mut cursor = &buf[..];
-        read_frontend_message(&mut cursor, is_startup, DEFAULT_MAX_MESSAGE_SIZE)
-            .await
-            .unwrap()
+        read_frontend_message(&mut cursor, is_startup, DEFAULT_MAX_MESSAGE_SIZE).await.unwrap()
     }
 
     // Helper: encode a backend message to bytes and decode it back.
@@ -1261,9 +1152,7 @@ mod tests {
         write_backend_message(&mut buf, msg).await.unwrap();
 
         let mut cursor = &buf[..];
-        read_backend_message(&mut cursor, DEFAULT_MAX_MESSAGE_SIZE)
-            .await
-            .unwrap()
+        read_backend_message(&mut cursor, DEFAULT_MAX_MESSAGE_SIZE).await.unwrap()
     }
 
     // -- DataType round-trip tests --
@@ -1283,14 +1172,8 @@ mod tests {
 
     #[test]
     fn test_data_type_boolean() {
-        assert_eq!(
-            roundtrip_data_type(&DataType::Boolean(true)),
-            DataType::Boolean(true)
-        );
-        assert_eq!(
-            roundtrip_data_type(&DataType::Boolean(false)),
-            DataType::Boolean(false)
-        );
+        assert_eq!(roundtrip_data_type(&DataType::Boolean(true)), DataType::Boolean(true));
+        assert_eq!(roundtrip_data_type(&DataType::Boolean(false)), DataType::Boolean(false));
     }
 
     #[test]
@@ -1384,10 +1267,7 @@ mod tests {
         inner_map.insert("x".to_string(), DataType::Long(1));
         let dt = DataType::Vector(vec![
             DataType::Map(inner_map),
-            DataType::Tuple(vec![
-                DataType::String("hello".to_string()),
-                DataType::Boolean(false),
-            ]),
+            DataType::Tuple(vec![DataType::String("hello".to_string()), DataType::Boolean(false)]),
         ]);
         assert_eq!(roundtrip_data_type(&dt), dt);
     }
@@ -1502,26 +1382,16 @@ mod tests {
     async fn test_startup_roundtrip() {
         let mut params = BTreeMap::new();
         params.insert("client_name".to_string(), "test-client".to_string());
-        let msg = FrontendMessage::Startup {
-            version_major: 0,
-            version_minor: 1,
-            params,
-        };
+        let msg = FrontendMessage::Startup { version_major: 0, version_minor: 1, params };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_open_db_roundtrip() {
-        let msg = FrontendMessage::OpenDb {
-            tx_id: Some(42),
-            system_time: Some(1700000000000000),
-        };
+        let msg = FrontendMessage::OpenDb { tx_id: Some(42), system_time: Some(1700000000000000) };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
 
-        let msg = FrontendMessage::OpenDb {
-            tx_id: None,
-            system_time: None,
-        };
+        let msg = FrontendMessage::OpenDb { tx_id: None, system_time: None };
         assert_eq!(roundtrip_frontend(&msg).await, msg);
     }
 
@@ -1587,18 +1457,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_authentication_ok_roundtrip() {
-        let msg = BackendMessage::AuthenticationOk {
-            server_version: "triplox 0.1.0".to_string(),
-        };
+        let msg = BackendMessage::AuthenticationOk { server_version: "triplox 0.1.0".to_string() };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_db_opened_roundtrip() {
-        let msg = BackendMessage::DbOpened {
-            db_id: 5,
-            tx_id: 42,
-        };
+        let msg = BackendMessage::DbOpened { db_id: 5, tx_id: 42 };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
@@ -1612,14 +1477,8 @@ mod tests {
     async fn test_row_description_roundtrip() {
         let msg = BackendMessage::RowDescription {
             columns: vec![
-                ColumnDescription {
-                    name: "?e".to_string(),
-                    data_type: TAG_LONG,
-                },
-                ColumnDescription {
-                    name: "?name".to_string(),
-                    data_type: TAG_STRING,
-                },
+                ColumnDescription { name: "?e".to_string(), data_type: TAG_LONG },
+                ColumnDescription { name: "?name".to_string(), data_type: TAG_STRING },
             ],
         };
         assert_eq!(roundtrip_backend(&msg).await, msg);
@@ -1641,23 +1500,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_ready_for_query_roundtrip() {
-        let msg = BackendMessage::ReadyForQuery {
-            status: STATUS_IDLE,
-        };
+        let msg = BackendMessage::ReadyForQuery { status: STATUS_IDLE };
         assert_eq!(roundtrip_backend(&msg).await, msg);
 
-        let msg = BackendMessage::ReadyForQuery {
-            status: STATUS_SUBSCRIBED,
-        };
+        let msg = BackendMessage::ReadyForQuery { status: STATUS_SUBSCRIBED };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
     #[tokio::test]
     async fn test_tx_key_roundtrip() {
-        let msg = BackendMessage::TxKey {
-            tx_id: 42,
-            system_time: 1700000000000000,
-        };
+        let msg = BackendMessage::TxKey { tx_id: 42, system_time: 1700000000000000 };
         assert_eq!(roundtrip_backend(&msg).await, msg);
     }
 
@@ -1693,10 +1545,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_heartbeat_roundtrip() {
-        assert_eq!(
-            roundtrip_backend(&BackendMessage::Heartbeat).await,
-            BackendMessage::Heartbeat
-        );
+        assert_eq!(roundtrip_backend(&BackendMessage::Heartbeat).await, BackendMessage::Heartbeat);
     }
 
     #[tokio::test]

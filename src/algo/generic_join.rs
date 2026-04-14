@@ -38,10 +38,7 @@ impl SingleLevelExtender {
     pub fn new(values: Vec<Bytes>, participates_in: usize) -> Self {
         let mut values = values;
         values.sort();
-        Self {
-            values,
-            participates_in,
-        }
+        Self { values, participates_in }
     }
 }
 
@@ -56,11 +53,7 @@ impl PrefixExtender for SingleLevelExtender {
 
     fn intersect(&self, _prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         let value_set: HashSet<_> = self.values.iter().collect();
-        extensions
-            .iter()
-            .filter(|ext| value_set.contains(ext))
-            .cloned()
-            .collect()
+        extensions.iter().filter(|ext| value_set.contains(ext)).cloned().collect()
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -134,11 +127,7 @@ impl FromPrefixExtender {
             participating_levels
         );
         let level_set = participating_levels.iter().cloned().collect();
-        Self {
-            participating_levels,
-            level_set,
-            partial_prefix,
-        }
+        Self { participating_levels, level_set, partial_prefix }
     }
 
     fn is_prefix_matching(&self, prefix: &Prefix) -> bool {
@@ -218,11 +207,7 @@ impl FromPrefixesExtender {
             participating_levels
         );
         let level_set = participating_levels.iter().cloned().collect();
-        Self {
-            participating_levels,
-            level_set,
-            partial_prefixes,
-        }
+        Self { participating_levels, level_set, partial_prefixes }
     }
 
     fn matching_prefixes(&self, prefix: &Prefix) -> Vec<&Prefix> {
@@ -273,16 +258,9 @@ impl PrefixExtender for FromPrefixesExtender {
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         let idx = self.next_level_index(prefix);
-        let valid_extensions: HashSet<_> = self
-            .matching_prefixes(prefix)
-            .into_iter()
-            .filter_map(|p| p.get(idx))
-            .collect();
-        extensions
-            .iter()
-            .filter(|ext| valid_extensions.contains(ext))
-            .cloned()
-            .collect()
+        let valid_extensions: HashSet<_> =
+            self.matching_prefixes(prefix).into_iter().filter_map(|p| p.get(idx)).collect();
+        extensions.iter().filter(|ext| valid_extensions.contains(ext)).cloned().collect()
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -299,10 +277,7 @@ pub struct GenericSingleJoin<'a> {
 impl<'a> GenericSingleJoin<'a> {
     pub fn new(extenders: Vec<&'a dyn PrefixExtender>, prefixes: Vec<Prefix>) -> Self {
         assert!(!extenders.is_empty(), "At least one extender is required");
-        Self {
-            extenders,
-            prefixes,
-        }
+        Self { extenders, prefixes }
     }
 
     pub fn join(&self) -> Vec<Prefix> {
@@ -349,19 +324,12 @@ pub struct PrefixAndExtensionsExtender {
 impl PrefixAndExtensionsExtender {
     pub fn new(fixed_prefix: Prefix, fixed_extensions: Vec<Extension>) -> Self {
         let extension_set = fixed_extensions.iter().cloned().collect();
-        Self {
-            fixed_prefix,
-            fixed_extensions,
-            extension_set,
-        }
+        Self { fixed_prefix, fixed_extensions, extension_set }
     }
 
     fn is_prefix_matching(&self, prefix: &Prefix) -> bool {
         prefix.len() <= self.fixed_prefix.len()
-            && prefix
-                .iter()
-                .zip(self.fixed_prefix.iter())
-                .all(|(a, b)| a == b)
+            && prefix.iter().zip(self.fixed_prefix.iter()).all(|(a, b)| a == b)
     }
 }
 
@@ -400,11 +368,7 @@ impl PrefixExtender for PrefixAndExtensionsExtender {
                     vec![]
                 }
             } else {
-                extensions
-                    .iter()
-                    .filter(|ext| self.extension_set.contains(*ext))
-                    .cloned()
-                    .collect()
+                extensions.iter().filter(|ext| self.extension_set.contains(*ext)).cloned().collect()
             }
         } else {
             vec![]
@@ -502,11 +466,8 @@ mod tests {
         // Second level: multiples of 6 and 12
         let multiples_of_six = SingleLevelExtender::new(vec![bi(6), bi(12)], 1);
 
-        let extenders: Vec<&dyn PrefixExtender> = vec![
-            &even_extender,
-            &divisible_by_three_extender,
-            &multiples_of_six,
-        ];
+        let extenders: Vec<&dyn PrefixExtender> =
+            vec![&even_extender, &divisible_by_three_extender, &multiples_of_six];
 
         let join = GenericJoin::new(extenders, 2);
         let result = join.join();
@@ -579,34 +540,19 @@ mod tests {
         let extender = FromPrefixExtender::new(vec![0, 2], vec![b("x"), b("y")]);
 
         // Empty prefix, extensions contain the expected value
-        assert_eq!(
-            extender.intersect(&vec![], &[b("x"), b("a"), b("b")]),
-            vec![b("x")]
-        );
+        assert_eq!(extender.intersect(&vec![], &[b("x"), b("a"), b("b")]), vec![b("x")]);
 
         // Empty prefix, extensions don't contain the expected value
-        assert_eq!(
-            extender.intersect(&vec![], &[b("a"), b("b"), b("c")]),
-            Vec::<Bytes>::new()
-        );
+        assert_eq!(extender.intersect(&vec![], &[b("a"), b("b"), b("c")]), Vec::<Bytes>::new());
 
         // Matching prefix at level 0, extensions contain expected value "y"
-        assert_eq!(
-            extender.intersect(&vec![b("x")], &[b("y"), b("z")]),
-            vec![b("y")]
-        );
+        assert_eq!(extender.intersect(&vec![b("x")], &[b("y"), b("z")]), vec![b("y")]);
 
         // Matching prefix at level 0, extensions don't contain expected value
-        assert_eq!(
-            extender.intersect(&vec![b("x")], &[b("a"), b("b")]),
-            Vec::<Bytes>::new()
-        );
+        assert_eq!(extender.intersect(&vec![b("x")], &[b("a"), b("b")]), Vec::<Bytes>::new());
 
         // Non-matching prefix
-        assert_eq!(
-            extender.intersect(&vec![b("wrong")], &[b("x"), b("y")]),
-            Vec::<Bytes>::new()
-        );
+        assert_eq!(extender.intersect(&vec![b("wrong")], &[b("x"), b("y")]), Vec::<Bytes>::new());
     }
 
     #[test]
@@ -623,12 +569,8 @@ mod tests {
         // This extender constrains: level 0 = 2, level 2 = "x"
         let constraint_extender = FromPrefixExtender::new(vec![0, 2], vec![bi(2), b("x")]);
 
-        let extenders: Vec<&dyn PrefixExtender> = vec![
-            &level0_extender,
-            &level1_extender,
-            &level2_extender,
-            &constraint_extender,
-        ];
+        let extenders: Vec<&dyn PrefixExtender> =
+            vec![&level0_extender, &level1_extender, &level2_extender, &constraint_extender];
 
         let join = GenericJoin::new(extenders, 3);
         let result = join.join();
@@ -705,31 +647,19 @@ mod tests {
             FromPrefixesExtender::new(vec![0, 2], vec![vec![b("a"), b("b")], vec![b("x"), b("y")]]);
 
         // Empty prefix, extensions contain both expected values
-        assert_eq!(
-            extender.intersect(&vec![], &[b("a"), b("x"), b("z")]),
-            vec![b("a"), b("x")]
-        );
+        assert_eq!(extender.intersect(&vec![], &[b("a"), b("x"), b("z")]), vec![b("a"), b("x")]);
 
         // Empty prefix, extensions contain only one expected value
         assert_eq!(extender.intersect(&vec![], &[b("a"), b("z")]), vec![b("a")]);
 
         // Empty prefix, extensions don't contain expected values
-        assert_eq!(
-            extender.intersect(&vec![], &[b("z"), b("w")]),
-            Vec::<Bytes>::new()
-        );
+        assert_eq!(extender.intersect(&vec![], &[b("z"), b("w")]), Vec::<Bytes>::new());
 
         // Matching prefix at level 0 for first prefix
-        assert_eq!(
-            extender.intersect(&vec![b("a")], &[b("b"), b("y"), b("z")]),
-            vec![b("b")]
-        );
+        assert_eq!(extender.intersect(&vec![b("a")], &[b("b"), b("y"), b("z")]), vec![b("b")]);
 
         // Matching prefix at level 0 for second prefix
-        assert_eq!(
-            extender.intersect(&vec![b("x")], &[b("b"), b("y"), b("z")]),
-            vec![b("y")]
-        );
+        assert_eq!(extender.intersect(&vec![b("x")], &[b("b"), b("y"), b("z")]), vec![b("y")]);
 
         // Non-matching prefix
         assert_eq!(
@@ -771,31 +701,13 @@ mod tests {
         let multi_extender = FromPrefixesExtender::new(vec![0, 1], vec![vec![b("a"), b("b")]]);
 
         // Both should behave identically
-        assert_eq!(
-            single_extender.count(&vec![]),
-            multi_extender.count(&vec![])
-        );
-        assert_eq!(
-            single_extender.count(&vec![b("a")]),
-            multi_extender.count(&vec![b("a")])
-        );
-        assert_eq!(
-            single_extender.count(&vec![b("z")]),
-            multi_extender.count(&vec![b("z")])
-        );
+        assert_eq!(single_extender.count(&vec![]), multi_extender.count(&vec![]));
+        assert_eq!(single_extender.count(&vec![b("a")]), multi_extender.count(&vec![b("a")]));
+        assert_eq!(single_extender.count(&vec![b("z")]), multi_extender.count(&vec![b("z")]));
 
-        assert_eq!(
-            single_extender.propose(&vec![]),
-            multi_extender.propose(&vec![])
-        );
-        assert_eq!(
-            single_extender.propose(&vec![b("a")]),
-            multi_extender.propose(&vec![b("a")])
-        );
-        assert_eq!(
-            single_extender.propose(&vec![b("z")]),
-            multi_extender.propose(&vec![b("z")])
-        );
+        assert_eq!(single_extender.propose(&vec![]), multi_extender.propose(&vec![]));
+        assert_eq!(single_extender.propose(&vec![b("a")]), multi_extender.propose(&vec![b("a")]));
+        assert_eq!(single_extender.propose(&vec![b("z")]), multi_extender.propose(&vec![b("z")]));
 
         assert_eq!(
             single_extender.intersect(&vec![], &[b("a"), b("b"), b("c")]),

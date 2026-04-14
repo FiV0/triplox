@@ -38,10 +38,8 @@ fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<IdOrTempId> {
         EntityRef::Id(id) => Ok(IdOrTempId::Id(*id)),
         EntityRef::TempId(s) => Ok(IdOrTempId::TempId(s.clone())),
         EntityRef::Ident(kw) => {
-            let eid = schema
-                .ident_map
-                .get(kw)
-                .ok_or_else(|| anyhow::anyhow!("Unknown ident: {}", kw))?;
+            let eid =
+                schema.ident_map.get(kw).ok_or_else(|| anyhow::anyhow!("Unknown ident: {}", kw))?;
             Ok(IdOrTempId::Id(*eid))
         }
         EntityRef::LookupRef(_, _) => Err(anyhow::anyhow!("Lookup refs not yet supported")),
@@ -60,19 +58,14 @@ fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<IdOrTempId> {
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident for :db/id: {}", kw))?;
             Ok(IdOrTempId::Id(*eid))
         }
-        other => Err(anyhow::anyhow!(
-            ":db/id must be Long, String, or Keyword, got {:?}",
-            other
-        )),
+        other => Err(anyhow::anyhow!(":db/id must be Long, String, or Keyword, got {:?}", other)),
     }
 }
 
 /// Resolve a value using the schema to determine if the attribute is ref-typed.
 fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<ValueWithTempIds> {
-    let is_ref = schema
-        .get_attribute(attr)
-        .map(|(_, a)| a.value_type == ValueType::Ref)
-        .unwrap_or(false);
+    let is_ref =
+        schema.get_attribute(attr).map(|(_, a)| a.value_type == ValueType::Ref).unwrap_or(false);
 
     if is_ref {
         match val {
@@ -84,11 +77,9 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
                 Ok(ValueWithTempIds::Data(DataType::Long(*eid)))
             }
             DataType::String(s) => Ok(ValueWithTempIds::TempRef(s.clone())),
-            other => Err(anyhow::anyhow!(
-                "Invalid value for ref-typed attribute {}: {:?}",
-                attr,
-                other
-            )),
+            other => {
+                Err(anyhow::anyhow!("Invalid value for ref-typed attribute {}: {:?}", attr, other))
+            }
         }
     } else {
         Ok(ValueWithTempIds::Data(val.clone()))
@@ -127,11 +118,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     });
                 }
             }
-            TxOp::Add {
-                entity,
-                attribute,
-                value,
-            } => {
+            TxOp::Add { entity, attribute, value } => {
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
@@ -139,11 +126,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomWithTempi
                     op: DatomOp::Assert,
                 });
             }
-            TxOp::Retract {
-                entity,
-                attribute,
-                value,
-            } => {
+            TxOp::Retract { entity, attribute, value } => {
                 datoms.push(DatomWithTempids {
                     entity: resolve_entity_ref(entity, schema)?,
                     attribute: attribute.clone(),
@@ -206,12 +189,7 @@ pub fn resolve_tempids(
             ValueWithTempIds::Data(data) => data.clone(),
             ValueWithTempIds::TempRef(s) => DataType::Long(*tempid_map.get(s.as_str()).unwrap()),
         };
-        resolved.push(Datom {
-            entity,
-            attribute: d.attribute.clone(),
-            value,
-            op: d.op,
-        });
+        resolved.push(Datom { entity, attribute: d.attribute.clone(), value, op: d.op });
     }
     Ok(resolved)
 }
@@ -236,13 +214,9 @@ mod tests {
         use crate::schema::Attribute;
         let mut schema = Schema::default();
         schema.ident_map.insert(attr_kw, attr_eid);
-        schema.attribute_map.insert(
-            attr_eid,
-            Attribute {
-                value_type: ValueType::Ref,
-                multival: false,
-            },
-        );
+        schema
+            .attribute_map
+            .insert(attr_eid, Attribute { value_type: ValueType::Ref, multival: false });
         schema
     }
 
@@ -277,10 +251,7 @@ mod tests {
 
     #[test]
     fn test_expand_put_attrs_share_entity() {
-        let ops = vec![TxOp::put(vec![
-            (kw!(:name), "alice".into()),
-            (kw!(:age), 30_i64.into()),
-        ])];
+        let ops = vec![TxOp::put(vec![(kw!(:name), "alice".into()), (kw!(:age), 30_i64.into())])];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 2);
         assert_eq!(datoms[0].entity, datoms[1].entity);
@@ -297,10 +268,7 @@ mod tests {
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].entity, IdOrTempId::Id(200));
         assert_eq!(datoms[0].attribute, kw!(:name));
-        assert_eq!(
-            datoms[0].value,
-            ValueWithTempIds::Data(DataType::String("bob".to_string()))
-        );
+        assert_eq!(datoms[0].value, ValueWithTempIds::Data(DataType::String("bob".to_string())));
         assert_eq!(datoms[0].op, DatomOp::Assert);
     }
 
@@ -361,10 +329,7 @@ mod tests {
             value: DataType::String("friend".to_string()),
         }];
         let datoms = expand_tx_ops(&ops, &schema).unwrap();
-        assert_eq!(
-            datoms[0].value,
-            ValueWithTempIds::TempRef("friend".to_string())
-        );
+        assert_eq!(datoms[0].value, ValueWithTempIds::TempRef("friend".to_string()));
     }
 
     #[test]

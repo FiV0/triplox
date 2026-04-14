@@ -43,8 +43,7 @@ impl IntoQuery for &ParsedQuery {
 
 impl IntoQuery for &str {
     fn into_query(self) -> Result<ParsedQuery, Error> {
-        self.parse()
-            .map_err(|e| anyhow::anyhow!("EDN parse error: {}", e))
+        self.parse().map_err(|e| anyhow::anyhow!("EDN parse error: {}", e))
     }
 }
 
@@ -89,13 +88,7 @@ impl DB {
         tx_key: TxKey,
         tx_eid: i64,
     ) -> Self {
-        Self {
-            snapshot,
-            ident_map,
-            handle,
-            tx_key,
-            tx_eid,
-        }
+        Self { snapshot, ident_map, handle, tx_key, tx_eid }
     }
 
     /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
@@ -105,13 +98,7 @@ impl DB {
         handle: Handle,
     ) -> Result<Self, Error> {
         let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
-        Ok(Self {
-            snapshot,
-            ident_map,
-            handle,
-            tx_key,
-            tx_eid,
-        })
+        Ok(Self { snapshot, ident_map, handle, tx_key, tx_eid })
     }
 
     pub fn tx_key(&self) -> &TxKey {
@@ -166,21 +153,12 @@ impl Node<MemoryLog> {
         let slate = in_memory_slate().await;
         let db = slate.db.clone();
         let metadata = crate::bootstrap::init_db(db.clone()).await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            db.clone(),
-            metadata,
-            None,
-        )));
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(db.clone(), metadata, None)));
         let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
-        Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-        }
+        Node { log, indexer, slate, subscription }
     }
 }
 
@@ -199,11 +177,7 @@ impl Node<FileLog> {
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(db.snapshot().await?);
         let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
-        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
-            Some(latest_indexed)
-        } else {
-            None
-        };
+        let latest_indexed_tx = if latest_indexed.tx_id > 0 { Some(latest_indexed) } else { None };
 
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             db.clone(),
@@ -237,12 +211,7 @@ impl Node<FileLog> {
             waiter.await_tx(tx_key).await?;
         }
 
-        Ok(Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-        })
+        Ok(Node { log, indexer, slate, subscription })
     }
 }
 
@@ -277,28 +246,14 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
     async fn db(&self) -> Result<DB, Error> {
         let snapshot = self.slate.db.snapshot().await?;
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
         let handle = Handle::current();
         DB::from_latest_snapshot(snapshot, ident_map, handle).await
     }
     // TODO we are currently not checking that snapshot contains TxKey
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
         let snapshot = self.slate.db.snapshot().await?;
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        let ident_map = self.indexer.read().await.metadata().schema.ident_map.clone();
         let handle = Handle::current();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
         Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid))
@@ -325,11 +280,8 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let tx_ops = vec![TxOp::Add {
-            entity: "bob".into(),
-            attribute: kw!(:name),
-            value: "bob".into(),
-        }];
+        let tx_ops =
+            vec![TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() }];
 
         let waiter = node.indexer.read().await.tx_waiter();
 
@@ -338,17 +290,11 @@ mod tests {
         assert_eq!(tx_key.tx_id, 1);
 
         // Wait for indexer to process the transaction
-        waiter
-            .await_tx(tx_key)
-            .await
-            .expect("Transaction should be indexed");
+        waiter.await_tx(tx_key).await.expect("Transaction should be indexed");
 
         // Verify data is queryable after async indexing
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
     }
 
@@ -367,15 +313,9 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query(r#"[:find ?email :where [?e :email ?email]]"#)
-            .await
-            .unwrap();
+        let result = db.query(r#"[:find ?email :where [?e :email ?email]]"#).await.unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            result[0],
-            vec![DataType::String("test@example.com".to_string())]
-        );
+        assert_eq!(result[0], vec![DataType::String("test@example.com".to_string())]);
     }
 
     // End-to-end query tests
@@ -401,10 +341,7 @@ mod tests {
         .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("alice".to_string())]));
@@ -432,10 +369,7 @@ mod tests {
         .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query(r#"[:find ?e :where [?e :name "alice"]]"#)
-            .await
-            .unwrap();
+        let result = db.query(r#"[:find ?e :where [?e :name "alice"]]"#).await.unwrap();
 
         assert_eq!(result.len(), 1);
     }
@@ -460,16 +394,11 @@ mod tests {
         .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
-            .await
-            .unwrap();
+        let result =
+            db.query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            result[0],
-            vec![DataType::String("alice".to_string()), DataType::Long(30)]
-        );
+        assert_eq!(result[0], vec![DataType::String("alice".to_string()), DataType::Long(30)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -478,25 +407,14 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![
-            TxOp::Add {
-                entity: "alice".into(),
-                attribute: kw!(:name),
-                value: "alice".into(),
-            },
-            TxOp::Add {
-                entity: "bob".into(),
-                attribute: kw!(:name),
-                value: "bob".into(),
-            },
+            TxOp::Add { entity: "alice".into(), attribute: kw!(:name), value: "alice".into() },
+            TxOp::Add { entity: "bob".into(), attribute: kw!(:name), value: "bob".into() },
         ])
         .await
         .unwrap();
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?a ?b :where [?a :name ?x] [?b :name ?x]]")
-            .await
-            .unwrap();
+        let result = db.query("[:find ?a ?b :where [?a :name ?x] [?b :name ?x]]").await.unwrap();
 
         // Only same-entity pairs should match: (alice, alice) and (bob, bob).
         assert_eq!(result.len(), 2, "expected 2 self-pairs, got {:?}", result);
@@ -533,10 +451,7 @@ mod tests {
         .unwrap();
 
         // Bind ?name to "Petr": only Petr's row should match.
-        let result = db
-            .query_with_args(&parsed, &[QueryArg::Scalar("Petr".into())])
-            .await
-            .unwrap();
+        let result = db.query_with_args(&parsed, &[QueryArg::Scalar("Petr".into())]).await.unwrap();
         assert_eq!(
             result,
             vec![vec![
@@ -546,10 +461,7 @@ mod tests {
         );
 
         // Bind ?name to "Ivan": only Ivan's row.
-        let result = db
-            .query_with_args(&parsed, &[QueryArg::Scalar("Ivan".into())])
-            .await
-            .unwrap();
+        let result = db.query_with_args(&parsed, &[QueryArg::Scalar("Ivan".into())]).await.unwrap();
         assert_eq!(
             result,
             vec![vec![
@@ -559,10 +471,7 @@ mod tests {
         );
 
         // A name with no match yields no rows.
-        let result = db
-            .query_with_args(&parsed, &[QueryArg::Scalar("Bob".into())])
-            .await
-            .unwrap();
+        let result = db.query_with_args(&parsed, &[QueryArg::Scalar("Bob".into())]).await.unwrap();
         assert!(result.is_empty());
 
         // Multiple scalar bindings: constrain on both name and email.
@@ -573,10 +482,7 @@ mod tests {
         let result = db
             .query_with_args(
                 &parsed,
-                &[
-                    QueryArg::Scalar("Petr".into()),
-                    QueryArg::Scalar("petr@example.com".into()),
-                ],
+                &[QueryArg::Scalar("Petr".into()), QueryArg::Scalar("petr@example.com".into())],
             )
             .await
             .unwrap();
@@ -586,10 +492,7 @@ mod tests {
         let result = db
             .query_with_args(
                 &parsed,
-                &[
-                    QueryArg::Scalar("Petr".into()),
-                    QueryArg::Scalar("ivan@example.com".into()),
-                ],
+                &[QueryArg::Scalar("Petr".into()), QueryArg::Scalar("ivan@example.com".into())],
             )
             .await
             .unwrap();
@@ -626,10 +529,8 @@ mod tests {
         .unwrap();
 
         // Variable limit resolved to 2.
-        let result = db
-            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(2))])
-            .await
-            .unwrap();
+        let result =
+            db.query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(2))]).await.unwrap();
         assert_eq!(
             result,
             vec![
@@ -639,33 +540,18 @@ mod tests {
         );
 
         // Zero limit yields an empty result.
-        let result = db
-            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(0))])
-            .await
-            .unwrap();
+        let result =
+            db.query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(0))]).await.unwrap();
         assert!(result.is_empty());
 
         // Non-Long binding for a variable limit is rejected.
-        let err = db
-            .query_with_args(&parsed, &[QueryArg::Scalar("two".into())])
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("must be bound to a Long"),
-            "unexpected error: {}",
-            err
-        );
+        let err = db.query_with_args(&parsed, &[QueryArg::Scalar("two".into())]).await.unwrap_err();
+        assert!(err.to_string().contains("must be bound to a Long"), "unexpected error: {}", err);
 
         // Negative limit is rejected.
-        let err = db
-            .query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(-1))])
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("non-negative"),
-            "unexpected error: {}",
-            err
-        );
+        let err =
+            db.query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(-1))]).await.unwrap_err();
+        assert!(err.to_string().contains("non-negative"), "unexpected error: {}", err);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -768,14 +654,8 @@ mod tests {
         let result = db.query(r#"[:find ?name ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :name ?name] [?e :age ?age]]"#).await.unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(result.contains(&vec![
-            DataType::String("alice".to_string()),
-            DataType::Long(30)
-        ]));
-        assert!(result.contains(&vec![
-            DataType::String("bob".to_string()),
-            DataType::Long(25)
-        ]));
+        assert!(result.contains(&vec![DataType::String("alice".to_string()), DataType::Long(30)]));
+        assert!(result.contains(&vec![DataType::String("bob".to_string()), DataType::Long(25)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -846,19 +726,13 @@ mod tests {
 
         // db_as_of(tx_key1): should only see alice
         let db1 = node.db_as_of(tx_key1).await.unwrap();
-        let result1 = db1
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result1 = db1.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(result1.len(), 1);
         assert_eq!(result1[0], vec![DataType::String("alice".to_string())]);
 
         // db_as_of(tx_key2): should see both
         let db2 = node.db_as_of(tx_key2).await.unwrap();
-        let result2 = db2
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result2 = db2.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::String("bob".to_string())]));
@@ -884,10 +758,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
-        let results = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let results = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
@@ -897,10 +768,7 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
 
         let db = node.db().await.unwrap();
-        let results = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let results = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
@@ -915,10 +783,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let db = node.db().await.unwrap();
-        let results = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let results = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![DataType::String("alice".to_string())]));
         assert!(results.contains(&vec![DataType::String("bob".to_string())]));
@@ -963,10 +828,7 @@ mod tests {
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(2), waiter.await_tx(tx_key)).await;
 
-        assert!(
-            result.is_ok(),
-            "tx_waiter should not timeout for an already-indexed tx"
-        );
+        assert!(result.is_ok(), "tx_waiter should not timeout for an already-indexed tx");
         result.unwrap().expect("await_tx should succeed");
 
         node.close().await;
@@ -1002,24 +864,14 @@ mod tests {
 
         // db_as_of pinned to first tx should only see alice
         let db = node.db_as_of(tx_key1).await.unwrap();
-        let results = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
-        assert_eq!(
-            results.len(),
-            1,
-            "basis-pinned DB should only see alice, got {:?}",
-            results
-        );
+        let results = db.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
+        assert_eq!(results.len(), 1, "basis-pinned DB should only see alice, got {:?}", results);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
         // latest db should see both
         let db_latest = node.db().await.unwrap();
-        let results_latest = db_latest
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let results_latest =
+            db_latest.query("[:find ?name :where [?e :name ?name]]").await.unwrap();
         assert_eq!(results_latest.len(), 2);
 
         node.close().await;
@@ -1040,10 +892,7 @@ mod tests {
 
         // Discover the auto-assigned entity ID
         let db = node.db().await.unwrap();
-        let result = db
-            .query(r#"[:find ?e :where [?e :name "alice"]]"#)
-            .await
-            .unwrap();
+        let result = db.query(r#"[:find ?e :where [?e :name "alice"]]"#).await.unwrap();
         assert_eq!(result.len(), 1);
         let entity_id = match &result[0][0] {
             DataType::Long(id) => *id,
@@ -1061,15 +910,10 @@ mod tests {
 
         // Verify: alice should now have age 31 (cardinality-one retracted 30)
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
-            .await
-            .unwrap();
+        let result =
+            db.query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]").await.unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            result[0],
-            vec![DataType::String("alice".to_string()), DataType::Long(31)]
-        );
+        assert_eq!(result[0], vec![DataType::String("alice".to_string()), DataType::Long(31)]);
 
         node.close().await;
     }
@@ -1151,10 +995,8 @@ mod tests {
         insert_three_people(&node).await;
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query(r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#)
-            .await
-            .unwrap();
+        let result =
+            db.query(r#"[:find ?e :where [?e :name ?name] [(= "Ivan" ?name)]]"#).await.unwrap();
         assert_eq!(result.len(), 1);
     }
 
@@ -1183,18 +1025,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.len(), 3);
-        assert!(result.contains(&vec![
-            DataType::String("Ivan".to_string()),
-            DataType::Long(15)
-        ]));
-        assert!(result.contains(&vec![
-            DataType::String("Bob".to_string()),
-            DataType::Long(20)
-        ]));
-        assert!(result.contains(&vec![
-            DataType::String("Dominic".to_string()),
-            DataType::Long(25)
-        ]));
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string()), DataType::Long(15)]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string()), DataType::Long(20)]));
+        assert!(result.contains(&vec![DataType::String("Dominic".to_string()), DataType::Long(25)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1206,10 +1039,7 @@ mod tests {
         let db = node.db().await.unwrap();
         let result = db.query("[:find ?name ?half :where [?e :name ?name] [?e :age ?age] [(/ ?age 2) ?half] [(> ?half 20)]]").await.unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(
-            result[0],
-            vec![DataType::String("Dominic".to_string()), DataType::Long(25)]
-        );
+        assert_eq!(result[0], vec![DataType::String("Dominic".to_string()), DataType::Long(25)]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1221,18 +1051,9 @@ mod tests {
         let db = node.db().await.unwrap();
         let result = db.query("[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(- ?age 15) ?result]]").await.unwrap();
         assert_eq!(result.len(), 3);
-        assert!(result.contains(&vec![
-            DataType::String("Ivan".to_string()),
-            DataType::Long(15)
-        ]));
-        assert!(result.contains(&vec![
-            DataType::String("Bob".to_string()),
-            DataType::Long(25)
-        ]));
-        assert!(result.contains(&vec![
-            DataType::String("Dominic".to_string()),
-            DataType::Long(35)
-        ]));
+        assert!(result.contains(&vec![DataType::String("Ivan".to_string()), DataType::Long(15)]));
+        assert!(result.contains(&vec![DataType::String("Bob".to_string()), DataType::Long(25)]));
+        assert!(result.contains(&vec![DataType::String("Dominic".to_string()), DataType::Long(35)]));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1242,10 +1063,8 @@ mod tests {
         insert_three_people(&node).await;
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name :where [?e :name ?name] (not [?e :age 50])]")
-            .await
-            .unwrap();
+        let result =
+            db.query("[:find ?name :where [?e :name ?name] (not [?e :age 50])]").await.unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
         assert!(result.contains(&vec![DataType::String("Bob".to_string())]));
@@ -1259,24 +1078,14 @@ mod tests {
         // Define "sex" attribute with keyword value type
         node.execute_tx(vec![TxOp::put(vec![
             (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
-            (
-                kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/keyword)).into(),
-            ),
-            (
-                kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
-            ),
+            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/keyword)).into()),
+            (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one)).into()),
         ])])
         .await
         .unwrap();
 
-        let people = vec![
-            ("Ivan", "male"),
-            ("Ivana", "female"),
-            ("Petr", "male"),
-            ("Doris", "female"),
-        ];
+        let people =
+            vec![("Ivan", "male"), ("Ivana", "female"), ("Petr", "male"), ("Doris", "female")];
         for (name, sex) in people {
             node.execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
@@ -1289,10 +1098,8 @@ mod tests {
         // find ?name where [?e :sex :male] [?e :name ?name]
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name :where [?e :sex :male] [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result =
+            db.query("[:find ?name :where [?e :sex :male] [?e :name ?name]]").await.unwrap();
 
         // Only Ivan and Petr are male
         assert_eq!(result.len(), 2);
@@ -1309,24 +1116,14 @@ mod tests {
 
         node.execute_tx(vec![TxOp::put(vec![
             (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
-            (
-                kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/keyword)).into(),
-            ),
-            (
-                kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
-            ),
+            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/keyword)).into()),
+            (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one)).into()),
         ])])
         .await
         .unwrap();
 
-        let people = vec![
-            ("Ivan", "male"),
-            ("Petr", "male"),
-            ("Doris", "female"),
-            ("Jane", "female"),
-        ];
+        let people =
+            vec![("Ivan", "male"), ("Petr", "male"), ("Doris", "female"), ("Jane", "female")];
         for (name, sex) in people {
             node.execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
@@ -1339,10 +1136,8 @@ mod tests {
         // Same clause order as Clojure: name first (binds ?e), sex filter second
 
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?name :where [?e :name ?name] [?e :sex :male]]")
-            .await
-            .unwrap();
+        let result =
+            db.query("[:find ?name :where [?e :name ?name] [?e :sex :male]]").await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
@@ -1359,14 +1154,8 @@ mod tests {
         // Define "last-name" attribute
         node.execute_tx(vec![TxOp::put(vec![
             (kw!(:db/ident), DataType::Keyword(kw!(:last-name)).into()),
-            (
-                kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/string)).into(),
-            ),
-            (
-                kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
-            ),
+            (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/string)).into()),
+            (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one)).into()),
         ])])
         .await
         .unwrap();
@@ -1389,10 +1178,7 @@ mod tests {
 
         // Discover the entity ID for "Ivannotov"
         let db = node.db().await.unwrap();
-        let ids = db
-            .query(r#"[:find ?e :where [?e :last-name "Ivannotov"]]"#)
-            .await
-            .unwrap();
+        let ids = db.query(r#"[:find ?e :where [?e :last-name "Ivannotov"]]"#).await.unwrap();
         assert_eq!(ids.len(), 1);
         let entity_id = match &ids[0][0] {
             DataType::Long(id) => *id,
@@ -1400,10 +1186,8 @@ mod tests {
         };
 
         // Use literal entity ID in entity position of a query
-        let result = db
-            .query(format!("[:find ?ln :where [{entity_id} :last-name ?ln]]"))
-            .await
-            .unwrap();
+        let result =
+            db.query(format!("[:find ?ln :where [{entity_id} :last-name ?ln]]")).await.unwrap();
 
         // Should return exactly one row: "Ivannotov"
         assert_eq!(result.len(), 1);
@@ -1484,10 +1268,7 @@ mod tests {
 
         // Discover the auto-assigned entity ID
         let db = node.db().await.unwrap();
-        let result = db
-            .query(r#"[:find ?e :where [?e :tags "rust"]]"#)
-            .await
-            .unwrap();
+        let result = db.query(r#"[:find ?e :where [?e :tags "rust"]]"#).await.unwrap();
         assert_eq!(result.len(), 1);
         let entity_id = match &result[0][0] {
             DataType::Long(id) => *id,
@@ -1505,10 +1286,8 @@ mod tests {
 
         // Query: find all tags for the entity
         let db = node.db().await.unwrap();
-        let result = db
-            .query(format!("[:find ?tag :where [{entity_id} :tags ?tag]]"))
-            .await
-            .unwrap();
+        let result =
+            db.query(format!("[:find ?tag :where [{entity_id} :tags ?tag]]")).await.unwrap();
 
         assert_eq!(result.len(), 2, "Expected both tags, got {:?}", result);
         assert!(result.contains(&vec![DataType::String("rust".to_string())]));
@@ -1555,10 +1334,7 @@ mod tests {
 
         // Query all (entity, name) pairs and verify contiguous counter values
         let db = node.db().await.unwrap();
-        let result = db
-            .query("[:find ?e ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
+        let result = db.query("[:find ?e ?name :where [?e :name ?name]]").await.unwrap();
 
         assert_eq!(result.len(), 2);
         let mut eids: Vec<i64> = result

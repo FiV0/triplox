@@ -12,10 +12,7 @@ pub struct GenericAndPrefixExtender {
 
 impl GenericAndPrefixExtender {
     pub fn new(children: Vec<Box<dyn PrefixExtender>>) -> Self {
-        assert!(
-            !children.is_empty(),
-            "AND extender requires at least one child"
-        );
+        assert!(!children.is_empty(), "AND extender requires at least one child");
         Self { children }
     }
 }
@@ -33,22 +30,16 @@ impl PrefixExtender for GenericAndPrefixExtender {
 
     fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
         let next_level = prefix.len();
-        let participating: Vec<_> = self
-            .children
-            .iter()
-            .filter(|c| c.participates_in_level(next_level))
-            .collect();
+        let participating: Vec<_> =
+            self.children.iter().filter(|c| c.participates_in_level(next_level)).collect();
 
         if participating.is_empty() {
             return vec![];
         }
 
         // Propose from the child with the smallest count
-        let (min_idx, _) = participating
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, c)| c.count(prefix))
-            .unwrap();
+        let (min_idx, _) =
+            participating.iter().enumerate().min_by_key(|(_, c)| c.count(prefix)).unwrap();
 
         let mut extensions = participating[min_idx].propose(prefix);
 
@@ -67,11 +58,8 @@ impl PrefixExtender for GenericAndPrefixExtender {
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         let next_level = prefix.len();
-        let mut participating: Vec<_> = self
-            .children
-            .iter()
-            .filter(|c| c.participates_in_level(next_level))
-            .collect();
+        let mut participating: Vec<_> =
+            self.children.iter().filter(|c| c.participates_in_level(next_level)).collect();
 
         // Sort by count so we intersect with the smallest first (fail fast)
         participating.sort_by_key(|c| c.count(prefix));

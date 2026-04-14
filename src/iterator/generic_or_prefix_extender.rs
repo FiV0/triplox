@@ -13,10 +13,7 @@ pub struct GenericOrPrefixExtender {
 
 impl GenericOrPrefixExtender {
     pub fn new(children: Vec<Box<dyn PrefixExtender>>) -> Self {
-        assert!(
-            !children.is_empty(),
-            "OR extender requires at least one child"
-        );
+        assert!(!children.is_empty(), "OR extender requires at least one child");
         Self { children }
     }
 }
@@ -27,22 +24,16 @@ impl PrefixExtender for GenericOrPrefixExtender {
     }
 
     fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.propose(prefix))
-            .collect();
+        let mut all: Vec<Extension> =
+            self.children.iter().flat_map(|c| c.propose(prefix)).collect();
         all.sort();
         all.dedup();
         all
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.intersect(prefix, extensions))
-            .collect();
+        let mut all: Vec<Extension> =
+            self.children.iter().flat_map(|c| c.intersect(prefix, extensions)).collect();
         all.sort();
         all.dedup();
         all

@@ -52,10 +52,7 @@ impl NamespaceableName {
         let n = name.into();
         assert!(!n.is_empty(), "Symbols and keywords cannot be unnamed.");
 
-        NamespaceableName {
-            components: n,
-            boundary: 0,
-        }
+        NamespaceableName { components: n, boundary: 0 }
     }
 
     #[inline]
@@ -70,10 +67,7 @@ impl NamespaceableName {
         // Note: These invariants are not required for safety. That is, if we
         // decide to allow these we can safely remove them.
         assert!(!n.is_empty(), "Symbols and keywords cannot be unnamed.");
-        assert!(
-            !ns.is_empty(),
-            "Symbols and keywords cannot have an empty non-null namespace."
-        );
+        assert!(!ns.is_empty(), "Symbols and keywords cannot have an empty non-null namespace.");
 
         let mut dest = String::with_capacity(n.len() + ns.len());
 
@@ -83,10 +77,7 @@ impl NamespaceableName {
 
         let boundary = ns.len();
 
-        NamespaceableName {
-            components: dest,
-            boundary,
-        }
+        NamespaceableName { components: dest, boundary }
     }
 
     fn new<N, T>(namespace: Option<N>, name: T) -> Self
@@ -146,10 +137,7 @@ impl NamespaceableName {
     #[inline]
     pub fn components(&self) -> (&str, &str) {
         if self.boundary > 0 {
-            (
-                &self.components[0..self.boundary],
-                &self.components[(self.boundary + 1)..],
-            )
+            (&self.components[0..self.boundary], &self.components[(self.boundary + 1)..])
         } else {
             (&self.components[0..0], &self.components)
         }
@@ -216,9 +204,7 @@ impl<'de> Deserialize<'de> for NamespaceableName {
         }
         if let Some(ns) = separated.namespace {
             if ns.is_empty() {
-                Err(de::Error::custom(
-                    "Empty but present namespace in keyword or symbol",
-                ))
+                Err(de::Error::custom("Empty but present namespace in keyword or symbol"))
             } else {
                 Ok(NamespaceableName::namespaced(ns, separated.name))
             }
@@ -289,29 +275,14 @@ mod test {
 
         let n6 = NamespaceableName::namespaced("z", "zz");
 
-        let mut arr = [
-            n5.clone(),
-            n6.clone(),
-            n0.clone(),
-            n3.clone(),
-            n2.clone(),
-            n1.clone(),
-            n4.clone(),
-        ];
+        let mut arr =
+            [n5.clone(), n6.clone(), n0.clone(), n3.clone(), n2.clone(), n1.clone(), n4.clone()];
 
         arr.sort();
 
         assert_eq!(
             arr,
-            [
-                n0.clone(),
-                n2.clone(),
-                n1.clone(),
-                n3.clone(),
-                n4.clone(),
-                n5.clone(),
-                n6.clone(),
-            ]
+            [n0.clone(), n2.clone(), n1.clone(), n3.clone(), n4.clone(), n5.clone(), n6.clone(),]
         );
     }
 }

@@ -20,11 +20,7 @@ pub struct MemoryLog {
 
 impl MemoryLog {
     pub fn new(clock: Box<dyn SystemTimeSource>) -> Self {
-        MemoryLog {
-            txs: vec![],
-            tx_sender: broadcast::channel(1024).0,
-            clock,
-        }
+        MemoryLog { txs: vec![], tx_sender: broadcast::channel(1024).0, clock }
     }
 }
 
@@ -49,20 +45,14 @@ impl TxLogReader for MemoryLog {
 impl TxLogWriter for MemoryLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let record = Record {
-            tx_key: TxKey {
-                tx_id: self.txs.len() as i64,
-                system_time: self.clock.now(),
-            },
+            tx_key: TxKey { tx_id: self.txs.len() as i64, system_time: self.clock.now() },
             record,
         };
         let tx_key = record.tx_key;
         self.txs.push(record.clone());
         // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
         if let Err(e) = self.tx_sender.send(record) {
-            warn!(
-                "Failed to send record from memory log to subscribers: {}",
-                e
-            );
+            warn!("Failed to send record from memory log to subscribers: {}", e);
         }
         tx_key
     }
@@ -111,30 +101,21 @@ mod tests {
         assert_eq!(
             subscriber.records[0],
             Record {
-                tx_key: TxKey {
-                    tx_id: 0,
-                    system_time: st_from_unix_epoch(0)
-                },
+                tx_key: TxKey { tx_id: 0, system_time: st_from_unix_epoch(0) },
                 record: vec![1, 2, 3]
             }
         );
         assert_eq!(
             subscriber.records[1],
             Record {
-                tx_key: TxKey {
-                    tx_id: 1,
-                    system_time: st_from_unix_epoch(100)
-                },
+                tx_key: TxKey { tx_id: 1, system_time: st_from_unix_epoch(100) },
                 record: vec![4, 5, 6]
             }
         );
         assert_eq!(
             subscriber.records[2],
             Record {
-                tx_key: TxKey {
-                    tx_id: 2,
-                    system_time: st_from_unix_epoch(200)
-                },
+                tx_key: TxKey { tx_id: 2, system_time: st_from_unix_epoch(200) },
                 record: vec![7, 8, 9]
             }
         );

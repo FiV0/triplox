@@ -38,13 +38,7 @@ impl SlateIterator {
         if let Some(next_key) = handle.block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());
         }
-        Ok(Self {
-            inner: iterator,
-            current_key,
-            prefix: prefix_bytes,
-            handle,
-            extractor,
-        })
+        Ok(Self { inner: iterator, current_key, prefix: prefix_bytes, handle, extractor })
     }
 }
 

@@ -40,10 +40,7 @@ struct DbCache {
 
 impl DbCache {
     fn new(max_open: usize) -> Self {
-        DbCache {
-            entries: RwLock::new(HashMap::new()),
-            max_open,
-        }
+        DbCache { entries: RwLock::new(HashMap::new()), max_open }
     }
 
     /// Get or create a DB snapshot for the given tx_id.
@@ -83,13 +80,7 @@ impl DbCache {
         if entries.len() >= self.max_open {
             bail!("Too many open DB snapshots (max {})", self.max_open);
         }
-        entries.insert(
-            tx_id,
-            DbCacheEntry {
-                db: arc_db.clone(),
-                refcount: 1,
-            },
-        );
+        entries.insert(tx_id, DbCacheEntry { db: arc_db.clone(), refcount: 1 });
         Ok(arc_db)
     }
 
@@ -121,11 +112,7 @@ struct ConnectionState {
 
 impl ConnectionState {
     fn new() -> Self {
-        ConnectionState {
-            handles: HashMap::new(),
-            dbs: HashMap::new(),
-            next_db_id: 1,
-        }
+        ConnectionState { handles: HashMap::new(), dbs: HashMap::new(), next_db_id: 1 }
     }
 
     fn allocate_handle(&mut self, tx_id: i64, db: Arc<DB>) -> Result<u32> {
@@ -164,10 +151,7 @@ pub struct Server<L: TxLog> {
 
 impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>, max_open_dbs: usize) -> Self {
-        Server {
-            node,
-            db_cache: Arc::new(DbCache::new(max_open_dbs)),
-        }
+        Server { node, db_cache: Arc::new(DbCache::new(max_open_dbs)) }
     }
 
     /// Start listening on the given address.
@@ -187,21 +171,17 @@ impl<L: TxLog + 'static> Server<L> {
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
         let node = self.node.clone();
         let db_cache = self.db_cache.clone();
-        accept_loop(
-            listener,
-            token,
-            |stream, peer_addr, conn_token, connections| {
-                let node = node.clone();
-                let db_cache = db_cache.clone();
-                connections.spawn(async move {
-                    if let Err(e) = handle_connection(stream, node, db_cache, conn_token).await {
-                        warn!("Connection from {} closed with error: {}", peer_addr, e);
-                    } else {
-                        info!("Connection from {} closed cleanly", peer_addr);
-                    }
-                });
-            },
-        )
+        accept_loop(listener, token, |stream, peer_addr, conn_token, connections| {
+            let node = node.clone();
+            let db_cache = db_cache.clone();
+            connections.spawn(async move {
+                if let Err(e) = handle_connection(stream, node, db_cache, conn_token).await {
+                    warn!("Connection from {} closed with error: {}", peer_addr, e);
+                } else {
+                    info!("Connection from {} closed cleanly", peer_addr);
+                }
+            });
+        })
         .await
     }
 }
@@ -226,29 +206,24 @@ impl DevServer {
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
         let max_open_dbs = self.max_open_dbs;
-        accept_loop(
-            listener,
-            token,
-            move |stream, peer_addr, conn_token, connections| {
-                connections.spawn(async move {
-                    let node = Arc::new(Node::memory_node().await);
-                    let db_cache = Arc::new(DbCache::new(max_open_dbs));
-                    if let Err(e) =
-                        handle_connection(stream, node.clone(), db_cache, conn_token).await
-                    {
-                        warn!("Connection from {} closed with error: {}", peer_addr, e);
-                    } else {
-                        info!("Connection from {} closed cleanly", peer_addr);
-                    }
-                    // This should never fail: handle_connection only borrows the Arc,
-                    // so refcount is 1 after it returns.
-                    let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
-                        panic!("dev node Arc should have refcount 1 after connection close")
-                    });
-                    node.close().await;
+        accept_loop(listener, token, move |stream, peer_addr, conn_token, connections| {
+            connections.spawn(async move {
+                let node = Arc::new(Node::memory_node().await);
+                let db_cache = Arc::new(DbCache::new(max_open_dbs));
+                if let Err(e) = handle_connection(stream, node.clone(), db_cache, conn_token).await
+                {
+                    warn!("Connection from {} closed with error: {}", peer_addr, e);
+                } else {
+                    info!("Connection from {} closed cleanly", peer_addr);
+                }
+                // This should never fail: handle_connection only borrows the Arc,
+                // so refcount is 1 after it returns.
+                let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
+                    panic!("dev node Arc should have refcount 1 after connection close")
                 });
-            },
-        )
+                node.close().await;
+            });
+        })
         .await
     }
 }
@@ -335,11 +310,7 @@ async fn handle_connection<L: TxLog + 'static>(
     // handshake doesn't block shutdown until the drain timeout expires.
     let startup = read_frontend_message(&mut reader, true, DEFAULT_MAX_MESSAGE_SIZE).await?;
     match startup {
-        FrontendMessage::Startup {
-            version_major,
-            version_minor,
-            ..
-        } => {
+        FrontendMessage::Startup { version_major, version_minor, .. } => {
             if version_major != PROTOCOL_VERSION_MAJOR {
                 write_backend_message(
                     &mut writer,
@@ -453,11 +424,7 @@ async fn handle_connection<L: TxLog + 'static>(
                 ready_for_query_flush(&mut writer).await?;
             }
 
-            FrontendMessage::Query {
-                query_string,
-                db_id,
-                args,
-            } => {
+            FrontendMessage::Query { query_string, db_id, args } => {
                 match handle_query(&conn_state, &query_string, db_id, &args).await {
                     Ok((result, find_vars)) => {
                         // Send RowDescription
@@ -490,10 +457,7 @@ async fn handle_connection<L: TxLog + 'static>(
                 ready_for_query_flush(&mut writer).await?;
             }
 
-            FrontendMessage::Execute {
-                ops,
-                await_indexing,
-            } => {
+            FrontendMessage::Execute { ops, await_indexing } => {
                 match handle_execute(&node, ops, await_indexing).await {
                     Ok(tx_result_msg) => {
                         write_backend_message(&mut writer, &tx_result_msg).await?;
@@ -579,15 +543,11 @@ async fn handle_open_db<L: TxLog + 'static>(
         }
         (Some(tid), Some(st)) => {
             let system_time = crate::protocol::micros_to_datetime(st)?;
-            let tx_key = crate::transaction::TxKey {
-                tx_id: tid,
-                system_time,
-            };
+            let tx_key = crate::transaction::TxKey { tx_id: tid, system_time };
             let tx_id = tx_key.tx_id;
             let node = node.clone();
-            let arc_db = db_cache
-                .acquire(tx_id, || async move { node.db_as_of(tx_key).await })
-                .await?;
+            let arc_db =
+                db_cache.acquire(tx_id, || async move { node.db_as_of(tx_key).await }).await?;
             (arc_db, tx_id)
         }
         _ => bail!("OpenDb requires both tx_id and system_time, or neither"),
@@ -603,9 +563,8 @@ async fn handle_query(
     db_id: u32,
     args: &[crate::ops::QueryArg],
 ) -> Result<(QueryResult, Vec<String>)> {
-    let db = conn_state
-        .get_db(db_id)
-        .ok_or_else(|| anyhow::anyhow!("Invalid DB handle: {}", db_id))?;
+    let db =
+        conn_state.get_db(db_id).ok_or_else(|| anyhow::anyhow!("Invalid DB handle: {}", db_id))?;
 
     let parsed = query_string.into_query()?;
 
@@ -651,13 +610,7 @@ async fn handle_execute<L: TxLog + 'static>(
 
 /// Send ReadyForQuery(Idle) and flush the writer.
 async fn ready_for_query_flush<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W) -> Result<()> {
-    write_backend_message(
-        writer,
-        &BackendMessage::ReadyForQuery {
-            status: STATUS_IDLE,
-        },
-    )
-    .await?;
+    write_backend_message(writer, &BackendMessage::ReadyForQuery { status: STATUS_IDLE }).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -678,13 +631,7 @@ async fn write_error_response<W: tokio::io::AsyncWrite + Unpin>(
     let message = err.to_string();
     write_backend_message(
         writer,
-        &BackendMessage::ErrorResponse {
-            severity,
-            code,
-            message,
-            detail: None,
-            hint: None,
-        },
+        &BackendMessage::ErrorResponse { severity, code, message, detail: None, hint: None },
     )
     .await?;
     Ok(())

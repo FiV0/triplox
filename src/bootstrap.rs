@@ -63,11 +63,7 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
 pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
     let version_key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
 
-    match slatedb
-        .get(&version_key)
-        .await
-        .expect("Failed to read version from META_INDEX")
-    {
+    match slatedb.get(&version_key).await.expect("Failed to read version from META_INDEX") {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
             let schema = load_schema_from_indices(slatedb.clone()).await;
@@ -104,9 +100,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             txn.put(&version_key, version.as_bytes()).unwrap();
-            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS)
-                .await
-                .unwrap();
+            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await.unwrap();
 
             // Derive counters from the just-written index
             let pm = scan_partition_counters(&slatedb).await;
@@ -130,28 +124,16 @@ mod tests {
         assert_eq!(metadata.schema.len(), 7);
         assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/valueType)).is_some());
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db/cardinality))
-            .is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/cardinality)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db.tx/error)).is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
-        assert_eq!(
-            metadata.partition_map[&DB_PARTITION],
-            DB_PARTITION_COUNTER_FLOOR
-        );
+        assert_eq!(metadata.partition_map[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
         // Enum entities are in ident_map but not attribute_map
-        assert!(metadata
-            .schema
-            .ident_map
-            .contains_key(&kw!(:db.type/string)));
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db.type/string))
-            .is_none());
+        assert!(metadata.schema.ident_map.contains_key(&kw!(:db.type/string)));
+        assert!(metadata.schema.get_attribute(&kw!(:db.type/string)).is_none());
     }
 
     #[tokio::test]
@@ -162,10 +144,7 @@ mod tests {
         let metadata2 = init_db(slatedb).await;
         assert_eq!(metadata1.schema.len(), metadata2.schema.len());
         assert_eq!(metadata1.schema.len(), 7);
-        assert_eq!(
-            metadata1.partition_map[&DB_PARTITION],
-            metadata2.partition_map[&DB_PARTITION]
-        );
+        assert_eq!(metadata1.partition_map[&DB_PARTITION], metadata2.partition_map[&DB_PARTITION]);
     }
 
     #[tokio::test]

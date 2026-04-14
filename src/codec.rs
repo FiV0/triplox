@@ -82,9 +82,7 @@ impl From<String> for DecodeError {
 
 impl From<&str> for DecodeError {
     fn from(message: &str) -> Self {
-        DecodeError {
-            message: message.to_string(),
-        }
+        DecodeError { message: message.to_string() }
     }
 }
 
@@ -159,11 +157,7 @@ pub fn decode_u64(cursor: &mut &[u8]) -> Result<u64, DecodeError> {
 pub fn encode_f64(value: f64, buf: &mut Vec<u8>) {
     let bits = value.to_bits();
     let sign_mask: u64 = 0x8000_0000_0000_0000;
-    let sortable = if bits & sign_mask != 0 {
-        !bits
-    } else {
-        bits ^ sign_mask
-    };
+    let sortable = if bits & sign_mask != 0 { !bits } else { bits ^ sign_mask };
     buf.extend_from_slice(&sortable.to_be_bytes());
 }
 
@@ -175,22 +169,14 @@ pub fn decode_f64(cursor: &mut &[u8]) -> Result<f64, DecodeError> {
     *cursor = &cursor[8..];
     let sortable = u64::from_be_bytes(bytes);
     let sign_mask: u64 = 0x8000_0000_0000_0000;
-    let bits = if sortable & sign_mask != 0 {
-        sortable ^ sign_mask
-    } else {
-        !sortable
-    };
+    let bits = if sortable & sign_mask != 0 { sortable ^ sign_mask } else { !sortable };
     Ok(f64::from_bits(bits))
 }
 
 pub fn encode_f32(value: f32, buf: &mut Vec<u8>) {
     let bits = value.to_bits();
     let sign_mask: u32 = 0x8000_0000;
-    let sortable = if bits & sign_mask != 0 {
-        !bits
-    } else {
-        bits ^ sign_mask
-    };
+    let sortable = if bits & sign_mask != 0 { !bits } else { bits ^ sign_mask };
     buf.extend_from_slice(&sortable.to_be_bytes());
 }
 
@@ -202,11 +188,7 @@ pub fn decode_f32(cursor: &mut &[u8]) -> Result<f32, DecodeError> {
     *cursor = &cursor[4..];
     let sortable = u32::from_be_bytes(bytes);
     let sign_mask: u32 = 0x8000_0000;
-    let bits = if sortable & sign_mask != 0 {
-        sortable ^ sign_mask
-    } else {
-        !sortable
-    };
+    let bits = if sortable & sign_mask != 0 { sortable ^ sign_mask } else { !sortable };
     Ok(f32::from_bits(bits))
 }
 
@@ -537,11 +519,9 @@ impl Decode for DataType {
         let mut cursor = buf;
         let result = decode_datatype(&mut cursor)?;
         if !cursor.is_empty() {
-            return Err(format!(
-                "trailing bytes after decode: {} bytes remaining",
-                cursor.len()
-            )
-            .into());
+            return Err(
+                format!("trailing bytes after decode: {} bytes remaining", cursor.len()).into()
+            );
         }
         Ok(result)
     }
@@ -562,17 +542,11 @@ mod tests {
     #[test]
     fn i64_encoding_table() {
         let cases: Vec<(i64, Vec<u8>)> = vec![
-            (
-                i64::MIN,
-                vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
-            ),
+            (i64::MIN, vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
             (-1, vec![0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             (0, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
             (1, vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]),
-            (
-                i64::MAX,
-                vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            ),
+            (i64::MAX, vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
         ];
         for (value, expected) in cases {
             let mut buf = Vec::new();
@@ -634,15 +608,7 @@ mod tests {
 
     #[test]
     fn roundtrip_f64() {
-        for &v in &[
-            f64::NEG_INFINITY,
-            -1.5,
-            -0.0,
-            0.0,
-            1.5,
-            f64::INFINITY,
-            f64::NAN,
-        ] {
+        for &v in &[f64::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f64::INFINITY, f64::NAN] {
             let mut buf = Vec::new();
             encode_f64(v, &mut buf);
             let mut cursor = buf.as_slice();
@@ -650,12 +616,7 @@ mod tests {
             if v.is_nan() {
                 assert!(decoded.is_nan());
             } else {
-                assert_eq!(
-                    decoded.to_bits(),
-                    v.to_bits(),
-                    "f64 {} round-trip failed",
-                    v
-                );
+                assert_eq!(decoded.to_bits(), v.to_bits(), "f64 {} round-trip failed", v);
             }
             assert!(cursor.is_empty());
         }
@@ -663,15 +624,7 @@ mod tests {
 
     #[test]
     fn roundtrip_f32() {
-        for &v in &[
-            f32::NEG_INFINITY,
-            -1.5,
-            -0.0,
-            0.0,
-            1.5,
-            f32::INFINITY,
-            f32::NAN,
-        ] {
+        for &v in &[f32::NEG_INFINITY, -1.5, -0.0, 0.0, 1.5, f32::INFINITY, f32::NAN] {
             let mut buf = Vec::new();
             encode_f32(v, &mut buf);
             let mut cursor = buf.as_slice();
@@ -679,12 +632,7 @@ mod tests {
             if v.is_nan() {
                 assert!(decoded.is_nan());
             } else {
-                assert_eq!(
-                    decoded.to_bits(),
-                    v.to_bits(),
-                    "f32 {} round-trip failed",
-                    v
-                );
+                assert_eq!(decoded.to_bits(), v.to_bits(), "f32 {} round-trip failed", v);
             }
             assert!(cursor.is_empty());
         }
@@ -829,10 +777,7 @@ mod tests {
     #[test]
     fn roundtrip_datatype_nested_composite() {
         let nested = DataType::Vector(vec![
-            DataType::Tuple(vec![
-                DataType::Long(1),
-                DataType::String("inner".to_string()),
-            ]),
+            DataType::Tuple(vec![DataType::Long(1), DataType::String("inner".to_string())]),
             DataType::Map({
                 let mut m = BTreeMap::new();
                 m.insert("k".to_string(), DataType::Boolean(true));
@@ -854,12 +799,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_i64(window[0], &mut a_buf);
             encode_i64(window[1], &mut b_buf);
-            assert!(
-                a_buf > b_buf,
-                "{} should encode after {}",
-                window[0],
-                window[1]
-            );
+            assert!(a_buf > b_buf, "{} should encode after {}", window[0], window[1]);
         }
     }
 
@@ -898,12 +838,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_f64(window[0], &mut a_buf);
             encode_f64(window[1], &mut b_buf);
-            assert!(
-                a_buf <= b_buf,
-                "{} should encode <= {}",
-                window[0],
-                window[1]
-            );
+            assert!(a_buf <= b_buf, "{} should encode <= {}", window[0], window[1]);
         }
     }
 
@@ -936,12 +871,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_string(window[0], &mut a_buf);
             encode_string(window[1], &mut b_buf);
-            assert!(
-                a_buf < b_buf,
-                "{:?} should encode before {:?}",
-                window[0],
-                window[1]
-            );
+            assert!(a_buf < b_buf, "{:?} should encode before {:?}", window[0], window[1]);
         }
     }
 
@@ -954,12 +884,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_bytes(&window[0], &mut a_buf);
             encode_bytes(&window[1], &mut b_buf);
-            assert!(
-                a_buf < b_buf,
-                "{:?} should encode before {:?}",
-                window[0],
-                window[1]
-            );
+            assert!(a_buf < b_buf, "{:?} should encode before {:?}", window[0], window[1]);
         }
     }
 
@@ -977,12 +902,7 @@ mod tests {
             let mut b_buf = Vec::new();
             encode_keyword(&window[0], &mut a_buf);
             encode_keyword(&window[1], &mut b_buf);
-            assert!(
-                a_buf < b_buf,
-                "{:?} should encode before {:?}",
-                window[0],
-                window[1]
-            );
+            assert!(a_buf < b_buf, "{:?} should encode before {:?}", window[0], window[1]);
         }
     }
 

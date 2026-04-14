@@ -71,11 +71,7 @@ pub struct Metadata {
 
 impl Metadata {
     pub fn new(schema: Schema, partition_map: PartitionMap) -> Self {
-        Self {
-            generation: 0,
-            partition_map,
-            schema,
-        }
+        Self { generation: 0, partition_map, schema }
     }
 
     pub fn advance_generation(&mut self) {

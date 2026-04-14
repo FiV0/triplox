@@ -54,9 +54,7 @@ where
     T: Eq + Hash,
 {
     pub fn new() -> InternSet<T> {
-        InternSet {
-            inner: HashSet::new(),
-        }
+        InternSet { inner: HashSet::new() }
     }
 
     /// Intern a value, providing a ref-counted handle to the interned value.

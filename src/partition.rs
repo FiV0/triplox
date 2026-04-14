@@ -43,10 +43,7 @@ pub fn partition_entity_prefix(partition: u32) -> Vec<u8> {
 /// For partition 0, the result equals the counter (small, readable IDs).
 pub fn make_entity_id(partition: u32, counter: i64) -> i64 {
     assert!(partition < (1 << 20), "partition must fit in 20 bits");
-    assert!(
-        (0..=COUNTER_MASK).contains(&counter),
-        "counter must fit in 42 bits"
-    );
+    assert!((0..=COUNTER_MASK).contains(&counter), "counter must fit in 42 bits");
     ((partition as i64) << COUNTER_BITS) | counter
 }
 
@@ -79,10 +76,7 @@ mod tests {
 
     #[test]
     fn test_bootstrap_ids_in_db_partition() {
-        assert_eq!(
-            make_entity_id(DB_PARTITION, crate::schema::DB_IDENT),
-            crate::schema::DB_IDENT
-        );
+        assert_eq!(make_entity_id(DB_PARTITION, crate::schema::DB_IDENT), crate::schema::DB_IDENT);
         assert_eq!(
             make_entity_id(DB_PARTITION, crate::schema::DB_VALUE_TYPE),
             crate::schema::DB_VALUE_TYPE

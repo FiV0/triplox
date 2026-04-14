@@ -165,10 +165,7 @@ pub struct NamespacedSymbol(NamespaceableName);
 /// Future: fast equality (interning?) for keywords.
 ///
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
-#[cfg_attr(
-    feature = "serde_support",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde_support", derive(serde::Serialize, serde::Deserialize))]
 pub struct Keyword(NamespaceableName);
 
 impl PlainSymbol {
@@ -216,10 +213,7 @@ impl NamespacedSymbol {
         T: AsRef<str>,
     {
         let r = namespace.as_ref();
-        assert!(
-            !r.is_empty(),
-            "Namespaced symbols cannot have an empty non-null namespace."
-        );
+        assert!(!r.is_empty(), "Namespaced symbols cannot have an empty non-null namespace.");
         NamespacedSymbol(NamespaceableName::namespaced(r, name))
     }
 
@@ -266,10 +260,7 @@ impl Keyword {
         T: AsRef<str>,
     {
         let r = namespace.as_ref();
-        assert!(
-            !r.is_empty(),
-            "Namespaced keywords cannot have an empty non-null namespace."
-        );
+        assert!(!r.is_empty(), "Namespaced keywords cannot have an empty non-null namespace.");
         Keyword(NamespaceableName::namespaced(r, name))
     }
 
@@ -424,9 +415,7 @@ impl FromStr for Keyword {
     /// assert!(Keyword::from_str(":foo/").is_err());
     /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s
-            .strip_prefix(':')
-            .ok_or(KeywordParseError::MissingColonPrefix)?;
+        let s = s.strip_prefix(':').ok_or(KeywordParseError::MissingColonPrefix)?;
         match s.split_once('/') {
             Some((ns, name)) => {
                 if ns.is_empty() {
@@ -479,10 +468,7 @@ fn test_kw_macro() {
     assert_eq!(kw!(:test/name), Keyword::namespaced("test", "name"));
     assert_eq!(kw!(:ns/_name), Keyword::namespaced("ns", "_name"));
     // Dotted namespace
-    assert_eq!(
-        kw!(:db.type/keyword),
-        Keyword::namespaced("db.type", "keyword")
-    );
+    assert_eq!(kw!(:db.type/keyword), Keyword::namespaced("db.type", "keyword"));
     // Plain
     assert_eq!(kw!(:name), Keyword::plain("name"));
     // Hyphenated

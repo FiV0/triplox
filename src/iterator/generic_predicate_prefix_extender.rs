@@ -31,12 +31,7 @@ impl GenericPredicatePrefixExtender {
         extension_var: Variable,
         level: usize,
     ) -> Self {
-        Self {
-            expr,
-            prefix_vars,
-            extension_var,
-            level,
-        }
+        Self { expr, prefix_vars, extension_var, level }
     }
 }
 
@@ -65,10 +60,8 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
             .filter(|ext| {
                 let ext_val = DataType::decode(ext).expect("failed to decode extension value");
 
-                let mut bindings: HashMap<Variable, &DataType> = prefix_values
-                    .iter()
-                    .map(|(var, dt)| (var.clone(), dt))
-                    .collect();
+                let mut bindings: HashMap<Variable, &DataType> =
+                    prefix_values.iter().map(|(var, dt)| (var.clone(), dt)).collect();
                 bindings.insert(self.extension_var.clone(), &ext_val);
 
                 let ctx = EvalContext::new(bindings);

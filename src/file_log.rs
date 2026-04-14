@@ -17,18 +17,10 @@ pub struct FileLog {
 impl FileLog {
     #[allow(unused)]
     pub fn new(path: &Path, clock: Box<dyn SystemTimeSource>) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let file =
+            OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
 
-        Ok(FileLog {
-            file: BufWriter::new(file),
-            tx_sender: broadcast::channel(1024).0,
-            clock,
-        })
+        Ok(FileLog { file: BufWriter::new(file), tx_sender: broadcast::channel(1024).0, clock })
     }
 
     fn current_offset(&mut self) -> io::Result<i64> {
@@ -76,13 +68,7 @@ impl TxLogWriter for FileLog {
     async fn append_tx(&mut self, record: Vec<u8>) -> TxKey {
         let tx_id = self.current_offset().unwrap();
 
-        let record = Record {
-            tx_key: TxKey {
-                tx_id,
-                system_time: self.clock.now(),
-            },
-            record,
-        };
+        let record = Record { tx_key: TxKey { tx_id, system_time: self.clock.now() }, record };
 
         // Serialize and write the record
         bincode::serialize_into(&mut self.file, &record).unwrap();
@@ -127,9 +113,7 @@ mod tests {
             st_from_unix_epoch(400),
         ]);
 
-        let log = Arc::new(RwLock::new(
-            FileLog::new(&file_path, Box::new(clock)).unwrap(),
-        ));
+        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         {
@@ -183,9 +167,7 @@ mod tests {
 
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
 
-        let log = Arc::new(RwLock::new(
-            FileLog::new(&file_path, Box::new(clock)).unwrap(),
-        ));
+        let log = Arc::new(RwLock::new(FileLog::new(&file_path, Box::new(clock)).unwrap()));
 
         // Write one transaction
         {

@@ -13,10 +13,7 @@ fn datatype_to_f64(dt: &DataType) -> Result<f64> {
         DataType::Double(n) => Ok(*n),
         DataType::Float(n) => Ok(*n as f64),
         DataType::BigInt(n) => Ok(*n as f64),
-        other => Err(anyhow!(
-            "cannot convert {:?} to numeric for aggregation",
-            other
-        )),
+        other => Err(anyhow!("cannot convert {:?} to numeric for aggregation", other)),
     }
 }
 
@@ -79,9 +76,7 @@ impl Accumulator for SumAccumulator {
                 self.accum = Some(NumericAccum::Double(*n));
             }
             (Some(NumericAccum::Long(acc)), DataType::Long(n)) => {
-                *acc = acc
-                    .checked_add(*n)
-                    .ok_or_else(|| anyhow!("integer overflow in sum"))?;
+                *acc = acc.checked_add(*n).ok_or_else(|| anyhow!("integer overflow in sum"))?;
             }
             (Some(NumericAccum::Long(acc)), DataType::Double(n)) => {
                 self.accum = Some(NumericAccum::Double(*acc as f64 + n));
@@ -113,10 +108,7 @@ impl Accumulator for SumAccumulator {
                 }
             }
             (_, other) => {
-                return Err(anyhow!(
-                    "sum: cannot aggregate non-numeric value {:?}",
-                    other
-                ));
+                return Err(anyhow!("sum: cannot aggregate non-numeric value {:?}", other));
             }
         }
         Ok(())
@@ -172,9 +164,7 @@ impl Accumulator for MinAccumulator {
     }
 
     fn finalize(&self) -> Result<DataType> {
-        self.current
-            .clone()
-            .ok_or_else(|| anyhow!("min: no values accumulated"))
+        self.current.clone().ok_or_else(|| anyhow!("min: no values accumulated"))
     }
 }
 
@@ -199,18 +189,14 @@ impl Accumulator for MaxAccumulator {
     }
 
     fn finalize(&self) -> Result<DataType> {
-        self.current
-            .clone()
-            .ok_or_else(|| anyhow!("max: no values accumulated"))
+        self.current.clone().ok_or_else(|| anyhow!("max: no values accumulated"))
     }
 }
 
 pub(crate) fn make_accumulator(func: &AggregateFunc) -> Box<dyn Accumulator> {
     match func {
         AggregateFunc::Count => Box::new(CountAccumulator { count: 0 }),
-        AggregateFunc::CountDistinct => Box::new(CountDistinctAccumulator {
-            seen: HashSet::new(),
-        }),
+        AggregateFunc::CountDistinct => Box::new(CountDistinctAccumulator { seen: HashSet::new() }),
         AggregateFunc::Sum => Box::new(SumAccumulator { accum: None }),
         AggregateFunc::Avg => Box::new(AvgAccumulator { sum: 0.0, count: 0 }),
         AggregateFunc::Min => Box::new(MinAccumulator { current: None }),

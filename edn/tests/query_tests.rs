@@ -28,10 +28,7 @@ fn can_parse_predicates() {
     let s = "[:find [?x ...] :where [?x _ ?y] [(< ?y 10)]]";
     let p = parse_query(s).unwrap();
 
-    assert_eq!(
-        p.find_spec,
-        FindSpec::FindColl(Element::Variable("?x".to_var()))
-    );
+    assert_eq!(p.find_spec, FindSpec::FindColl(Element::Variable("?x".to_var())));
     assert_eq!(
         p.where_clauses,
         vec![
@@ -55,10 +52,7 @@ fn can_parse_simple_or() {
     let s = "[:find ?x . :where (or [?x _ 10] [?x _ 15])]";
     let p = parse_query(s).unwrap();
 
-    assert_eq!(
-        p.find_spec,
-        FindSpec::FindScalar(Element::Variable("?x".to_var()))
-    );
+    assert_eq!(p.find_spec, FindSpec::FindScalar(Element::Variable("?x".to_var())));
     assert_eq!(
         p.where_clauses,
         vec![WhereClause::OrJoin(OrJoin::new(
@@ -88,10 +82,7 @@ fn can_parse_unit_or_join() {
     let s = "[:find ?x . :where (or-join [?x] [?x _ 15])]";
     let p = parse_query(s).expect("to be able to parse find");
 
-    assert_eq!(
-        p.find_spec,
-        FindSpec::FindScalar(Element::Variable("?x".to_var()))
-    );
+    assert_eq!(p.find_spec, FindSpec::FindScalar(Element::Variable("?x".to_var())));
     assert_eq!(
         p.where_clauses,
         vec![WhereClause::OrJoin(OrJoin::new(
@@ -112,10 +103,7 @@ fn can_parse_simple_or_join() {
     let s = "[:find ?x . :where (or-join [?x] [?x _ 10] [?x _ -15])]";
     let p = parse_query(s).unwrap();
 
-    assert_eq!(
-        p.find_spec,
-        FindSpec::FindScalar(Element::Variable("?x".to_var()))
-    );
+    assert_eq!(p.find_spec, FindSpec::FindScalar(Element::Variable("?x".to_var())));
     assert_eq!(
         p.where_clauses,
         vec![WhereClause::OrJoin(OrJoin::new(
@@ -150,10 +138,7 @@ fn can_parse_simple_or_and_join() {
     let s = "[:find ?x . :where (or [?x _ 10] (and (or [?x :foo/bar ?y] [?x :foo/baz ?y]) [(< ?y 1)]))]";
     let p = parse_query(s).unwrap();
 
-    assert_eq!(
-        p.find_spec,
-        FindSpec::FindScalar(Element::Variable("?x".to_var()))
-    );
+    assert_eq!(p.find_spec, FindSpec::FindScalar(Element::Variable("?x".to_var())));
     assert_eq!(
         p.where_clauses,
         vec![WhereClause::OrJoin(OrJoin::new(
@@ -248,10 +233,7 @@ fn can_parse_limit() {
     assert_eq!(parse_query(onethousand).unwrap().limit, Limit::Fixed(1000));
 
     let variable_with_in = "[:find ?x :in ?limit :where [?x :foo/baz ?y] :limit ?limit]";
-    assert_eq!(
-        parse_query(variable_with_in).unwrap().limit,
-        Limit::Variable("?limit".to_var())
-    );
+    assert_eq!(parse_query(variable_with_in).unwrap().limit, Limit::Variable("?limit".to_var()));
 
     let variable_with_in_used = "[:find ?x :in ?limit :where [?x :foo/baz ?limit] :limit ?limit]";
     assert_eq!(
@@ -266,11 +248,7 @@ fn can_parse_uuid() {
         edn::Uuid::parse_str("4cb3f828-752d-497a-90c9-b1fd516d5644").expect("valid uuid");
     let s = "[:find ?x :where [?x :foo/baz #uuid \"4cb3f828-752d-497a-90c9-b1fd516d5644\"]]";
     assert_eq!(
-        parse_query(s)
-            .expect("parsed")
-            .where_clauses
-            .pop()
-            .expect("a where clause"),
+        parse_query(s).expect("parsed").where_clauses.pop().expect("a where clause"),
         WhereClause::Pattern(
             Pattern::new(
                 None,
@@ -295,11 +273,7 @@ fn can_parse_exotic_whitespace() {
    "4cb3f828-752d-497a-90c9-b1fd516d5644", ;testa
 ,],,  ,],;"#;
     assert_eq!(
-        parse_query(s)
-            .expect("parsed")
-            .where_clauses
-            .pop()
-            .expect("a where clause"),
+        parse_query(s).expect("parsed").where_clauses.pop().expect("a where clause"),
         WhereClause::Pattern(
             Pattern::new(
                 None,
@@ -322,10 +296,7 @@ fn assert_round_trip(input: &str) {
     let parsed = parse_query(input).expect("initial parse failed");
     let displayed = parsed.to_string();
     let reparsed = parse_query(&displayed).unwrap_or_else(|e| {
-        panic!(
-            "re-parse of Display output failed: {}\nDisplayed: {}",
-            e, displayed
-        )
+        panic!("re-parse of Display output failed: {}\nDisplayed: {}", e, displayed)
     });
     assert_eq!(
         parsed, reparsed,

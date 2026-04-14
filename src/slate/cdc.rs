@@ -121,11 +121,8 @@ impl CdcStream {
 
             // No more files — poll for new WAL files (after the one we already processed).
             loop {
-                let new_files: VecDeque<WalFile> = self
-                    .wal_reader
-                    .list((self.cursor.wal_id + 1)..)
-                    .await?
-                    .into();
+                let new_files: VecDeque<WalFile> =
+                    self.wal_reader.list((self.cursor.wal_id + 1)..).await?.into();
 
                 if !new_files.is_empty() {
                     self.wal_files = new_files;
@@ -171,9 +168,7 @@ mod tests {
     }
 
     fn flush_opts() -> FlushOptions {
-        FlushOptions {
-            flush_type: FlushType::Wal,
-        }
+        FlushOptions { flush_type: FlushType::Wal }
     }
 
     #[tokio::test]
@@ -182,14 +177,10 @@ mod tests {
         let wal_reader = WalReader::new("/test_empty", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel(); // cancel immediately so next_transaction returns None
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
+        let mut stream =
+            CdcStream::new(wal_reader, CdcCursor::default(), Duration::from_millis(10), cancel)
+                .await
+                .unwrap();
 
         let result = stream.next_transaction().await.unwrap();
         assert!(result.is_none());
@@ -207,14 +198,10 @@ mod tests {
         let wal_reader = WalReader::new("/test_single", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
+        let mut stream =
+            CdcStream::new(wal_reader, CdcCursor::default(), Duration::from_millis(10), cancel)
+                .await
+                .unwrap();
 
         // Collect all entries across transactions.
         let mut all_entries = Vec::new();
@@ -254,14 +241,10 @@ mod tests {
         let wal_reader = WalReader::new("/test_multi", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
+        let mut stream =
+            CdcStream::new(wal_reader, CdcCursor::default(), Duration::from_millis(10), cancel)
+                .await
+                .unwrap();
 
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
@@ -291,14 +274,10 @@ mod tests {
         let wal_reader = WalReader::new("/test_filter", object_store.clone());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
+        let mut stream =
+            CdcStream::new(wal_reader, CdcCursor::default(), Duration::from_millis(10), cancel)
+                .await
+                .unwrap();
 
         let tx1 = stream.next_transaction().await.unwrap().unwrap();
 
@@ -308,10 +287,7 @@ mod tests {
         cancel2.cancel();
         let mut stream2 = CdcStream::new(
             wal_reader2,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: tx1.seq,
-            },
+            CdcCursor { wal_id: 0, last_seq: tx1.seq },
             Duration::from_millis(10),
             cancel2,
         )
@@ -337,14 +313,10 @@ mod tests {
         let cancel = CancellationToken::new();
         // Cancel immediately so we don't block after consuming available data.
         cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
+        let mut stream =
+            CdcStream::new(wal_reader, CdcCursor::default(), Duration::from_millis(10), cancel)
+                .await
+                .unwrap();
 
         // Collect all entries across transactions.
         let mut all_entries = Vec::new();
@@ -353,9 +325,8 @@ mod tests {
         }
 
         // Should have a tombstone entry.
-        let has_tombstone = all_entries
-            .iter()
-            .any(|e| matches!(e.value, ValueDeletable::Tombstone));
+        let has_tombstone =
+            all_entries.iter().any(|e| matches!(e.value, ValueDeletable::Tombstone));
         assert!(has_tombstone);
         db.close().await.unwrap();
     }
@@ -372,10 +343,7 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: u64::MAX - 1,
-            },
+            CdcCursor { wal_id: 0, last_seq: u64::MAX - 1 },
             Duration::from_millis(10),
             cancel,
         )
@@ -409,10 +377,7 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: snap_seq,
-            },
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
             Duration::from_millis(10),
             cancel,
         )
@@ -448,10 +413,7 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: snap_seq,
-            },
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
             Duration::from_millis(10),
             cancel,
         )
@@ -460,12 +422,7 @@ mod tests {
 
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(
-                tx.seq > snap_seq,
-                "tx.seq {} should be > snapshot seq {}",
-                tx.seq,
-                snap_seq
-            );
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
             txs.push(tx);
         }
         assert!(
@@ -495,10 +452,7 @@ mod tests {
         cancel.cancel();
         let mut stream = CdcStream::new(
             wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: snap_seq,
-            },
+            CdcCursor { wal_id: 0, last_seq: snap_seq },
             Duration::from_millis(10),
             cancel,
         )
@@ -507,19 +461,10 @@ mod tests {
 
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(
-                tx.seq > snap_seq,
-                "tx.seq {} should be > snapshot seq {}",
-                tx.seq,
-                snap_seq
-            );
+            assert!(tx.seq > snap_seq, "tx.seq {} should be > snapshot seq {}", tx.seq, snap_seq);
             txs.push(tx);
         }
-        assert!(
-            txs.len() >= 2,
-            "expected at least 2 transactions, got {}",
-            txs.len()
-        );
+        assert!(txs.len() >= 2, "expected at least 2 transactions, got {}", txs.len());
         db.close().await.unwrap();
     }
 
@@ -540,10 +485,7 @@ mod tests {
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
                 wal_reader,
-                CdcCursor {
-                    wal_id: 0,
-                    last_seq: snap_seq,
-                },
+                CdcCursor { wal_id: 0, last_seq: snap_seq },
                 Duration::from_millis(10),
                 cancel,
             )
@@ -572,11 +514,7 @@ mod tests {
                 );
                 txs.push(tx);
             }
-            assert!(
-                txs.len() >= 2,
-                "expected at least 2 live transactions, got {}",
-                txs.len()
-            );
+            assert!(txs.len() >= 2, "expected at least 2 live transactions, got {}", txs.len());
         })
         .await
         .expect("test_cdc_after_snapshot_live_streaming timed out");
@@ -604,10 +542,7 @@ mod tests {
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
                 wal_reader,
-                CdcCursor {
-                    wal_id: 0,
-                    last_seq: snap_seq,
-                },
+                CdcCursor { wal_id: 0, last_seq: snap_seq },
                 Duration::from_millis(10),
                 cancel,
             )

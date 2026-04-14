@@ -28,11 +28,7 @@ pub struct GenericFnPrefixExtender {
 
 impl GenericFnPrefixExtender {
     pub fn new(expr: Expr, prefix_vars: Vec<(Variable, usize)>, output_level: usize) -> Self {
-        Self {
-            expr,
-            prefix_vars,
-            output_level,
-        }
+        Self { expr, prefix_vars, output_level }
     }
 
     /// Evaluate the expression against the given prefix, returning the serialized result.
@@ -46,10 +42,8 @@ impl GenericFnPrefixExtender {
             })
             .collect();
 
-        let bindings: HashMap<Variable, &DataType> = prefix_values
-            .iter()
-            .map(|(var, dt)| (var.clone(), dt))
-            .collect();
+        let bindings: HashMap<Variable, &DataType> =
+            prefix_values.iter().map(|(var, dt)| (var.clone(), dt)).collect();
 
         let ctx = EvalContext::new(bindings);
         let result = evaluate(&self.expr, &ctx)?;
@@ -71,11 +65,7 @@ impl PrefixExtender for GenericFnPrefixExtender {
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
         match self.compute(prefix) {
-            Some(result) => extensions
-                .iter()
-                .filter(|ext| **ext == result)
-                .cloned()
-                .collect(),
+            Some(result) => extensions.iter().filter(|ext| **ext == result).cloned().collect(),
             None => vec![],
         }
     }
@@ -169,10 +159,7 @@ mod tests {
             2, // output at level 2
         );
 
-        let prefix = vec![
-            serialize(&DataType::Long(10)),
-            serialize(&DataType::Long(20)),
-        ];
+        let prefix = vec![serialize(&DataType::Long(10)), serialize(&DataType::Long(20))];
         let result = ext.propose(&prefix);
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(30));
@@ -226,10 +213,7 @@ mod tests {
         let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::Long(25))];
-        let extensions = vec![
-            serialize(&DataType::Long(30)),
-            serialize(&DataType::Long(40)),
-        ];
+        let extensions = vec![serialize(&DataType::Long(30)), serialize(&DataType::Long(40))];
 
         let result = ext.intersect(&prefix, &extensions);
         assert!(result.is_empty());

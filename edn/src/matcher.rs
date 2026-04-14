@@ -64,9 +64,7 @@ struct Matcher<'a> {
 impl<'a> Matcher<'a> {
     /// Creates a Matcher instance.
     fn new() -> Matcher<'a> {
-        Matcher {
-            placeholders: RefCell::default(),
-        }
+        Matcher { placeholders: RefCell::default() }
     }
 
     /// Performs pattern matching between two EDN `Value` instances (`value`
@@ -104,10 +102,8 @@ impl<'a> Matcher<'a> {
                 }
                 (Set(v), Set(p)) => {
                     v.len() == p.len()
-                        && v.iter()
-                            .all(|a| p.iter().any(|b| self.match_internal::<T>(a, b)))
-                        && p.iter()
-                            .all(|b| v.iter().any(|a| self.match_internal::<T>(a, b)))
+                        && v.iter().all(|a| p.iter().any(|b| self.match_internal::<T>(a, b)))
+                        && p.iter().all(|b| v.iter().any(|a| self.match_internal::<T>(a, b)))
                 }
                 (Map(v), Map(p)) => {
                     v.len() == p.len()

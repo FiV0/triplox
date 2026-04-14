@@ -170,10 +170,7 @@ fn is_value_variable(place: &PatternValuePlace) -> bool {
 
 /// Check if a PatternNonValuePlace is a constant (Entid or Ident).
 fn is_non_value_constant(place: &PatternNonValuePlace) -> bool {
-    matches!(
-        place,
-        PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_)
-    )
+    matches!(place, PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_))
 }
 
 /// Check if a PatternValuePlace is a constant.
@@ -244,30 +241,18 @@ fn convert_predicate(pred: &EdnPredicate) -> Result<Expr, Error> {
     }
     let left = convert_fn_arg(&pred.args[0])?;
     let right = convert_fn_arg(&pred.args[1])?;
-    Ok(Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(left),
-        op,
-        right: Box::new(right),
-    }))
+    Ok(Expr::BinaryExpr(BinaryExpr { left: Box::new(left), op, right: Box::new(right) }))
 }
 
 fn convert_where_fn(wf: &EdnWhereFn) -> Result<FnExpr, Error> {
     let op_name = wf.operator.0.as_str();
     let op = convert_binary_op(op_name)?;
     if wf.args.len() != 2 {
-        return Err(anyhow::anyhow!(
-            "WhereFn '{}' expects 2 args, got {}",
-            op_name,
-            wf.args.len()
-        ));
+        return Err(anyhow::anyhow!("WhereFn '{}' expects 2 args, got {}", op_name, wf.args.len()));
     }
     let left = convert_fn_arg(&wf.args[0])?;
     let right = convert_fn_arg(&wf.args[1])?;
-    let expr = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(left),
-        op,
-        right: Box::new(right),
-    });
+    let expr = Expr::BinaryExpr(BinaryExpr { left: Box::new(left), op, right: Box::new(right) });
     let output = match &wf.binding {
         edn::query::Binding::BindScalar(v) => v.clone(),
         _ => return Err(anyhow::anyhow!("Only scalar binding supported")),
@@ -283,10 +268,9 @@ fn convert_where_fn(wf: &EdnWhereFn) -> Result<FnExpr, Error> {
 fn collect_variables_from_or_branch(branch: &OrWhereClause) -> Vec<Variable> {
     match branch {
         OrWhereClause::Clause(clause) => collect_variables_from_clause(clause),
-        OrWhereClause::And(children) => children
-            .iter()
-            .flat_map(collect_variables_from_clause)
-            .collect(),
+        OrWhereClause::And(children) => {
+            children.iter().flat_map(collect_variables_from_clause).collect()
+        }
     }
 }
 
@@ -299,10 +283,7 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
         WhereClause::OrJoin(oj) => {
             // All branches must have the same free variables (validated in execute_query).
             // Extract from the first branch only.
-            oj.clauses
-                .first()
-                .map(collect_variables_from_or_branch)
-                .unwrap_or_default()
+            oj.clauses.first().map(collect_variables_from_or_branch).unwrap_or_default()
         }
         WhereClause::WhereFn(wf) => {
             // The output variable is the one contributed.
@@ -339,11 +320,7 @@ pub fn query_variable_order(in_vars: &[Variable], where_clauses: &[WhereClause])
     let reordered: Vec<&WhereClause> = where_clauses
         .iter()
         .filter(|c| !matches!(c, WhereClause::WhereFn(_)))
-        .chain(
-            where_clauses
-                .iter()
-                .filter(|c| matches!(c, WhereClause::WhereFn(_))),
-        )
+        .chain(where_clauses.iter().filter(|c| matches!(c, WhereClause::WhereFn(_))))
         .collect();
 
     for clause in reordered {
@@ -434,10 +411,7 @@ fn validate_fn_clauses(
         if let WhereClause::WhereFn(wf) = clause {
             let fn_expr = convert_where_fn(wf)?;
             let output_pos = var_index.get(&fn_expr.output).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Function output variable {} not in join order",
-                    fn_expr.output
-                )
+                anyhow::anyhow!("Function output variable {} not in join order", fn_expr.output)
             })?;
             for var in fn_expr.input_variables() {
                 let input_pos = var_index.get(&var).ok_or_else(|| {
@@ -466,9 +440,7 @@ fn compile_predicate(
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     let vars = expr_variables(expr);
     if vars.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Predicate expression must reference at least one variable"
-        ));
+        return Err(anyhow::anyhow!("Predicate expression must reference at least one variable"));
     }
 
     // Find each variable's join level
@@ -483,11 +455,7 @@ fn compile_predicate(
         .collect::<Result<_, Error>>()?;
 
     // The variable with the highest join level is the extension variable
-    let (ext_idx, _) = var_levels
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, (_, level))| *level)
-        .unwrap();
+    let (ext_idx, _) = var_levels.iter().enumerate().max_by_key(|(_, (_, level))| *level).unwrap();
 
     let (extension_var, level) = var_levels.remove(ext_idx);
     let prefix_vars = var_levels;
@@ -519,17 +487,10 @@ fn compile_fn_expr(
         .collect::<Result<_, Error>>()?;
 
     let output_level = var_index.get(&fn_expr.output).copied().ok_or_else(|| {
-        anyhow::anyhow!(
-            "FnExpr output variable {} not in join order",
-            fn_expr.output
-        )
+        anyhow::anyhow!("FnExpr output variable {} not in join order", fn_expr.output)
     })?;
 
-    Ok(Box::new(GenericFnPrefixExtender::new(
-        fn_expr.expr.clone(),
-        prefix_vars,
-        output_level,
-    )))
+    Ok(Box::new(GenericFnPrefixExtender::new(fn_expr.expr.clone(), prefix_vars, output_level)))
 }
 
 /// Determine the index type for a single-variable pattern using Pattern directly.
@@ -539,13 +500,8 @@ fn pattern_index_type(pattern: &Pattern, join_order: &[Variable]) -> Result<Inde
     let value = &pattern.value;
 
     // Attribute must be constant (Ident or Entid)
-    if matches!(
-        attribute,
-        PatternNonValuePlace::Placeholder | PatternNonValuePlace::Variable(_)
-    ) {
-        return Err(anyhow::anyhow!(
-            "Attribute position must be a keyword or entid"
-        ));
+    if matches!(attribute, PatternNonValuePlace::Placeholder | PatternNonValuePlace::Variable(_)) {
+        return Err(anyhow::anyhow!("Attribute position must be a keyword or entid"));
     }
 
     match (entity, value) {
@@ -606,9 +562,7 @@ fn determine_index_types(
     } else if pat_vars.is_empty() {
         Ok(vec![])
     } else {
-        Err(anyhow::anyhow!(
-            "Patterns with more than 2 variables not supported"
-        ))
+        Err(anyhow::anyhow!("Patterns with more than 2 variables not supported"))
     }
 }
 
@@ -655,10 +609,8 @@ pub fn compile_pattern(
 
     // Determine participating levels (sorted ascending — build_slate_prefix relies on
     // ordered iteration to append already-bound components in index-key layout order).
-    let mut participating_levels: Vec<usize> = pat_vars
-        .iter()
-        .filter_map(|v| var_index.get(v).copied())
-        .collect();
+    let mut participating_levels: Vec<usize> =
+        pat_vars.iter().filter_map(|v| var_index.get(v).copied()).collect();
     participating_levels.sort_unstable();
 
     // Determine index types for each level
@@ -769,11 +721,7 @@ fn compile_find_plan(
         }
     }
 
-    Ok(FindPlan {
-        group_key_indices,
-        projections,
-        has_aggregates,
-    })
+    Ok(FindPlan { group_key_indices, projections, has_aggregates })
 }
 
 /// Project join results without aggregation.
@@ -904,14 +852,12 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
         return Err(anyhow::anyhow!("OR clause must have at least one branch"));
     }
 
-    let first_vars: HashSet<Variable> = collect_variables_from_or_branch(&branches[0])
-        .into_iter()
-        .collect();
+    let first_vars: HashSet<Variable> =
+        collect_variables_from_or_branch(&branches[0]).into_iter().collect();
 
     for (i, branch) in branches.iter().enumerate().skip(1) {
-        let branch_vars: HashSet<Variable> = collect_variables_from_or_branch(branch)
-            .into_iter()
-            .collect();
+        let branch_vars: HashSet<Variable> =
+            collect_variables_from_or_branch(branch).into_iter().collect();
         if branch_vars != first_vars {
             return Err(anyhow::anyhow!(
                 "OR branch {} has different free variables {:?} than branch 0 {:?}",
@@ -955,12 +901,9 @@ fn resolve_order_columns(
     orders
         .iter()
         .map(|Order(dir, var)| {
-            var_positions
-                .get(var)
-                .map(|&idx| (idx, dir.clone()))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("ORDER BY variable {} is not in the :find clause", var)
-                })
+            var_positions.get(var).map(|&idx| (idx, dir.clone())).ok_or_else(|| {
+                anyhow::anyhow!("ORDER BY variable {} is not in the :find clause", var)
+            })
         })
         .collect()
 }
@@ -1102,9 +1045,9 @@ fn compile_or_branch(
     as_of: i64,
 ) -> Result<Box<dyn PrefixExtender>, Error> {
     match branch {
-        OrWhereClause::Clause(clause) => compile_where_clause(
-            clause, join_order, var_index, slate, handle, ident_map, as_of,
-        ),
+        OrWhereClause::Clause(clause) => {
+            compile_where_clause(clause, join_order, var_index, slate, handle, ident_map, as_of)
+        }
         OrWhereClause::And(children) => {
             let extenders: Vec<Box<dyn PrefixExtender>> = children
                 .iter()
@@ -1170,10 +1113,7 @@ fn compile_where_clause(
             let fn_expr = convert_where_fn(wf)?;
             compile_fn_expr(&fn_expr, var_index)
         }
-        _ => Err(anyhow::anyhow!(
-            "Unsupported where clause type: {:?}",
-            clause
-        )),
+        _ => Err(anyhow::anyhow!("Unsupported where clause type: {:?}", clause)),
     }
 }
 
@@ -1221,10 +1161,8 @@ pub fn execute_query(
             unreachable!("validate_query ensures only scalar bindings reach execute_query");
         };
         let encoded = dt.encode();
-        extenders.push(Box::new(SingleLevelExtender::new(
-            vec![bytes::Bytes::from(encoded)],
-            level,
-        )));
+        extenders
+            .push(Box::new(SingleLevelExtender::new(vec![bytes::Bytes::from(encoded)], level)));
     }
 
     // 3. Compile WHERE patterns into extenders
@@ -1278,10 +1216,7 @@ mod tests {
     fn test_query_variable_order_multiple_patterns() {
         let parsed = parse_query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]");
         let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
-        assert_eq!(
-            order,
-            vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
-        );
+        assert_eq!(order, vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]);
     }
 
     #[test]
@@ -1327,10 +1262,7 @@ mod tests {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#);
         let result = validate_query(&parsed, &[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least one variable"));
+        assert!(result.unwrap_err().to_string().contains("at least one variable"));
     }
 
     #[test]
@@ -1338,10 +1270,7 @@ mod tests {
         let parsed =
             parse_query("[:find ?e ?next_age :where [?e :age ?age] [(+ ?age 1) ?next_age]]");
         let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
-        assert_eq!(
-            order,
-            vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
-        );
+        assert_eq!(order, vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]);
     }
 
     #[test]
@@ -1378,10 +1307,7 @@ mod tests {
         let parsed =
             parse_query("[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]");
         let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
-        assert_eq!(
-            order,
-            vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
-        );
+        assert_eq!(order, vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]);
     }
 
     #[test]
@@ -1389,10 +1315,7 @@ mod tests {
         let parsed =
             parse_query("[:find ?e ?name ?age :where (or (and [?e :name ?name] [?e :age ?age]))]");
         let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
-        assert_eq!(
-            order,
-            vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
-        );
+        assert_eq!(order, vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]);
     }
 
     #[test]
@@ -1429,25 +1352,18 @@ mod tests {
 
     fn make_find_rel(vars: &[&str]) -> FindSpec {
         FindSpec::FindRel(
-            vars.iter()
-                .map(|name| Element::Variable(Variable::from_valid_name(name)))
-                .collect(),
+            vars.iter().map(|name| Element::Variable(Variable::from_valid_name(name))).collect(),
         )
     }
 
     fn rows(data: Vec<Vec<i64>>) -> QueryResult {
-        data.into_iter()
-            .map(|row| row.into_iter().map(DataType::from).collect())
-            .collect()
+        data.into_iter().map(|row| row.into_iter().map(DataType::from).collect()).collect()
     }
 
     #[test]
     fn test_apply_order_ascending() {
         let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Ascending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let order = Some(vec![Order(Direction::Ascending, Variable::from_valid_name("?a"))]);
         let result = apply_order_and_limit(
             rows(vec![vec![3], vec![1], vec![2]]),
             &order,
@@ -1461,10 +1377,7 @@ mod tests {
     #[test]
     fn test_apply_order_descending() {
         let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Descending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let order = Some(vec![Order(Direction::Descending, Variable::from_valid_name("?a"))]);
         let result = apply_order_and_limit(
             rows(vec![vec![1], vec![3], vec![2]]),
             &order,
@@ -1484,10 +1397,7 @@ mod tests {
         ]);
         let input = rows(vec![vec![1, 10], vec![2, 20], vec![1, 30], vec![2, 10]]);
         let result = apply_order_and_limit(input, &order, &Limit::None, &find).unwrap();
-        assert_eq!(
-            result,
-            rows(vec![vec![1, 30], vec![1, 10], vec![2, 20], vec![2, 10]])
-        );
+        assert_eq!(result, rows(vec![vec![1, 30], vec![1, 10], vec![2, 20], vec![2, 10]]));
     }
 
     #[test]
@@ -1523,10 +1433,7 @@ mod tests {
     #[test]
     fn test_apply_order_then_limit() {
         let find = make_find_rel(&["?a"]);
-        let order = Some(vec![Order(
-            Direction::Ascending,
-            Variable::from_valid_name("?a"),
-        )]);
+        let order = Some(vec![Order(Direction::Ascending, Variable::from_valid_name("?a"))]);
         let result = apply_order_and_limit(
             rows(vec![vec![5], vec![3], vec![1], vec![4], vec![2]]),
             &order,
@@ -1541,11 +1448,7 @@ mod tests {
     fn test_validate_order_var_not_in_find() {
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :order [?name :asc]]");
         let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string().contains("ORDER BY variable"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(err.to_string().contains("ORDER BY variable"), "unexpected error: {}", err);
     }
 
     #[test]
@@ -1553,11 +1456,7 @@ mod tests {
         // Variable limit without :in binding should fail
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :limit ?limit]");
         let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string().contains("not bound in :in clause"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(err.to_string().contains("not bound in :in clause"), "unexpected error: {}", err);
     }
 
     #[test]

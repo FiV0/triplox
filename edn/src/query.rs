@@ -412,9 +412,9 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
             crate::SpannedValue::Float(x) => {
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Float(x)))
             }
-            crate::SpannedValue::BigInteger(ref x) => Some(PatternValuePlace::Constant(
-                NonIntegerConstant::BigInteger(x.clone()),
-            )),
+            crate::SpannedValue::BigInteger(ref x) => {
+                Some(PatternValuePlace::Constant(NonIntegerConstant::BigInteger(x.clone())))
+            }
             crate::SpannedValue::Instant(x) => {
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Instant(x)))
             }
@@ -499,10 +499,7 @@ pub struct NamedPullAttribute {
 
 impl From<PullConcreteAttribute> for NamedPullAttribute {
     fn from(a: PullConcreteAttribute) -> Self {
-        NamedPullAttribute {
-            attribute: a,
-            alias: None,
-        }
+        NamedPullAttribute { attribute: a, alias: None }
     }
 }
 
@@ -601,10 +598,7 @@ impl std::fmt::Display for Element {
             Element::Variable(var) => {
                 write!(f, "{}", var)
             }
-            &Element::Pull(Pull {
-                ref var,
-                ref patterns,
-            }) => {
+            &Element::Pull(Pull { ref var, ref patterns }) => {
                 write!(f, "(pull {} [ ", var)?;
                 for p in patterns.iter() {
                     write!(f, "{} ", p)?;
@@ -871,13 +865,7 @@ impl Pattern {
                 }
             }
         }
-        Some(Pattern {
-            source: src,
-            entity: e,
-            attribute: a,
-            value: v,
-            tx,
-        })
+        Some(Pattern { source: src, entity: e, attribute: a, value: v, tx })
     }
 }
 
@@ -962,10 +950,7 @@ pub struct NotJoin {
 
 impl NotJoin {
     pub fn new(unify_vars: UnifyVars, clauses: Vec<WhereClause>) -> NotJoin {
-        NotJoin {
-            unify_vars,
-            clauses,
-        }
+        NotJoin { unify_vars, clauses }
     }
 }
 
@@ -1082,11 +1067,7 @@ impl ParsedQuery {
 
 impl OrJoin {
     pub fn new(unify_vars: UnifyVars, clauses: Vec<OrWhereClause>) -> OrJoin {
-        OrJoin {
-            unify_vars,
-            clauses,
-            mentioned_vars: None,
-        }
+        OrJoin { unify_vars, clauses, mentioned_vars: None }
     }
 
     /// Return true if either the `OrJoin` is `UnifyVars::Implicit`, or if
@@ -1290,11 +1271,9 @@ impl std::fmt::Display for NonIntegerConstant {
                 }
                 write!(f, "\"")
             }
-            NonIntegerConstant::Instant(v) => write!(
-                f,
-                "#inst \"{}\"",
-                v.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-            ),
+            NonIntegerConstant::Instant(v) => {
+                write!(f, "#inst \"{}\"", v.to_rfc3339_opts(SecondsFormat::AutoSi, true))
+            }
             NonIntegerConstant::Uuid(ref u) => write!(f, "#uuid \"{}\"", u.hyphenated()),
         }
     }

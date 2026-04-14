@@ -9,9 +9,7 @@ use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
 fn load_config() -> Result<Config> {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config/triplox.toml".to_string());
+    let path = std::env::args().nth(1).unwrap_or_else(|| "config/triplox.toml".to_string());
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read config file: {}", path))?;
     let config: Config = toml::from_str(&contents)

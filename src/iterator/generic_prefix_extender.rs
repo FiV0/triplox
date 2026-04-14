@@ -56,10 +56,7 @@ impl GenericPrefixExtender {
 
     /// Get the pattern-internal level (how many of this pattern's variables we've already bound)
     fn pattern_level(&self, join_prefix: &Prefix) -> usize {
-        self.participating_levels
-            .iter()
-            .filter(|&&level| level < join_prefix.len())
-            .count()
+        self.participating_levels.iter().filter(|&&level| level < join_prefix.len()).count()
     }
 
     /// Build SlateDB key prefix from join prefix
@@ -159,8 +156,7 @@ impl PrefixExtender for GenericPrefixExtender {
         let mut extensions = Vec::new();
         while let Ok(Some(extension)) = iter.get_value() {
             extensions.push(extension);
-            iter.next()
-                .unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
+            iter.next().unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
         }
 
         extensions
@@ -177,8 +173,7 @@ impl PrefixExtender for GenericPrefixExtender {
 
         let mut result = Vec::new();
         for ext in extensions {
-            iter.seek(ext.clone())
-                .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
+            iter.seek(ext.clone()).unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
             if !iter.has_next() {
                 break;
             }
@@ -369,11 +364,8 @@ mod tests {
             2000_i64,
         );
 
-        let candidates = vec![
-            encode_string("Alice"),
-            encode_string("Bob"),
-            encode_string("Charlie"),
-        ];
+        let candidates =
+            vec![encode_string("Alice"), encode_string("Bob"), encode_string("Charlie")];
 
         let filtered = extender.intersect(&vec![], &candidates);
         assert_eq!(filtered.len(), 2);
@@ -442,10 +434,7 @@ mod tests {
 
         // Note: estimate_key_count may return non-zero even for empty ranges
         assert_eq!(extender.propose(&vec![]), Vec::<Bytes>::new());
-        assert_eq!(
-            extender.intersect(&vec![], &[encode_string("Alice")]),
-            Vec::<Bytes>::new()
-        );
+        assert_eq!(extender.intersect(&vec![], &[encode_string("Alice")]), Vec::<Bytes>::new());
 
         Ok(())
     }

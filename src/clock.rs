@@ -88,14 +88,8 @@ mod tests {
         };
 
         assert_eq!(clock.now(), base_instant);
-        assert_eq!(
-            clock.now(),
-            base_instant + std::time::Duration::from_secs(1)
-        );
-        assert_eq!(
-            clock.now(),
-            base_instant + std::time::Duration::from_secs(2)
-        );
+        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(1));
+        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(2));
     }
 
     #[test]
@@ -117,13 +111,7 @@ mod tests {
         }));
 
         assert_eq!(clock.now(), base_instant);
-        assert_eq!(
-            clock.now(),
-            base_instant + std::time::Duration::from_secs(1)
-        );
-        assert_eq!(
-            clock.now(),
-            base_instant + std::time::Duration::from_secs(2)
-        );
+        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(1));
+        assert_eq!(clock.now(), base_instant + std::time::Duration::from_secs(2));
     }
 }

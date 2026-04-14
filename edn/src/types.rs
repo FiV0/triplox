@@ -163,9 +163,7 @@ impl From<SpannedValue> for Value {
             }
             SpannedValue::Set(v) => Value::Set(v.into_iter().map(|x| x.without_spans()).collect()),
             SpannedValue::Map(v) => Value::Map(
-                v.into_iter()
-                    .map(|(x, y)| (x.without_spans(), y.without_spans()))
-                    .collect(),
+                v.into_iter().map(|(x, y)| (x.without_spans(), y.without_spans())).collect(),
             ),
         }
     }
@@ -536,11 +534,9 @@ macro_rules! def_common_value_display {
             $t::Nil => write!($f, "nil"),
             $t::Boolean(v) => write!($f, "{}", v),
             $t::Integer(v) => write!($f, "{}", v),
-            $t::Instant(v) => write!(
-                $f,
-                "#inst \"{}\"",
-                v.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-            ),
+            $t::Instant(v) => {
+                write!($f, "#inst \"{}\"", v.to_rfc3339_opts(SecondsFormat::AutoSi, true))
+            }
             $t::BigInteger(ref v) => write!($f, "{}N", v),
             // TODO: make sure float syntax is correct.
             $t::Float(ref v) => {
@@ -651,11 +647,8 @@ pub trait FromMicros {
 
 impl FromMicros for DateTime<Utc> {
     fn from_micros(ts: i64) -> Self {
-        DateTime::from_timestamp(
-            ts / 1_000_000,
-            ((ts % 1_000_000).unsigned_abs() as u32) * 1_000,
-        )
-        .unwrap()
+        DateTime::from_timestamp(ts / 1_000_000, ((ts % 1_000_000).unsigned_abs() as u32) * 1_000)
+            .unwrap()
     }
 }
 
@@ -717,18 +710,12 @@ mod test {
 
     #[test]
     fn test_value_from() {
-        assert_eq!(
-            Value::from_float(42f64),
-            Value::Float(OrderedFloat::from(42f64))
-        );
+        assert_eq!(Value::from_float(42f64), Value::Float(OrderedFloat::from(42f64)));
         assert_eq!(
             Value::from_ordered_float(OrderedFloat::from(42f64)),
             Value::Float(OrderedFloat::from(42f64))
         );
-        assert_eq!(
-            Value::from_bigint("42").unwrap(),
-            Value::BigInteger(BigInt::from(42))
-        );
+        assert_eq!(Value::from_bigint("42").unwrap(), Value::BigInteger(BigInt::from(42)));
     }
 
     #[test]
@@ -761,32 +748,17 @@ mod test {
 
         assert_eq!(string, data.to_string());
         assert_eq!(string, parse::value(&data.to_string()).unwrap().to_string());
-        assert_eq!(
-            string,
-            parse::value(&data.to_string())
-                .unwrap()
-                .without_spans()
-                .to_string()
-        );
+        assert_eq!(string, parse::value(&data.to_string()).unwrap().without_spans().to_string());
     }
 
     #[test]
     fn test_ord() {
         // TODO: Check we follow the equality rules at the bottom of https://github.com/edn-format/edn
         assert_eq!(Value::Nil.cmp(&Value::Nil), Ordering::Equal);
-        assert_eq!(
-            Value::Boolean(false).cmp(&Value::Boolean(true)),
-            Ordering::Greater
-        );
+        assert_eq!(Value::Boolean(false).cmp(&Value::Boolean(true)), Ordering::Greater);
         assert_eq!(Value::Integer(1).cmp(&Value::Integer(2)), Ordering::Greater);
-        assert_eq!(
-            Value::from_bigint("1").cmp(&Value::from_bigint("2")),
-            Ordering::Greater
-        );
-        assert_eq!(
-            Value::from_float(1f64).cmp(&Value::from_float(2f64)),
-            Ordering::Greater
-        );
+        assert_eq!(Value::from_bigint("1").cmp(&Value::from_bigint("2")), Ordering::Greater);
+        assert_eq!(Value::from_float(1f64).cmp(&Value::from_float(2f64)), Ordering::Greater);
         assert_eq!(
             Value::Text("1".to_string()).cmp(&Value::Text("2".to_string())),
             Ordering::Greater
@@ -807,22 +779,13 @@ mod test {
             Value::from_keyword(None, ":a").cmp(&Value::from_keyword(None, ":b")),
             Ordering::Greater
         );
-        assert_eq!(
-            Value::Vector(vec![]).cmp(&Value::Vector(vec![])),
-            Ordering::Equal
-        );
+        assert_eq!(Value::Vector(vec![]).cmp(&Value::Vector(vec![])), Ordering::Equal);
         assert_eq!(
             Value::List(LinkedList::new()).cmp(&Value::List(LinkedList::new())),
             Ordering::Equal
         );
-        assert_eq!(
-            Value::Set(BTreeSet::new()).cmp(&Value::Set(BTreeSet::new())),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Value::Map(BTreeMap::new()).cmp(&Value::Map(BTreeMap::new())),
-            Ordering::Equal
-        );
+        assert_eq!(Value::Set(BTreeSet::new()).cmp(&Value::Set(BTreeSet::new())), Ordering::Equal);
+        assert_eq!(Value::Map(BTreeMap::new()).cmp(&Value::Map(BTreeMap::new())), Ordering::Equal);
     }
 
     #[test]

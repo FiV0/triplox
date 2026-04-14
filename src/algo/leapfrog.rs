@@ -58,11 +58,7 @@ pub struct SingleLevelIndex {
 impl SingleLevelIndex {
     pub fn new(mut values: Vec<Bytes>, participating_level: usize) -> Self {
         values.sort();
-        Self {
-            values,
-            current_index: 0,
-            participating_level,
-        }
+        Self { values, current_index: 0, participating_level }
     }
 }
 
@@ -128,11 +124,7 @@ pub struct TupleIndex {
 
 impl TupleIndex {
     pub fn new(tuple: ResultTuple) -> Self {
-        Self {
-            tuple,
-            current_level: 0,
-            past_value: false,
-        }
+        Self { tuple, current_level: 0, past_value: false }
     }
 }
 
@@ -201,10 +193,7 @@ pub struct LeapfrogSingleJoin<'a> {
 impl<'a> LeapfrogSingleJoin<'a> {
     pub fn new(iterators: Vec<&'a mut dyn LeapfrogIndex>) -> Self {
         assert!(!iterators.is_empty(), "Must have at least one iterator");
-        Self {
-            iterators,
-            current_iterator_index: 0,
-        }
+        Self { iterators, current_iterator_index: 0 }
     }
 
     pub fn next(&mut self) {
@@ -294,12 +283,7 @@ impl LeapfrogJoin {
             })
             .collect();
 
-        Self {
-            indexes,
-            levels,
-            filter_indexes,
-            participants,
-        }
+        Self { indexes, levels, filter_indexes, participants }
     }
 
     pub fn join(&mut self) -> Vec<ResultTuple> {
@@ -312,11 +296,7 @@ impl LeapfrogJoin {
 
         while current_level >= 0 {
             let level = current_level as usize;
-            assert_eq!(
-                level,
-                candidate_tuple.len(),
-                "Level should always match candidate size"
-            );
+            assert_eq!(level, candidate_tuple.len(), "Level should always match candidate size");
 
             // Perform single join search at current level
             let found = self.search_at_level(level, &mut candidate_tuple);
@@ -460,11 +440,7 @@ mod tests {
         impl MultiLevelIndex {
             fn new(level_data: Vec<Vec<Bytes>>) -> Self {
                 let num_levels = level_data.len();
-                Self {
-                    level_data,
-                    current_level: 0,
-                    index_per_level: vec![0; num_levels],
-                }
+                Self { level_data, current_level: 0, index_per_level: vec![0; num_levels] }
             }
         }
 
@@ -724,10 +700,7 @@ mod tests {
 
     impl NotLeapfrogIndex {
         fn new(indexes: Vec<Box<dyn LeapfrogIndex>>, participation_level: usize) -> Self {
-            Self {
-                indexes,
-                participation_level,
-            }
+            Self { indexes, participation_level }
         }
     }
 
@@ -763,10 +736,7 @@ mod tests {
 
     impl SimpleNotFilter {
         fn new(excluded_values: Vec<Bytes>, participation_level: usize) -> Self {
-            Self {
-                excluded_values,
-                participation_level,
-            }
+            Self { excluded_values, participation_level }
         }
     }
 

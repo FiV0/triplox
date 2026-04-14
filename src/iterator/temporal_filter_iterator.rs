@@ -93,7 +93,8 @@ impl TemporalFilterIterator {
                     );
 
                     // Descending encoding: ts >= as_of_encoded means real_T <= as_of
-                    let ts = &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+                    let ts =
+                        &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
                     if ts >= self.as_of_encoded.as_slice() {
                         let op = key[key.len() - 1];
                         if op == codec::RETRACT {
@@ -195,9 +196,7 @@ mod tests {
         let slate = in_memory_slate().await.db;
         let t1 = 1000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -221,12 +220,8 @@ mod tests {
         let t2 = 2000;
 
         // Two versions of "alice" at t1 and t2
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t2, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"alice", t2, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -248,9 +243,7 @@ mod tests {
         let slate = in_memory_slate().await.db;
         let t1 = 2000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -274,9 +267,7 @@ mod tests {
         let t1 = 1000;
         let t2 = 2000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t2, codec::ADD), b"").await;
 
@@ -312,15 +303,9 @@ mod tests {
         let t2 = 2000;
         let t3 = 3000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
+        slate.put(&make_key(PFX, b"alice", t3, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
 
@@ -380,13 +365,9 @@ mod tests {
         let slate = in_memory_slate().await.db;
         let t1 = 1000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
-        slate
-            .put(&make_key(PFX, b"charlie", t1, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"charlie", t1, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
         let handle = tokio::runtime::Handle::current();
@@ -424,12 +405,8 @@ mod tests {
         let t1 = 1000;
         let t2 = 2000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
@@ -472,15 +449,9 @@ mod tests {
         let t2 = 2000;
         let t3 = 3000;
 
-        slate
-            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"")
-            .await;
-        slate
-            .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
-            .await;
+        slate.put(&make_key(PFX, b"alice", t1, codec::ADD), b"").await;
+        slate.put(&make_key(PFX, b"alice", t2, codec::RETRACT), b"").await;
+        slate.put(&make_key(PFX, b"alice", t3, codec::ADD), b"").await;
 
         let snapshot = slate.snapshot().await.unwrap();
 

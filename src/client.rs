@@ -65,15 +65,11 @@ impl ClientNode {
         // Expect ReadyForQuery
         let msg = read_backend_message(&mut reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
         match msg {
-            BackendMessage::ReadyForQuery {
-                status: STATUS_IDLE,
-            } => {}
+            BackendMessage::ReadyForQuery { status: STATUS_IDLE } => {}
             other => bail!("Expected ReadyForQuery, got {:?}", other),
         }
 
-        Ok(ClientNode {
-            conn: Arc::new(Mutex::new(ConnectionInner { reader, writer })),
-        })
+        Ok(ClientNode { conn: Arc::new(Mutex::new(ConnectionInner { reader, writer })) })
     }
 
     async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
@@ -82,11 +78,8 @@ impl ClientNode {
             None => (None, None),
             Some(tk) => (Some(tk.tx_id), Some(tk.system_time.timestamp_micros())),
         };
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::OpenDb { tx_id, system_time },
-        )
-        .await?;
+        write_frontend_message(&mut conn.writer, &FrontendMessage::OpenDb { tx_id, system_time })
+            .await?;
         conn.writer.flush().await?;
 
         // Expect DbOpened
@@ -107,11 +100,7 @@ impl ClientNode {
             other => bail!("Expected ReadyForQuery, got {:?}", other),
         }
 
-        Ok(ClientDb {
-            db_id,
-            tx_id,
-            conn: self.conn.clone(),
-        })
+        Ok(ClientDb { db_id, tx_id, conn: self.conn.clone() })
     }
 
     /// Gracefully close the connection.
@@ -128,10 +117,7 @@ impl SubmitNode for ClientNode {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::Execute {
-                ops,
-                await_indexing: false,
-            },
+            &FrontendMessage::Execute { ops, await_indexing: false },
         )
         .await?;
         conn.writer.flush().await?;
@@ -140,10 +126,7 @@ impl SubmitNode for ClientNode {
         let tx_key = match msg {
             BackendMessage::TxKey { tx_id, system_time } => {
                 let dt = crate::protocol::micros_to_datetime(system_time)?;
-                TxKey {
-                    tx_id,
-                    system_time: dt,
-                }
+                TxKey { tx_id, system_time: dt }
             }
             BackendMessage::ErrorResponse { message, .. } => {
                 // TODO: fatal errors may not be followed by ReadyForQuery
@@ -167,27 +150,16 @@ impl SubmitNode for ClientNode {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::Execute {
-                ops,
-                await_indexing: true,
-            },
+            &FrontendMessage::Execute { ops, await_indexing: true },
         )
         .await?;
         conn.writer.flush().await?;
 
         let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
         let result = match msg {
-            BackendMessage::TxResult {
-                status,
-                tx_id,
-                system_time,
-                error_message,
-            } => {
+            BackendMessage::TxResult { status, tx_id, system_time, error_message } => {
                 let dt = crate::protocol::micros_to_datetime(system_time)?;
-                let tx_key = TxKey {
-                    tx_id,
-                    system_time: dt,
-                };
+                let tx_key = TxKey { tx_id, system_time: dt };
                 if status == 0 {
                     TransactionResult::TxCommited(tx_key)
                 } else {
@@ -252,11 +224,7 @@ impl ClientDb {
         let mut conn = self.conn.lock().await;
         write_frontend_message(
             &mut conn.writer,
-            &FrontendMessage::Query {
-                query_string: edn.to_string(),
-                db_id: self.db_id,
-                args,
-            },
+            &FrontendMessage::Query { query_string: edn.to_string(), db_id: self.db_id, args },
         )
         .await?;
         conn.writer.flush().await?;
@@ -292,11 +260,8 @@ impl ClientDb {
     /// Release this DB handle on the server.
     pub async fn close(self) -> Result<()> {
         let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::CloseDb { db_id: self.db_id },
-        )
-        .await?;
+        write_frontend_message(&mut conn.writer, &FrontendMessage::CloseDb { db_id: self.db_id })
+            .await?;
         conn.writer.flush().await?;
 
         // Expect DbClosed

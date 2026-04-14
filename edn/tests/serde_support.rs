@@ -21,10 +21,7 @@ fn test_serialize_keyword() {
         &kw,
         &[
             Token::NewtypeStruct { name: "Keyword" },
-            Token::Struct {
-                name: "NamespaceableName",
-                len: 2,
-            },
+            Token::Struct { name: "NamespaceableName", len: 2 },
             Token::Str("namespace"),
             Token::Some,
             Token::BorrowedStr("foo"),

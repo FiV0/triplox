@@ -99,10 +99,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
 
         let (start, end) = match index {
             IndexType::EAV => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ENTITY_LENGTH,
-                ),
+                0 => (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ENTITY_LENGTH),
                 1 => (
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH,
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
@@ -113,10 +110,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
             },
             IndexType::AVE => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
+                0 => (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
                     total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
@@ -127,10 +121,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
             },
             IndexType::AEV => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
+                0 => (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
@@ -142,17 +133,11 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
             },
             // AE/AV are atemporal — no T+op suffix
             IndexType::AE => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
+                0 => (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH),
                 1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
             },
             IndexType::AV => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
+                0 => (codec::CODEC_LENGTH, codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH),
                 1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
             },
         };

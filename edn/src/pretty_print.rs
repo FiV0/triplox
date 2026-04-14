@@ -57,10 +57,7 @@ impl Value {
     {
         let open = open.into();
         let n = open.len();
-        let i = vs
-            .into_iter()
-            .map(|v| v.as_doc(allocator))
-            .intersperse_with(|| allocator.line());
+        let i = vs.into_iter().map(|v| v.as_doc(allocator)).intersperse_with(|| allocator.line());
         allocator
             .text(open)
             .append(allocator.concat(i).nest(n as isize))
@@ -86,19 +83,15 @@ impl Value {
                     .rev()
                     .map(|(k, v)| k.as_doc(pp).append(pp.space()).append(v.as_doc(pp)).group())
                     .intersperse_with(|| pp.line());
-                pp.text("{")
-                    .append(pp.concat(xs).nest(1))
-                    .append(pp.text("}"))
-                    .group()
+                pp.text("{").append(pp.concat(xs).nest(1)).append(pp.text("}")).group()
             }
             Value::NamespacedSymbol(ref v) => pp.text(v.namespace()).append("/").append(v.name()),
             Value::PlainSymbol(ref v) => pp.text(v.to_string()),
             Value::Keyword(ref v) => pp.text(v.to_string()),
             Value::Text(ref v) => pp.text("\"").append(v.as_str()).append("\""),
-            Value::Uuid(ref u) => pp
-                .text("#uuid \"")
-                .append(u.hyphenated().to_string())
-                .append("\""),
+            Value::Uuid(ref u) => {
+                pp.text("#uuid \"").append(u.hyphenated().to_string()).append("\"")
+            }
             Value::Instant(ref v) => pp
                 .text("#inst \"")
                 .append(v.to_rfc3339_opts(SecondsFormat::AutoSi, true))
