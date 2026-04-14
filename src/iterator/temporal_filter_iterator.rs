@@ -94,7 +94,7 @@ impl TemporalFilterIterator {
 
                     // Descending encoding: ts >= as_of_encoded means real_T <= as_of
                     let ts = &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
-                    if ts >= &self.as_of_encoded[..] {
+                    if ts >= self.as_of_encoded.as_slice() {
                         let op = key[key.len() - 1];
                         if op == codec::RETRACT {
                             if !self.seek_past_logical_key(&key)? {
