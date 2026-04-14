@@ -96,6 +96,9 @@ fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<EntityExpande
     }
 }
 
+// TODO: The code duplication in the two functions below seems off. The main difference is that
+// one deals with entity position and the other with value position. See also #198
+
 /// Resolve a :db/id DataType value to EntityExpanded.
 fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<EntityExpanded> {
     match val {
