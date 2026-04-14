@@ -56,19 +56,13 @@ pub async fn local_slate(path: &str) -> SlateComponents {
     }
 }
 
-pub const DEFAULT_READ_OPTIONS: ReadOptions = ReadOptions {
-    durability_filter: DurabilityLevel::Memory,
-    dirty: true,
-    cache_blocks: true,
-};
-
 pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
     await_durable: false,
 };
 
 pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     durability_filter: DurabilityLevel::Memory,
-    dirty: true,
+    dirty: false,
     read_ahead_bytes: 1,
     cache_blocks: false,
     max_fetch_tasks: 1,
