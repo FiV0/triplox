@@ -73,4 +73,4 @@ Datom (i64 + DataType)                           fully concrete
 In the entity position we can use a strongly typed `EntityRef` (id, tempid, ident, lookup ref). The same thing doesn't
 work for value positions as things like `[:attr value]` could be considered a vector or a lookup-ref in Clojure and I didn't
 want to bring the schema to the client in non strongly typed languages. I think this is something to be revisited as it makes
-the Rust API look less convincing.
+the Rust API look less convincing. The other option is to use special syntax for lookup refs vs Clojure vectors.
