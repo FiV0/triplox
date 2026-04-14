@@ -759,6 +759,55 @@ async fn test_aggregate_min_incompatible_types() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_join_ref_with_plain_long() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    // Insert Bob
+    client
+        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "Bob".into())])])
+        .await
+        .unwrap();
+
+    // Query for Bob's entity id
+    let db = client.db().await.unwrap();
+    let result = db
+        .query(r#"{:find [?e] :where [[?e :name "Bob"]]}"#)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    let bob_id = match &result[0][0] {
+        DataType::Long(id) => *id,
+        other => panic!("Expected Long entity ID, got {:?}", other),
+    };
+    db.close().await.unwrap();
+
+    // Insert Alice with :follows pointing to Bob's entity id
+    client
+        .execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:follows), DataType::Long(bob_id)),
+        ])])
+        .await
+        .unwrap();
+
+    // Join through the ref: find the name of who Alice follows
+    let db = client.db().await.unwrap();
+    let result = db
+        .query(r#"{:find [?friend-name] :where [[?e :name "Alice"] [?e :follows ?f] [?f :name ?friend-name]]}"#)
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::String("Bob".to_string())]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_upsert_with_resolved_entity_id() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
