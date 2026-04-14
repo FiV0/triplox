@@ -562,4 +562,42 @@ mod tests {
         .await
         .unwrap();
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_temporal_filter_count() {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
+        let t1 = 1000;
+
+        slate
+            .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
+            .await;
+        slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
+        slate
+            .put(&make_key(PFX, b"charlie", t1, codec::ADD), b"")
+            .await;
+
+        // Flush memtable to SSTs so RangeStats can read the metadata
+        slate
+            .flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::MemTable,
+            })
+            .await
+            .unwrap();
+
+        let snapshot = slate.snapshot().await.unwrap();
+        let handle = tokio::runtime::Handle::current();
+
+        tokio::task::spawn_blocking(move || {
+            let extractor = make_test_extractor(PFX.len());
+            let iter =
+                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000, range_stats)
+                    .unwrap();
+            let count = iter.count().unwrap();
+            assert_eq!(count, 3);
+        })
+        .await
+        .unwrap();
+    }
 }
