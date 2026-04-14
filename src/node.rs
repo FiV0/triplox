@@ -308,7 +308,7 @@ impl<L: TxLog> QueryNode for Node<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{DataType, TxOp};
+    use crate::ops::{DataType, EntityRef, TxOp};
     use crate::schema::test_schema_tx;
     use crate::transaction::TransactionResult;
     use edn::kw;
@@ -1647,5 +1647,157 @@ mod tests {
         } else {
             panic!("Expected String for error, got {:?}", result[0][1]);
         }
+    }
+
+    // --- Lookup ref tests ---
+
+    #[tokio::test]
+    async fn test_lookup_ref_entity_position() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Create an entity with a known email
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Use a lookup ref in entity position to add an attribute to the same entity
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(
+                    kw!(:email),
+                    DataType::String("alice@example.com".into()),
+                ),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        // Verify both :name and :age are on the same entity
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::String("Alice".into()));
+        assert_eq!(result[0][1], DataType::Long(30));
+    }
+
+    #[tokio::test]
+    async fn test_lookup_ref_value_position() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Create two entities
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Bob".into()),
+            (kw!(:email), "bob@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Bob follows Alice, using a lookup ref in value position for the :follows ref attr
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(
+                    kw!(:email),
+                    DataType::String("bob@example.com".into()),
+                ),
+                attribute: kw!(:follows),
+                value: DataType::Vector(vec![
+                    DataType::Keyword(kw!(:email)),
+                    DataType::String("alice@example.com".into()),
+                ]),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        // Verify the follow relationship
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?follower ?followed :where [?e1 :name ?follower] [?e1 :follows ?e2] [?e2 :name ?followed]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::String("Bob".into()));
+        assert_eq!(result[0][1], DataType::String("Alice".into()));
+    }
+
+    #[tokio::test]
+    async fn test_lookup_ref_in_put_db_id() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Create an entity with a known email
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Use a lookup ref as :db/id in a Put to update the same entity
+        let result = node
+            .execute_tx(vec![TxOp::Put(
+                vec![
+                    (
+                        kw!(:db/id),
+                        DataType::Vector(vec![
+                            DataType::Keyword(kw!(:email)),
+                            DataType::String("alice@example.com".into()),
+                        ]),
+                    ),
+                    (kw!(:age), DataType::Long(30)),
+                ]
+                .into_iter()
+                .collect(),
+            )])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        // Verify :age was added to the same entity as :name
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::String("Alice".into()));
+        assert_eq!(result[0][1], DataType::Long(30));
+    }
+
+    #[tokio::test]
+    async fn test_lookup_ref_not_found_errors() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Try a lookup ref for a non-existent entity
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(
+                    kw!(:email),
+                    DataType::String("nobody@example.com".into()),
+                ),
+                attribute: kw!(:name),
+                value: "Ghost".into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxAborted(_, _)));
     }
 }
