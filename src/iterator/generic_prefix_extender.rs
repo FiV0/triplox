@@ -277,6 +277,13 @@ mod tests {
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Charlie")))?;
 
+        // Flush memtable to SSTs so RangeStats can read the metadata
+        runtime
+            .block_on(slate.flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::MemTable,
+            }))
+            .unwrap();
+
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
 
         let extender = GenericPrefixExtender::new(
@@ -291,8 +298,7 @@ mod tests {
         );
 
         let count = extender.count(&vec![]);
-        // Memtable-only data returns 0 from RangeStats (no SSTs to read)
-        assert_eq!(count, 0);
+        assert!(count > 0, "Expected non-zero count after flush, got {}", count);
 
         Ok(())
     }

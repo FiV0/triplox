@@ -337,14 +337,21 @@ mod tests {
         slate.put(&make_key(PFX, b"bb"), b"").await;
         slate.put(&make_key(PFX, b"cc"), b"").await;
 
+        // Flush memtable to SSTs so RangeStats can read the metadata
+        slate
+            .flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::MemTable,
+            })
+            .await
+            .unwrap();
+
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
-            // Memtable-only data returns 0 from RangeStats (no SSTs to read)
-            assert_eq!(count, 0);
+            assert!(count > 0, "Expected non-zero count after flush, got {}", count);
         })
         .await
         .unwrap();
