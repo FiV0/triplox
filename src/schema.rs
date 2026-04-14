@@ -865,11 +865,35 @@ mod tests {
     use crate::metadata::PartitionMap;
     use crate::tx;
 
+    /// Skip lookup ref resolution for tests that have no DB and no lookup refs.
+    fn expanded_to_tempids(datoms: Vec<tx::DatomExpanded>) -> Vec<tx::DatomWithTempids> {
+        datoms
+            .into_iter()
+            .map(|d| tx::DatomWithTempids {
+                entity: match d.entity {
+                    tx::EntityExpanded::Id(id) => tx::IdOrTempId::Id(id),
+                    tx::EntityExpanded::TempId(s) => tx::IdOrTempId::TempId(s),
+                    tx::EntityExpanded::LookupRef(_, _) => {
+                        panic!("test helper: unresolved lookup ref in entity position")
+                    }
+                },
+                attribute: d.attribute,
+                value: match d.value {
+                    tx::ValueExpanded::Data(dt) => tx::ValueWithTempIds::Data(dt),
+                    tx::ValueExpanded::TempRef(s) => tx::ValueWithTempIds::TempRef(s),
+                    tx::ValueExpanded::LookupRef(_, _) => {
+                        panic!("test helper: unresolved lookup ref in value position")
+                    }
+                },
+                op: d.op,
+            })
+            .collect()
+    }
+
     fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
-        let with_tempids: Vec<tx::DatomWithTempids> =
-            expanded.into_iter().map(Into::into).collect();
+        let with_tempids = expanded_to_tempids(expanded);
         tx::resolve_tempids(&with_tempids, &mut pm).unwrap()
     }
 
@@ -1060,8 +1084,7 @@ mod tests {
         let bootstrap = bootstrap_schema();
         let tx_ops = bootstrap_schema_tx();
         let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
-        let with_tempids: Vec<tx::DatomWithTempids> =
-            expanded.into_iter().map(Into::into).collect();
+        let with_tempids = expanded_to_tempids(expanded);
         let mut pm = PartitionMap::new();
         let datoms = tx::resolve_tempids(&with_tempids, &mut pm).unwrap();
         let validation = bootstrap.validate_datoms(&datoms).unwrap();

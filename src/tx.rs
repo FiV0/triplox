@@ -43,32 +43,6 @@ pub struct DatomExpanded {
     pub op: DatomOp,
 }
 
-/// Narrowing conversion from DatomExpanded to DatomWithTempids.
-/// Panics if any LookupRef variants remain — only use when lookup refs are known to be absent
-/// (e.g., in tests without a DB).
-impl From<DatomExpanded> for DatomWithTempids {
-    fn from(d: DatomExpanded) -> Self {
-        DatomWithTempids {
-            entity: match d.entity {
-                EntityExpanded::Id(id) => IdOrTempId::Id(id),
-                EntityExpanded::TempId(s) => IdOrTempId::TempId(s),
-                EntityExpanded::LookupRef(_, _) => {
-                    panic!("From<DatomExpanded>: unresolved lookup ref in entity position")
-                }
-            },
-            attribute: d.attribute,
-            value: match d.value {
-                ValueExpanded::Data(dt) => ValueWithTempIds::Data(dt),
-                ValueExpanded::TempRef(s) => ValueWithTempIds::TempRef(s),
-                ValueExpanded::LookupRef(_, _) => {
-                    panic!("From<DatomExpanded>: unresolved lookup ref in value position")
-                }
-            },
-            op: d.op,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Stage 2 types: after lookup ref resolution, before tempid allocation.
 // Only TempId variants remain.
@@ -248,6 +222,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
 /// Batch-resolve all lookup refs via the AVE index.
 /// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
+// TODO(#62): validate that lookup ref attributes have :db/unique set.
 pub async fn resolve_lookup_refs(
     datoms: Vec<DatomExpanded>,
     schema: &Schema,
@@ -276,20 +251,30 @@ pub async fn resolve_lookup_refs(
             .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
             .await?;
 
-        match iter.next().await? {
+        let resolved_eid = match iter.next().await? {
             Some(kv) => {
-                let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(kv.key)?;
-                match entity_dt {
-                    DataType::Long(eid) => {
-                        resolved_map.insert((*attr_eid, value.clone()), eid);
-                    }
-                    other => {
-                        return Err(anyhow::anyhow!(
-                            "Expected Long entity ID in AVE key, got {:?}",
-                            other
-                        ));
+                let (_attribute, _value, entity_dt, _tx_eid, op) = ave_key_to_parts(kv.key)?;
+                // Most recent entry is a retraction — entity no longer has this value.
+                if op == codec::RETRACT {
+                    None
+                } else {
+                    match entity_dt {
+                        DataType::Long(eid) => Some(eid),
+                        other => {
+                            return Err(anyhow::anyhow!(
+                                "Expected Long entity ID in AVE key, got {:?}",
+                                other
+                            ));
+                        }
                     }
                 }
+            }
+            None => None,
+        };
+
+        match resolved_eid {
+            Some(eid) => {
+                resolved_map.insert((*attr_eid, value.clone()), eid);
             }
             None => {
                 let attr_kw = schema
