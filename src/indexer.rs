@@ -362,28 +362,12 @@ impl Indexer {
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
             // Scan EAV prefix to find the current value for this (entity, attribute).
-            // The indexer processes transactions serially, so all existing entries
-            // have tx_eid < current. First entry is the most recent.
-            let mut iter = txn
-                .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
-                .await?;
-            let old_value: Option<DataType> = match iter.next().await? {
-                Some(kv) => {
-                    let key = &kv.key;
-                    assert!(
-                        key.len() >= codec::TX_EID_OP_SUFFIX,
-                        "Key too short ({} bytes) to contain tx_eid + op suffix",
-                        key.len()
-                    );
-                    let op = key[key.len() - 1];
-                    if op == codec::RETRACT {
-                        None
-                    } else {
-                        let value_bytes =
-                            &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
-                        let mut cursor = value_bytes;
-                        Some(decode_datatype(&mut cursor)?)
-                    }
+            let old_value: Option<DataType> = match first_live_key(txn, &eav_prefix).await? {
+                Some(key) => {
+                    let value_bytes =
+                        &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
+                    let mut cursor = value_bytes;
+                    Some(decode_datatype(&mut cursor)?)
                 }
                 None => None,
             };
@@ -546,6 +530,34 @@ fn strip_atemporal_key<'a>(
         return Err(anyhow::anyhow!("Key too short"));
     }
     Ok(&key[1..])
+}
+
+/// Scan a prefix and return the first non-retracted entry's key, or None.
+/// The indexer processes transactions serially, so the first entry is always
+/// the most recent — if its op byte is RETRACT, the logical value is absent.
+pub(crate) async fn first_live_key(
+    txn: &slatedb::DbTransaction,
+    prefix: &[u8],
+) -> Result<Option<Bytes>, Error> {
+    let mut iter = txn
+        .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS)
+        .await?;
+    match iter.next().await? {
+        Some(kv) => {
+            let key = &kv.key;
+            assert!(
+                key.len() >= codec::TX_EID_OP_SUFFIX,
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            );
+            if key[key.len() - 1] == codec::RETRACT {
+                Ok(None)
+            } else {
+                Ok(Some(kv.key))
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8), Error> {

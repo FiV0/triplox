@@ -5,12 +5,11 @@ use edn::kw;
 use edn::symbols::Keyword;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
-use crate::indexer::ave_key_to_parts;
+use crate::indexer::{ave_key_to_parts, first_live_key};
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, ValueType};
-use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::concat_bytes;
 
 // ---------------------------------------------------------------------------
@@ -247,25 +246,16 @@ pub async fn resolve_lookup_refs(
         encode_datatype(value, &mut value_bytes);
         let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
 
-        let mut iter = txn
-            .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
-            .await?;
-
-        let resolved_eid = match iter.next().await? {
-            Some(kv) => {
-                let (_attribute, _value, entity_dt, _tx_eid, op) = ave_key_to_parts(kv.key)?;
-                // Most recent entry is a retraction — entity no longer has this value.
-                if op == codec::RETRACT {
-                    None
-                } else {
-                    match entity_dt {
-                        DataType::Long(eid) => Some(eid),
-                        other => {
-                            return Err(anyhow::anyhow!(
-                                "Expected Long entity ID in AVE key, got {:?}",
-                                other
-                            ));
-                        }
+        let resolved_eid = match first_live_key(txn, &ave_prefix).await? {
+            Some(key) => {
+                let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(key)?;
+                match entity_dt {
+                    DataType::Long(eid) => Some(eid),
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "Expected Long entity ID in AVE key, got {:?}",
+                            other
+                        ));
                     }
                 }
             }
