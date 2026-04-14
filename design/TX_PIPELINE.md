@@ -68,36 +68,9 @@ DatomWithTempids (IdOrTempId + ValueWithTempIds) only TempId remains
 Datom (i64 + DataType)                           fully concrete
 ```
 
-## Key Types
+## User facing types
 
-### User-facing (src/ops.rs)
-
-- `EntityRef` — how to identify an entity: `Id(i64)`, `TempId(String)`, `Ident(Keyword)`, `LookupRef(Keyword, DataType)`
-- `TxOp` — transaction operation: `Put`, `Add`, `Retract`, `Delete`, `Erase`. Values are `DataType`; ref-typed attribute values are resolved server-side based on the schema.
-
-### Stage 1 — After expansion (src/tx.rs)
-
-- `EntityExpanded` — entity after ident resolution: `Id(i64)`, `TempId(String)`, or `LookupRef(i64, DataType)` (attribute entid resolved, value pending AVE lookup)
-- `ValueExpanded` — value after ident resolution: `Data(DataType)`, `TempRef(String)`, or `LookupRef(i64, DataType)`
-- `DatomExpanded` — datom-shaped tuple before lookup ref resolution
-
-### Stage 2 — After lookup ref resolution (src/tx.rs)
-
-- `IdOrTempId` — entity after lookup ref resolution: `Id(i64)` or `TempId(String)`
-- `ValueWithTempIds` — value after lookup ref resolution: `Data(DataType)` or `TempRef(String)`
-- `DatomWithTempids` — datom-shaped tuple before tempid allocation
-
-### Resolved (src/ops.rs)
-
-- `Datom` — fully resolved fact: `entity: i64`, `attribute: Keyword`, `value: DataType`, `op: DatomOp`
-- Note: `tx_eid` is not stored on Datom — passed separately to `write_index_entries`
-
-## Lookup Refs
-
-Lookup refs allow referring to an entity by an attribute-value pair instead of by ID.
-
-**Entity position**: Explicit via `EntityRef::LookupRef(keyword, value)`.
-
-**Value position** (ref-typed attributes only): Implicit via `DataType::Vector([Keyword, Value])` — a 2-element vector where the first element is a keyword. This follows the same implicit-resolution pattern as tempids (`String`) and idents (`Keyword`) in value position.
-
-Resolution is batched: all lookup refs across all datoms are collected, then resolved in one pass via AVE prefix scans.
+In the entity position we can use a strongly typed `EntityRef` (id, tempid, ident, lookup ref). The same thing doesn't
+work for value positions as things like `[:attr value]` could be considered a vector or a lookup-ref in Clojure and I didn't
+want to bring the schema to the client in non strongly typed languages. I think this is something to be revisited as it makes
+the Rust API look less convincing.
