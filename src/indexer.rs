@@ -20,7 +20,7 @@ use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::transaction::TxKey;
-use crate::tx;
+use crate::tx::{self, first_live_key};
 use crate::util::concat_bytes;
 use edn::symbols::Keyword;
 
@@ -530,34 +530,6 @@ fn strip_atemporal_key<'a>(
         return Err(anyhow::anyhow!("Key too short"));
     }
     Ok(&key[1..])
-}
-
-/// Scan a prefix and return the first non-retracted entry's key, or None.
-/// The indexer processes transactions serially, so the first entry is always
-/// the most recent — if its op byte is RETRACT, the logical value is absent.
-pub(crate) async fn first_live_key(
-    txn: &slatedb::DbTransaction,
-    prefix: &[u8],
-) -> Result<Option<Bytes>, Error> {
-    let mut iter = txn
-        .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    match iter.next().await? {
-        Some(kv) => {
-            let key = &kv.key;
-            assert!(
-                key.len() >= codec::TX_EID_OP_SUFFIX,
-                "Key too short ({} bytes) to contain tx_eid + op suffix",
-                key.len()
-            );
-            if key[key.len() - 1] == codec::RETRACT {
-                Ok(None)
-            } else {
-                Ok(Some(kv.key))
-            }
-        }
-        None => Ok(None),
-    }
 }
 
 pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8), Error> {
