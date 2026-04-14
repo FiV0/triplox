@@ -29,27 +29,9 @@ pub(crate) struct TemporalFilterIterator {
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
-pub(crate) fn logical_key(key: &[u8]) -> &[u8] {
+#[inline]
+fn logical_key(key: &[u8]) -> &[u8] {
     &key[..key.len() - codec::TX_EID_OP_SUFFIX]
-}
-
-/// Extract the encoded tx_eid bytes from a full key.
-pub(crate) fn tx_eid_bytes(key: &[u8]) -> &[u8] {
-    &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH]
-}
-
-/// Resolve a temporal key against an as-of tx_eid.
-///
-/// Returns `Some(op_byte)` if the key's tx_eid <= as_of (i.e. it is the newest
-/// valid entry), or `None` if the entry is newer than as_of and should be skipped.
-pub(crate) fn resolve_temporal_key(key: &[u8], as_of_encoded: &[u8; 8]) -> Option<u8> {
-    let ts = tx_eid_bytes(key);
-    // Descending encoding: encoded_T >= as_of_encoded means real_T <= as_of
-    if ts >= &as_of_encoded[..] {
-        Some(key[key.len() - 1])
-    } else {
-        None
-    }
 }
 
 impl TemporalFilterIterator {
@@ -110,22 +92,21 @@ impl TemporalFilterIterator {
                         key.len()
                     );
 
-                    match resolve_temporal_key(&key, &self.as_of_encoded) {
-                        Some(op) if op == codec::RETRACT => {
+                    // Descending encoding: ts >= as_of_encoded means real_T <= as_of
+                    let ts = &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+                    if ts >= &self.as_of_encoded[..] {
+                        let op = key[key.len() - 1];
+                        if op == codec::RETRACT {
                             if !self.seek_past_logical_key(&key)? {
                                 self.current_key = None;
                                 return Ok(());
                             }
                             continue;
                         }
-                        Some(_) => {
-                            self.current_key = Some(key);
-                            return Ok(());
-                        }
-                        None => {
-                            // Entry is newer than as_of — skip it, keep scanning.
-                        }
+                        self.current_key = Some(key);
+                        return Ok(());
                     }
+                    // Entry is newer than as_of — skip it, keep scanning.
                 }
             }
         }

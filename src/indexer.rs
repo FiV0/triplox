@@ -12,7 +12,6 @@ use edn::kw;
 use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
-use crate::iterator::temporal_filter_iterator;
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
@@ -336,7 +335,6 @@ impl Indexer {
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
-        let as_of_encoded = encode_i64_bytes(tx_eid);
         let mut resolved_datoms: HashSet<Datom> = HashSet::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
@@ -359,38 +357,32 @@ impl Indexer {
             let attr_id_bytes = encode_i64_bytes(attribute_id);
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
-            // Scan EAV prefix on the transaction to find the current value.
-            // Uses async scan directly because TemporalFilterIterator is sync-only.
-            // This duplicates the temporal resolution logic from advance_to_next_valid().
-            // TODO(#99): unify with TemporalFilterIterator once the iterator
-            // layer becomes fully async, eliminating this duplication.
+            // Scan EAV prefix to find the current value for this (entity, attribute).
+            // The indexer processes transactions serially, so all existing entries
+            // have tx_eid < current. First entry is the most recent.
             let mut iter = txn
                 .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
                 .await?;
-            let mut old_value: Option<DataType> = None;
-            while let Some(kv) = iter.next().await? {
-                let key = &kv.key;
-                assert!(
-                    key.len() >= codec::TX_EID_OP_SUFFIX,
-                    "Key too short ({} bytes) to contain tx_eid + op suffix",
-                    key.len()
-                );
-                match temporal_filter_iterator::resolve_temporal_key(key, &as_of_encoded) {
-                    Some(op) if op == codec::RETRACT => {
-                        old_value = None;
-                        break;
-                    }
-                    Some(_) => {
+            let old_value: Option<DataType> = match iter.next().await? {
+                Some(kv) => {
+                    let key = &kv.key;
+                    assert!(
+                        key.len() >= codec::TX_EID_OP_SUFFIX,
+                        "Key too short ({} bytes) to contain tx_eid + op suffix",
+                        key.len()
+                    );
+                    let op = key[key.len() - 1];
+                    if op == codec::RETRACT {
+                        None
+                    } else {
                         let value_bytes =
                             &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
                         let mut cursor = value_bytes;
-                        let value: DataType = decode_datatype(&mut cursor)?;
-                        old_value = Some(value);
-                        break;
+                        Some(decode_datatype(&mut cursor)?)
                     }
-                    None => {}
                 }
-            }
+                None => None,
+            };
 
             if let Some(old_value) = old_value {
                 if old_value == datom.value {
