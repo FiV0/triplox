@@ -583,12 +583,12 @@ mod tests {
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::ops::{DataType, EntityRef};
     use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
-    use crate::slate::in_memory_slate;
+    use crate::slate::{in_memory_slate, SlateComponents};
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
-    async fn bootstrapped_indexer(slate: &crate::slate::SlateComponents) -> Indexer {
+    async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
         let metadata = crate::bootstrap::init_db(slate).await;
         let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
         let tx_key_0 = TxKey {
