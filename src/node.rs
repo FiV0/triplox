@@ -1738,6 +1738,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lookup_ref_in_put_db_id() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        // Create an entity with a known email
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        // Use a lookup ref as :db/id in a Put to update the same entity
+        let result = node
+            .execute_tx(vec![TxOp::Put(
+                vec![
+                    (
+                        kw!(:db/id),
+                        DataType::Vector(vec![
+                            DataType::Keyword(kw!(:email)),
+                            DataType::String("alice@example.com".into()),
+                        ]),
+                    ),
+                    (kw!(:age), DataType::Long(30)),
+                ]
+                .into_iter()
+                .collect(),
+            )])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        // Verify :age was added to the same entity as :name
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::String("Alice".into()));
+        assert_eq!(result[0][1], DataType::Long(30));
+    }
+
+    #[tokio::test]
     async fn test_lookup_ref_not_found_errors() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;

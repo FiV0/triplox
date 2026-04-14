@@ -108,8 +108,20 @@ fn resolve_db_id(val: &DataType, schema: &Schema) -> Result<EntityExpanded> {
                 .ok_or_else(|| anyhow::anyhow!("Unknown ident for :db/id: {}", kw))?;
             Ok(EntityExpanded::Id(*eid))
         }
+        DataType::Vector(v) if v.len() == 2 => match (&v[0], &v[1]) {
+            (DataType::Keyword(kw), val) => {
+                let attr_eid = schema.ident_map.get(kw).ok_or_else(|| {
+                    anyhow::anyhow!("Unknown attribute in :db/id lookup ref: {}", kw)
+                })?;
+                Ok(EntityExpanded::LookupRef(*attr_eid, val.clone()))
+            }
+            _ => Err(anyhow::anyhow!(
+                ":db/id lookup ref must be [Keyword, Value], got {:?}",
+                v
+            )),
+        },
         other => Err(anyhow::anyhow!(
-            ":db/id must be Long, String, or Keyword, got {:?}",
+            ":db/id must be Long, String, Keyword, or [Keyword, Value] lookup ref, got {:?}",
             other
         )),
     }
@@ -270,6 +282,7 @@ pub async fn resolve_lookup_refs(
     }
 
     // Batch resolve via AVE index.
+    // TODO(#196): parallelize AVE scans with try_join_all.
     let mut resolved_map: HashMap<(i64, DataType), i64> = HashMap::new();
     for (attr_eid, value) in &lookup_refs {
         let attr_bytes = encode_i64_bytes(*attr_eid);
