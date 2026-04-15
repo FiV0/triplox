@@ -3,6 +3,7 @@
 pub mod cdc;
 
 use slatedb::config::{DurabilityLevel, ReadOptions, ScanOptions, WriteOptions};
+use object_store::aws::AmazonS3Builder;
 use slatedb::object_store::local::LocalFileSystem;
 use slatedb::object_store::{memory::InMemory, ObjectStore};
 use slatedb::Db;
@@ -43,6 +44,37 @@ pub async fn in_memory_slate() -> SlateComponents {
 pub async fn local_slate(path: &str) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
+    let db = Arc::new(
+        Db::builder("triplox", object_store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    SlateComponents {
+        db,
+        path: "triplox".to_string(),
+        object_store,
+    }
+}
+
+pub async fn remote_slate(
+    endpoint: &str,
+    bucket: &str,
+    access_key: &str,
+    secret_key: &str,
+    region: &str,
+) -> SlateComponents {
+    let s3 = AmazonS3Builder::new()
+        .with_endpoint(endpoint)
+        .with_bucket_name(bucket)
+        .with_access_key_id(access_key)
+        .with_secret_access_key(secret_key)
+        .with_region(region)
+        .with_allow_http(true)
+        .build()
+        .expect("failed to build S3 object store");
+
+    let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
     let db = Arc::new(
         Db::builder("triplox", object_store.clone())
             .build()

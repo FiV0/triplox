@@ -12,7 +12,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
-use crate::slate::{in_memory_slate, local_slate, SlateComponents};
+use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 pub use crate::transaction::{TransactionResult, TxKey};
 use edn::query::ParsedQuery;
 use tokio::sync::RwLock;
@@ -233,6 +233,65 @@ impl Node<FileLog> {
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
 
         // Wait for catch-up to complete if there are un-indexed transactions
+        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+            waiter.await_tx(tx_key).await?;
+        }
+
+        Ok(Node {
+            log,
+            indexer,
+            slate,
+            subscription,
+        })
+    }
+
+    pub async fn remote_node(
+        log_path: &Path,
+        endpoint: &str,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        region: &str,
+    ) -> Result<Self, Error> {
+        let slate = remote_slate(endpoint, bucket, access_key, secret_key, region).await;
+        let db = slate.db.clone();
+        let metadata = crate::bootstrap::init_db(db.clone()).await;
+
+        let snapshot = Arc::new(db.snapshot().await?);
+        let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
+        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
+            Some(latest_indexed)
+        } else {
+            None
+        };
+
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+            db.clone(),
+            metadata,
+            latest_indexed_tx,
+        )));
+
+        std::fs::create_dir_all(log_path)?;
+        let log = Arc::new(RwLock::new(FileLog::new(
+            &log_path.join("log"),
+            Box::new(clock::SystemClock),
+        )?));
+
+        let after_tx_id = latest_indexed_tx.map(|k| k.tx_id);
+
+        let last_tx_key = {
+            let log_reader = log.read().await;
+            let records = log_reader.read_txs_after(after_tx_id, u16::MAX)?;
+            records.last().map(|r| r.tx_key)
+        };
+
+        let waiter = match last_tx_key {
+            Some(_) => Some(indexer.read().await.tx_waiter()),
+            None => None,
+        };
+
+        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
             waiter.await_tx(tx_key).await?;
         }

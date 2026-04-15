@@ -19,9 +19,12 @@ case "$TRIPLOX_STORAGE" in
     local)
         CONFIG_FILE="/etc/triplox/triplox-local.toml"
         ;;
+    remote)
+        CONFIG_FILE="/etc/triplox/triplox-remote.toml"
+        ;;
     *)
         echo "Error: unknown TRIPLOX_STORAGE value: $TRIPLOX_STORAGE"
-        echo "Supported values: dev, memory, local"
+        echo "Supported values: dev, memory, local, remote"
         exit 1
         ;;
 esac

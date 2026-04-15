@@ -18,8 +18,13 @@ pub enum StorageConfig {
         path: PathBuf,
     },
     Remote {
-        #[serde(flatten)]
-        _extra: toml::Table,
+        endpoint: String,
+        bucket: String,
+        access_key: String,
+        secret_key: String,
+        #[serde(default = "default_region")]
+        region: String,
+        log_path: PathBuf,
     },
 }
 
@@ -31,6 +36,10 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_max_open_dbs")]
     pub max_open_dbs: usize,
+}
+
+fn default_region() -> String {
+    "us-east-1".to_string()
 }
 
 fn default_host() -> String {
