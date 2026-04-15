@@ -446,7 +446,7 @@ peg::parser! {
 
         rule query_part() -> query::QueryPart
             = __() ":find" fs:find_spec() { query::QueryPart::FindSpec(fs) }
-            / __() ":in" in_vars:variable()* { query::QueryPart::InVars(in_vars) }
+            / __() ":in" bs:binding()* { query::QueryPart::InBindings(bs) }
             / __() ":limit" l:limit() { query::QueryPart::Limit(l) }
             / __() ":order" os:order()+ { query::QueryPart::Order(os) }
             / __() ":where" ws:where_clause()+ { query::QueryPart::WhereClauses(ws) }
@@ -454,7 +454,7 @@ peg::parser! {
 
         rule map_query_part() -> query::QueryPart
             = __() ":find" __() "[" fs:find_spec() "]" __() { query::QueryPart::FindSpec(fs) }
-            / __() ":in" __() "[" __() in_vars:variable()* "]" __() { query::QueryPart::InVars(in_vars) }
+            / __() ":in" __() "[" __() bs:binding()* "]" __() { query::QueryPart::InBindings(bs) }
             / __() ":where" __() "[" ws:where_clause()+ "]" __() { query::QueryPart::WhereClauses(ws) }
             / __() ":order" __() "[" os:order()+ "]" __() { query::QueryPart::Order(os) }
             / __() ":limit" l:limit() { query::QueryPart::Limit(l) }

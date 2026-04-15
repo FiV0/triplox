@@ -10,9 +10,9 @@ use tokio::runtime::Handle;
 use crate::schema::IdentMap;
 
 use edn::query::{
-    Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin, OrJoin, OrWhereClause, Order,
-    ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate as EdnPredicate,
-    ToVariable, UnifyVars, Variable, WhereClause, WhereFn as EdnWhereFn,
+    Binding, Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin, OrJoin,
+    OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
+    ToVariable, UnifyVars, Variable, WhereClause, WhereFn,
 };
 
 use crate::aggregate::{make_accumulator, Accumulator};
@@ -232,7 +232,7 @@ fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
     }
 }
 
-fn convert_predicate(pred: &EdnPredicate) -> Result<Expr, Error> {
+fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
     let op_name = pred.operator.0.as_str();
     let op = convert_binary_op(op_name)?;
     if pred.args.len() != 2 {
@@ -251,7 +251,7 @@ fn convert_predicate(pred: &EdnPredicate) -> Result<Expr, Error> {
     }))
 }
 
-fn convert_where_fn(wf: &EdnWhereFn) -> Result<FnExpr, Error> {
+fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
     let op_name = wf.operator.0.as_str();
     let op = convert_binary_op(op_name)?;
     if wf.args.len() != 2 {
@@ -324,14 +324,19 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
 /// Pattern/OrJoin variables in the join order.
 /// TODO: refine to only require the clauses that bind a WhereFn's input variables
 /// to appear before that WhereFn (topological sort).
-pub fn query_variable_order(in_vars: &[Variable], where_clauses: &[WhereClause]) -> Vec<Variable> {
+pub fn query_variable_order(
+    in_bindings: &[Binding],
+    where_clauses: &[WhereClause],
+) -> Vec<Variable> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
 
     // In-binding variables come first in the join order.
-    for var in in_vars {
-        if seen.insert(var.clone()) {
-            order.push(var.clone());
+    for binding in in_bindings {
+        for var in binding.variables().into_iter().flatten() {
+            if seen.insert(var.clone()) {
+                order.push(var);
+            }
         }
     }
 
@@ -1026,27 +1031,45 @@ fn apply_order_and_limit(
 // queries are rejected at parse time rather than at execution time.
 pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
     // Validate :in binding count matches args
-    if query.in_vars.len() != args.len() {
+    if query.in_bindings.len() != args.len() {
         return Err(anyhow::anyhow!(
-            ":in clause declares {} variable(s) but {} argument(s) provided",
-            query.in_vars.len(),
+            ":in clause declares {} binding(s) but {} argument(s) provided",
+            query.in_bindings.len(),
             args.len()
         ));
     }
 
-    // Only scalar bindings are supported for now
-    for (i, arg) in args.iter().enumerate() {
-        if !matches!(arg, QueryArg::Scalar(_)) {
-            return Err(anyhow::anyhow!(
-                "Only scalar bindings are currently supported, but argument {} for {} is {:?}",
-                i,
-                query.in_vars[i],
-                arg
-            ));
+    // Validate binding type matches argument type
+    for (i, (binding, arg)) in query.in_bindings.iter().zip(args.iter()).enumerate() {
+        match (binding, arg) {
+            (Binding::BindScalar(_), QueryArg::Scalar(_)) => {}
+            (Binding::BindColl(_), QueryArg::Collection(_)) => {}
+            (Binding::BindScalar(_), _) => {
+                return Err(anyhow::anyhow!(
+                    "Scalar binding {} expects a Scalar argument, but argument {} is {:?}",
+                    binding,
+                    i,
+                    arg
+                ));
+            }
+            (Binding::BindColl(_), _) => {
+                return Err(anyhow::anyhow!(
+                    "Collection binding {} expects a Collection argument, but argument {} is {:?}",
+                    binding,
+                    i,
+                    arg
+                ));
+            }
+            (Binding::BindTuple(_), _) | (Binding::BindRel(_), _) => {
+                return Err(anyhow::anyhow!(
+                    "Tuple and relation bindings are not yet supported (binding {})",
+                    binding
+                ));
+            }
         }
     }
 
-    let join_order = query_variable_order(&query.in_vars, &query.where_clauses);
+    let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no variables"));
     }
@@ -1066,11 +1089,17 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
         resolve_order_columns(orders, &query.find_spec)?;
     }
 
-    // Variable limits must be bound in :in to a non-negative Long.
+    // Variable limits must be bound in :in as a scalar non-negative Long.
     if let Limit::Variable(v) = &query.limit {
-        let idx =
-            query.in_vars.iter().position(|iv| iv == v).ok_or_else(|| {
-                anyhow::anyhow!("Variable limit {} is not bound in :in clause", v)
+        let idx = query
+            .in_bindings
+            .iter()
+            .position(|b| matches!(b, Binding::BindScalar(bv) if bv == v))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Variable limit {} is not bound as a scalar in :in clause",
+                    v
+                )
             })?;
         match &args[idx] {
             QueryArg::Scalar(DataType::Long(n)) => {
@@ -1179,15 +1208,16 @@ fn compile_where_clause(
 
 /// Resolve a variable limit from :in bindings.
 ///
-/// `validate_query` guarantees the variable is present in `in_vars` and bound
-/// to a non-negative `Long`, so this is infallible for validated queries.
-fn resolve_limit(limit: &Limit, in_vars: &[Variable], args: &[QueryArg]) -> Limit {
+/// `validate_query` guarantees the variable is present as a scalar binding in
+/// `in_bindings` and bound to a non-negative `Long`, so this is infallible for
+/// validated queries.
+fn resolve_limit(limit: &Limit, in_bindings: &[Binding], args: &[QueryArg]) -> Limit {
     match limit {
         Limit::Variable(v) => {
-            let idx = in_vars
+            let idx = in_bindings
                 .iter()
-                .position(|iv| iv == v)
-                .expect("validate_query ensures variable limit is in :in");
+                .position(|b| matches!(b, Binding::BindScalar(bv) if bv == v))
+                .expect("validate_query ensures variable limit is a scalar in :in");
             match &args[idx] {
                 QueryArg::Scalar(DataType::Long(n)) => Limit::Fixed(*n as u64),
                 _ => unreachable!("validate_query ensures variable limit binds to a Long"),
@@ -1206,25 +1236,34 @@ pub fn execute_query(
     ident_map: &IdentMap,
     as_of: i64,
 ) -> Result<QueryResult, Error> {
-    // 1. Extract variable order (in_vars prepended)
-    let join_order = query_variable_order(&query.in_vars, &query.where_clauses);
+    // 1. Extract variable order (in_bindings prepended)
+    let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     let num_levels = join_order.len();
     let var_index = build_var_index(&join_order);
 
     // 2. Compile in-binding arguments into extenders
     let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
 
-    for (in_var, arg) in query.in_vars.iter().zip(args.iter()) {
-        let level = *var_index.get(in_var).expect("in_var must be in join order");
-        // validate_query ensures every arg is a Scalar; non-scalars are rejected there.
-        let QueryArg::Scalar(dt) = arg else {
-            unreachable!("validate_query ensures only scalar bindings reach execute_query");
-        };
-        let encoded = dt.encode();
-        extenders.push(Box::new(SingleLevelExtender::new(
-            vec![bytes::Bytes::from(encoded)],
-            level,
-        )));
+    for (binding, arg) in query.in_bindings.iter().zip(args.iter()) {
+        match (binding, arg) {
+            (Binding::BindScalar(var), QueryArg::Scalar(dt)) => {
+                let level = *var_index.get(var).expect("in_var must be in join order");
+                let encoded = dt.encode();
+                extenders.push(Box::new(SingleLevelExtender::new(
+                    vec![bytes::Bytes::from(encoded)],
+                    level,
+                )));
+            }
+            (Binding::BindColl(var), QueryArg::Collection(items)) => {
+                let level = *var_index.get(var).expect("in_var must be in join order");
+                let encoded_values: Vec<bytes::Bytes> = items
+                    .iter()
+                    .map(|dt| bytes::Bytes::from(dt.encode()))
+                    .collect();
+                extenders.push(Box::new(SingleLevelExtender::new(encoded_values, level)));
+            }
+            _ => unreachable!("validate_query ensures binding/arg types match"),
+        }
     }
 
     // 3. Compile WHERE patterns into extenders
@@ -1254,7 +1293,7 @@ pub fn execute_query(
     };
 
     // 6. Resolve variable limit from :in bindings and apply ORDER BY + LIMIT
-    let resolved_limit = resolve_limit(&query.limit, &query.in_vars, args);
+    let resolved_limit = resolve_limit(&query.limit, &query.in_bindings, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }
 
@@ -1270,14 +1309,14 @@ mod tests {
     #[test]
     fn test_query_variable_order_single_pattern() {
         let parsed = parse_query("[:find ?e ?name :where [?e :name ?name]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(order, vec!["?e".to_var(), "?name".to_var()]);
     }
 
     #[test]
     fn test_query_variable_order_multiple_patterns() {
         let parsed = parse_query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(
             order,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
@@ -1287,14 +1326,14 @@ mod tests {
     #[test]
     fn test_query_variable_order_with_constants() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"]]"#);
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(order, vec!["?e".to_var()]);
     }
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
         let parsed = parse_query("[:find ?e :where (or [?e _ 10] [?e _ 15])]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(order, vec!["?e".to_var()]);
     }
 
@@ -1303,14 +1342,14 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :age ?age]]"#,
         );
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(order, vec!["?e".to_var(), "?age".to_var(),]);
     }
 
     #[test]
     fn test_query_variable_order_ignores_predicates() {
         let parsed = parse_query("[:find ?e ?age :where [?e :age ?age] [(< ?age 30)]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(order, vec!["?e".to_var(), "?age".to_var(),]);
     }
 
@@ -1337,7 +1376,7 @@ mod tests {
     fn test_query_variable_order_with_fn_expr() {
         let parsed =
             parse_query("[:find ?e ?next_age :where [?e :age ?age] [(+ ?age 1) ?next_age]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(
             order,
             vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
@@ -1377,7 +1416,7 @@ mod tests {
         // FnExpr appears first, but its output should still come after Triple vars
         let parsed =
             parse_query("[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(
             order,
             vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
@@ -1388,7 +1427,7 @@ mod tests {
     fn test_query_variable_order_with_and_inside_or() {
         let parsed =
             parse_query("[:find ?e ?name ?age :where (or (and [?e :name ?name] [?e :age ?age]))]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         assert_eq!(
             order,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
@@ -1554,7 +1593,7 @@ mod tests {
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :limit ?limit]");
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
-            err.to_string().contains("not bound in :in clause"),
+            err.to_string().contains("not bound as a scalar in :in clause"),
             "unexpected error: {}",
             err
         );
@@ -1572,7 +1611,7 @@ mod tests {
         let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
-            err.to_string().contains("1 variable(s) but 0 argument(s)"),
+            err.to_string().contains("1 binding(s) but 0 argument(s)"),
             "unexpected error: {}",
             err
         );
@@ -1581,7 +1620,7 @@ mod tests {
     #[test]
     fn test_query_variable_order_with_in_vars() {
         let parsed = parse_query("[:find ?e ?name :in ?name :where [?e :person/name ?name]]");
-        let order = query_variable_order(&parsed.in_vars, &parsed.where_clauses);
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         // ?name from :in should come first, then ?e from WHERE
         assert_eq!(order, vec!["?name".to_var(), "?e".to_var(),]);
     }

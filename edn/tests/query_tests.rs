@@ -11,9 +11,9 @@
 use edn::{Keyword, PlainSymbol};
 
 use edn::query::{
-    Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, OrJoin, OrWhereClause, Order,
-    Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, ToVariable, UnifyVars,
-    WhereClause,
+    Binding, Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, OrJoin,
+    OrWhereClause, Order, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, ToVariable,
+    UnifyVars, WhereClause,
 };
 
 use edn::parse::parse_query;
@@ -410,17 +410,26 @@ fn can_parse_map_form_in_vars() {
     // Single :in variable in map form
     let single = "{:find [?e] :in [?name] :where [[?e :name ?name]]}";
     let parsed = parse_query(single).expect("map-form :in should parse");
-    assert_eq!(parsed.in_vars, vec!["?name".to_var()]);
+    assert_eq!(
+        parsed.in_bindings,
+        vec![Binding::BindScalar("?name".to_var())]
+    );
 
     // Multiple :in variables in map form
     let multi = "{:find [?e] :in [?name ?age] :where [[?e :name ?name] [?e :age ?age]]}";
     let parsed = parse_query(multi).expect("map-form multi :in should parse");
-    assert_eq!(parsed.in_vars, vec!["?name".to_var(), "?age".to_var()]);
+    assert_eq!(
+        parsed.in_bindings,
+        vec![
+            Binding::BindScalar("?name".to_var()),
+            Binding::BindScalar("?age".to_var()),
+        ]
+    );
 
     // Empty :in in map form
     let empty = "{:find [?e] :in [] :where [[?e :name ?name]]}";
     let parsed = parse_query(empty).expect("map-form empty :in should parse");
-    assert!(parsed.in_vars.is_empty());
+    assert!(parsed.in_bindings.is_empty());
 }
 
 #[test]
@@ -428,15 +437,57 @@ fn can_parse_list_form_in_vars() {
     // Single :in variable in list form
     let single = "[:find ?e :in ?name :where [?e :name ?name]]";
     let parsed = parse_query(single).expect("list-form :in should parse");
-    assert_eq!(parsed.in_vars, vec!["?name".to_var()]);
+    assert_eq!(
+        parsed.in_bindings,
+        vec![Binding::BindScalar("?name".to_var())]
+    );
 
     // Multiple :in variables in list form
     let multi = "[:find ?e :in ?name ?age :where [?e :name ?name] [?e :age ?age]]";
     let parsed = parse_query(multi).expect("list-form multi :in should parse");
-    assert_eq!(parsed.in_vars, vec!["?name".to_var(), "?age".to_var()]);
+    assert_eq!(
+        parsed.in_bindings,
+        vec![
+            Binding::BindScalar("?name".to_var()),
+            Binding::BindScalar("?age".to_var()),
+        ]
+    );
 
     // Empty :in in list form (no variables between :in and the next clause)
     let empty = "[:find ?e :in :where [?e :name ?name]]";
     let parsed = parse_query(empty).expect("list-form empty :in should parse");
-    assert!(parsed.in_vars.is_empty());
+    assert!(parsed.in_bindings.is_empty());
+}
+
+#[test]
+fn can_parse_collection_binding_list_form() {
+    let s = "[:find ?name :in [?name ...] :where [?e :name ?name]]";
+    let parsed = parse_query(s).expect("collection binding should parse");
+    assert_eq!(
+        parsed.in_bindings,
+        vec![Binding::BindColl("?name".to_var())]
+    );
+}
+
+#[test]
+fn can_parse_collection_binding_map_form() {
+    let s = "{:find [?name] :in [[?name ...]] :where [[?e :name ?name]]}";
+    let parsed = parse_query(s).expect("map-form collection binding should parse");
+    assert_eq!(
+        parsed.in_bindings,
+        vec![Binding::BindColl("?name".to_var())]
+    );
+}
+
+#[test]
+fn can_parse_mixed_scalar_and_collection_bindings() {
+    let s = "[:find ?name :in ?age [?name ...] :where [?e :name ?name] [?e :age ?age]]";
+    let parsed = parse_query(s).expect("mixed bindings should parse");
+    assert_eq!(
+        parsed.in_bindings,
+        vec![
+            Binding::BindScalar("?age".to_var()),
+            Binding::BindColl("?name".to_var()),
+        ]
+    );
 }

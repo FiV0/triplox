@@ -604,8 +604,6 @@
               "Petr"))))
 
   (testing "Can query entity by entity position"
-    ;; Collection binding `[[?e ...]]` — not yet supported.
-    #_
     (is (= #{["Ivan"]
              ["Petr"]}
            (q '{:find [?name]
@@ -613,7 +611,6 @@
                 :where [[?e :name ?name]]}
               [:ivan :petr])))
 
-    #_
     (is (= #{["Ivan" "Ivanov"]
              ["Petr" "Petrov"]}
            (q '{:find [?name ?last-name]
@@ -640,8 +637,6 @@
               :ivan "Petr"))))
 
   (testing "Can query entity by single field with several arguments"
-    ;; Collection binding `[[?name ...]]` — not yet supported.
-    #_
     (is (= #{["Ivan"] ["Petr"]}
            (q '{:find [?name]
                 :in [[?name ...]]
@@ -649,8 +644,6 @@
               ["Ivan" "Petr"]))))
 
   (testing "Can query entity by single field with literals"
-    ;; Collection bindings — not yet supported.
-    #_
     (is (= #{["Ivan"]}
            (q '{:find [?name]
                 :in [[?name ...]]
