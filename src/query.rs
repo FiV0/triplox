@@ -1068,6 +1068,41 @@ fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<()
     Ok(())
 }
 
+/// Compile :in bindings and their arguments into `SingleLevelExtender`s.
+///
+/// `validate_in_bindings` must be called first to ensure binding/arg types match.
+fn compile_in_bindings(
+    in_bindings: &[Binding],
+    args: &[QueryArg],
+    var_index: &HashMap<&Variable, usize>,
+) -> Vec<Box<dyn PrefixExtender>> {
+    in_bindings
+        .iter()
+        .zip(args.iter())
+        .map(|(binding, arg)| -> Box<dyn PrefixExtender> {
+            match (binding, arg) {
+                (Binding::BindScalar(var), QueryArg::Scalar(dt)) => {
+                    let level = *var_index.get(var).expect("in_var must be in join order");
+                    let encoded = dt.encode();
+                    Box::new(SingleLevelExtender::new(
+                        vec![bytes::Bytes::from(encoded)],
+                        level,
+                    ))
+                }
+                (Binding::BindColl(var), QueryArg::Collection(items)) => {
+                    let level = *var_index.get(var).expect("in_var must be in join order");
+                    let encoded_values: Vec<bytes::Bytes> = items
+                        .iter()
+                        .map(|dt| bytes::Bytes::from(dt.encode()))
+                        .collect();
+                    Box::new(SingleLevelExtender::new(encoded_values, level))
+                }
+                _ => unreachable!("validate_in_bindings ensures binding/arg types match"),
+            }
+        })
+        .collect()
+}
+
 /// Validate a query before execution.
 // TODO: Move query validation into the edn parsing crate so that invalid
 // queries are rejected at parse time rather than at execution time.
@@ -1247,29 +1282,7 @@ pub fn execute_query(
     let var_index = build_var_index(&join_order);
 
     // 2. Compile in-binding arguments into extenders
-    let mut extenders: Vec<Box<dyn PrefixExtender>> = Vec::new();
-
-    for (binding, arg) in query.in_bindings.iter().zip(args.iter()) {
-        match (binding, arg) {
-            (Binding::BindScalar(var), QueryArg::Scalar(dt)) => {
-                let level = *var_index.get(var).expect("in_var must be in join order");
-                let encoded = dt.encode();
-                extenders.push(Box::new(SingleLevelExtender::new(
-                    vec![bytes::Bytes::from(encoded)],
-                    level,
-                )));
-            }
-            (Binding::BindColl(var), QueryArg::Collection(items)) => {
-                let level = *var_index.get(var).expect("in_var must be in join order");
-                let encoded_values: Vec<bytes::Bytes> = items
-                    .iter()
-                    .map(|dt| bytes::Bytes::from(dt.encode()))
-                    .collect();
-                extenders.push(Box::new(SingleLevelExtender::new(encoded_values, level)));
-            }
-            _ => unreachable!("validate_query ensures binding/arg types match"),
-        }
-    }
+    let mut extenders = compile_in_bindings(&query.in_bindings, args, &var_index);
 
     // 3. Compile WHERE patterns into extenders
     for clause in &query.where_clauses {
