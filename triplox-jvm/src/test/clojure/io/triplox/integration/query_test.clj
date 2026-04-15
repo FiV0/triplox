@@ -604,8 +604,8 @@
               "Petr"))))
 
   (testing "Can query entity by entity position"
-    ;; Collection binding on entity position requires ident resolution;
-    ;; the test data has no :db/id idents, so these remain disabled.
+    ;; Collection binding on entity position requires the entity id.
+    ;; Re-enable these tests after something like https://github.com/FiV0/triplox/issues/58
     #_
     (is (= #{["Ivan"]
              ["Petr"]}
