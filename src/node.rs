@@ -185,13 +185,12 @@ impl Node<MemoryLog> {
 }
 
 impl Node<FileLog> {
-    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
-        std::fs::create_dir_all(root_path.join("db"))?;
-        let db_path = root_path.join("db");
-        let db_path_str = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
-        let slate = local_slate(db_path_str).await;
+    /// Shared setup: given a slate and a path to the log file, bootstrap the
+    /// database, create the indexer & FileLog, subscribe, and catch up.
+    async fn from_slate_and_log(
+        slate: SlateComponents,
+        log_file: &Path,
+    ) -> Result<Self, Error> {
         let db = slate.db.clone();
         let metadata = crate::bootstrap::init_db(db.clone()).await;
 
@@ -211,7 +210,7 @@ impl Node<FileLog> {
             latest_indexed_tx,
         )));
         let log = Arc::new(RwLock::new(FileLog::new(
-            &root_path.join("log"),
+            log_file,
             Box::new(clock::SystemClock),
         )?));
 
@@ -245,6 +244,16 @@ impl Node<FileLog> {
         })
     }
 
+    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
+        std::fs::create_dir_all(root_path.join("db"))?;
+        let db_path = root_path.join("db");
+        let db_path_str = db_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
+        let slate = local_slate(db_path_str).await;
+        Self::from_slate_and_log(slate, &root_path.join("log")).await
+    }
+
     pub async fn remote_node(
         log_path: &Path,
         endpoint: &str,
@@ -254,54 +263,8 @@ impl Node<FileLog> {
         region: &str,
     ) -> Result<Self, Error> {
         let slate = remote_slate(endpoint, bucket, access_key, secret_key, region).await;
-        let db = slate.db.clone();
-        let metadata = crate::bootstrap::init_db(db.clone()).await;
-
-        let snapshot = Arc::new(db.snapshot().await?);
-        let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
-        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
-            Some(latest_indexed)
-        } else {
-            None
-        };
-
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            db.clone(),
-            metadata,
-            latest_indexed_tx,
-        )));
-
         std::fs::create_dir_all(log_path)?;
-        let log = Arc::new(RwLock::new(FileLog::new(
-            &log_path.join("log"),
-            Box::new(clock::SystemClock),
-        )?));
-
-        let after_tx_id = latest_indexed_tx.map(|k| k.tx_id);
-
-        let last_tx_key = {
-            let log_reader = log.read().await;
-            let records = log_reader.read_txs_after(after_tx_id, u16::MAX)?;
-            records.last().map(|r| r.tx_key)
-        };
-
-        let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
-            None => None,
-        };
-
-        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-
-        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            waiter.await_tx(tx_key).await?;
-        }
-
-        Ok(Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-        })
+        Self::from_slate_and_log(slate, &log_path.join("log")).await
     }
 }
 
