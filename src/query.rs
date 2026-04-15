@@ -1607,6 +1607,23 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_limit_variable_rejects_collection_binding() {
+        let parsed =
+            parse_query("[:find ?e :in [?limit ...] :where [?e :name ?name] :limit ?limit]");
+        let err = validate_query(
+            &parsed,
+            &[QueryArg::Collection(vec![DataType::Long(10)])],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not bound as a scalar in :in clause"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_validate_in_arg_count_mismatch() {
         let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
         let err = validate_query(&parsed, &[]).unwrap_err();
