@@ -46,13 +46,12 @@ async fn test_remote_node_with_s3_storage() {
         .build();
 
     let s3_client = aws_sdk_s3::Client::from_conf(config);
-    for i in 0..30 {
-        match s3_client.create_bucket().bucket("triplox").send().await {
-            Ok(_) => break,
-            Err(e) if i == 29 => panic!("Failed to create bucket after retries: {}", e),
-            _ => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-        }
-    }
+    s3_client
+        .create_bucket()
+        .bucket("triplox")
+        .send()
+        .await
+        .expect("Failed to create bucket");
 
     // Create remote node with a temp dir for the FileLog
     let log_dir = tempdir().unwrap();
