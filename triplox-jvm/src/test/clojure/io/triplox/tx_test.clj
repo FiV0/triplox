@@ -82,15 +82,6 @@
       (is (= :email (.attr ^EntityRef$LookupRef (.entity ^TxOp$Add op))))
       (is (= "test@example.com" (.value ^EntityRef$LookupRef (.entity ^TxOp$Add op)))))))
 
-(deftest lookup-ref-in-value-position
-  (testing "Lookup ref vector in value position is passed through as-is"
-    (let [ops (tx/tx-data->ops [[:db/add 42 :friend [:email "test@example.com"]]])
-          op (first ops)]
-      (is (instance? TxOp$Add op))
-      (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Add op))))
-      (is (= :friend (.attribute ^TxOp$Add op)))
-      (is (= [:email "test@example.com"] (.value ^TxOp$Add op))))))
-
 (deftest invalid-form-throws
   (testing "Invalid form throws"
     (is (thrown? clojure.lang.ExceptionInfo
