@@ -1026,21 +1026,17 @@ fn apply_order_and_limit(
     Ok(results)
 }
 
-/// Validate a query before execution.
-// TODO: Move query validation into the edn parsing crate so that invalid
-// queries are rejected at parse time rather than at execution time.
-pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
-    // Validate :in binding count matches args
-    if query.in_bindings.len() != args.len() {
+/// Validate that :in bindings match the provided arguments in count and type.
+fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<(), Error> {
+    if in_bindings.len() != args.len() {
         return Err(anyhow::anyhow!(
             ":in clause declares {} binding(s) but {} argument(s) provided",
-            query.in_bindings.len(),
+            in_bindings.len(),
             args.len()
         ));
     }
 
-    // Validate binding type matches argument type
-    for (i, (binding, arg)) in query.in_bindings.iter().zip(args.iter()).enumerate() {
+    for (i, (binding, arg)) in in_bindings.iter().zip(args.iter()).enumerate() {
         match (binding, arg) {
             (Binding::BindScalar(_), QueryArg::Scalar(_)) => {}
             (Binding::BindColl(_), QueryArg::Collection(_)) => {}
@@ -1068,6 +1064,15 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
             }
         }
     }
+
+    Ok(())
+}
+
+/// Validate a query before execution.
+// TODO: Move query validation into the edn parsing crate so that invalid
+// queries are rejected at parse time rather than at execution time.
+pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
+    validate_in_bindings(&query.in_bindings, args)?;
 
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
