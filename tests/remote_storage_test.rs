@@ -19,7 +19,7 @@ async fn test_remote_node_with_s3_storage() {
     let container = GenericImage::new("rustfs/rustfs", "1.0.0-alpha.93")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/minio/health/live")
+            HttpWaitStrategy::new("/health/ready")
                 .with_expected_status_code(200u16),
         ))
         .with_env_var("RUSTFS_ROOT_USER", "minioadmin")
