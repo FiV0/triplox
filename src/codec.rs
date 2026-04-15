@@ -40,8 +40,7 @@ pub const STATS_INDEX: u8 = 128;
 pub const META_INDEX: u8 = 129;
 
 pub const ADD: u8 = 0;
-pub const DELETE: u8 = 1;
-pub const RETRACT: u8 = 2;
+pub const RETRACT: u8 = 1;
 
 /// Suffix length: tx_eid (8 bytes) + op (1 byte), used for end-of-key extraction.
 pub const TX_EID_OP_SUFFIX: usize = TX_EID_LENGTH + OP_LENGTH;
