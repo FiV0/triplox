@@ -39,7 +39,7 @@ pub struct ServerConfig {
 }
 
 fn default_region() -> String {
-    "us-east-1".to_string()
+    "eu-central-1".to_string()
 }
 
 fn default_host() -> String {
