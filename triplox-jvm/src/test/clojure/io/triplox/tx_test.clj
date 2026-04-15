@@ -1,7 +1,7 @@
 (ns io.triplox.tx-test
   (:require [clojure.test :refer [deftest is testing]]
             [io.triplox.tx :as tx])
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (deftest map-to-put
@@ -72,6 +72,15 @@
           op (first ops)]
       (is (instance? EntityRef$Ident (.entity ^TxOp$Add op)))
       (is (= :person/alice (.ident ^EntityRef$Ident (.entity ^TxOp$Add op)))))))
+
+(deftest lookup-ref-entity-ref
+  (testing "Lookup ref vector in entity position becomes LookupRef"
+    (let [ops (tx/tx-data->ops [[:db/add [:email "test@example.com"] :name "Alice"]])
+          op (first ops)]
+      (is (instance? TxOp$Add op))
+      (is (instance? EntityRef$LookupRef (.entity ^TxOp$Add op)))
+      (is (= :email (.attr ^EntityRef$LookupRef (.entity ^TxOp$Add op))))
+      (is (= "test@example.com" (.value ^EntityRef$LookupRef (.entity ^TxOp$Add op)))))))
 
 (deftest invalid-form-throws
   (testing "Invalid form throws"

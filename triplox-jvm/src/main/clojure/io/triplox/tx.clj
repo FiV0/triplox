@@ -1,6 +1,6 @@
 (ns io.triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident
+  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (defn- ->entity-ref
@@ -10,6 +10,8 @@
     (integer? v)  (EntityRef$Id. (long v))
     (string? v)   (EntityRef$TempId. v)
     (keyword? v)  (EntityRef$Ident. v)
+    (and (vector? v) (= 2 (count v)) (keyword? (first v)))
+    (EntityRef$LookupRef. (first v) (second v))
     :else (throw (ex-info "Cannot convert to EntityRef" {:value v}))))
 
 (defn- map->put
