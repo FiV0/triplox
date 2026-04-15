@@ -43,7 +43,7 @@ remote-test = []
 [dev-dependencies]
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
 tempfile = "3.14.0"
-testcontainers = "0.25"
+testcontainers = { version = "0.25", features = ["http_wait"] }
 triplox = { path = ".", features = ["test-helpers"] }
 
 [lints.rust]

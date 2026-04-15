@@ -1,7 +1,7 @@
 #![cfg(feature = "remote-test")]
 
 use tempfile::tempdir;
-use testcontainers::core::wait::LogWaitStrategy;
+use testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
@@ -18,7 +18,10 @@ async fn test_remote_node_with_s3_storage() {
     // Start RustFS container
     let container = GenericImage::new("rustfs/rustfs", "1.0.0-alpha.93")
         .with_exposed_port(9000.tcp())
-        .with_wait_for(WaitFor::Log(LogWaitStrategy::stdout("Starting: /usr/bin/rustfs server")))
+        .with_wait_for(WaitFor::http(
+            HttpWaitStrategy::new("/minio/health/live")
+                .with_expected_status_code(200u16),
+        ))
         .with_env_var("RUSTFS_ROOT_USER", "minioadmin")
         .with_env_var("RUSTFS_ROOT_PASSWORD", "minioadmin")
         .with_cmd(vec!["server", "/data"])
