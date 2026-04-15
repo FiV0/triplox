@@ -993,7 +993,7 @@ pub struct ParsedQuery {
     pub find_spec: FindSpec,
     pub default_source: SrcVar,
     pub with: Vec<Variable>,
-    pub in_vars: Vec<Variable>,
+    pub in_bindings: Vec<Binding>,
     pub in_sources: BTreeSet<SrcVar>,
     pub limit: Limit,
     pub where_clauses: Vec<WhereClause>,
@@ -1003,7 +1003,7 @@ pub struct ParsedQuery {
 pub(crate) enum QueryPart {
     FindSpec(FindSpec),
     WithVars(Vec<Variable>),
-    InVars(Vec<Variable>),
+    InBindings(Vec<Binding>),
     Limit(Limit),
     WhereClauses(Vec<WhereClause>),
     Order(Vec<Order>),
@@ -1016,12 +1016,20 @@ pub(crate) enum QueryPart {
 /// We split `ParsedQuery` from `FindQuery` because it's not easy to generalize over containers
 /// (here, `Vec` and `BTreeSet`) in Rust.
 impl ParsedQuery {
+    /// Extract a flat list of variables from in_bindings (each binding contributes its variable(s)).
+    pub fn in_vars(&self) -> Vec<Variable> {
+        self.in_bindings
+            .iter()
+            .flat_map(|b| b.variables().into_iter().flatten())
+            .collect()
+    }
+
     pub(crate) fn from_parts(
         parts: Vec<QueryPart>,
     ) -> std::result::Result<ParsedQuery, &'static str> {
         let mut find_spec: Option<FindSpec> = None;
         let mut with: Option<Vec<Variable>> = None;
-        let mut in_vars: Option<Vec<Variable>> = None;
+        let mut in_bindings: Option<Vec<Binding>> = None;
         let mut limit: Option<Limit> = None;
         let mut where_clauses: Option<Vec<WhereClause>> = None;
         let mut order: Option<Vec<Order>> = None;
@@ -1040,11 +1048,11 @@ impl ParsedQuery {
                     }
                     with = Some(x)
                 }
-                QueryPart::InVars(x) => {
-                    if in_vars.is_some() {
+                QueryPart::InBindings(x) => {
+                    if in_bindings.is_some() {
                         return Err("find query has repeated :in");
                     }
-                    in_vars = Some(x)
+                    in_bindings = Some(x)
                 }
                 QueryPart::Limit(x) => {
                     if limit.is_some() {
@@ -1071,7 +1079,7 @@ impl ParsedQuery {
             find_spec: find_spec.ok_or("expected :find")?,
             default_source: SrcVar::DefaultSrc,
             with: with.unwrap_or(vec![]),
-            in_vars: in_vars.unwrap_or(vec![]),
+            in_bindings: in_bindings.unwrap_or(vec![]),
             in_sources: BTreeSet::default(),
             limit: limit.unwrap_or(Limit::None),
             where_clauses: where_clauses.ok_or("expected :where")?,
@@ -1532,13 +1540,13 @@ impl std::fmt::Display for ParsedQuery {
             }
             write!(f, "]")?;
         }
-        if !self.in_vars.is_empty() {
+        if !self.in_bindings.is_empty() {
             write!(f, " :in [")?;
-            for (i, v) in self.in_vars.iter().enumerate() {
+            for (i, b) in self.in_bindings.iter().enumerate() {
                 if i > 0 {
                     write!(f, " ")?;
                 }
-                write!(f, "{}", v)?;
+                write!(f, "{}", b)?;
             }
             write!(f, "]")?;
         }

@@ -307,6 +307,8 @@ impl<L: TxLog> QueryNode for Node<L> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::ops::{DataType, EntityRef, TxOp};
     use crate::schema::test_schema_tx;
@@ -666,6 +668,81 @@ mod tests {
             "unexpected error: {}",
             err
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_with_collection_in_bindings() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("ivan".to_string())),
+                (kw!(:name), "Ivan".into()),
+                (kw!(:email), "ivan@example.com".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("petr".to_string())),
+                (kw!(:name), "Petr".into()),
+                (kw!(:email), "petr@example.com".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".to_string())),
+                (kw!(:name), "Bob".into()),
+                (kw!(:email), "bob@example.com".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+
+        // Collection binding: match names in a set
+        let parsed = edn::parse::parse_query(
+            "[:find ?name :in [?name ...] :where [?e :name ?name]]",
+        )
+        .unwrap();
+
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[QueryArg::Collection(vec![
+                    "Ivan".into(),
+                    "Petr".into(),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        let names: HashSet<_> = result
+            .iter()
+            .map(|row| row[0].clone())
+            .collect();
+        assert!(names.contains(&DataType::String("Ivan".to_string())));
+        assert!(names.contains(&DataType::String("Petr".to_string())));
+
+        // Collection with a value that doesn't match: only matching rows returned
+        let result = db
+            .query_with_args(
+                &parsed,
+                &[QueryArg::Collection(vec![
+                    "Ivan".into(),
+                    "Nobody".into(),
+                ])],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("Ivan".to_string())]]
+        );
+
+        // Empty collection: no rows
+        let result = db
+            .query_with_args(&parsed, &[QueryArg::Collection(vec![])])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

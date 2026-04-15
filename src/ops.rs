@@ -216,8 +216,8 @@ impl TxOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryArg {
     Scalar(DataType),
-    // TODO: Collection, Tuple, Relation are not yet supported in the EDN parser
     Collection(Vec<DataType>),
+    // TODO: Tuple and Relation are not yet supported in the query engine
     Tuple(Vec<DataType>),
     Relation(Vec<Vec<DataType>>),
 }

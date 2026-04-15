@@ -632,7 +632,8 @@
               "Petr"))))
 
   (testing "Can query entity by entity position"
-    ;; Collection binding `[[?e ...]]` — not yet supported.
+    ;; Collection binding on entity position requires the entity id.
+    ;; Re-enable these tests after something like https://github.com/FiV0/triplox/issues/58
     #_
     (is (= #{["Ivan"]
              ["Petr"]}
@@ -668,8 +669,6 @@
               :ivan "Petr"))))
 
   (testing "Can query entity by single field with several arguments"
-    ;; Collection binding `[[?name ...]]` — not yet supported.
-    #_
     (is (= #{["Ivan"] ["Petr"]}
            (q '{:find [?name]
                 :in [[?name ...]]
@@ -677,8 +676,6 @@
               ["Ivan" "Petr"]))))
 
   (testing "Can query entity by single field with literals"
-    ;; Collection bindings — not yet supported.
-    #_
     (is (= #{["Ivan"]}
            (q '{:find [?name]
                 :in [[?name ...]]
