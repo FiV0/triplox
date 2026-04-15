@@ -70,11 +70,12 @@ pub async fn remote_slate(
         .with_access_key_id(access_key)
         .with_secret_access_key(secret_key)
         .with_region(region)
-        .with_allow_http(true)
+        .with_allow_http(true) // TODO: make configurable for production use
         .build()
         .expect("failed to build S3 object store");
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
+    // TODO: hardcoded path — reconsider when adding database creation functions
     let db = Arc::new(
         Db::builder("triplox", object_store.clone())
             .build()

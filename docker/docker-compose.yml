@@ -2,6 +2,7 @@ services:
   rustfs:
     image: rustfs/rustfs:1.0.0-alpha.93
     command: server /data --console-address ":9001"
+    # Dev-only credentials — do not use in production
     environment:
       RUSTFS_ROOT_USER: triplox
       RUSTFS_ROOT_PASSWORD: triplox123
