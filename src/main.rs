@@ -64,8 +64,20 @@ async fn run_server(config: Config) -> Result<()> {
             let server = Server::new(node, max_open_dbs);
             server.listen(&bind_addr, token).await
         }
-        StorageConfig::Remote { .. } => {
-            bail!("Remote storage is not yet supported")
+        StorageConfig::Remote {
+            endpoint,
+            bucket,
+            access_key,
+            secret_key,
+            region,
+            log_path,
+        } => {
+            let node = Arc::new(
+                Node::remote_node(&log_path, &endpoint, &bucket, &access_key, &secret_key, &region)
+                    .await?,
+            );
+            let server = Server::new(node, max_open_dbs);
+            server.listen(&bind_addr, token).await
         }
     }
 }

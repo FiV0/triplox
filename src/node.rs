@@ -12,7 +12,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
-use crate::slate::{in_memory_slate, local_slate, SlateComponents};
+use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 pub use crate::transaction::{TransactionResult, TxKey};
 use edn::query::ParsedQuery;
 use tokio::sync::RwLock;
@@ -185,13 +185,12 @@ impl Node<MemoryLog> {
 }
 
 impl Node<FileLog> {
-    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
-        std::fs::create_dir_all(root_path.join("db"))?;
-        let db_path = root_path.join("db");
-        let db_path_str = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
-        let slate = local_slate(db_path_str).await;
+    /// Shared setup: given a slate and a path to the log file, bootstrap the
+    /// database, create the indexer & FileLog, subscribe, and catch up.
+    async fn from_slate_and_log(
+        slate: SlateComponents,
+        log_file: &Path,
+    ) -> Result<Self, Error> {
         let db = slate.db.clone();
         let metadata = crate::bootstrap::init_db(db.clone()).await;
 
@@ -211,7 +210,7 @@ impl Node<FileLog> {
             latest_indexed_tx,
         )));
         let log = Arc::new(RwLock::new(FileLog::new(
-            &root_path.join("log"),
+            log_file,
             Box::new(clock::SystemClock),
         )?));
 
@@ -243,6 +242,29 @@ impl Node<FileLog> {
             slate,
             subscription,
         })
+    }
+
+    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
+        std::fs::create_dir_all(root_path.join("db"))?;
+        let db_path = root_path.join("db");
+        let db_path_str = db_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
+        let slate = local_slate(db_path_str).await;
+        Self::from_slate_and_log(slate, &root_path.join("log")).await
+    }
+
+    pub async fn remote_node(
+        log_path: &Path,
+        endpoint: &str,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        region: &str,
+    ) -> Result<Self, Error> {
+        let slate = remote_slate(endpoint, bucket, access_key, secret_key, region).await;
+        std::fs::create_dir_all(log_path)?;
+        Self::from_slate_and_log(slate, &log_path.join("log")).await
     }
 }
 

@@ -1,6 +1,6 @@
 # Triplox Docker
 
-Docker support for running Triplox with in-memory or local persisted storage.
+Docker support for running Triplox with in-memory, local persisted, or remote S3-compatible storage.
 
 ## Building
 
@@ -27,6 +27,18 @@ docker run -p 5490:5490 \
   triplox:latest
 ```
 
+### Remote mode (S3-compatible with RustFS)
+
+Using docker-compose:
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
+```
+
+This starts:
+- **RustFS** on port 9000 (S3 API) and 9001 (console)
+- **Triplox** on port 5490 with SlateDB backed by RustFS
+
 ### Custom config
 
 Mount your own config file and pass its path as an argument:
@@ -41,7 +53,7 @@ docker run -p 5490:5490 \
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRIPLOX_STORAGE` | `memory` | Storage mode: `memory` or `local` |
+| `TRIPLOX_STORAGE` | `memory` | Storage mode: `dev`, `memory`, `local`, or `remote` |
 
 ## Ports
 
