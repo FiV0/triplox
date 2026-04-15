@@ -552,29 +552,27 @@
 
 (deftest test-lookup-ref-in-entity-position
   (tc/transact *conn* [{:name "Alice" :age 30}])
+  (tc/transact *conn* [[:db/add [:name "Alice"] :city "NYC"]])
 
-  (testing "Can use lookup ref to add attribute to existing entity"
-    (tc/transact *conn* [[:db/add [:name "Alice"] :city "NYC"]])
-    (is (= #{["Alice" "NYC"]}
-           (q '{:find [?name ?city]
-                :where [[?e :name ?name]
-                        [?e :city ?city]]})))))
+  (is (= #{["Alice" "NYC"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]]}))))
 
 (deftest test-lookup-ref-in-value-position
   (tc/transact *conn*
-    [{:db/ident :friend
-      :db/valueType :db.type/ref
-      :db/cardinality :db.cardinality/one}])
+               [{:db/ident :friend
+                 :db/valueType :db.type/ref
+                 :db/cardinality :db.cardinality/one}])
   (tc/transact *conn* [{:name "Alice" :age 30}
                        {:name "Bob" :age 25}])
 
-  (testing "Can use lookup ref as value for ref-typed attribute"
-    (tc/transact *conn* [[:db/add [:name "Bob"] :friend [:name "Alice"]]])
-    (is (= #{["Bob" "Alice"]}
-           (q '{:find [?name ?friend-name]
-                :where [[?e :name ?name]
-                        [?e :friend ?f]
-                        [?f :name ?friend-name]]})))))
+  (tc/transact *conn* [[:db/add [:name "Bob"] :friend [:name "Alice"]]])
+  (is (= #{["Bob" "Alice"]}
+         (q '{:find [?name ?friend-name]
+              :where [[?e :name ?name]
+                      [?e :friend ?f]
+                      [?f :name ?friend-name]]}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests — order-by & limit
