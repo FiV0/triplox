@@ -105,7 +105,6 @@ pub async fn init_db(slate: &SlateComponents) -> Metadata {
                 "bootstrap attribute_map mismatch"
             );
 
-            let txn = slate.db.begin(IsolationLevel::Snapshot).await.unwrap();
             write_index_entries(&txn, &datoms, &bootstrap_schema, 0_i64).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
