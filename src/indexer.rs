@@ -589,7 +589,7 @@ mod tests {
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
-        let metadata = crate::bootstrap::init_db(slate).await;
+        let metadata = crate::bootstrap::init_db(slate).await.unwrap();
         let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
         let tx_key_0 = TxKey {
             tx_id: 0,
