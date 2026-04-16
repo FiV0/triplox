@@ -5,7 +5,7 @@ use crate::partition::{
     extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION,
 };
 use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
-use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tx;
 use crate::util::concat_bytes;
 use slatedb::{Db, IsolationLevel};
@@ -60,18 +60,19 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
 ///   directly to SlateDB, writes the version, and returns populated metadata.
 /// - **Existing DB**: loads the schema from indices via the Datalog query engine,
 ///   derives counters by scanning the EAV index.
-pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
+pub async fn init_db(slate: &SlateComponents) -> Metadata {
     let version_key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
 
-    match slatedb
+    match slate
+        .db
         .get(&version_key)
         .await
         .expect("Failed to read version from META_INDEX")
     {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
-            let schema = load_schema_from_indices(slatedb.clone()).await;
-            let pm = scan_partition_counters(&slatedb).await;
+            let schema = load_schema_from_indices(slate).await;
+            let pm = scan_partition_counters(&slate.db).await;
             Metadata::new(schema, pm)
         }
         None => {
@@ -79,7 +80,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
             // Same 3-stage pipeline as the indexer
-            let txn = slatedb.begin(IsolationLevel::Snapshot).await.unwrap();
+            let txn = slate.db.begin(IsolationLevel::Snapshot).await.unwrap();
             let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
             let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &txn)
                 .await
@@ -113,7 +114,7 @@ pub async fn init_db(slatedb: Arc<Db>) -> Metadata {
                 .unwrap();
 
             // Derive counters from the just-written index
-            let pm = scan_partition_counters(&slatedb).await;
+            let pm = scan_partition_counters(&slate.db).await;
             Metadata::new(bootstrap_schema, pm)
         }
     }
@@ -128,8 +129,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_fresh() {
-        let slatedb = in_memory_slate().await.db;
-        let metadata = init_db(slatedb).await;
+        let slate = in_memory_slate().await;
+        let metadata = init_db(&slate).await;
         // Bootstrap defines 7 schema attributes (3 core + 4 tx)
         assert_eq!(metadata.schema.len(), 7);
         assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
@@ -160,10 +161,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_existing() {
-        let slatedb = in_memory_slate().await.db;
-        let metadata1 = init_db(slatedb.clone()).await;
+        let slate = in_memory_slate().await;
+        let metadata1 = init_db(&slate).await;
         // Second call takes the existing-DB path (scan EAV for counters)
-        let metadata2 = init_db(slatedb).await;
+        let metadata2 = init_db(&slate).await;
         assert_eq!(metadata1.schema.len(), metadata2.schema.len());
         assert_eq!(metadata1.schema.len(), 7);
         assert_eq!(
@@ -174,14 +175,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_db_preserves_old_version() {
-        let slatedb = in_memory_slate().await.db;
+        let slate = in_memory_slate().await;
 
         // Write an older version directly (simulates existing DB without bootstrap indices)
         let key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
-        slatedb.put(&key, b"0.0.1").await.unwrap();
+        slate.db.put(&key, b"0.0.1").await.unwrap();
 
         // init_db takes the existing-DB path — loads from indices (empty, since no bootstrap ran)
-        let metadata = init_db(slatedb).await;
+        let metadata = init_db(&slate).await;
         assert_eq!(metadata.schema.len(), 0);
         // No EAV entries → empty counters
         assert!(metadata.partition_map.is_empty());

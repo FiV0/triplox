@@ -583,14 +583,14 @@ mod tests {
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::ops::{DataType, EntityRef};
     use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
-    use crate::slate::in_memory_slate;
+    use crate::slate::{in_memory_slate, SlateComponents};
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
-    async fn bootstrapped_indexer(slate: Arc<Db>) -> Indexer {
-        let metadata = crate::bootstrap::init_db(slate.clone()).await;
-        let mut indexer = Indexer::new(slate, metadata, None);
+    async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
+        let metadata = crate::bootstrap::init_db(slate).await;
+        let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
         let tx_key_0 = TxKey {
             tx_id: 0,
             system_time: st_from_unix_epoch(1),
@@ -604,8 +604,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let name_id = indexer
             .metadata()
             .schema
@@ -652,8 +653,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer_write_persisted() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
@@ -689,8 +691,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_indexer_multi_attribute_document() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
@@ -725,8 +728,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_tx_key_after_transact() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
             tx_id: 42,
             system_time: st_from_unix_epoch(1000),
@@ -759,8 +763,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_tx_key_highest_wins() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
 
         for i in 0..3 {
             let tx_id = i + 1;
@@ -785,8 +790,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_tx_eid_for_tx_key_found() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
             tx_id: 42,
             system_time: st_from_unix_epoch(1000),
@@ -826,8 +832,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_await_tx_already_indexed() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
 
         let tx_key = TxKey {
             tx_id: 1,
@@ -848,8 +855,9 @@ mod tests {
     async fn test_await_tx_waits_for_future_tx() -> Result<(), Error> {
         use tokio::sync::RwLock;
 
-        let slate = in_memory_slate().await.db;
-        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(&components).await));
 
         let tx_key_1 = TxKey {
             tx_id: 1,
@@ -904,8 +912,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_await_tx_ordering() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
 
         for i in 0..2 {
             let tx_id = i + 1;
@@ -939,8 +948,9 @@ mod tests {
     async fn test_await_tx_multiple_waiters() -> Result<(), Error> {
         use tokio::sync::RwLock;
 
-        let slate = in_memory_slate().await.db;
-        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(slate.clone()).await));
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let indexer = Arc::new(RwLock::new(bootstrapped_indexer(&components).await));
 
         let tx_key = TxKey {
             tx_id: 5,
@@ -976,8 +986,9 @@ mod tests {
     // TODO(#96): replace explicit entity IDs with query-based verification
     #[tokio::test]
     async fn test_retract_on_overwrite() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let name_id = indexer
             .metadata()
             .schema
@@ -1065,8 +1076,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_value_no_retract() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let name_id = indexer
             .metadata()
             .schema
@@ -1143,8 +1155,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_immutability_rejected_in_pipeline() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
         let (name_id, attr) = indexer
             .metadata()
             .schema
@@ -1199,8 +1212,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_cardinality_many_no_retract() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
 
         // First tx: assert tags="rust" for a new entity (auto-assigned ID)
         let tx1 = TxKey {
@@ -1266,8 +1280,9 @@ mod tests {
     // We may want to switch to set semantics in the future.
     #[tokio::test]
     async fn test_cardinality_many_same_value() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let mut indexer = bootstrapped_indexer(slate.clone()).await;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
 
         // First tx: assert tags="rust" for a new entity (auto-assigned ID)
         let tx1 = TxKey {

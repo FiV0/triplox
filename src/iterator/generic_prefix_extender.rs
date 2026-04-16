@@ -18,6 +18,7 @@ use super::temporal_filter_iterator::TemporalFilterIterator;
 pub struct GenericPrefixExtender {
     slate: Arc<slatedb::DbSnapshot>,
     handle: Handle,
+    range_stats: Arc<slatedb_estimates::RangeStats>,
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
@@ -28,6 +29,7 @@ impl GenericPrefixExtender {
     pub fn new(
         slate: Arc<slatedb::DbSnapshot>,
         handle: Handle,
+        range_stats: Arc<slatedb_estimates::RangeStats>,
         index_types: Vec<IndexType>,
         attribute_id: i64,
         constant_prefix: Vec<u8>,
@@ -47,6 +49,7 @@ impl GenericPrefixExtender {
         Self {
             slate,
             handle,
+            range_stats,
             index_types,
             constant_prefix: full_prefix,
             participating_levels,
@@ -102,6 +105,7 @@ impl GenericPrefixExtender {
                     self.slate.as_ref(),
                     self.handle.clone(),
                     extractor,
+                    self.range_stats.clone(),
                 )
                 .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
             ),
@@ -112,6 +116,7 @@ impl GenericPrefixExtender {
                     self.handle.clone(),
                     extractor,
                     self.as_of,
+                    self.range_stats.clone(),
                 )
                 .unwrap_or_else(|e| panic!("Failed to create TemporalFilterIterator: {}", e)),
             ),
@@ -239,12 +244,15 @@ mod tests {
     #[test]
     fn test_participates_in_level() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
 
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
             42,
             vec![],
@@ -260,18 +268,28 @@ mod tests {
     #[test]
     fn test_count_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Charlie")))?;
 
+        // Flush memtable to SSTs so RangeStats can read the metadata
+        runtime
+            .block_on(slate.flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::MemTable,
+            }))
+            .unwrap();
+
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
 
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV],
             attr_name,
             vec![],
@@ -280,8 +298,7 @@ mod tests {
         );
 
         let count = extender.count(&vec![]);
-        // TODO: count() currently returns 100 as estimate_key_count is not on DbSnapshot
-        assert_eq!(count, 100);
+        assert_eq!(count, 3);
 
         Ok(())
     }
@@ -289,7 +306,9 @@ mod tests {
     #[test]
     fn test_propose_with_av_index() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -300,6 +319,7 @@ mod tests {
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV],
             attr_name,
             vec![],
@@ -317,7 +337,9 @@ mod tests {
     #[test]
     fn test_multiple_index_types() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         // Insert into both AV and AVE indexes
@@ -331,6 +353,7 @@ mod tests {
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
             attr_name,
             vec![],
@@ -351,7 +374,9 @@ mod tests {
     #[test]
     fn test_intersect() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
@@ -362,6 +387,7 @@ mod tests {
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV],
             attr_name,
             vec![],
@@ -392,7 +418,9 @@ mod tests {
         // but make_extractor_fn computes position = pattern_level + 1 = 1,
         // which extracts the value (position 1) instead.
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         let value_bytes = Bytes::from(DataType::String("alice".to_string()).encode());
@@ -407,6 +435,7 @@ mod tests {
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AVE],
             attr_name,
             value_bytes.to_vec(),
@@ -425,7 +454,9 @@ mod tests {
     #[test]
     fn test_empty_results() -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let slate = runtime.block_on(in_memory_slate()).db;
+        let components = runtime.block_on(in_memory_slate());
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
         let snapshot = runtime.block_on(slate.snapshot()).unwrap();
@@ -433,6 +464,7 @@ mod tests {
         let extender = GenericPrefixExtender::new(
             snapshot,
             runtime.handle().clone(),
+            range_stats.clone(),
             vec![IndexType::AV],
             attr_name,
             vec![],

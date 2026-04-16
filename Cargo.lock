@@ -3449,6 +3449,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "slatedb_estimates"
+version = "0.1.0"
+source = "git+https://github.com/FiV0/slatedb-estimates#2e329bda61deb97f6ed0f5cffda38037f268dd81"
+dependencies = [
+ "slatedb",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4039,6 +4047,7 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "slatedb",
+ "slatedb_estimates",
  "tempfile",
  "testcontainers",
  "thiserror 2.0.12",

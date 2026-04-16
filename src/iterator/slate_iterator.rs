@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use anyhow::Error;
@@ -22,6 +24,7 @@ pub(crate) struct SlateIterator {
     prefix: Bytes,
     handle: Handle,
     extractor: Extractor,
+    range_stats: Arc<slatedb_estimates::RangeStats>,
 }
 
 impl SlateIterator {
@@ -30,6 +33,7 @@ impl SlateIterator {
         slate: &slatedb::DbSnapshot,
         handle: Handle,
         extractor: Extractor,
+        range_stats: Arc<slatedb_estimates::RangeStats>,
     ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let mut iterator =
@@ -44,15 +48,16 @@ impl SlateIterator {
             prefix: prefix_bytes,
             handle,
             extractor,
+            range_stats,
         })
     }
 }
 
 impl Index for SlateIterator {
     fn count(&self) -> Result<u64, Error> {
-        // TODO: estimate_key_count is not available on DbSnapshot
-        // For now, return 100 as a placeholder
-        Ok(100)
+        Ok(self
+            .handle
+            .block_on(self.range_stats.estimate_key_count_with_prefix(&self.prefix))?)
     }
 
     fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
@@ -245,7 +250,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_basic() {
-        let slate = in_memory_slate().await.db;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;
@@ -257,7 +264,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -273,7 +280,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_seek() {
-        let slate = in_memory_slate().await.db;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;
@@ -284,7 +293,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
+            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -297,7 +306,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_empty_prefix() {
-        let slate = in_memory_slate().await.db;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let handle = Handle::current();
 
         slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
@@ -306,7 +317,7 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         })
@@ -316,21 +327,30 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_slate_iterator_count() {
-        let slate = in_memory_slate().await.db;
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let range_stats = components.range_stats.clone();
         let handle = Handle::current();
 
         slate.put(&make_key(PFX, b"aa"), b"").await;
         slate.put(&make_key(PFX, b"bb"), b"").await;
         slate.put(&make_key(PFX, b"cc"), b"").await;
 
+        // Flush memtable to SSTs so RangeStats can read the metadata
+        slate
+            .flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::MemTable,
+            })
+            .await
+            .unwrap();
+
         let snapshot = slate.snapshot().await.unwrap();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor).unwrap();
+            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
-            // TODO: count() currently returns 100 as estimate_key_count is not on DbSnapshot
-            assert_eq!(count, 100);
+            assert_eq!(count, 3);
         })
         .await
         .unwrap();
