@@ -57,8 +57,7 @@ impl Index for SlateIterator {
     fn count(&self) -> Result<u64, Error> {
         Ok(self
             .handle
-            .block_on(self.range_stats.estimate_key_count_with_prefix(&self.prefix))
-            .unwrap_or(0))
+            .block_on(self.range_stats.estimate_key_count_with_prefix(&self.prefix))?)
     }
 
     fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
