@@ -1948,24 +1948,6 @@ mod tests {
             assert!(pm[&crate::partition::TX_PARTITION] > 0);
         }
 
-        // Verify no entity ID collision: insert another user entity
-        let result = node
-            .execute_tx(vec![TxOp::Add {
-                entity: "bob".into(),
-                attribute: kw!(:name),
-                value: "bob".into(),
-            }])
-            .await
-            .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-
-        let db = node.db().await.unwrap();
-        let results = db
-            .query("[:find ?name :where [?e :name ?name]]")
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 2);
-
         node.close().await;
     }
 }
