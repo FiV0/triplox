@@ -179,8 +179,17 @@ mod tests {
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        // Give it some time to process
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if subscriber.read().await.records.len() >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for subscriber to process first record");
+        tokio::time::sleep(Duration::from_millis(25)).await;
 
         token.cancel();
 
