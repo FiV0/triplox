@@ -28,18 +28,18 @@ use crate::query::QueryResult;
 /// A shared, reference-counted cache of DB snapshots.
 /// Keyed by tx_id (the point-in-time identifier for the snapshot).
 /// DBs are read-only and safe to share across connections.
-struct DbCacheEntry {
-    db: Arc<DB>,
-    refcount: usize,
+pub(crate) struct DbCacheEntry {
+    pub(crate) db: Arc<DB>,
+    pub(crate) refcount: usize,
 }
 
-struct DbCache {
+pub(crate) struct DbCache {
     entries: RwLock<HashMap<i64, DbCacheEntry>>,
     max_open: usize,
 }
 
 impl DbCache {
-    fn new(max_open: usize) -> Self {
+    pub(crate) fn new(max_open: usize) -> Self {
         DbCache {
             entries: RwLock::new(HashMap::new()),
             max_open,
@@ -50,7 +50,7 @@ impl DbCache {
     /// The `create` future is only evaluated on cache miss.
     // TODO: the write lock is held across create().await (disk I/O),
     // blocking all other acquire/release calls across every connection.
-    async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
+    pub(crate) async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<DB>>,
@@ -95,7 +95,7 @@ impl DbCache {
 
     /// Release a reference to a DB snapshot.
     /// Evicts the entry when refcount reaches 0.
-    async fn release(&self, tx_id: i64) {
+    pub(crate) async fn release(&self, tx_id: i64) {
         let mut entries = self.entries.write().await;
         if let Some(entry) = entries.get_mut(&tx_id) {
             entry.refcount -= 1;
@@ -561,7 +561,7 @@ async fn handle_connection<L: TxLog + 'static>(
 // Handler helpers
 // ---------------------------------------------------------------------------
 
-async fn handle_open_db<L: TxLog + 'static>(
+pub(crate) async fn handle_open_db<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     db_cache: &DbCache,
     conn_state: &mut ConnectionState,
@@ -597,7 +597,7 @@ async fn handle_open_db<L: TxLog + 'static>(
     Ok((db_id, tx_id))
 }
 
-async fn handle_query(
+pub(crate) async fn handle_query(
     conn_state: &ConnectionState,
     query_string: &str,
     db_id: u32,
@@ -619,7 +619,7 @@ async fn handle_query(
     Ok((result, find_vars))
 }
 
-async fn handle_execute<L: TxLog + 'static>(
+pub(crate) async fn handle_execute<L: TxLog + 'static>(
     node: &Arc<Node<L>>,
     ops: Vec<crate::ops::TxOp>,
     await_indexing: bool,

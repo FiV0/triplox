@@ -27,6 +27,7 @@ mod util;
 
 pub mod client;
 pub mod config;
+pub mod http_server;
 pub mod node;
 pub mod protocol;
 pub mod server;

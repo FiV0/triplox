@@ -1,15 +1,10 @@
-//! Rust client library for connecting to a Triplox server.
+//! HTTP/2 client library for connecting to a Triplox server.
 //!
 //! `ClientNode` mirrors the `Node` API and `ClientDb` mirrors the `DB` API,
-//! both operating over TCP via the wire protocol.
-
-use std::collections::BTreeMap;
-use std::sync::Arc;
+//! both operating over HTTP/2 via the binary protocol encoding.
 
 use anyhow::{bail, Error, Result};
-use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use reqwest::Client;
 
 use crate::node::{Database, IntoQuery, QueryNode, SubmitNode, TransactionResult, TxKey};
 use crate::ops::{DataType, QueryArg, TxOp};
@@ -18,200 +13,132 @@ use crate::query::QueryResult;
 use edn::query::ParsedQuery;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const CONTENT_TYPE: &str = "application/x-triplox";
+
+/// Check an HTTP response for errors. If the status is not success,
+/// attempt to decode a binary ErrorResponse from the body.
+async fn check_response(resp: reqwest::Response) -> Result<bytes::Bytes> {
+    let status = resp.status();
+    if status.is_success() {
+        Ok(resp.bytes().await?)
+    } else {
+        let body = resp.bytes().await?;
+        if let Ok((_, code, message, detail, _)) = decode_error_body(&body) {
+            let mut msg = format!("Server error (code {}): {}", code, message);
+            if let Some(d) = detail {
+                msg.push_str(&format!(" — {}", d));
+            }
+            bail!("{}", msg);
+        }
+        bail!("HTTP error {}: {}", status, String::from_utf8_lossy(&body));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ClientNode
 // ---------------------------------------------------------------------------
 
-/// Shared connection state protected by a mutex (serial protocol — one op at a time).
-struct ConnectionInner {
-    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
-    writer: BufWriter<tokio::net::tcp::OwnedWriteHalf>,
-}
-
 pub struct ClientNode {
-    conn: Arc<Mutex<ConnectionInner>>,
+    client: Client,
+    base_url: String,
 }
 
 impl ClientNode {
-    /// Connect to a Triplox server and perform the startup handshake.
-    pub async fn connect(addr: &str) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        stream.set_nodelay(true)?;
-        let (reader, writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-        let mut writer = BufWriter::new(writer);
-
-        // Send Startup
-        write_frontend_message(
-            &mut writer,
-            &FrontendMessage::Startup {
-                version_major: PROTOCOL_VERSION_MAJOR,
-                version_minor: PROTOCOL_VERSION_MINOR,
-                params: BTreeMap::new(),
-            },
-        )
-        .await?;
-        writer.flush().await?;
-
-        // Expect AuthenticationOk
-        let msg = read_backend_message(&mut reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::AuthenticationOk { .. } => {}
-            BackendMessage::ErrorResponse { message, .. } => {
-                bail!("Server rejected connection: {}", message);
-            }
-            other => bail!("Unexpected response to Startup: {:?}", other),
-        }
-
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery {
-                status: STATUS_IDLE,
-            } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
-        }
-
+    /// Connect to a Triplox HTTP server.
+    ///
+    /// `url` should be the base URL, e.g. `http://127.0.0.1:5490`.
+    pub async fn connect(url: &str) -> Result<Self> {
+        let client = Client::builder()
+            .http2_prior_knowledge()
+            .build()?;
         Ok(ClientNode {
-            conn: Arc::new(Mutex::new(ConnectionInner { reader, writer })),
+            client,
+            base_url: url.trim_end_matches('/').to_string(),
         })
     }
 
     async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
-        let mut conn = self.conn.lock().await;
         let (tx_id, system_time) = match &tx_key {
             None => (None, None),
             Some(tk) => (Some(tk.tx_id), Some(tk.system_time.timestamp_micros())),
         };
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::OpenDb { tx_id, system_time },
-        )
-        .await?;
-        conn.writer.flush().await?;
 
-        // Expect DbOpened
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        let (db_id, tx_id) = match msg {
-            BackendMessage::DbOpened { db_id, tx_id } => (db_id, tx_id),
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Failed to open DB: {}", message);
-            }
-            other => bail!("Expected DbOpened, got {:?}", other),
-        };
+        let body = encode_open_db_request(tx_id, system_time);
+        let resp = self
+            .client
+            .post(format!("{}/db/open", self.base_url))
+            .header("Content-Type", CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await?;
 
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery { .. } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
-        }
+        let data = check_response(resp).await?;
+        let (db_id, tx_id) = decode_db_opened_response(&data)?;
 
         Ok(ClientDb {
             db_id,
             tx_id,
-            conn: self.conn.clone(),
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
         })
     }
 
-    /// Gracefully close the connection.
+    /// Graceful close. With HTTP, handles are cleaned up on connection drop.
     pub async fn close(&self) -> Result<()> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(&mut conn.writer, &FrontendMessage::Terminate).await?;
-        conn.writer.flush().await?;
         Ok(())
     }
 }
 
 impl SubmitNode for ClientNode {
     async fn submit_tx(&self, ops: Vec<TxOp>) -> Result<TxKey, Error> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::Execute {
-                ops,
-                await_indexing: false,
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
+        let body = encode_execute_request(&ops);
+        let resp = self
+            .client
+            .post(format!("{}/tx/submit", self.base_url))
+            .header("Content-Type", CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await?;
 
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        let tx_key = match msg {
-            BackendMessage::TxKey { tx_id, system_time } => {
-                let dt = crate::protocol::micros_to_datetime(system_time)?;
-                TxKey {
-                    tx_id,
-                    system_time: dt,
-                }
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                // TODO: fatal errors may not be followed by ReadyForQuery
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Transaction error: {}", message);
-            }
-            other => bail!("Expected TxKey, got {:?}", other),
-        };
-
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery { .. } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
-        }
-
-        Ok(tx_key)
+        let data = check_response(resp).await?;
+        let (tx_id, system_time) = decode_tx_key_response(&data)?;
+        let dt = micros_to_datetime(system_time)?;
+        Ok(TxKey {
+            tx_id,
+            system_time: dt,
+        })
     }
 
     async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::Execute {
-                ops,
-                await_indexing: true,
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
+        let body = encode_execute_request(&ops);
+        let resp = self
+            .client
+            .post(format!("{}/tx/execute", self.base_url))
+            .header("Content-Type", CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await?;
 
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        let result = match msg {
-            BackendMessage::TxResult {
-                status,
-                tx_id,
-                system_time,
-                error_message,
-            } => {
-                let dt = crate::protocol::micros_to_datetime(system_time)?;
-                let tx_key = TxKey {
-                    tx_id,
-                    system_time: dt,
-                };
-                if status == 0 {
-                    TransactionResult::TxCommited(tx_key)
-                } else {
-                    let err_msg =
-                        error_message.unwrap_or_else(|| "transaction aborted".to_string());
-                    TransactionResult::TxAborted(tx_key, anyhow::anyhow!("{}", err_msg).into())
-                }
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                // TODO: fatal errors may not be followed by ReadyForQuery
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Transaction error: {}", message);
-            }
-            other => bail!("Expected TxResult, got {:?}", other),
+        let data = check_response(resp).await?;
+        let (status, tx_id, system_time, error_message) = decode_tx_result_response(&data)?;
+        let dt = micros_to_datetime(system_time)?;
+        let tx_key = TxKey {
+            tx_id,
+            system_time: dt,
         };
 
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery { .. } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
+        if status == 0 {
+            Ok(TransactionResult::TxCommited(tx_key))
+        } else {
+            let err_msg = error_message.unwrap_or_else(|| "transaction aborted".to_string());
+            Ok(TransactionResult::TxAborted(
+                tx_key,
+                anyhow::anyhow!("{}", err_msg).into(),
+            ))
         }
-
-        Ok(result)
     }
 }
 
@@ -233,12 +160,14 @@ impl QueryNode for ClientNode {
 
 /// A remote DB snapshot handle. Mirrors the `DB` API.
 ///
-/// Callers must call [`.close()`](ClientDb::close) when done. Dropping without
-/// closing leaks the server-side handle until the connection is closed.
+/// Callers should call [`.close()`](ClientDb::close) when done to release
+/// the server-side handle. If not closed explicitly, the server will clean
+/// up via TTL expiration or connection-drop detection.
 pub struct ClientDb {
     db_id: u32,
     tx_id: i64,
-    conn: Arc<Mutex<ConnectionInner>>,
+    client: Client,
+    base_url: String,
 }
 
 impl ClientDb {
@@ -247,76 +176,14 @@ impl ClientDb {
         self.tx_id
     }
 
-    /// Send a raw EDN query string with input binding arguments over the wire.
-    async fn query_edn_with_args(&self, edn: &str, args: Vec<QueryArg>) -> Result<QueryResult> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::Query {
-                query_string: edn.to_string(),
-                db_id: self.db_id,
-                args,
-            },
-        )
-        .await?;
-        conn.writer.flush().await?;
-
-        // Read response: could be RowDescription + DataRow* + ReadyForQuery, or ErrorResponse
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-
-        match msg {
-            BackendMessage::RowDescription { .. } => {
-                // Collect DataRows until ReadyForQuery
-                let mut rows = Vec::new();
-                loop {
-                    let msg =
-                        read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                    match msg {
-                        BackendMessage::DataRow { values } => {
-                            rows.push(values);
-                        }
-                        BackendMessage::ReadyForQuery { .. } => break,
-                        other => bail!("Unexpected message during query: {:?}", other),
-                    }
-                }
-                Ok(rows)
-            }
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Query error: {}", message);
-            }
-            other => bail!("Expected RowDescription or ErrorResponse, got {:?}", other),
-        }
-    }
-
     /// Release this DB handle on the server.
     pub async fn close(self) -> Result<()> {
-        let mut conn = self.conn.lock().await;
-        write_frontend_message(
-            &mut conn.writer,
-            &FrontendMessage::CloseDb { db_id: self.db_id },
-        )
-        .await?;
-        conn.writer.flush().await?;
-
-        // Expect DbClosed
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::DbClosed { .. } => {}
-            BackendMessage::ErrorResponse { message, .. } => {
-                read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-                bail!("Failed to close DB: {}", message);
-            }
-            other => bail!("Expected DbClosed, got {:?}", other),
-        }
-
-        // Expect ReadyForQuery
-        let msg = read_backend_message(&mut conn.reader, DEFAULT_MAX_MESSAGE_SIZE).await?;
-        match msg {
-            BackendMessage::ReadyForQuery { .. } => {}
-            other => bail!("Expected ReadyForQuery, got {:?}", other),
-        }
-
+        let resp = self
+            .client
+            .delete(format!("{}/db/{}", self.base_url, self.db_id))
+            .send()
+            .await?;
+        check_response(resp).await?;
         Ok(())
     }
 }
@@ -324,7 +191,7 @@ impl ClientDb {
 impl Database for ClientDb {
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
         let parsed = query.into_query()?;
-        self.query_edn_with_args(&parsed.to_string(), vec![]).await
+        self.query_with_args(&parsed, &[]).await
     }
 
     async fn query_with_args(
@@ -332,7 +199,17 @@ impl Database for ClientDb {
         query: &ParsedQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
-        let edn = query.to_string();
-        self.query_edn_with_args(&edn, args.to_vec()).await
+        let body = encode_query_request(&query.to_string(), args);
+        let resp = self
+            .client
+            .post(format!("{}/db/{}/query", self.base_url, self.db_id))
+            .header("Content-Type", CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await?;
+
+        let data = check_response(resp).await?;
+        let (_columns, rows) = decode_query_response(&data)?;
+        Ok(rows)
     }
 }

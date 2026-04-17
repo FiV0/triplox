@@ -6,10 +6,8 @@
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
-  (^TriploxNode [host port]
-   (connect host port {}))
-  (^TriploxNode [host port params]
-   (TriploxNode/connect host (int port) (into {} (map (fn [[k v]] [(name k) (str v)])) params))))
+  ^TriploxNode [host port]
+  (TriploxNode/connect host (int port)))
 
 (defn db
   "Open a DB snapshot. Returns a Db (AutoCloseable)."

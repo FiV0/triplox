@@ -6,10 +6,10 @@ use tokio_util::sync::CancellationToken;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
+use triplox::http_server::{DevHttpServer, HttpServer};
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
-use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
 
 async fn define_base_schema(client: &ClientNode) {
@@ -17,15 +17,15 @@ async fn define_base_schema(client: &ClientNode) {
     assert!(matches!(result, TransactionResult::TxCommited(_)));
 }
 
-/// Start an in-memory server on a free port.
-/// Returns the address string and a cancellation token.
-/// Cancel the token to shut down the server.
+/// Start an in-memory HTTP server on a free port.
+/// Returns the base URL and a cancellation token.
 async fn start_test_server() -> (String, CancellationToken) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
 
     let node = Arc::new(Node::memory_node().await);
-    let server = Server::new(node, 1024);
+    let server = HttpServer::new(node, 1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -33,7 +33,7 @@ async fn start_test_server() -> (String, CancellationToken) {
         let _ = server.listen_on(listener, server_token).await;
     });
 
-    (addr, token)
+    (url, token)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -282,9 +282,10 @@ async fn test_db_as_of() {
 
 async fn start_dev_server() -> (String, CancellationToken) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
 
-    let server = DevServer::new(1024);
+    let server = DevHttpServer::new(1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -292,7 +293,7 @@ async fn start_dev_server() -> (String, CancellationToken) {
         let _ = server.listen_on(listener, server_token).await;
     });
 
-    (addr, token)
+    (url, token)
 }
 
 #[tokio::test(flavor = "multi_thread")]

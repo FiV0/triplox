@@ -3,196 +3,152 @@ package io.triplox.client;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
 
 import static io.triplox.client.MessageTypes.*;
 
 /**
- * Wire-level codec for framing Triplox protocol messages.
+ * Codec for encoding/decoding Triplox binary payloads for HTTP transport.
  *
- * Frontend (write) methods build the payload into a buffer first
- * to compute the length, then write the framed message.
- *
- * The read method reads a single backend message from the stream.
+ * Produces and consumes raw byte arrays suitable for HTTP request/response bodies.
+ * The binary encoding of values (DataType, TxOp, QueryArg) is unchanged from
+ * the TCP wire protocol — only the framing layer is replaced by HTTP.
  */
 public final class WireCodec {
     private WireCodec() {}
 
     // ---------------------------------------------------------------
-    // Write frontend messages
+    // Request body encoding (client → server)
     // ---------------------------------------------------------------
 
     /**
-     * Startup message — special: no type byte, just [length:u32][payload].
+     * Encode an OpenDb request body: option_i64(txId) + option_i64(null).
      */
-    public static void writeStartup(OutputStream out, Map<String, String> params) throws IOException {
+    public static byte[] encodeOpenDbBody(Long txId) throws IOException {
         var baos = new ByteArrayOutputStream();
         var dos = new DataOutputStream(baos);
-        dos.writeShort(PROTOCOL_VERSION_MAJOR);
-        dos.writeShort(PROTOCOL_VERSION_MINOR);
-        var sorted = new TreeMap<>(params);
-        DataTypeCodec.encodeStringMap(dos, sorted);
+        DataTypeCodec.encodeOptionalLong(dos, txId);   // tx_id
+        DataTypeCodec.encodeOptionalLong(dos, null);   // system_time (always null from client)
         dos.flush();
-        byte[] payload = baos.toByteArray();
-
-        var frame = new DataOutputStream(out);
-        frame.writeInt(payload.length + 4); // length includes itself
-        frame.write(payload);
-        frame.flush();
+        return baos.toByteArray();
     }
 
-    public static void writeOpenDb(OutputStream out, Long txId) throws IOException {
-        writeFramed(out, MSG_OPEN_DB, dos -> {
-            DataTypeCodec.encodeOptionalLong(dos, txId);   // tx_id
-            DataTypeCodec.encodeOptionalLong(dos, null);   // system_time
-        });
-    }
-
-    public static void writeCloseDb(OutputStream out, int dbId) throws IOException {
-        writeFramed(out, MSG_CLOSE_DB, dos -> dos.writeInt(dbId));
-    }
-
-    public static void writeQuery(OutputStream out, String query, int dbId) throws IOException {
-        writeQuery(out, query, dbId, List.of());
-    }
-
-    public static void writeQuery(OutputStream out, String query, int dbId, List<QueryArg> args) throws IOException {
-        writeFramed(out, MSG_QUERY, dos -> {
-            DataTypeCodec.encodeString(dos, query);
-            dos.writeInt(dbId);
-            QueryArg.encodeArgs(dos, args);
-        });
-    }
-
-    public static void writeExecute(OutputStream out, List<TxOp> ops, boolean awaitIndexing) throws IOException {
-        writeFramed(out, MSG_EXECUTE, dos -> {
-            TxOpCodec.encode(dos, ops);
-            dos.writeBoolean(awaitIndexing);
-        });
-    }
-
-    public static void writeSubscribe(OutputStream out, String query, int dbId) throws IOException {
-        writeSubscribe(out, query, dbId, List.of());
-    }
-
-    public static void writeSubscribe(OutputStream out, String query, int dbId, List<QueryArg> args) throws IOException {
-        writeFramed(out, MSG_SUBSCRIBE, dos -> {
-            DataTypeCodec.encodeString(dos, query);
-            dos.writeInt(dbId);
-            QueryArg.encodeArgs(dos, args);
-        });
-    }
-
-    public static void writeUnsubscribe(OutputStream out) throws IOException {
-        writeEmpty(out, MSG_UNSUBSCRIBE);
-    }
-
-    public static void writeTerminate(OutputStream out) throws IOException {
-        writeEmpty(out, MSG_TERMINATE);
-    }
-
-    // ---------------------------------------------------------------
-    // Read backend messages
-    // ---------------------------------------------------------------
-
-    public static BackendMessage readBackendMessage(InputStream in) throws IOException {
-        var dis = new DataInputStream(in);
-        byte type = dis.readByte();
-        int length = dis.readInt();
-        if (length < 4) {
-            throw new IOException("Invalid message length: " + length);
-        }
-        int payloadSize = length - 4;
-        byte[] payload = new byte[payloadSize];
-        if (payloadSize > 0) {
-            dis.readFully(payload);
-        }
-
-        var pin = new DataInputStream(new ByteArrayInputStream(payload));
-        return decodeBackendPayload(type, pin);
-    }
-
-    // ---------------------------------------------------------------
-    // Internal: framing helpers
-    // ---------------------------------------------------------------
-
-    @FunctionalInterface
-    interface PayloadWriter {
-        void write(DataOutputStream out) throws IOException;
-    }
-
-    private static void writeFramed(OutputStream out, byte typeByte, PayloadWriter writer) throws IOException {
+    /**
+     * Encode a Query request body: string(query) + query_args(args).
+     */
+    public static byte[] encodeQueryBody(String query, List<QueryArg> args) throws IOException {
         var baos = new ByteArrayOutputStream();
         var dos = new DataOutputStream(baos);
-        writer.write(dos);
+        DataTypeCodec.encodeString(dos, query);
+        QueryArg.encodeArgs(dos, args);
         dos.flush();
-        byte[] payload = baos.toByteArray();
-
-        var frame = new DataOutputStream(out);
-        frame.writeByte(typeByte);
-        frame.writeInt(payload.length + 4);
-        frame.write(payload);
-        frame.flush();
+        return baos.toByteArray();
     }
 
-    private static void writeEmpty(OutputStream out, byte typeByte) throws IOException {
-        var frame = new DataOutputStream(out);
-        frame.writeByte(typeByte);
-        frame.writeInt(4);
-        frame.flush();
+    /**
+     * Encode an Execute request body: tx_ops(ops).
+     */
+    public static byte[] encodeExecuteBody(List<TxOp> ops) throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
+        TxOpCodec.encode(dos, ops);
+        dos.flush();
+        return baos.toByteArray();
     }
 
     // ---------------------------------------------------------------
-    // Internal: backend payload decoding
+    // Response body decoding (server → client)
     // ---------------------------------------------------------------
 
-    private static BackendMessage decodeBackendPayload(byte type, DataInputStream in) throws IOException {
-        return switch (type) {
-            case MSG_AUTHENTICATION_OK -> new BackendMessage.AuthenticationOk(
-                    DataTypeCodec.decodeString(in));
+    /**
+     * Decode a DbOpened response body: u32(db_id) + i64(tx_id).
+     */
+    public static BackendMessage.DbOpened decodeDbOpened(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        return new BackendMessage.DbOpened(dis.readInt(), dis.readLong());
+    }
 
-            case MSG_DB_OPENED -> new BackendMessage.DbOpened(in.readInt(), in.readLong());
+    /**
+     * Decode a DbClosed response body: u32(db_id).
+     */
+    public static BackendMessage.DbClosed decodeDbClosed(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        return new BackendMessage.DbClosed(dis.readInt());
+    }
 
-            case MSG_DB_CLOSED -> new BackendMessage.DbClosed(in.readInt());
+    /**
+     * Decode a query response from concatenated framed backend messages.
+     * Format: [type:1][length:4][payload]* where messages are RowDescription + DataRows.
+     */
+    public static QueryResult decodeQueryResponse(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        List<ColumnDesc> columns = null;
+        var rows = new ArrayList<List<Object>>();
 
-            case MSG_ROW_DESCRIPTION -> {
-                int count = in.readInt();
-                var columns = new ArrayList<ColumnDesc>(count);
-                for (int i = 0; i < count; i++) {
-                    columns.add(new ColumnDesc(DataTypeCodec.decodeString(in), in.readByte()));
-                }
-                yield new BackendMessage.RowDescription(columns);
+        while (dis.available() > 0) {
+            byte type = dis.readByte();
+            int length = dis.readInt();
+            if (length < 4) {
+                throw new IOException("Invalid message length: " + length);
+            }
+            int payloadSize = length - 4;
+            byte[] payload = new byte[payloadSize];
+            if (payloadSize > 0) {
+                dis.readFully(payload);
             }
 
-            case MSG_DATA_ROW -> {
-                int count = in.readInt();
-                var values = new ArrayList<>(count);
-                for (int i = 0; i < count; i++) {
-                    values.add(DataTypeCodec.decode(in));
+            var pin = new DataInputStream(new ByteArrayInputStream(payload));
+            switch (type) {
+                case MSG_ROW_DESCRIPTION -> {
+                    int count = pin.readInt();
+                    columns = new ArrayList<>(count);
+                    for (int i = 0; i < count; i++) {
+                        columns.add(new ColumnDesc(DataTypeCodec.decodeString(pin), pin.readByte()));
+                    }
                 }
-                yield new BackendMessage.DataRow(values);
+                case MSG_DATA_ROW -> {
+                    int count = pin.readInt();
+                    var values = new ArrayList<>(count);
+                    for (int i = 0; i < count; i++) {
+                        values.add(DataTypeCodec.decode(pin));
+                    }
+                    rows.add(values);
+                }
+                default -> throw new IOException("Unexpected message type in query response: 0x" +
+                        Integer.toHexString(type & 0xFF));
             }
+        }
 
-            case MSG_DATA_BATCH_COMPLETE -> new BackendMessage.DataBatchComplete(in.readLong());
+        if (columns == null) {
+            throw new IOException("Missing RowDescription in query response");
+        }
+        return new QueryResult(columns, rows);
+    }
 
-            case MSG_READY_FOR_QUERY -> new BackendMessage.ReadyForQuery(in.readByte());
+    /**
+     * Decode a TxKey response body: i64(tx_id) + i64(system_time).
+     */
+    public static BackendMessage.TxKey decodeTxKey(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        return new BackendMessage.TxKey(dis.readLong(), dis.readLong());
+    }
 
-            case MSG_TX_KEY -> new BackendMessage.TxKey(in.readLong(), in.readLong());
+    /**
+     * Decode a TxResult response body: u8(status) + i64(tx_id) + i64(system_time) + option_string(error).
+     */
+    public static BackendMessage.TxResult decodeTxResult(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        return new BackendMessage.TxResult(
+                dis.readByte(), dis.readLong(), dis.readLong(),
+                DataTypeCodec.decodeOptionalString(dis));
+    }
 
-            case MSG_TX_RESULT -> new BackendMessage.TxResult(
-                    in.readByte(), in.readLong(), in.readLong(),
-                    DataTypeCodec.decodeOptionalString(in));
-
-            case MSG_UNSUBSCRIBE_COMPLETE -> new BackendMessage.UnsubscribeComplete();
-
-            case MSG_HEARTBEAT -> new BackendMessage.Heartbeat();
-
-            case MSG_ERROR_RESPONSE -> new BackendMessage.ErrorResponse(
-                    in.readByte(), in.readShort(), DataTypeCodec.decodeString(in),
-                    DataTypeCodec.decodeOptionalString(in), DataTypeCodec.decodeOptionalString(in));
-
-            default -> throw new IOException("Unknown backend message type: 0x" + Integer.toHexString(type & 0xFF));
-        };
+    /**
+     * Decode an ErrorResponse body: u8(severity) + u16(code) + string(message) + option(detail) + option(hint).
+     */
+    public static BackendMessage.ErrorResponse decodeErrorResponse(byte[] body) throws IOException {
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        return new BackendMessage.ErrorResponse(
+                dis.readByte(), dis.readShort(), DataTypeCodec.decodeString(dis),
+                DataTypeCodec.decodeOptionalString(dis), DataTypeCodec.decodeOptionalString(dis));
     }
 }

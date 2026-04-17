@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.List;
-import java.util.Map;
 import java.util.TreeMap;
 
 import static io.triplox.client.MessageTypes.*;
@@ -13,193 +12,132 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class WireCodecTest {
 
-    /**
-     * Encode a frontend message using WireCodec write methods,
-     * then decode as a backend message to test framing.
-     * Since WireCodec only reads backend messages, we test by
-     * writing backend messages manually and reading them back.
-     */
-    private BackendMessage writeAndReadBack(BackendMessageWriter writer) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        writer.write(baos);
-        var bin = new ByteArrayInputStream(baos.toByteArray());
-        return WireCodec.readBackendMessage(bin);
-    }
-
-    @FunctionalInterface
-    interface BackendMessageWriter {
-        void write(OutputStream out) throws IOException;
-    }
-
     // ---------------------------------------------------------------
-    // Test backend message reading via manual wire encoding
+    // Request body encoding tests
     // ---------------------------------------------------------------
 
-    private void writeBackendMessage(OutputStream out, byte type, byte[] payload) throws IOException {
-        var dos = new DataOutputStream(out);
-        dos.writeByte(type);
-        dos.writeInt(payload.length + 4);
-        dos.write(payload);
-        dos.flush();
+    @Test
+    void testEncodeOpenDbBodyNull() throws IOException {
+        byte[] body = WireCodec.encodeOpenDbBody(null);
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        // Two None tags (tx_id, system_time)
+        assertEquals(0x00, dis.readByte());
+        assertEquals(0x00, dis.readByte());
+        assertEquals(0, dis.available());
     }
 
     @Test
-    void testAuthenticationOk() throws IOException {
+    void testEncodeOpenDbBodyWithTxId() throws IOException {
+        byte[] body = WireCodec.encodeOpenDbBody(42L);
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        // Some(42) for tx_id
+        assertEquals(0x01, dis.readByte());
+        assertEquals(42L, dis.readLong());
+        // None for system_time
+        assertEquals(0x00, dis.readByte());
+        assertEquals(0, dis.available());
+    }
+
+    @Test
+    void testEncodeQueryBody() throws IOException {
+        byte[] body = WireCodec.encodeQueryBody("{:find [?e]}", List.of());
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        String query = DataTypeCodec.decodeString(dis);
+        assertEquals("{:find [?e]}", query);
+        int argsCount = dis.readInt();
+        assertEquals(0, argsCount);
+    }
+
+    @Test
+    void testEncodeExecuteBody() throws IOException {
+        var doc = new TreeMap<Keyword, Object>();
+        doc.put(Keyword.intern("db", "id"), 1L);
+        var ops = List.<TxOp>of(new TxOp.Put(doc));
+
+        byte[] body = WireCodec.encodeExecuteBody(ops);
+        var dis = new DataInputStream(new ByteArrayInputStream(body));
+        int count = dis.readInt();
+        assertEquals(1, count);
+        // First byte is the op type tag
+        assertEquals(TXOP_PUT, dis.readByte());
+    }
+
+    // ---------------------------------------------------------------
+    // Response body decoding tests
+    // ---------------------------------------------------------------
+
+    @Test
+    void testDecodeDbOpened() throws IOException {
         var baos = new ByteArrayOutputStream();
         var dos = new DataOutputStream(baos);
-        DataTypeCodec.encodeString(dos, "triplox 0.1.0");
-        dos.flush();
-
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_AUTHENTICATION_OK, baos.toByteArray());
-
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        assertInstanceOf(BackendMessage.AuthenticationOk.class, msg);
-        assertEquals("triplox 0.1.0", ((BackendMessage.AuthenticationOk) msg).serverVersion());
-    }
-
-    @Test
-    void testDbOpened() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
         dos.writeInt(5);
         dos.writeLong(42);
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_DB_OPENED, payload.toByteArray());
-
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        var opened = (BackendMessage.DbOpened) msg;
+        var opened = WireCodec.decodeDbOpened(baos.toByteArray());
         assertEquals(5, opened.dbId());
         assertEquals(42, opened.txId());
     }
 
     @Test
-    void testDbClosed() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
+    void testDecodeDbClosed() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
         dos.writeInt(5);
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_DB_CLOSED, payload.toByteArray());
-
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(5, ((BackendMessage.DbClosed) msg).dbId());
+        var closed = WireCodec.decodeDbClosed(baos.toByteArray());
+        assertEquals(5, closed.dbId());
     }
 
     @Test
-    void testReadyForQuery() throws IOException {
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_READY_FOR_QUERY, new byte[]{STATUS_IDLE});
-
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(STATUS_IDLE, ((BackendMessage.ReadyForQuery) msg).status());
-    }
-
-    @Test
-    void testRowDescription() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        dos.writeInt(2); // 2 columns
-        DataTypeCodec.encodeString(dos, "?e");
-        dos.writeByte(TAG_LONG);
-        DataTypeCodec.encodeString(dos, "?name");
-        dos.writeByte(TAG_STRING);
-        dos.flush();
-
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_ROW_DESCRIPTION, payload.toByteArray());
-
-        var msg = (BackendMessage.RowDescription) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(2, msg.columns().size());
-        assertEquals("?e", msg.columns().get(0).name());
-        assertEquals(TAG_LONG, msg.columns().get(0).dataType());
-        assertEquals("?name", msg.columns().get(1).name());
-        assertEquals(TAG_STRING, msg.columns().get(1).dataType());
-    }
-
-    @Test
-    void testDataRow() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        dos.writeInt(2); // 2 values
-        DataTypeCodec.encode(dos, 1L);
-        DataTypeCodec.encode(dos, "alice");
-        dos.flush();
-
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_DATA_ROW, payload.toByteArray());
-
-        var msg = (BackendMessage.DataRow) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(2, msg.values().size());
-        assertEquals(1L, msg.values().get(0));
-        assertEquals("alice", msg.values().get(1));
-    }
-
-    @Test
-    void testTxKey() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
+    void testDecodeTxKey() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
         dos.writeLong(42);
         dos.writeLong(1700000000000000L);
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_TX_KEY, payload.toByteArray());
-
-        var msg = (BackendMessage.TxKey) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(42, msg.txId());
-        assertEquals(1700000000000000L, msg.systemTime());
+        var txKey = WireCodec.decodeTxKey(baos.toByteArray());
+        assertEquals(42, txKey.txId());
+        assertEquals(1700000000000000L, txKey.systemTime());
     }
 
     @Test
-    void testTxResultCommitted() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        dos.writeByte(0); // committed
+    void testDecodeTxResultCommitted() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
+        dos.writeByte(0);
         dos.writeLong(42);
         dos.writeLong(1700000000000000L);
         DataTypeCodec.encodeOptionalString(dos, null);
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_TX_RESULT, payload.toByteArray());
-
-        var msg = (BackendMessage.TxResult) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(0, msg.status());
-        assertEquals(42, msg.txId());
-        assertNull(msg.errorMessage());
+        var result = WireCodec.decodeTxResult(baos.toByteArray());
+        assertEquals(0, result.status());
+        assertEquals(42, result.txId());
+        assertNull(result.errorMessage());
     }
 
     @Test
-    void testTxResultAborted() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        dos.writeByte(1); // aborted
+    void testDecodeTxResultAborted() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
+        dos.writeByte(1);
         dos.writeLong(42);
         dos.writeLong(1700000000000000L);
         DataTypeCodec.encodeOptionalString(dos, "constraint violation");
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_TX_RESULT, payload.toByteArray());
-
-        var msg = (BackendMessage.TxResult) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(1, msg.status());
-        assertEquals("constraint violation", msg.errorMessage());
+        var result = WireCodec.decodeTxResult(baos.toByteArray());
+        assertEquals(1, result.status());
+        assertEquals("constraint violation", result.errorMessage());
     }
 
     @Test
-    void testErrorResponse() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
+    void testDecodeErrorResponse() throws IOException {
+        var baos = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(baos);
         dos.writeByte(SEVERITY_ERROR);
         dos.writeShort(2000);
         DataTypeCodec.encodeString(dos, "parse error");
@@ -207,131 +145,86 @@ class WireCodecTest {
         DataTypeCodec.encodeOptionalString(dos, "check syntax");
         dos.flush();
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_ERROR_RESPONSE, payload.toByteArray());
-
-        var msg = (BackendMessage.ErrorResponse) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(SEVERITY_ERROR, msg.severity());
-        assertEquals(2000, msg.code());
-        assertEquals("parse error", msg.message());
-        assertEquals("unexpected token", msg.detail());
-        assertEquals("check syntax", msg.hint());
+        var err = WireCodec.decodeErrorResponse(baos.toByteArray());
+        assertEquals(SEVERITY_ERROR, err.severity());
+        assertEquals(2000, err.code());
+        assertEquals("parse error", err.message());
+        assertEquals("unexpected token", err.detail());
+        assertEquals("check syntax", err.hint());
     }
 
     @Test
-    void testHeartbeat() throws IOException {
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_HEARTBEAT, new byte[0]);
+    void testDecodeQueryResponse() throws IOException {
+        // Build a query response: RowDescription + 2 DataRows
+        var response = new ByteArrayOutputStream();
 
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        assertInstanceOf(BackendMessage.Heartbeat.class, msg);
-    }
-
-    @Test
-    void testUnsubscribeComplete() throws IOException {
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_UNSUBSCRIBE_COMPLETE, new byte[0]);
-
-        var msg = WireCodec.readBackendMessage(new ByteArrayInputStream(frame.toByteArray()));
-        assertInstanceOf(BackendMessage.UnsubscribeComplete.class, msg);
-    }
-
-    @Test
-    void testDataBatchComplete() throws IOException {
-        var payload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(payload);
-        dos.writeLong(100);
+        // RowDescription frame
+        var rowDescPayload = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(rowDescPayload);
+        dos.writeInt(2); // 2 columns
+        DataTypeCodec.encodeString(dos, "?e");
+        dos.writeByte(TAG_LONG);
+        DataTypeCodec.encodeString(dos, "?name");
+        dos.writeByte(TAG_STRING);
         dos.flush();
+        writeFrame(response, MSG_ROW_DESCRIPTION, rowDescPayload.toByteArray());
 
-        var frame = new ByteArrayOutputStream();
-        writeBackendMessage(frame, MSG_DATA_BATCH_COMPLETE, payload.toByteArray());
+        // DataRow 1
+        var row1Payload = new ByteArrayOutputStream();
+        dos = new DataOutputStream(row1Payload);
+        dos.writeInt(2); // 2 values
+        DataTypeCodec.encode(dos, 1L);
+        DataTypeCodec.encode(dos, "alice");
+        dos.flush();
+        writeFrame(response, MSG_DATA_ROW, row1Payload.toByteArray());
 
-        var msg = (BackendMessage.DataBatchComplete) WireCodec.readBackendMessage(
-                new ByteArrayInputStream(frame.toByteArray()));
-        assertEquals(100, msg.txId());
+        // DataRow 2
+        var row2Payload = new ByteArrayOutputStream();
+        dos = new DataOutputStream(row2Payload);
+        dos.writeInt(2);
+        DataTypeCodec.encode(dos, 2L);
+        DataTypeCodec.encode(dos, "bob");
+        dos.flush();
+        writeFrame(response, MSG_DATA_ROW, row2Payload.toByteArray());
+
+        var result = WireCodec.decodeQueryResponse(response.toByteArray());
+        assertEquals(2, result.columns().size());
+        assertEquals("?e", result.columns().get(0).name());
+        assertEquals(TAG_LONG, result.columns().get(0).dataType());
+        assertEquals(2, result.rows().size());
+        assertEquals(1L, result.rows().get(0).get(0));
+        assertEquals("alice", result.rows().get(0).get(1));
+        assertEquals(2L, result.rows().get(1).get(0));
+        assertEquals("bob", result.rows().get(1).get(1));
+    }
+
+    @Test
+    void testDecodeQueryResponseEmpty() throws IOException {
+        var response = new ByteArrayOutputStream();
+
+        // RowDescription with 1 column, no DataRows
+        var rowDescPayload = new ByteArrayOutputStream();
+        var dos = new DataOutputStream(rowDescPayload);
+        dos.writeInt(1);
+        DataTypeCodec.encodeString(dos, "?e");
+        dos.writeByte(TAG_LONG);
+        dos.flush();
+        writeFrame(response, MSG_ROW_DESCRIPTION, rowDescPayload.toByteArray());
+
+        var result = WireCodec.decodeQueryResponse(response.toByteArray());
+        assertEquals(1, result.columns().size());
+        assertTrue(result.rows().isEmpty());
     }
 
     // ---------------------------------------------------------------
-    // Test frontend write methods produce valid framing
+    // Helper
     // ---------------------------------------------------------------
 
-    @Test
-    void testStartupFraming() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        WireCodec.writeStartup(baos, Map.of("client_name", "test"));
-
-        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        int length = dis.readInt();
-        assertTrue(length >= 4 + 4 + 4); // at least version(4) + map count(4) + length itself
-        short major = dis.readShort();
-        short minor = dis.readShort();
-        assertEquals(0, major);
-        assertEquals(1, minor);
-    }
-
-    @Test
-    void testTerminateFraming() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        WireCodec.writeTerminate(baos);
-
-        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        byte type = dis.readByte();
-        int length = dis.readInt();
-        assertEquals(MSG_TERMINATE, type);
-        assertEquals(4, length);
-    }
-
-    @Test
-    void testQueryFraming() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        WireCodec.writeQuery(baos, "{:find [?e]}", 1);
-
-        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        byte type = dis.readByte();
-        int length = dis.readInt();
-        assertEquals(MSG_QUERY, type);
-        assertTrue(length > 4);
-
-        // Decode the payload
-        String queryStr = DataTypeCodec.decodeString(dis);
-        int dbId = dis.readInt();
-        assertEquals("{:find [?e]}", queryStr);
-        assertEquals(1, dbId);
-    }
-
-    @Test
-    void testExecuteFraming() throws IOException {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "id"), 1L);
-        var ops = List.<TxOp>of(new TxOp.Put(doc));
-
-        var baos = new ByteArrayOutputStream();
-        WireCodec.writeExecute(baos, ops, true);
-
-        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        byte type = dis.readByte();
-        int length = dis.readInt();
-        assertEquals(MSG_EXECUTE, type);
-        assertTrue(length > 4);
-    }
-
-    @Test
-    void testOpenDbFraming() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        WireCodec.writeOpenDb(baos, null);
-
-        var dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        assertEquals(MSG_OPEN_DB, dis.readByte());
-        int length = dis.readInt();
-        assertEquals(6, length); // 4 + 2x 1 byte None tags (tx_id, system_time)
-
-        baos = new ByteArrayOutputStream();
-        WireCodec.writeOpenDb(baos, 42L);
-
-        dis = new DataInputStream(new ByteArrayInputStream(baos.toByteArray()));
-        assertEquals(MSG_OPEN_DB, dis.readByte());
-        length = dis.readInt();
-        assertEquals(14, length); // 4 + (1 tag + 8 i64) + 1 None
+    private void writeFrame(OutputStream out, byte type, byte[] payload) throws IOException {
+        var dos = new DataOutputStream(out);
+        dos.writeByte(type);
+        dos.writeInt(payload.length + 4);
+        dos.write(payload);
+        dos.flush();
     }
 }

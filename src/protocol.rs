@@ -538,17 +538,17 @@ fn encode_query_args(buf: &mut Vec<u8>, args: &[QueryArg]) {
 // ---------------------------------------------------------------------------
 
 /// A cursor over a byte slice for decoding.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Cursor { data, pos: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.data.len() - self.pos
     }
 
@@ -871,7 +871,7 @@ fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
 // Message Payload Encoding
 // ---------------------------------------------------------------------------
 
-fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
+pub(crate) fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
     match msg {
         FrontendMessage::Startup {
             version_major,
@@ -919,7 +919,7 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
     }
 }
 
-fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
+pub(crate) fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
     match msg {
         BackendMessage::AuthenticationOk { server_version } => {
             encode_string(buf, server_version);
@@ -984,7 +984,7 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
 // Message Payload Decoding
 // ---------------------------------------------------------------------------
 
-fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<FrontendMessage> {
+pub(crate) fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<FrontendMessage> {
     match msg_type {
         MSG_OPEN_DB => Ok(FrontendMessage::OpenDb {
             tx_id: cursor.read_option_i64()?,
@@ -1017,7 +1017,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
     }
 }
 
-fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
+pub(crate) fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
     match msg_type {
         MSG_AUTHENTICATION_OK => Ok(BackendMessage::AuthenticationOk {
             server_version: cursor.read_string()?,
@@ -1230,6 +1230,217 @@ pub async fn write_backend_message<W: AsyncWrite + Unpin>(
     writer.write_u32(length).await?;
     writer.write_all(&payload).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// HTTP Body Encode/Decode Helpers
+// ---------------------------------------------------------------------------
+
+/// Encode an OpenDb request body: option_i64(tx_id) + option_i64(system_time)
+pub fn encode_open_db_request(tx_id: Option<i64>, system_time: Option<i64>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_option_i64(&mut buf, &tx_id);
+    encode_option_i64(&mut buf, &system_time);
+    buf
+}
+
+/// Decode an OpenDb request body.
+pub fn decode_open_db_request(data: &[u8]) -> Result<(Option<i64>, Option<i64>)> {
+    let mut cursor = Cursor::new(data);
+    let tx_id = cursor.read_option_i64()?;
+    let system_time = cursor.read_option_i64()?;
+    Ok((tx_id, system_time))
+}
+
+/// Encode a DbOpened response body: u32(db_id) + i64(tx_id)
+pub fn encode_db_opened_response(db_id: u32, tx_id: i64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u32(&mut buf, db_id);
+    encode_i64(&mut buf, tx_id);
+    buf
+}
+
+/// Decode a DbOpened response body.
+pub fn decode_db_opened_response(data: &[u8]) -> Result<(u32, i64)> {
+    let mut cursor = Cursor::new(data);
+    let db_id = cursor.read_u32()?;
+    let tx_id = cursor.read_i64()?;
+    Ok((db_id, tx_id))
+}
+
+/// Encode a DbClosed response body: u32(db_id)
+pub fn encode_db_closed_response(db_id: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u32(&mut buf, db_id);
+    buf
+}
+
+/// Encode a query request body: string(query) + query_args(args)
+pub fn encode_query_request(query: &str, args: &[QueryArg]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_string(&mut buf, query);
+    encode_query_args(&mut buf, args);
+    buf
+}
+
+/// Decode a query request body.
+pub fn decode_query_request(data: &[u8]) -> Result<(String, Vec<QueryArg>)> {
+    let mut cursor = Cursor::new(data);
+    let query = cursor.read_string()?;
+    let args = decode_query_args(&mut cursor)?;
+    Ok((query, args))
+}
+
+/// Encode a query response as concatenated framed backend messages:
+/// [RowDescription frame][DataRow frame]*
+pub fn encode_query_response(columns: &[ColumnDescription], rows: &[Vec<DataType>]) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    // RowDescription frame
+    let row_desc = BackendMessage::RowDescription {
+        columns: columns.to_vec(),
+    };
+    let mut payload = Vec::new();
+    encode_backend_payload(&mut payload, &row_desc);
+    buf.push(MSG_ROW_DESCRIPTION);
+    encode_u32(&mut buf, (payload.len() + 4) as u32);
+    buf.extend_from_slice(&payload);
+
+    // DataRow frames
+    for row in rows {
+        let data_row = BackendMessage::DataRow {
+            values: row.clone(),
+        };
+        let mut payload = Vec::new();
+        encode_backend_payload(&mut payload, &data_row);
+        buf.push(MSG_DATA_ROW);
+        encode_u32(&mut buf, (payload.len() + 4) as u32);
+        buf.extend_from_slice(&payload);
+    }
+
+    buf
+}
+
+/// Decode a query response from concatenated framed backend messages.
+pub fn decode_query_response(data: &[u8]) -> Result<(Vec<ColumnDescription>, Vec<Vec<DataType>>)> {
+    let mut pos = 0;
+    let mut columns = Vec::new();
+    let mut rows = Vec::new();
+
+    while pos < data.len() {
+        if pos + 5 > data.len() {
+            bail!("Incomplete message frame at position {}", pos);
+        }
+        let msg_type = data[pos];
+        pos += 1;
+        let length = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if length < 4 {
+            bail!("Invalid message length: {}", length);
+        }
+        let payload_size = length - 4;
+        if pos + payload_size > data.len() {
+            bail!("Message payload truncated at position {}", pos);
+        }
+        let payload = &data[pos..pos + payload_size];
+        pos += payload_size;
+
+        let mut cursor = Cursor::new(payload);
+        let msg = decode_backend_payload(msg_type, &mut cursor)?;
+        match msg {
+            BackendMessage::RowDescription { columns: cols } => {
+                columns = cols;
+            }
+            BackendMessage::DataRow { values } => {
+                rows.push(values);
+            }
+            other => bail!("Unexpected message in query response: {:?}", other),
+        }
+    }
+
+    Ok((columns, rows))
+}
+
+/// Encode an Execute request body (submit or execute): tx_ops(ops)
+pub fn encode_execute_request(ops: &[TxOp]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_tx_ops(&mut buf, ops);
+    buf
+}
+
+/// Decode an Execute request body.
+pub fn decode_execute_request(data: &[u8]) -> Result<Vec<TxOp>> {
+    let mut cursor = Cursor::new(data);
+    decode_tx_ops(&mut cursor)
+}
+
+/// Encode a TxKey response body: i64(tx_id) + i64(system_time)
+pub fn encode_tx_key_response(tx_id: i64, system_time: i64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_i64(&mut buf, tx_id);
+    encode_i64(&mut buf, system_time);
+    buf
+}
+
+/// Decode a TxKey response body.
+pub fn decode_tx_key_response(data: &[u8]) -> Result<(i64, i64)> {
+    let mut cursor = Cursor::new(data);
+    let tx_id = cursor.read_i64()?;
+    let system_time = cursor.read_i64()?;
+    Ok((tx_id, system_time))
+}
+
+/// Encode a TxResult response body: u8(status) + i64(tx_id) + i64(system_time) + option_string(error)
+pub fn encode_tx_result_response(
+    status: u8,
+    tx_id: i64,
+    system_time: i64,
+    error_message: &Option<String>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u8(&mut buf, status);
+    encode_i64(&mut buf, tx_id);
+    encode_i64(&mut buf, system_time);
+    encode_option_string(&mut buf, error_message);
+    buf
+}
+
+/// Decode a TxResult response body.
+pub fn decode_tx_result_response(data: &[u8]) -> Result<(u8, i64, i64, Option<String>)> {
+    let mut cursor = Cursor::new(data);
+    let status = cursor.read_u8()?;
+    let tx_id = cursor.read_i64()?;
+    let system_time = cursor.read_i64()?;
+    let error_message = cursor.read_option_string()?;
+    Ok((status, tx_id, system_time, error_message))
+}
+
+/// Encode an ErrorResponse body.
+pub fn encode_error_body(
+    severity: u8,
+    code: u16,
+    message: &str,
+    detail: &Option<String>,
+    hint: &Option<String>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u8(&mut buf, severity);
+    encode_u16(&mut buf, code);
+    encode_string(&mut buf, message);
+    encode_option_string(&mut buf, detail);
+    encode_option_string(&mut buf, hint);
+    buf
+}
+
+/// Decode an ErrorResponse body.
+pub fn decode_error_body(data: &[u8]) -> Result<(u8, u16, String, Option<String>, Option<String>)> {
+    let mut cursor = Cursor::new(data);
+    let severity = cursor.read_u8()?;
+    let code = cursor.read_u16()?;
+    let message = cursor.read_string()?;
+    let detail = cursor.read_option_string()?;
+    let hint = cursor.read_option_string()?;
+    Ok((severity, code, message, detail, hint))
 }
 
 // ---------------------------------------------------------------------------
