@@ -1,10 +1,11 @@
 (ns auctionmark.main
   "AuctionMark benchmark entry point, workload driver, and reporting."
-  (:require [io.triplox.api :as tc]
+  (:require [clojure.tools.logging :as log]
+            [io.triplox.api :as tc]
             [auctionmark.procedures :as proc])
   (:import [java.util Random]
            [java.util.concurrent Executors TimeUnit]
-           [java.util.concurrent.atomic AtomicBoolean AtomicLong]))
+           [java.util.concurrent.atomic AtomicBoolean]))
 
 ;; ---------------------------------------------------------------------------
 ;; Config
@@ -55,25 +56,20 @@
 ;; ---------------------------------------------------------------------------
 
 (defn run-worker
-  "Run one worker thread. Returns total ops count."
-  [conn ^Random rng state ^AtomicBoolean running? ^AtomicLong ops ^AtomicLong errors]
+  "Run one worker thread."
+  [conn ^Random rng state ^AtomicBoolean running?]
   (while (.get running?)
     (let [[proc-name proc-fn] (pick-procedure rng)]
       (try
         (proc-fn conn rng state)
-        (.incrementAndGet ops)
         (catch Exception e
-          (.incrementAndGet errors)
-          (when (zero? (rem (.get errors) 100))
-            (println (str "Error in " proc-name ": " (.getMessage e)))))))))
+          (log/warn e "Error in" proc-name))))))
 
 (defn run-benchmark
   "Run the OLTP phase with concurrent workers + background thread."
   [{:keys [host port threads duration] :as config} state]
   (let [pool (Executors/newFixedThreadPool (+ threads 1))
         running? (AtomicBoolean. true)
-        ops (AtomicLong. 0)
-        errors (AtomicLong. 0)
         ;; one connection per thread
         conns (mapv (fn [_] (tc/connect host port)) (range (+ threads 1)))
         start-time (System/nanoTime)]
@@ -84,7 +80,7 @@
         ^Runnable (fn []
                     (let [conn (nth conns i)
                           rng (Random. (+ 1000 i))]
-                      (run-worker conn rng state running? ops errors)))))
+                      (run-worker conn rng state running?)))))
 
     ;; start background thread for check-winning-bid + post-auction
     (.submit pool
@@ -98,39 +94,30 @@
                         (proc/proc-post-auction conn rng state)
                         (catch InterruptedException _)
                         (catch Exception e
-                          (.incrementAndGet errors)
-                          (println (str "Background error: " (.getMessage e)))))))))
+                          (log/warn e "Background error")))))))
 
     ;; wait for duration
-    (println (str "Running benchmark for " duration " seconds..."))
+    (log/info "Running benchmark for" duration "seconds...")
     (Thread/sleep (* duration 1000))
     (.set running? false)
     (.shutdown pool)
     (.awaitTermination pool 30 TimeUnit/SECONDS)
 
     (let [elapsed-ns (- (System/nanoTime) start-time)
-          elapsed-secs (/ elapsed-ns 1e9)
-          total-ops (.get ops)
-          total-errors (.get errors)]
+          elapsed-secs (/ elapsed-ns 1e9)]
 
       ;; close connections
       (doseq [c conns] (.close c))
 
-      {:elapsed-secs elapsed-secs
-       :total-ops total-ops
-       :total-errors total-errors
-       :throughput (/ total-ops elapsed-secs)})))
+      {:elapsed-secs elapsed-secs})))
 
 ;; ---------------------------------------------------------------------------
 ;; Reporting
 ;; ---------------------------------------------------------------------------
 
 (defn print-report [results]
-  (println "\n=== AuctionMark Results ===")
-  (println (format "Duration:   %.1f seconds" (:elapsed-secs results)))
-  (println (format "Total ops:  %d" (:total-ops results)))
-  (println (format "Errors:     %d" (:total-errors results)))
-  (println (format "Throughput: %.1f ops/sec" (:throughput results))))
+  (log/info "=== AuctionMark Results ===")
+  (log/info (format "Duration: %.1f seconds" (:elapsed-secs results))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry point
@@ -138,22 +125,22 @@
 
 (defn -main [& _args]
   (let [config (parse-config)]
-    (println "=== AuctionMark Benchmark for Triplox ===")
-    (println (format "Host: %s:%d" (:host config) (:port config)))
-    (println (format "Scale factor: %.2f" (:scale-factor config)))
-    (println (format "Threads: %d" (:threads config)))
-    (println (format "Duration: %d seconds" (:duration config)))
+    (log/info "=== AuctionMark Benchmark for Triplox ===")
+    (log/info (format "Host: %s:%d" (:host config) (:port config)))
+    (log/info (format "Scale factor: %.2f" (:scale-factor config)))
+    (log/info (format "Threads: %d" (:threads config)))
+    (log/info (format "Duration: %d seconds" (:duration config)))
 
     ;; Phase 1: Load data
-    (println "\n--- Loading Phase ---")
+    (log/info "--- Loading Phase ---")
     (let [load-conn (tc/connect (:host config) (:port config))
           state (proc/load-data! load-conn config)]
       (.close load-conn)
 
       ;; Phase 2: OLTP benchmark
-      (println "\n--- OLTP Phase ---")
+      (log/info "--- OLTP Phase ---")
       (let [results (run-benchmark config state)]
         (print-report results)))
 
-    (println "\nDone.")
+    (log/info "Done.")
     (System/exit 0)))
