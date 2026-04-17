@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="img/logo.png" alt="Triplox logo" width="600">
+  <img src="img/logo_thin.png" alt="Triplox logo" width="600">
 </p>
 
 # Triplox
