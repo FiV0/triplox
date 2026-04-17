@@ -1,3 +1,5 @@
+use anyhow::{bail, Context, Result};
+
 use crate::codec;
 use crate::indexer::write_index_entries;
 use crate::metadata::{Metadata, PartitionMap};
@@ -9,7 +11,6 @@ use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS}
 use crate::tx;
 use crate::util::concat_bytes;
 use slatedb::{Db, IsolationLevel};
-use std::sync::Arc;
 
 const META_KEY_VERSION: &[u8] = b"version";
 
@@ -21,37 +22,44 @@ const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
 /// Scan each partition's EAV prefix and return per-partition counters (max counter + 1).
 /// With descending encoding, the first entity per partition has the highest counter.
 /// The DB_PARTITION counter is clamped to at least DB_PARTITION_COUNTER_FLOOR.
-pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
+/// Partitions with no entities are initialized to counter 0.
+pub(crate) async fn scan_partition_counters(slatedb: &Db) -> Result<PartitionMap> {
     let mut pm = PartitionMap::new();
     for partition in [DB_PARTITION, TX_PARTITION, USER_PARTITION] {
+        pm.insert(partition, 0);
+
         let prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(partition)]);
         let mut iter = slatedb
             .scan_prefix_with_options(&prefix, &DEFAULT_SCAN_OPTIONS)
             .await
-            .expect("Failed to scan EAV partition prefix");
+            .context("Failed to scan EAV partition prefix")?;
 
-        if let Some(kv) = iter.next().await.expect("Failed to read EAV key") {
+        if let Some(kv) = iter
+            .next()
+            .await
+            .context("Failed to read EAV key")?
+        {
             let mut cursor: &[u8] =
                 &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
             let eid = match codec::decode_datatype(&mut cursor)
-                .expect("Failed to decode entity ID from EAV key")
+                .context("Failed to decode entity ID from EAV key")?
             {
                 crate::ops::DataType::Long(id) => id,
-                other => panic!("Expected Long entity ID in EAV key, got {:?}", other),
+                other => bail!("Expected Long entity ID in EAV key, got {:?}", other),
             };
             let counter = extract_counter(eid);
             pm.insert(partition, counter + 1);
         }
     }
 
-    // Reserve space for future bootstrap entities (only if DB_PARTITION has entries)
+    // Reserve space for future bootstrap entities
     if let Some(db_counter) = pm.get_mut(&crate::partition::DB_PARTITION) {
         if *db_counter < DB_PARTITION_COUNTER_FLOOR {
             *db_counter = DB_PARTITION_COUNTER_FLOOR;
         }
     }
 
-    pm
+    Ok(pm)
 }
 
 /// Initialize the database and return ready `Metadata`.
@@ -60,20 +68,20 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> PartitionMap {
 ///   directly to SlateDB, writes the version, and returns populated metadata.
 /// - **Existing DB**: loads the schema from indices via the Datalog query engine,
 ///   derives counters by scanning the EAV index.
-pub async fn init_db(slate: &SlateComponents) -> Metadata {
+pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
     let version_key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
 
     match slate
         .db
         .get(&version_key)
         .await
-        .expect("Failed to read version from META_INDEX")
+        .context("Failed to read version from META_INDEX")?
     {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
             let schema = load_schema_from_indices(slate).await;
-            let pm = scan_partition_counters(&slate.db).await;
-            Metadata::new(schema, pm)
+            let pm = scan_partition_counters(&slate.db).await?;
+            Ok(Metadata::new(schema, pm))
         }
         None => {
             // Fresh DB — build schema from constants, then bootstrap
@@ -114,8 +122,8 @@ pub async fn init_db(slate: &SlateComponents) -> Metadata {
                 .unwrap();
 
             // Derive counters from the just-written index
-            let pm = scan_partition_counters(&slate.db).await;
-            Metadata::new(bootstrap_schema, pm)
+            let pm = scan_partition_counters(&slate.db).await?;
+            Ok(Metadata::new(bootstrap_schema, pm))
         }
     }
 }
@@ -123,14 +131,14 @@ pub async fn init_db(slate: &SlateComponents) -> Metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::partition::DB_PARTITION;
+    use crate::partition::{DB_PARTITION, TX_PARTITION, USER_PARTITION};
     use crate::slate::in_memory_slate;
     use edn::kw;
 
     #[tokio::test]
     async fn test_init_db_fresh() {
         let slate = in_memory_slate().await;
-        let metadata = init_db(&slate).await;
+        let metadata = init_db(&slate).await.unwrap();
         // Bootstrap defines 7 schema attributes (3 core + 4 tx)
         assert_eq!(metadata.schema.len(), 7);
         assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
@@ -162,9 +170,9 @@ mod tests {
     #[tokio::test]
     async fn test_init_db_existing() {
         let slate = in_memory_slate().await;
-        let metadata1 = init_db(&slate).await;
+        let metadata1 = init_db(&slate).await.unwrap();
         // Second call takes the existing-DB path (scan EAV for counters)
-        let metadata2 = init_db(&slate).await;
+        let metadata2 = init_db(&slate).await.unwrap();
         assert_eq!(metadata1.schema.len(), metadata2.schema.len());
         assert_eq!(metadata1.schema.len(), 7);
         assert_eq!(
@@ -182,9 +190,11 @@ mod tests {
         slate.db.put(&key, b"0.0.1").await.unwrap();
 
         // init_db takes the existing-DB path — loads from indices (empty, since no bootstrap ran)
-        let metadata = init_db(&slate).await;
+        let metadata = init_db(&slate).await.unwrap();
         assert_eq!(metadata.schema.len(), 0);
-        // No EAV entries → empty counters
-        assert!(metadata.partition_map.is_empty());
+        // No EAV entries → partition counters initialized to 0 (DB clamped to floor)
+        assert_eq!(metadata.partition_map[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
+        assert_eq!(metadata.partition_map[&TX_PARTITION], 0);
+        assert_eq!(metadata.partition_map[&USER_PARTITION], 0);
     }
 }

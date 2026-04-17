@@ -170,7 +170,7 @@ pub struct Node<L: TxLog> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
-        let metadata = crate::bootstrap::init_db(&slate).await;
+        let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
@@ -196,7 +196,7 @@ impl Node<FileLog> {
         slate: SlateComponents,
         log_file: &Path,
     ) -> Result<Self, Error> {
-        let metadata = crate::bootstrap::init_db(&slate).await;
+        let metadata = crate::bootstrap::init_db(&slate).await?;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
@@ -1904,5 +1904,50 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxAborted(_, _)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_partition_counters_include_user_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        // Fresh local node — bootstrap only, no user transactions yet
+        let node = Node::local_node(&root_path).await.unwrap();
+        {
+            let indexer = node.indexer.read().await;
+            let pm = &indexer.metadata().partition_map;
+            // All three partitions must be present even before any user data
+            assert!(
+                pm.contains_key(&crate::partition::USER_PARTITION),
+                "USER_PARTITION should be in partition map after bootstrap"
+            );
+            assert_eq!(pm[&crate::partition::USER_PARTITION], 0);
+            assert!(pm[&crate::partition::DB_PARTITION] > 0);
+            // TX_PARTITION is 0 after bootstrap (tx entities created by indexer, not bootstrap)
+            assert_eq!(pm[&crate::partition::TX_PARTITION], 0);
+        }
+
+        // Insert a user entity, close, and reopen
+        define_test_schema(&node).await;
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+        node.close().await;
+
+        // After restart, all partitions should be present with correct counters
+        let node = Node::local_node(&root_path).await.unwrap();
+        {
+            let indexer = node.indexer.read().await;
+            let pm = &indexer.metadata().partition_map;
+            assert!(pm[&crate::partition::USER_PARTITION] > 0);
+            assert!(pm[&crate::partition::DB_PARTITION] > 0);
+            assert!(pm[&crate::partition::TX_PARTITION] > 0);
+        }
+
+        node.close().await;
     }
 }
