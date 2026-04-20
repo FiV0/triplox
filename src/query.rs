@@ -19,7 +19,8 @@ use edn::query::{
 use crate::aggregate::{make_accumulator, Accumulator};
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple, SingleLevelExtender};
 use crate::codec::{Decode, Encode};
-use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr, UnaryExpr, UnaryOp};
+use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr, RegexpLikeExpr, UnaryExpr, UnaryOp};
+use regex::Regex;
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
@@ -247,8 +248,43 @@ fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
     }
 }
 
+/// Extract a literal string from a FnArg, for operators that require a literal pattern.
+fn fn_arg_as_text_literal<'a>(arg: &'a edn::query::FnArg) -> Option<&'a str> {
+    if let edn::query::FnArg::Constant(NonIntegerConstant::Text(s)) = arg {
+        Some(s.as_str())
+    } else {
+        None
+    }
+}
+
+/// Build a RegexpLike expression from the 2-arg `(regexp_like ?subject "pattern")` form.
+/// Pattern must be a string literal; compiled once at plan time.
+fn build_regexp_like(args: &[edn::query::FnArg]) -> Result<Expr, Error> {
+    if args.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "regexp_like expects 2 args (subject, pattern), got {}",
+            args.len()
+        ));
+    }
+    let subject = convert_fn_arg(&args[0])?;
+    let pattern_src = fn_arg_as_text_literal(&args[1]).ok_or_else(|| {
+        anyhow::anyhow!("regexp_like requires a string literal as second argument (pattern)")
+    })?;
+    let pattern = Regex::new(pattern_src).map_err(|e| {
+        anyhow::anyhow!("invalid regex pattern for regexp_like `{}`: {}", pattern_src, e)
+    })?;
+    Ok(Expr::RegexpLike(RegexpLikeExpr {
+        pattern_src: pattern_src.to_string(),
+        pattern: Arc::new(pattern),
+        subject: Box::new(subject),
+    }))
+}
+
 pub(crate) fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
     let op_name = pred.operator.0.as_str();
+    if op_name == "regexp_like" {
+        return build_regexp_like(&pred.args);
+    }
     let op = convert_binary_op(op_name)?;
     if pred.args.len() != 2 {
         return Err(anyhow::anyhow!(
@@ -268,6 +304,11 @@ pub(crate) fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
 
 pub(crate) fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
     let op_name = wf.operator.0.as_str();
+    if op_name == "regexp_like" {
+        return Err(anyhow::anyhow!(
+            "regexp_like is a predicate, not a binding function"
+        ));
+    }
     let expr = match wf.args.len() {
         1 => {
             let op = convert_unary_op(op_name)?;
@@ -1391,5 +1432,73 @@ mod tests {
         let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         // ?name from :in should come first, then ?e from WHERE
         assert_eq!(order, vec!["?name".to_var(), "?e".to_var(),]);
+    }
+
+    // --- regexp_like query conversion tests ---
+
+    #[test]
+    fn test_regexp_like_valid_query() {
+        let parsed = parse_query(
+            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "^B")]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_ok(), "expected ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_regexp_like_invalid_pattern_rejected_at_plan_time() {
+        let parsed = parse_query(
+            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "[")]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid regex pattern"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_regexp_like_non_literal_pattern_rejected() {
+        // Pattern arg is a variable ?pat, not a string literal.
+        let parsed = parse_query(
+            r#"[:find ?name :where [?e :name ?name] [?e :pat ?pat] [(regexp_like ?name ?pat)]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("string literal"),
+            "unexpected error: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_regexp_like_wrong_arity_rejected() {
+        let parsed = parse_query(
+            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name)]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expects 2 args"));
+    }
+
+    #[test]
+    fn test_regexp_like_binding_form_rejected() {
+        // regexp_like is predicate-only; binding form should be rejected.
+        let parsed = parse_query(
+            r#"[:find ?name ?hit :where [?e :name ?name] [(regexp_like ?name "^B") ?hit]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("predicate, not a binding function"),
+            "unexpected error: {}",
+            msg
+        );
     }
 }

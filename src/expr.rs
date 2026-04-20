@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use regex::Regex;
 
 use chrono::Datelike;
 
@@ -58,6 +61,20 @@ pub struct UnaryExpr {
     pub operand: Box<Expr>,
 }
 
+/// A regexp_like expression node. Compiles the pattern once at plan time.
+#[derive(Debug, Clone)]
+pub struct RegexpLikeExpr {
+    pub pattern_src: String,
+    pub pattern: Arc<Regex>,
+    pub subject: Box<Expr>,
+}
+
+impl PartialEq for RegexpLikeExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern_src == other.pattern_src && self.subject == other.subject
+    }
+}
+
 /// Expression tree (inspired by DataFusion's Expr enum).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -69,6 +86,8 @@ pub enum Expr {
     BinaryExpr(BinaryExpr),
     /// A unary operation.
     UnaryExpr(UnaryExpr),
+    /// regexp_like predicate with a pre-compiled pattern.
+    RegexpLike(RegexpLikeExpr),
 }
 
 /// Collect all variables referenced in an expression, deduplicated, in first-appearance order.
@@ -93,6 +112,9 @@ fn collect_vars(expr: &Expr, seen: &mut HashSet<Variable>, vars: &mut Vec<Variab
         }
         Expr::UnaryExpr(UnaryExpr { operand, .. }) => {
             collect_vars(operand, seen, vars);
+        }
+        Expr::RegexpLike(RegexpLikeExpr { subject, .. }) => {
+            collect_vars(subject, seen, vars);
         }
     }
 }
@@ -128,6 +150,15 @@ pub fn evaluate<'a>(expr: &'a Expr, ctx: &'a EvalContext<'a>) -> Option<Cow<'a, 
         Expr::UnaryExpr(UnaryExpr { op, operand }) => {
             let v = evaluate(operand, ctx)?;
             eval_unary_op(op, &v).map(Cow::Owned)
+        }
+        Expr::RegexpLike(RegexpLikeExpr {
+            pattern, subject, ..
+        }) => {
+            let v = evaluate(subject, ctx)?;
+            match v.as_ref() {
+                DataType::String(s) => Some(Cow::Owned(DataType::Boolean(pattern.is_match(s)))),
+                _ => None,
+            }
         }
     }
 }
@@ -716,5 +747,92 @@ mod tests {
         let expr = unary(UnaryOp::Month, lit_string("2024-06-15"));
         let ctx = EvalContext::new(HashMap::new());
         assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    // --- regexp_like tests ---
+
+    fn regexp_like(pattern: &str, subject: Expr) -> Expr {
+        Expr::RegexpLike(RegexpLikeExpr {
+            pattern_src: pattern.to_string(),
+            pattern: Arc::new(Regex::new(pattern).expect("valid regex")),
+            subject: Box::new(subject),
+        })
+    }
+
+    #[test]
+    fn test_regexp_like_match() {
+        let expr = regexp_like("^.*BRASS$", var("?ptype"));
+        let ptype = DataType::String("STANDARD POLISHED BRASS".to_string());
+        let ctx = EvalContext::new(HashMap::from([("?ptype".to_var(), &ptype)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
+    }
+
+    #[test]
+    fn test_regexp_like_no_match() {
+        let expr = regexp_like("^.*BRASS$", var("?ptype"));
+        let ptype = DataType::String("STANDARD POLISHED COPPER".to_string());
+        let ctx = EvalContext::new(HashMap::from([("?ptype".to_var(), &ptype)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(false)));
+    }
+
+    #[test]
+    fn test_regexp_like_substring() {
+        let expr = regexp_like(".*green.*", var("?name"));
+        let matches = DataType::String("forest green pine".to_string());
+        let misses = DataType::String("aqua blue".to_string());
+        let ctx_match = EvalContext::new(HashMap::from([("?name".to_var(), &matches)]));
+        let ctx_miss = EvalContext::new(HashMap::from([("?name".to_var(), &misses)]));
+        assert_eq!(eval(&expr, &ctx_match), Some(DataType::Boolean(true)));
+        assert_eq!(eval(&expr, &ctx_miss), Some(DataType::Boolean(false)));
+    }
+
+    #[test]
+    fn test_regexp_like_case_insensitive_inline_flag() {
+        let expr = regexp_like("(?i)^.*green.*", var("?name"));
+        let val = DataType::String("Forest GREEN pine".to_string());
+        let ctx = EvalContext::new(HashMap::from([("?name".to_var(), &val)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
+    }
+
+    #[test]
+    fn test_regexp_like_non_string_subject_drops() {
+        let expr = regexp_like(".*", var("?n"));
+        let n = DataType::Long(42);
+        let ctx = EvalContext::new(HashMap::from([("?n".to_var(), &n)]));
+        // Non-String subject -> None (row dropped). See issue #222.
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_regexp_like_unbound_subject() {
+        let expr = regexp_like(".*", var("?missing"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_regexp_like_expr_variables() {
+        let expr = regexp_like("^foo", var("?name"));
+        assert_eq!(expr_variables(&expr), vec!["?name".to_var()]);
+    }
+
+    #[test]
+    fn test_regexp_like_evaluate_as_bool() {
+        let expr = regexp_like("^foo", var("?name"));
+        let hit = DataType::String("foobar".to_string());
+        let miss = DataType::String("bar".to_string());
+        let ctx_hit = EvalContext::new(HashMap::from([("?name".to_var(), &hit)]));
+        let ctx_miss = EvalContext::new(HashMap::from([("?name".to_var(), &miss)]));
+        assert!(evaluate_as_bool(&expr, &ctx_hit));
+        assert!(!evaluate_as_bool(&expr, &ctx_miss));
+    }
+
+    #[test]
+    fn test_regexp_like_partial_eq_by_pattern_src() {
+        let a = regexp_like("^foo", var("?x"));
+        let b = regexp_like("^foo", var("?x"));
+        let c = regexp_like("^bar", var("?x"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

@@ -345,23 +345,22 @@
                           [?e2 :age ?age2]
                           [(<= ?age1 ?age2)]]})))))
 
-  ;; re-find tests commented out — see triplox-bwi for tracking
-  #_(testing "re-find predicate"
-      (is (= #{["Bob"] ["Dominic"]}
+  (testing "regexp_like predicate"
+    (is (= #{["Bob"] ["Dominic"]}
+           (q '{:find [?name]
+                :where [[?e :name ?name]
+                        [(regexp_like ?name "o")]]})))
+
+    (testing "No results"
+      (is (empty? (q '{:find [?name]
+                       :where [[?e :name ?name]
+                               [(regexp_like ?name "X")]]}))))
+
+    (testing "Not predicate"
+      (is (= #{["Ivan"]}
              (q '{:find [?name]
                   :where [[?e :name ?name]
-                          [(re-find #"o" ?name)]]})))
-
-      (testing "No results"
-        (is (empty? (q '{:find [?name]
-                         :where [[?e :name ?name]
-                                 [(re-find #"X" ?name)]]}))))
-
-      (testing "Not predicate"
-        (is (= #{["Ivan"]}
-               (q '{:find [?name]
-                    :where [[?e :name ?name]
-                            (not [(re-find #"o" ?name)])]})))))
+                          (not [(regexp_like ?name "o")])]})))))
 
   (testing "Entity variable"
     ;; Discover Ivan's entity ID, then use it in a predicate
@@ -386,30 +385,30 @@
                                    [(= 30 ?age)]]}))))))
 
 
-  ;; re-find tests commented out — see triplox-bwi
-  #_(testing "Several variables with re-find"
-      (is (= #{["Bob"]}
-             (q '{:find [?name]
-                  :where [[?e :name ?name]
-                          [?e :age ?age]
-                          [(= 40 ?age)]
-                          [(re-find #"o" ?name)]
-                          [(not= ?age ?name)]]})))
+  (testing "Several variables with regexp_like"
+    (is (= #{["Bob"]}
+           (q '{:find [?name]
+                :where [[?e :name ?name]
+                        [?e :age ?age]
+                        [(= 40 ?age)]
+                        [(regexp_like ?name "o")]
+                        [(not= ?age ?name)]]})))
 
-      (is (= #{[1001 "Ivanov"]}
+    (let [bob-id (ffirst (q '{:find [?e] :where [[?e :name "Bob"]]}))]
+      (is (= #{[bob-id "Ivanov"]}
              (q '{:find [?e ?last-name]
                   :where [[?e :last-name ?last-name]
                           [?e :age ?age]
-                          [(re-find #"ov$" ?last-name)]
-                          (not [(= ?age 30)])]})))
+                          [(regexp_like ?last-name "ov$")]
+                          (not [(= ?age 30)])]}))))
 
-      (testing "No results"
-        (is (= #{}
-               (q '{:find [?name]
-                    :where [[?e :name ?name]
-                            [?e :age ?age]
-                            [(re-find #"o" ?name)]
-                            [(= ?age ?name)]]})))))
+    (testing "No results"
+      (is (= #{}
+             (q '{:find [?name]
+                  :where [[?e :name ?name]
+                          [?e :age ?age]
+                          [(regexp_like ?name "o")]
+                          [(= ?age ?name)]]})))))
 
   (testing "Bind result to var"
     (is (= #{["Dominic" 25] ["Ivan" 15] ["Bob" 20]}
