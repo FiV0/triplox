@@ -75,6 +75,14 @@ impl PartialEq for RegexpLikeExpr {
     }
 }
 
+/// A conditional (if) expression node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfExpr {
+    pub condition: Box<Expr>,
+    pub then_expr: Box<Expr>,
+    pub else_expr: Box<Expr>,
+}
+
 /// Expression tree (inspired by DataFusion's Expr enum).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -88,6 +96,8 @@ pub enum Expr {
     UnaryExpr(UnaryExpr),
     /// regexp_like predicate with a pre-compiled pattern.
     RegexpLike(RegexpLikeExpr),
+    /// A conditional (if) expression.
+    IfExpr(IfExpr),
 }
 
 /// Collect all variables referenced in an expression, deduplicated, in first-appearance order.
@@ -115,6 +125,15 @@ fn collect_vars(expr: &Expr, seen: &mut HashSet<Variable>, vars: &mut Vec<Variab
         }
         Expr::RegexpLike(RegexpLikeExpr { subject, .. }) => {
             collect_vars(subject, seen, vars);
+        }
+        Expr::IfExpr(IfExpr {
+            condition,
+            then_expr,
+            else_expr,
+        }) => {
+            collect_vars(condition, seen, vars);
+            collect_vars(then_expr, seen, vars);
+            collect_vars(else_expr, seen, vars);
         }
     }
 }
@@ -158,6 +177,17 @@ pub fn evaluate<'a>(expr: &'a Expr, ctx: &'a EvalContext<'a>) -> Option<Cow<'a, 
             match v.as_ref() {
                 DataType::String(s) => Some(Cow::Owned(DataType::Boolean(pattern.is_match(s)))),
                 _ => None,
+            }
+        }
+        Expr::IfExpr(IfExpr {
+            condition,
+            then_expr,
+            else_expr,
+        }) => {
+            if evaluate_as_bool(condition, ctx) {
+                evaluate(then_expr, ctx)
+            } else {
+                evaluate(else_expr, ctx)
             }
         }
     }
@@ -759,6 +789,16 @@ mod tests {
         })
     }
 
+    // --- IfExpr tests ---
+
+    fn if_expr(condition: Expr, then_expr: Expr, else_expr: Expr) -> Expr {
+        Expr::IfExpr(IfExpr {
+            condition: Box::new(condition),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+        })
+    }
+
     #[test]
     fn test_regexp_like_match() {
         let expr = regexp_like("^.*BRASS$", var("?ptype"));
@@ -834,5 +874,74 @@ mod tests {
         let c = regexp_like("^bar", var("?x"));
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_if_true_condition() {
+        // (if (= ?x 1) 10 0)
+        let expr = if_expr(
+            binary(var("?x"), BinaryOp::Eq, lit_long(1)),
+            lit_long(10),
+            lit_long(0),
+        );
+        let x = DataType::Long(1);
+        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
+    }
+
+    #[test]
+    fn test_if_false_condition() {
+        // (if (= ?x 1) 10 0)
+        let expr = if_expr(
+            binary(var("?x"), BinaryOp::Eq, lit_long(1)),
+            lit_long(10),
+            lit_long(0),
+        );
+        let x = DataType::Long(99);
+        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(0)));
+    }
+
+    #[test]
+    fn test_if_with_variable_branches() {
+        // (if (> ?age 30) ?age 0)
+        let expr = if_expr(
+            binary(var("?age"), BinaryOp::Gt, lit_long(30)),
+            var("?age"),
+            lit_long(0),
+        );
+        let old = DataType::Long(40);
+        let ctx_old = EvalContext::new(HashMap::from([("?age".to_var(), &old)]));
+        assert_eq!(eval(&expr, &ctx_old), Some(DataType::Long(40)));
+
+        let young = DataType::Long(20);
+        let ctx_young = EvalContext::new(HashMap::from([("?age".to_var(), &young)]));
+        assert_eq!(eval(&expr, &ctx_young), Some(DataType::Long(0)));
+    }
+
+    #[test]
+    fn test_if_unbound_condition_variable() {
+        // Unbound var in condition returns else.
+        let expr = if_expr(
+            binary(var("?missing"), BinaryOp::Eq, lit_long(1)),
+            lit_long(10),
+            lit_long(0),
+        );
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(0)));
+    }
+
+    #[test]
+    fn test_if_expr_variables() {
+        // All four variables are collected.
+        let expr = if_expr(
+            binary(var("?a"), BinaryOp::Eq, var("?b")),
+            var("?c"),
+            var("?d"),
+        );
+        assert_eq!(
+            expr_variables(&expr),
+            vec!["?a".to_var(), "?b".to_var(), "?c".to_var(), "?d".to_var(),]
+        );
     }
 }

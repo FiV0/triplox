@@ -19,7 +19,9 @@ use edn::query::{
 use crate::aggregate::{make_accumulator, Accumulator};
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple, SingleLevelExtender};
 use crate::codec::{Decode, Encode};
-use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr, RegexpLikeExpr, UnaryExpr, UnaryOp};
+use crate::expr::{
+    expr_variables, BinaryExpr, BinaryOp, Expr, IfExpr, RegexpLikeExpr, UnaryExpr, UnaryOp,
+};
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
@@ -236,6 +238,23 @@ fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
 fn convert_sexpr(op_name: &str, args: &[edn::query::FnArg]) -> Result<Expr, Error> {
     if op_name == "regexp_like" {
         return build_regexp_like(args);
+    }
+
+    if op_name == "if" {
+        if args.len() != 3 {
+            return Err(anyhow::anyhow!(
+                "'if' expects 3 args (condition, then, else), got {}",
+                args.len()
+            ));
+        }
+        let condition = convert_fn_arg(&args[0])?;
+        let then_expr = convert_fn_arg(&args[1])?;
+        let else_expr = convert_fn_arg(&args[2])?;
+        return Ok(Expr::IfExpr(IfExpr {
+            condition: Box::new(condition),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+        }));
     }
 
     if args.len() == 2 {
@@ -1546,5 +1565,41 @@ mod tests {
             "unexpected error: {}",
             msg
         );
+    }
+
+    #[test]
+    fn test_query_variable_order_with_if_expr() {
+        let parsed = parse_query(
+            r#"[:find ?name ?flag :where [?e :name ?name] [?e :age ?age] [(if (> ?age 30) 1 0) ?flag]]"#,
+        );
+        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        assert_eq!(
+            order,
+            vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
+                "?flag".to_var(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_validate_if_expr_valid() {
+        let parsed = parse_query(
+            r#"[:find ?name ?flag :where [?e :name ?name] [?e :age ?age] [(if (> ?age 30) ?age 0) ?flag]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_if_expr_unbound_condition_variable() {
+        let parsed = parse_query(
+            r#"[:find ?e ?flag :where [?e :name "Alice"] [(if (> ?unbound 30) 1 0) ?flag]]"#,
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
 }
