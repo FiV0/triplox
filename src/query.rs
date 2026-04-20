@@ -1427,6 +1427,60 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_order_var_not_in_find() {
+        let parsed = parse_query("[:find ?e :where [?e :name ?name] :order [?name :asc]]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("ORDER BY variable"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_limit_variable_requires_in_binding() {
+        let parsed = parse_query("[:find ?e :where [?e :name ?name] :limit ?limit]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not bound as a scalar in :in clause"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_limit_variable_with_in_binding() {
+        let parsed = parse_query("[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]");
+        assert!(validate_query(&parsed, &[QueryArg::Scalar(DataType::Long(10))]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_limit_variable_rejects_collection_binding() {
+        let parsed =
+            parse_query("[:find ?e :in [?limit ...] :where [?e :name ?name] :limit ?limit]");
+        let err =
+            validate_query(&parsed, &[QueryArg::Collection(vec![DataType::Long(10)])]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not bound as a scalar in :in clause"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_in_arg_count_mismatch() {
+        let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("1 binding(s) but 0 argument(s)"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_query_variable_order_with_in_vars() {
         let parsed = parse_query("[:find ?e ?name :in ?name :where [?e :person/name ?name]]");
         let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
