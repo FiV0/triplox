@@ -218,6 +218,8 @@ pub enum FnArg {
     EntidOrInteger(i64),
     IdentOrKeyword(Keyword),
     Constant(NonIntegerConstant),
+    /// A nested s-expression function call, e.g. `(= ?x 10)` or `(+ (* ?x 2) 1)`.
+    SExpr(PlainSymbol, Vec<FnArg>),
 }
 
 impl FromValue<FnArg> for FnArg {
@@ -268,6 +270,13 @@ impl std::fmt::Display for FnArg {
             &FnArg::EntidOrInteger(entid) => write!(f, "{}", entid),
             FnArg::IdentOrKeyword(kw) => write!(f, "{}", kw),
             FnArg::Constant(constant) => write!(f, "{}", constant),
+            FnArg::SExpr(ref func, ref args) => {
+                write!(f, "({}", func)?;
+                for arg in args {
+                    write!(f, " {}", arg)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -870,14 +879,12 @@ impl Pattern {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Predicate {
-    pub operator: PlainSymbol,
-    pub args: Vec<FnArg>,
+    pub expr: FnArg, // always SExpr at top level
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WhereFn {
-    pub operator: PlainSymbol,
-    pub args: Vec<FnArg>,
+    pub expr: FnArg, // always SExpr at top level
     pub binding: Binding,
 }
 
@@ -1182,13 +1189,21 @@ impl ContainsVariables for NotJoin {
     }
 }
 
-impl ContainsVariables for Predicate {
-    fn accumulate_mentioned_variables(&self, acc: &mut BTreeSet<Variable>) {
-        for arg in &self.args {
-            if let FnArg::Variable(v) = arg {
-                acc_ref(acc, v)
+fn accumulate_fn_arg_variables(arg: &FnArg, acc: &mut BTreeSet<Variable>) {
+    match arg {
+        FnArg::Variable(v) => acc_ref(acc, v),
+        FnArg::SExpr(_, args) => {
+            for a in args {
+                accumulate_fn_arg_variables(a, acc);
             }
         }
+        _ => {}
+    }
+}
+
+impl ContainsVariables for Predicate {
+    fn accumulate_mentioned_variables(&self, acc: &mut BTreeSet<Variable>) {
+        accumulate_fn_arg_variables(&self.expr, acc);
     }
 }
 
@@ -1215,11 +1230,7 @@ impl ContainsVariables for Binding {
 
 impl ContainsVariables for WhereFn {
     fn accumulate_mentioned_variables(&self, acc: &mut BTreeSet<Variable>) {
-        for arg in &self.args {
-            if let FnArg::Variable(v) = arg {
-                acc_ref(acc, v)
-            }
-        }
+        accumulate_fn_arg_variables(&self.expr, acc);
         self.binding.accumulate_mentioned_variables(acc);
     }
 }
@@ -1330,11 +1341,7 @@ impl std::fmt::Display for Pattern {
 
 impl std::fmt::Display for Predicate {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "({}", self.operator)?;
-        for arg in &self.args {
-            write!(f, " {}", arg)?;
-        }
-        write!(f, ")")
+        write!(f, "{}", self.expr)
     }
 }
 
@@ -1375,12 +1382,7 @@ impl std::fmt::Display for Binding {
 
 impl std::fmt::Display for WhereFn {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "[({}", self.operator)?;
-        for arg in &self.args {
-            write!(f, " {}", arg)?;
-        }
-        write!(f, ") {}", self.binding)?;
-        write!(f, "]")
+        write!(f, "[{} {}]", self.expr, self.binding)
     }
 }
 

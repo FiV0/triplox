@@ -234,6 +234,39 @@ fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
     }
 }
 
+fn convert_sexpr(op_name: &str, args: &[edn::query::FnArg]) -> Result<Expr, Error> {
+    if op_name == "regexp_like" {
+        return build_regexp_like(args);
+    }
+
+    if args.len() == 2 {
+        if let Ok(op) = convert_binary_op(op_name) {
+            let left = convert_fn_arg(&args[0])?;
+            let right = convert_fn_arg(&args[1])?;
+            return Ok(Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            }));
+        }
+    }
+
+    if args.len() == 1 {
+        if let Ok(op) = convert_unary_op(op_name) {
+            let operand = convert_fn_arg(&args[0])?;
+            return Ok(Expr::UnaryExpr(UnaryExpr {
+                op,
+                operand: Box::new(operand),
+            }));
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Unsupported function '{}' with {} args",
+        op_name,
+        args.len()
+    ))
+}
 fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
     match arg {
         edn::query::FnArg::Variable(v) => Ok(Expr::Variable(v.clone())),
@@ -244,6 +277,7 @@ fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
         edn::query::FnArg::Constant(ref c) => non_integer_constant_to_datatype(c)
             .map(Expr::Literal)
             .ok_or_else(|| anyhow::anyhow!("Cannot convert constant to DataType")),
+        edn::query::FnArg::SExpr(ref func, ref args) => convert_sexpr(func.0.as_str(), args),
         _ => Err(anyhow::anyhow!("Unsupported fn arg type")),
     }
 }
@@ -285,61 +319,23 @@ fn build_regexp_like(args: &[edn::query::FnArg]) -> Result<Expr, Error> {
 }
 
 pub(crate) fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
-    let op_name = pred.operator.0.as_str();
-    if op_name == "regexp_like" {
-        return build_regexp_like(&pred.args);
-    }
-    let op = convert_binary_op(op_name)?;
-    if pred.args.len() != 2 {
-        return Err(anyhow::anyhow!(
-            "Predicate '{}' expects 2 args, got {}",
-            op_name,
-            pred.args.len()
-        ));
-    }
-    let left = convert_fn_arg(&pred.args[0])?;
-    let right = convert_fn_arg(&pred.args[1])?;
-    Ok(Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(left),
-        op,
-        right: Box::new(right),
-    }))
+    convert_fn_arg(&pred.expr)
+}
+
+fn is_direct_regexp_like(arg: &edn::query::FnArg) -> bool {
+    matches!(
+        arg,
+        edn::query::FnArg::SExpr(func, _) if func.0.as_str() == "regexp_like"
+    )
 }
 
 pub(crate) fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
-    let op_name = wf.operator.0.as_str();
-    if op_name == "regexp_like" {
+    if is_direct_regexp_like(&wf.expr) {
         return Err(anyhow::anyhow!(
             "regexp_like is a predicate, not a binding function"
         ));
     }
-    let expr = match wf.args.len() {
-        1 => {
-            let op = convert_unary_op(op_name)?;
-            let operand = convert_fn_arg(&wf.args[0])?;
-            Expr::UnaryExpr(UnaryExpr {
-                op,
-                operand: Box::new(operand),
-            })
-        }
-        2 => {
-            let op = convert_binary_op(op_name)?;
-            let left = convert_fn_arg(&wf.args[0])?;
-            let right = convert_fn_arg(&wf.args[1])?;
-            Expr::BinaryExpr(BinaryExpr {
-                left: Box::new(left),
-                op,
-                right: Box::new(right),
-            })
-        }
-        n => {
-            return Err(anyhow::anyhow!(
-                "WhereFn '{}' has {} args, expected 1 or 2",
-                op_name,
-                n
-            ));
-        }
-    };
+    let expr = convert_fn_arg(&wf.expr)?;
     let output = match &wf.binding {
         edn::query::Binding::BindScalar(v) => v.clone(),
         _ => return Err(anyhow::anyhow!("Only scalar binding supported")),
