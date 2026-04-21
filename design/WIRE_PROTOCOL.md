@@ -847,7 +847,41 @@ Servers MAY enforce an idle connection timeout for connections in the Idle state
 
 ---
 
-## 13. Future Extensions
+## 13. HTTP/2 Transport
+
+The wire protocol payloads (Section 11) are reused over HTTP/2 with `Content-Type: application/x-triplox`. The TCP framing envelope (type byte + length) is dropped — HTTP provides its own framing. Each operation maps to an HTTP endpoint:
+
+| Endpoint                  | Method   | Request Body              | Success Body               |
+|---------------------------|----------|---------------------------|-----------------------------|
+| `/db/open`                | `POST`   | OpenDb payload            | DbOpened payload            |
+| `/db/{db_id}`             | `DELETE` | *(empty)*                 | DbClosed payload            |
+| `/db/{db_id}/query`       | `POST`   | Query payload             | Concatenated framed messages (RowDescription + DataRow\*) |
+| `/tx/submit`              | `POST`   | Execute payload (ops only)| TxKey payload               |
+| `/tx/execute`             | `POST`   | Execute payload (ops only)| TxResult payload            |
+
+### 13.1 HTTP Status Codes
+
+HTTP status codes distinguish transport/protocol errors from successful processing. Application-level outcomes (e.g. a transaction that aborts due to a constraint violation) are returned as **200** with the result encoded in the response body.
+
+| HTTP Status | Meaning | When returned |
+|-------------|---------|---------------|
+| **200** | Success | Request processed successfully. For `/tx/execute`, check the `status` byte in the TxResult body: `0` = committed, `1` = aborted. |
+| **400** | Bad Request | Malformed request body (decode failure), Datalog parse error, invalid field combinations (e.g. `tx_id` without `system_time` in OpenDb). |
+| **404** | Not Found | Invalid or expired `db_id` handle in `/db/{db_id}` or `/db/{db_id}/query`. |
+| **500** | Internal Server Error | Unexpected engine error: query execution failure, transaction infrastructure error, DB snapshot creation failure, DB cache exhaustion. |
+
+All error responses (non-200) carry a binary ErrorResponse body with the same encoding as Section 4.18: `severity` (u8), `code` (u16), `message` (String), `detail` (Option\<String\>), `hint` (Option\<String\>).
+
+### 13.2 DB Handle Lifecycle
+
+DB handles are scoped to an HTTP/2 connection (identified by the underlying TCP connection). Two cleanup mechanisms ensure handles are released:
+
+1. **Connection-drop** (fast path): When the TCP connection closes, all handles belonging to that connection are released immediately.
+2. **TTL reaper** (safety net): A background task periodically evicts handles that have not been used for 24 hours.
+
+---
+
+## 14. Future Extensions
 
 The following features are deliberately deferred to a later protocol version. They are documented here to inform client and server implementations of planned evolution:
 
