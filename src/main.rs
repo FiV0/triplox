@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use triplox::config::{Config, StorageConfig};
+use triplox::http_server::{DevHttpServer, HttpServer};
 use triplox::node::Node;
-use triplox::server::{DevServer, Server};
 
 fn load_config() -> Result<Config> {
     let path = std::env::args()
@@ -51,17 +51,17 @@ async fn run_server(config: Config) -> Result<()> {
 
     match config.storage {
         StorageConfig::Dev => {
-            let server = DevServer::new(max_open_dbs);
+            let server = DevHttpServer::new(max_open_dbs);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
             let node = Arc::new(Node::memory_node().await);
-            let server = Server::new(node, max_open_dbs);
+            let server = HttpServer::new(node, max_open_dbs);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Local { path } => {
             let node = Arc::new(Node::local_node(&path).await?);
-            let server = Server::new(node, max_open_dbs);
+            let server = HttpServer::new(node, max_open_dbs);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Remote {
@@ -76,7 +76,7 @@ async fn run_server(config: Config) -> Result<()> {
                 Node::remote_node(&log_path, &endpoint, &bucket, &access_key, &secret_key, &region)
                     .await?,
             );
-            let server = Server::new(node, max_open_dbs);
+            let server = HttpServer::new(node, max_open_dbs);
             server.listen(&bind_addr, token).await
         }
     }

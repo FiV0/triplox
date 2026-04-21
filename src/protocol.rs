@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use edn::symbols::Keyword;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use std::str::FromStr;
@@ -538,17 +537,17 @@ fn encode_query_args(buf: &mut Vec<u8>, args: &[QueryArg]) {
 // ---------------------------------------------------------------------------
 
 /// A cursor over a byte slice for decoding.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Cursor { data, pos: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.data.len() - self.pos
     }
 
@@ -871,7 +870,7 @@ fn decode_query_args(cursor: &mut Cursor) -> Result<Vec<QueryArg>> {
 // Message Payload Encoding
 // ---------------------------------------------------------------------------
 
-fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
+pub(crate) fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
     match msg {
         FrontendMessage::Startup {
             version_major,
@@ -919,7 +918,7 @@ fn encode_frontend_payload(buf: &mut Vec<u8>, msg: &FrontendMessage) {
     }
 }
 
-fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
+pub(crate) fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
     match msg {
         BackendMessage::AuthenticationOk { server_version } => {
             encode_string(buf, server_version);
@@ -984,7 +983,7 @@ fn encode_backend_payload(buf: &mut Vec<u8>, msg: &BackendMessage) {
 // Message Payload Decoding
 // ---------------------------------------------------------------------------
 
-fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<FrontendMessage> {
+pub(crate) fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<FrontendMessage> {
     match msg_type {
         MSG_OPEN_DB => Ok(FrontendMessage::OpenDb {
             tx_id: cursor.read_option_i64()?,
@@ -1017,7 +1016,7 @@ fn decode_frontend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<Frontend
     }
 }
 
-fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
+pub(crate) fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMessage> {
     match msg_type {
         MSG_AUTHENTICATION_OK => Ok(BackendMessage::AuthenticationOk {
             server_version: cursor.read_string()?,
@@ -1081,155 +1080,214 @@ fn decode_backend_payload(msg_type: u8, cursor: &mut Cursor) -> Result<BackendMe
 }
 
 // ---------------------------------------------------------------------------
-// Framed Message Reading/Writing (async, over TCP)
+// HTTP Body Encode/Decode Helpers
 // ---------------------------------------------------------------------------
 
-/// Read a frontend message from the stream.
-/// If `is_startup` is true, expects a Startup message (no type byte).
-pub async fn read_frontend_message<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    is_startup: bool,
-    max_message_size: u32,
-) -> Result<FrontendMessage> {
-    if is_startup {
-        // Startup: no type byte, just [length][payload]
-        let length = reader.read_u32().await?;
-        if length < 4 {
-            bail!("Invalid startup message length: {}", length);
-        }
-        let payload_size = length - 4;
-        if payload_size > max_message_size {
-            bail!("Startup message too large: {} bytes", payload_size);
-        }
-        let mut payload = vec![0u8; payload_size as usize];
-        reader.read_exact(&mut payload).await?;
+/// Encode an OpenDb request body: option_i64(tx_id) + option_i64(system_time)
+pub fn encode_open_db_request(tx_id: Option<i64>, system_time: Option<i64>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_option_i64(&mut buf, &tx_id);
+    encode_option_i64(&mut buf, &system_time);
+    buf
+}
 
-        let mut cursor = Cursor::new(&payload);
-        let version_major = cursor.read_u16()?;
-        let version_minor = cursor.read_u16()?;
-        let params = cursor.read_string_map()?;
-        Ok(FrontendMessage::Startup {
-            version_major,
-            version_minor,
-            params,
-        })
-    } else {
-        let msg_type = reader.read_u8().await?;
-        let length = reader.read_u32().await?;
+/// Decode an OpenDb request body.
+pub fn decode_open_db_request(data: &[u8]) -> Result<(Option<i64>, Option<i64>)> {
+    let mut cursor = Cursor::new(data);
+    let tx_id = cursor.read_option_i64()?;
+    let system_time = cursor.read_option_i64()?;
+    Ok((tx_id, system_time))
+}
+
+/// Encode a DbOpened response body: u32(db_id) + i64(tx_id)
+pub fn encode_db_opened_response(db_id: u32, tx_id: i64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u32(&mut buf, db_id);
+    encode_i64(&mut buf, tx_id);
+    buf
+}
+
+/// Decode a DbOpened response body.
+pub fn decode_db_opened_response(data: &[u8]) -> Result<(u32, i64)> {
+    let mut cursor = Cursor::new(data);
+    let db_id = cursor.read_u32()?;
+    let tx_id = cursor.read_i64()?;
+    Ok((db_id, tx_id))
+}
+
+/// Encode a DbClosed response body: u32(db_id)
+pub fn encode_db_closed_response(db_id: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u32(&mut buf, db_id);
+    buf
+}
+
+/// Encode a query request body: string(query) + query_args(args)
+pub fn encode_query_request(query: &str, args: &[QueryArg]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_string(&mut buf, query);
+    encode_query_args(&mut buf, args);
+    buf
+}
+
+/// Decode a query request body.
+pub fn decode_query_request(data: &[u8]) -> Result<(String, Vec<QueryArg>)> {
+    let mut cursor = Cursor::new(data);
+    let query = cursor.read_string()?;
+    let args = decode_query_args(&mut cursor)?;
+    Ok((query, args))
+}
+
+/// Encode a query response as concatenated framed backend messages:
+/// [RowDescription frame][DataRow frame]*
+pub fn encode_query_response(columns: &[ColumnDescription], rows: &[Vec<DataType>]) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    // RowDescription frame
+    let row_desc = BackendMessage::RowDescription {
+        columns: columns.to_vec(),
+    };
+    let mut payload = Vec::new();
+    encode_backend_payload(&mut payload, &row_desc);
+    buf.push(MSG_ROW_DESCRIPTION);
+    encode_u32(&mut buf, (payload.len() + 4) as u32);
+    buf.extend_from_slice(&payload);
+
+    // DataRow frames
+    for row in rows {
+        let data_row = BackendMessage::DataRow {
+            values: row.clone(),
+        };
+        let mut payload = Vec::new();
+        encode_backend_payload(&mut payload, &data_row);
+        buf.push(MSG_DATA_ROW);
+        encode_u32(&mut buf, (payload.len() + 4) as u32);
+        buf.extend_from_slice(&payload);
+    }
+
+    buf
+}
+
+/// Decode a query response from concatenated framed backend messages.
+pub fn decode_query_response(data: &[u8]) -> Result<(Vec<ColumnDescription>, Vec<Vec<DataType>>)> {
+    let mut pos = 0;
+    let mut columns = Vec::new();
+    let mut rows = Vec::new();
+
+    while pos < data.len() {
+        if pos + 5 > data.len() {
+            bail!("Incomplete message frame at position {}", pos);
+        }
+        let msg_type = data[pos];
+        pos += 1;
+        let length = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
         if length < 4 {
             bail!("Invalid message length: {}", length);
         }
         let payload_size = length - 4;
-        if payload_size > max_message_size {
-            bail!("Message too large: {} bytes", payload_size);
+        if pos + payload_size > data.len() {
+            bail!("Message payload truncated at position {}", pos);
         }
-        let mut payload = vec![0u8; payload_size as usize];
-        if payload_size > 0 {
-            reader.read_exact(&mut payload).await?;
-        }
+        let payload = &data[pos..pos + payload_size];
+        pos += payload_size;
 
-        let mut cursor = Cursor::new(&payload);
-        decode_frontend_payload(msg_type, &mut cursor)
+        let mut cursor = Cursor::new(payload);
+        let msg = decode_backend_payload(msg_type, &mut cursor)?;
+        match msg {
+            BackendMessage::RowDescription { columns: cols } => {
+                columns = cols;
+            }
+            BackendMessage::DataRow { values } => {
+                rows.push(values);
+            }
+            other => bail!("Unexpected message in query response: {:?}", other),
+        }
     }
+
+    Ok((columns, rows))
 }
 
-/// Write a frontend message to the stream.
-pub async fn write_frontend_message<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    msg: &FrontendMessage,
-) -> Result<()> {
-    let mut payload = Vec::new();
-    encode_frontend_payload(&mut payload, msg);
-
-    let payload_len = payload.len() + 4;
-    let length = u32::try_from(payload_len)
-        .map_err(|_| anyhow!("message payload too large: {} bytes", payload.len()))?;
-    if length > DEFAULT_MAX_MESSAGE_SIZE + 4 {
-        bail!("message payload exceeds max size: {} bytes", payload.len());
-    }
-
-    match msg {
-        FrontendMessage::Startup { .. } => {
-            // Startup: no type byte, just [length][payload]
-            writer.write_u32(length).await?;
-            writer.write_all(&payload).await?;
-        }
-        _ => {
-            let type_byte = match msg {
-                FrontendMessage::OpenDb { .. } => MSG_OPEN_DB,
-                FrontendMessage::CloseDb { .. } => MSG_CLOSE_DB,
-                FrontendMessage::Query { .. } => MSG_QUERY,
-                FrontendMessage::Execute { .. } => MSG_EXECUTE,
-                FrontendMessage::Subscribe { .. } => MSG_SUBSCRIBE,
-                FrontendMessage::Unsubscribe => MSG_UNSUBSCRIBE,
-                FrontendMessage::Terminate => MSG_TERMINATE,
-                FrontendMessage::Startup { .. } => unreachable!(),
-            };
-            writer.write_u8(type_byte).await?;
-            writer.write_u32(length).await?;
-            writer.write_all(&payload).await?;
-        }
-    }
-    Ok(())
+/// Encode an Execute request body (submit or execute): tx_ops(ops)
+pub fn encode_execute_request(ops: &[TxOp]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_tx_ops(&mut buf, ops);
+    buf
 }
 
-/// Read a backend message from the stream.
-pub async fn read_backend_message<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    max_message_size: u32,
-) -> Result<BackendMessage> {
-    let msg_type = reader.read_u8().await?;
-    let length = reader.read_u32().await?;
-    if length < 4 {
-        bail!("Invalid message length: {}", length);
-    }
-    let payload_size = length - 4;
-    if payload_size > max_message_size {
-        bail!("Message too large: {} bytes", payload_size);
-    }
-    let mut payload = vec![0u8; payload_size as usize];
-    if payload_size > 0 {
-        reader.read_exact(&mut payload).await?;
-    }
-
-    let mut cursor = Cursor::new(&payload);
-    decode_backend_payload(msg_type, &mut cursor)
+/// Decode an Execute request body.
+pub fn decode_execute_request(data: &[u8]) -> Result<Vec<TxOp>> {
+    let mut cursor = Cursor::new(data);
+    decode_tx_ops(&mut cursor)
 }
 
-/// Write a backend message to the stream.
-pub async fn write_backend_message<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    msg: &BackendMessage,
-) -> Result<()> {
-    let mut payload = Vec::new();
-    encode_backend_payload(&mut payload, msg);
+/// Encode a TxKey response body: i64(tx_id) + i64(system_time)
+pub fn encode_tx_key_response(tx_id: i64, system_time: i64) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_i64(&mut buf, tx_id);
+    encode_i64(&mut buf, system_time);
+    buf
+}
 
-    let payload_len = payload.len() + 4;
-    let length = u32::try_from(payload_len)
-        .map_err(|_| anyhow!("message payload too large: {} bytes", payload.len()))?;
-    if length > DEFAULT_MAX_MESSAGE_SIZE + 4 {
-        bail!("message payload exceeds max size: {} bytes", payload.len());
-    }
+/// Decode a TxKey response body.
+pub fn decode_tx_key_response(data: &[u8]) -> Result<(i64, i64)> {
+    let mut cursor = Cursor::new(data);
+    let tx_id = cursor.read_i64()?;
+    let system_time = cursor.read_i64()?;
+    Ok((tx_id, system_time))
+}
 
-    let type_byte = match msg {
-        BackendMessage::AuthenticationOk { .. } => MSG_AUTHENTICATION_OK,
-        BackendMessage::DbOpened { .. } => MSG_DB_OPENED,
-        BackendMessage::DbClosed { .. } => MSG_DB_CLOSED,
-        BackendMessage::RowDescription { .. } => MSG_ROW_DESCRIPTION,
-        BackendMessage::DataRow { .. } => MSG_DATA_ROW,
-        BackendMessage::DataBatchComplete { .. } => MSG_DATA_BATCH_COMPLETE,
-        BackendMessage::ReadyForQuery { .. } => MSG_READY_FOR_QUERY,
-        BackendMessage::TxKey { .. } => MSG_TX_KEY,
-        BackendMessage::TxResult { .. } => MSG_TX_RESULT,
-        BackendMessage::UnsubscribeComplete => MSG_UNSUBSCRIBE_COMPLETE,
-        BackendMessage::Heartbeat => MSG_HEARTBEAT,
-        BackendMessage::ErrorResponse { .. } => MSG_ERROR_RESPONSE,
-    };
+/// Encode a TxResult response body: u8(status) + i64(tx_id) + i64(system_time) + option_string(error)
+pub fn encode_tx_result_response(
+    status: u8,
+    tx_id: i64,
+    system_time: i64,
+    error_message: &Option<String>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u8(&mut buf, status);
+    encode_i64(&mut buf, tx_id);
+    encode_i64(&mut buf, system_time);
+    encode_option_string(&mut buf, error_message);
+    buf
+}
 
-    writer.write_u8(type_byte).await?;
-    writer.write_u32(length).await?;
-    writer.write_all(&payload).await?;
-    Ok(())
+/// Decode a TxResult response body.
+pub fn decode_tx_result_response(data: &[u8]) -> Result<(u8, i64, i64, Option<String>)> {
+    let mut cursor = Cursor::new(data);
+    let status = cursor.read_u8()?;
+    let tx_id = cursor.read_i64()?;
+    let system_time = cursor.read_i64()?;
+    let error_message = cursor.read_option_string()?;
+    Ok((status, tx_id, system_time, error_message))
+}
+
+/// Encode an ErrorResponse body.
+pub fn encode_error_body(
+    severity: u8,
+    code: u16,
+    message: &str,
+    detail: &Option<String>,
+    hint: &Option<String>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_u8(&mut buf, severity);
+    encode_u16(&mut buf, code);
+    encode_string(&mut buf, message);
+    encode_option_string(&mut buf, detail);
+    encode_option_string(&mut buf, hint);
+    buf
+}
+
+/// Decode an ErrorResponse body.
+pub fn decode_error_body(data: &[u8]) -> Result<(u8, u16, String, Option<String>, Option<String>)> {
+    let mut cursor = Cursor::new(data);
+    let severity = cursor.read_u8()?;
+    let code = cursor.read_u16()?;
+    let message = cursor.read_string()?;
+    let detail = cursor.read_option_string()?;
+    let hint = cursor.read_option_string()?;
+    Ok((severity, code, message, detail, hint))
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,27 +1301,52 @@ mod tests {
     use edn::kw;
     use std::collections::BTreeMap;
 
-    // Helper: encode a frontend message to bytes and decode it back.
-    async fn roundtrip_frontend(msg: &FrontendMessage) -> FrontendMessage {
+    // Helper: encode a frontend message payload and decode it back.
+    fn roundtrip_frontend(msg: &FrontendMessage) -> FrontendMessage {
+        let msg_type = match msg {
+            FrontendMessage::Startup { .. } => None,
+            FrontendMessage::OpenDb { .. } => Some(MSG_OPEN_DB),
+            FrontendMessage::CloseDb { .. } => Some(MSG_CLOSE_DB),
+            FrontendMessage::Query { .. } => Some(MSG_QUERY),
+            FrontendMessage::Execute { .. } => Some(MSG_EXECUTE),
+            FrontendMessage::Subscribe { .. } => Some(MSG_SUBSCRIBE),
+            FrontendMessage::Unsubscribe => Some(MSG_UNSUBSCRIBE),
+            FrontendMessage::Terminate => Some(MSG_TERMINATE),
+        };
         let mut buf = Vec::new();
-        write_frontend_message(&mut buf, msg).await.unwrap();
-
-        let is_startup = matches!(msg, FrontendMessage::Startup { .. });
-        let mut cursor = &buf[..];
-        read_frontend_message(&mut cursor, is_startup, DEFAULT_MAX_MESSAGE_SIZE)
-            .await
-            .unwrap()
+        encode_frontend_payload(&mut buf, msg);
+        let mut cursor = Cursor::new(&buf);
+        match msg_type {
+            None => {
+                let version_major = cursor.read_u16().unwrap();
+                let version_minor = cursor.read_u16().unwrap();
+                let params = cursor.read_string_map().unwrap();
+                FrontendMessage::Startup { version_major, version_minor, params }
+            }
+            Some(t) => decode_frontend_payload(t, &mut cursor).unwrap(),
+        }
     }
 
-    // Helper: encode a backend message to bytes and decode it back.
-    async fn roundtrip_backend(msg: &BackendMessage) -> BackendMessage {
+    // Helper: encode a backend message payload and decode it back.
+    fn roundtrip_backend(msg: &BackendMessage) -> BackendMessage {
+        let msg_type = match msg {
+            BackendMessage::AuthenticationOk { .. } => MSG_AUTHENTICATION_OK,
+            BackendMessage::DbOpened { .. } => MSG_DB_OPENED,
+            BackendMessage::DbClosed { .. } => MSG_DB_CLOSED,
+            BackendMessage::RowDescription { .. } => MSG_ROW_DESCRIPTION,
+            BackendMessage::DataRow { .. } => MSG_DATA_ROW,
+            BackendMessage::DataBatchComplete { .. } => MSG_DATA_BATCH_COMPLETE,
+            BackendMessage::ReadyForQuery { .. } => MSG_READY_FOR_QUERY,
+            BackendMessage::TxKey { .. } => MSG_TX_KEY,
+            BackendMessage::TxResult { .. } => MSG_TX_RESULT,
+            BackendMessage::UnsubscribeComplete => MSG_UNSUBSCRIBE_COMPLETE,
+            BackendMessage::Heartbeat => MSG_HEARTBEAT,
+            BackendMessage::ErrorResponse { .. } => MSG_ERROR_RESPONSE,
+        };
         let mut buf = Vec::new();
-        write_backend_message(&mut buf, msg).await.unwrap();
-
-        let mut cursor = &buf[..];
-        read_backend_message(&mut cursor, DEFAULT_MAX_MESSAGE_SIZE)
-            .await
-            .unwrap()
+        encode_backend_payload(&mut buf, msg);
+        let mut cursor = Cursor::new(&buf);
+        decode_backend_payload(msg_type, &mut cursor).unwrap()
     }
 
     // -- DataType round-trip tests --
@@ -1498,8 +1581,8 @@ mod tests {
 
     // -- Frontend message round-trip tests --
 
-    #[tokio::test]
-    async fn test_startup_roundtrip() {
+    #[test]
+    fn test_startup_roundtrip() {
         let mut params = BTreeMap::new();
         params.insert("client_name".to_string(), "test-client".to_string());
         let msg = FrontendMessage::Startup {
@@ -1507,42 +1590,42 @@ mod tests {
             version_minor: 1,
             params,
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_open_db_roundtrip() {
+    #[test]
+    fn test_open_db_roundtrip() {
         let msg = FrontendMessage::OpenDb {
             tx_id: Some(42),
             system_time: Some(1700000000000000),
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
 
         let msg = FrontendMessage::OpenDb {
             tx_id: None,
             system_time: None,
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_close_db_roundtrip() {
+    #[test]
+    fn test_close_db_roundtrip() {
         let msg = FrontendMessage::CloseDb { db_id: 7 };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_query_roundtrip() {
+    #[test]
+    fn test_query_roundtrip() {
         let msg = FrontendMessage::Query {
             query_string: "{:find [?e ?name] :where [[?e :person/name ?name]]}".to_string(),
             db_id: 1,
             args: vec![],
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_execute_roundtrip() {
+    #[test]
+    fn test_execute_roundtrip() {
         let msg = FrontendMessage::Execute {
             ops: vec![
                 TxOp::Add {
@@ -1554,62 +1637,62 @@ mod tests {
             ],
             await_indexing: true,
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_subscribe_roundtrip() {
+    #[test]
+    fn test_subscribe_roundtrip() {
         let msg = FrontendMessage::Subscribe {
             query_string: "{:find [?name] :where [[?e :person/name ?name]]}".to_string(),
             db_id: 3,
             args: vec![],
         };
-        assert_eq!(roundtrip_frontend(&msg).await, msg);
+        assert_eq!(roundtrip_frontend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_unsubscribe_roundtrip() {
+    #[test]
+    fn test_unsubscribe_roundtrip() {
         assert_eq!(
-            roundtrip_frontend(&FrontendMessage::Unsubscribe).await,
+            roundtrip_frontend(&FrontendMessage::Unsubscribe),
             FrontendMessage::Unsubscribe
         );
     }
 
-    #[tokio::test]
-    async fn test_terminate_roundtrip() {
+    #[test]
+    fn test_terminate_roundtrip() {
         assert_eq!(
-            roundtrip_frontend(&FrontendMessage::Terminate).await,
+            roundtrip_frontend(&FrontendMessage::Terminate),
             FrontendMessage::Terminate
         );
     }
 
     // -- Backend message round-trip tests --
 
-    #[tokio::test]
-    async fn test_authentication_ok_roundtrip() {
+    #[test]
+    fn test_authentication_ok_roundtrip() {
         let msg = BackendMessage::AuthenticationOk {
             server_version: "triplox 0.1.0".to_string(),
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_db_opened_roundtrip() {
+    #[test]
+    fn test_db_opened_roundtrip() {
         let msg = BackendMessage::DbOpened {
             db_id: 5,
             tx_id: 42,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_db_closed_roundtrip() {
+    #[test]
+    fn test_db_closed_roundtrip() {
         let msg = BackendMessage::DbClosed { db_id: 5 };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_row_description_roundtrip() {
+    #[test]
+    fn test_row_description_roundtrip() {
         let msg = BackendMessage::RowDescription {
             columns: vec![
                 ColumnDescription {
@@ -1622,85 +1705,85 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_data_row_query_mode_roundtrip() {
+    #[test]
+    fn test_data_row_query_mode_roundtrip() {
         let msg = BackendMessage::DataRow {
             values: vec![DataType::Long(1), DataType::String("alice".to_string())],
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_data_batch_complete_roundtrip() {
+    #[test]
+    fn test_data_batch_complete_roundtrip() {
         let msg = BackendMessage::DataBatchComplete { tx_id: 100 };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_ready_for_query_roundtrip() {
+    #[test]
+    fn test_ready_for_query_roundtrip() {
         let msg = BackendMessage::ReadyForQuery {
             status: STATUS_IDLE,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
 
         let msg = BackendMessage::ReadyForQuery {
             status: STATUS_SUBSCRIBED,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_tx_key_roundtrip() {
+    #[test]
+    fn test_tx_key_roundtrip() {
         let msg = BackendMessage::TxKey {
             tx_id: 42,
             system_time: 1700000000000000,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_tx_result_committed_roundtrip() {
+    #[test]
+    fn test_tx_result_committed_roundtrip() {
         let msg = BackendMessage::TxResult {
             status: 0,
             tx_id: 42,
             system_time: 1700000000000000,
             error_message: None,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_tx_result_aborted_roundtrip() {
+    #[test]
+    fn test_tx_result_aborted_roundtrip() {
         let msg = BackendMessage::TxResult {
             status: 1,
             tx_id: 42,
             system_time: 1700000000000000,
             error_message: Some("transaction aborted: constraint violation".to_string()),
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_unsubscribe_complete_roundtrip() {
+    #[test]
+    fn test_unsubscribe_complete_roundtrip() {
         assert_eq!(
-            roundtrip_backend(&BackendMessage::UnsubscribeComplete).await,
+            roundtrip_backend(&BackendMessage::UnsubscribeComplete),
             BackendMessage::UnsubscribeComplete
         );
     }
 
-    #[tokio::test]
-    async fn test_heartbeat_roundtrip() {
+    #[test]
+    fn test_heartbeat_roundtrip() {
         assert_eq!(
-            roundtrip_backend(&BackendMessage::Heartbeat).await,
+            roundtrip_backend(&BackendMessage::Heartbeat),
             BackendMessage::Heartbeat
         );
     }
 
-    #[tokio::test]
-    async fn test_error_response_roundtrip() {
+    #[test]
+    fn test_error_response_roundtrip() {
         let msg = BackendMessage::ErrorResponse {
             severity: SEVERITY_ERROR,
             code: ErrorCode::ParseError.as_u16(),
@@ -1708,11 +1791,11 @@ mod tests {
             detail: Some("unexpected token at position 42".to_string()),
             hint: Some("check your EDN syntax".to_string()),
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
-    #[tokio::test]
-    async fn test_error_response_minimal_roundtrip() {
+    #[test]
+    fn test_error_response_minimal_roundtrip() {
         let msg = BackendMessage::ErrorResponse {
             severity: SEVERITY_FATAL,
             code: ErrorCode::ProtocolVersionMismatch.as_u16(),
@@ -1720,7 +1803,7 @@ mod tests {
             detail: None,
             hint: None,
         };
-        assert_eq!(roundtrip_backend(&msg).await, msg);
+        assert_eq!(roundtrip_backend(&msg), msg);
     }
 
     // -- Error code tests --

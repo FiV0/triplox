@@ -1,48 +1,39 @@
 package io.triplox.client;
 
 import java.io.*;
-import java.net.Socket;
-import java.util.ArrayList;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Manages a TCP connection to a Triplox server.
+ * HTTP/2 client for connecting to a Triplox server.
  *
- * <p>Not thread-safe. Callers needing concurrency should use separate connections.</p>
+ * <p>Thread-safe. The underlying {@link HttpClient} handles connection pooling
+ * and HTTP/2 multiplexing, so a single {@code TriploxNode} can be shared
+ * across threads.</p>
  */
 public class TriploxNode implements AutoCloseable {
-    private final Socket socket;
-    private final BufferedOutputStream out;
-    private final BufferedInputStream in;
+    private final HttpClient httpClient;
+    private final String baseUrl;
 
-    private TriploxNode(Socket socket) throws IOException {
-        this.socket = socket;
-        this.out = new BufferedOutputStream(socket.getOutputStream());
-        this.in = new BufferedInputStream(socket.getInputStream());
+    private static final String CONTENT_TYPE = "application/x-triplox";
+
+    private TriploxNode(HttpClient httpClient, String baseUrl) {
+        this.httpClient = httpClient;
+        this.baseUrl = baseUrl;
     }
 
     /**
-     * Connect to a Triplox server and perform the startup handshake.
+     * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        return connect(host, port, Map.of());
-    }
-
-    /**
-     * Connect to a Triplox server with custom startup parameters.
-     */
-    public static TriploxNode connect(String host, int port, Map<String, String> params) throws IOException {
-        Socket socket = new Socket(host, port);
-        socket.setTcpNoDelay(true);
-        var node = new TriploxNode(socket);
-        try {
-            node.performStartup(params);
-            return node;
-        } catch (Exception e) {
-            node.close();
-            throw e;
-        }
+        var client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
+                .build();
+        String url = "http://" + host + ":" + port;
+        return new TriploxNode(client, url);
     }
 
     /**
@@ -56,33 +47,17 @@ public class TriploxNode implements AutoCloseable {
      * Open a DB snapshot at a specific transaction ID.
      */
     public Db openDb(Long txId) throws IOException {
-        WireCodec.writeOpenDb(out, txId);
-        out.flush();
-
-        BackendMessage msg = readExpecting("DbOpened");
-        if (msg instanceof BackendMessage.DbOpened opened) {
-            expectReadyForQuery();
-            return new Db(this, opened.dbId(), opened.txId());
-        }
-        throw unexpectedMessage("DbOpened", msg);
+        byte[] body = WireCodec.encodeOpenDbBody(txId);
+        byte[] responseBody = postBinary("/db/open", body);
+        var opened = WireCodec.decodeDbOpened(responseBody);
+        return new Db(this, opened.dbId(), opened.txId());
     }
 
     /**
      * Release a previously opened DB snapshot.
      */
     void closeDbInternal(Db db) throws IOException {
-        WireCodec.writeCloseDb(out, db.dbId());
-        out.flush();
-
-        BackendMessage msg = readExpecting("DbClosed");
-        if (msg instanceof BackendMessage.DbClosed closed) {
-            if (closed.dbId() != db.dbId()) {
-                throw new IOException("DbClosed for wrong dbId: expected " + db.dbId() + ", got " + closed.dbId());
-            }
-            expectReadyForQuery();
-            return;
-        }
-        throw unexpectedMessage("DbClosed", msg);
+        deleteBinary("/db/" + db.dbId());
     }
 
     /**
@@ -96,60 +71,30 @@ public class TriploxNode implements AutoCloseable {
      * Execute a Datalog query with input binding arguments.
      */
     QueryResult queryInternal(Db db, String edn, List<QueryArg> args) throws IOException {
-        WireCodec.writeQuery(out, edn, db.dbId(), args);
-        out.flush();
-
-        // Read RowDescription
-        BackendMessage msg = readExpecting("RowDescription");
-        if (!(msg instanceof BackendMessage.RowDescription rowDesc)) {
-            throw unexpectedMessage("RowDescription", msg);
-        }
-
-        // Read DataRows until ReadyForQuery
-        var rows = new ArrayList<List<Object>>();
-        while (true) {
-            msg = readExpecting("DataRow or ReadyForQuery");
-            if (msg instanceof BackendMessage.DataRow dataRow) {
-                rows.add(dataRow.values());
-            } else if (msg instanceof BackendMessage.ReadyForQuery) {
-                break;
-            } else {
-                throw unexpectedMessage("DataRow or ReadyForQuery", msg);
-            }
-        }
-
-        return new QueryResult(rowDesc.columns(), rows);
+        byte[] body = WireCodec.encodeQueryBody(edn, args);
+        byte[] responseBody = postBinary("/db/" + db.dbId() + "/query", body);
+        return WireCodec.decodeQueryResponse(responseBody);
     }
 
     /**
      * Submit a fire-and-forget transaction.
      */
     public TxKeyResult submitTx(List<TxOp> ops) throws IOException {
-        WireCodec.writeExecute(out, ops, false);
-        out.flush();
-
-        BackendMessage msg = readExpecting("TxKey");
-        if (msg instanceof BackendMessage.TxKey txKey) {
-            expectReadyForQuery();
-            return new TxKeyResult(txKey.txId(), txKey.systemTime());
-        }
-        throw unexpectedMessage("TxKey", msg);
+        byte[] body = WireCodec.encodeExecuteBody(ops);
+        byte[] responseBody = postBinary("/tx/submit", body);
+        var txKey = WireCodec.decodeTxKey(responseBody);
+        return new TxKeyResult(txKey.txId(), txKey.systemTime());
     }
 
     /**
      * Execute a transaction and wait for indexing.
      */
     public TxResultValue executeTx(List<TxOp> ops) throws IOException {
-        WireCodec.writeExecute(out, ops, true);
-        out.flush();
-
-        BackendMessage msg = readExpecting("TxResult");
-        if (msg instanceof BackendMessage.TxResult txResult) {
-            expectReadyForQuery();
-            return new TxResultValue(txResult.status(), txResult.txId(),
-                    txResult.systemTime(), txResult.errorMessage());
-        }
-        throw unexpectedMessage("TxResult", msg);
+        byte[] body = WireCodec.encodeExecuteBody(ops);
+        byte[] responseBody = postBinary("/tx/execute", body);
+        var txResult = WireCodec.decodeTxResult(responseBody);
+        return new TxResultValue(txResult.status(), txResult.txId(),
+                txResult.systemTime(), txResult.errorMessage());
     }
 
     /**
@@ -167,69 +112,61 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Graceful connection close.
+     * Close the HTTP client.
      */
     @Override
-    public void close() throws IOException {
+    public void close() {
+        httpClient.close();
+    }
+
+    // ---------------------------------------------------------------
+    // Internal HTTP helpers
+    // ---------------------------------------------------------------
+
+    private byte[] postBinary(String path, byte[] body) throws IOException {
+        var request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Content-Type", CONTENT_TYPE)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .build();
+        return sendAndCheck(request);
+    }
+
+    private byte[] deleteBinary(String path) throws IOException {
+        var request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .DELETE()
+                .build();
+        return sendAndCheck(request);
+    }
+
+    private byte[] sendAndCheck(HttpRequest request) throws IOException {
+        HttpResponse<byte[]> response;
         try {
-            if (!socket.isClosed()) {
-                WireCodec.writeTerminate(out);
-                out.flush();
-            }
-        } catch (IOException ignored) {
-            // Best-effort terminate
-        } finally {
-            socket.close();
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Internal
-    // ---------------------------------------------------------------
-
-    private void performStartup(Map<String, String> params) throws IOException {
-        WireCodec.writeStartup(out, params);
-        out.flush();
-
-        BackendMessage msg = readExpecting("AuthenticationOk");
-        if (!(msg instanceof BackendMessage.AuthenticationOk)) {
-            throw unexpectedMessage("AuthenticationOk", msg);
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("HTTP request interrupted", e);
         }
 
-        expectReadyForQuery();
-    }
-
-    private void expectReadyForQuery() throws IOException {
-        BackendMessage msg = readExpecting("ReadyForQuery");
-        if (msg instanceof BackendMessage.ReadyForQuery rfq) {
-            if (rfq.status() != MessageTypes.STATUS_IDLE && rfq.status() != MessageTypes.STATUS_SUBSCRIBED) {
-                throw new IOException("Unexpected ReadyForQuery status: 0x" +
-                        Integer.toHexString(rfq.status() & 0xFF));
-            }
-            return;
+        int status = response.statusCode();
+        if (status >= 200 && status < 300) {
+            return response.body();
         }
-        throw unexpectedMessage("ReadyForQuery", msg);
-    }
 
-    private BackendMessage readExpecting(String context) throws IOException {
-        BackendMessage msg = WireCodec.readBackendMessage(in);
-        if (msg instanceof BackendMessage.ErrorResponse err) {
-            var ex = new TriploxException(err.severity(), err.code(),
-                    err.message(), err.detail(), err.hint());
-            if (ex.isFatal()) {
-                throw ex;
+        // Try to decode binary ErrorResponse from the body
+        byte[] responseBody = response.body();
+        if (responseBody != null && responseBody.length > 0) {
+            try {
+                var err = WireCodec.decodeErrorResponse(responseBody);
+                throw new TriploxException(err.severity(), err.code(),
+                        err.message(), err.detail(), err.hint());
+            } catch (TriploxException e) {
+                throw e;
+            } catch (Exception ignored) {
+                // Fall through to generic error
             }
-            // Non-fatal: ReadyForQuery follows, but we throw for the caller
-            BackendMessage next = WireCodec.readBackendMessage(in);
-            if (!(next instanceof BackendMessage.ReadyForQuery)) {
-                throw unexpectedMessage("ReadyForQuery", next);
-            }
-            throw ex;
         }
-        return msg;
-    }
-
-    private static IOException unexpectedMessage(String expected, BackendMessage actual) {
-        return new IOException("Expected " + expected + " but got " + actual.getClass().getSimpleName());
+        throw new IOException("HTTP error " + status + ": " + new String(responseBody));
     }
 }

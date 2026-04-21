@@ -7,10 +7,10 @@ use chrono::TimeZone;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
+use triplox::http_server::{DevHttpServer, HttpServer};
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
-use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
 
 async fn define_base_schema(client: &ClientNode) {
@@ -18,15 +18,15 @@ async fn define_base_schema(client: &ClientNode) {
     assert!(matches!(result, TransactionResult::TxCommited(_)));
 }
 
-/// Start an in-memory server on a free port.
-/// Returns the address string and a cancellation token.
-/// Cancel the token to shut down the server.
+/// Start an in-memory HTTP server on a free port.
+/// Returns the base URL and a cancellation token.
 async fn start_test_server() -> (String, CancellationToken) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
 
     let node = Arc::new(Node::memory_node().await);
-    let server = Server::new(node, 1024);
+    let server = HttpServer::new(node, 1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -34,14 +34,13 @@ async fn start_test_server() -> (String, CancellationToken) {
         let _ = server.listen_on(listener, server_token).await;
     });
 
-    (addr, token)
+    (url, token)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_client_connect_and_close() {
+async fn test_client_connect() {
     let (addr, token) = start_test_server().await;
-    let client = ClientNode::connect(&addr).await.unwrap();
-    client.close().await.unwrap();
+    let _client = ClientNode::connect(&addr).await.unwrap();
     token.cancel();
 }
 
@@ -73,7 +72,6 @@ async fn test_execute_tx_and_query() {
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -93,7 +91,6 @@ async fn test_submit_tx() {
         .unwrap();
     assert!(tx_key.tx_id >= 0);
 
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -133,7 +130,6 @@ async fn test_multiple_transactions_and_query() {
     assert!(result.contains(&vec![DataType::String("bob".to_string())]));
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -171,7 +167,6 @@ async fn test_open_close_multiple_dbs() {
 
     db1.close().await.unwrap();
     db2.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -201,8 +196,6 @@ async fn test_two_connections() {
     assert_eq!(result.len(), 1);
 
     db.close().await.unwrap();
-    client1.close().await.unwrap();
-    client2.close().await.unwrap();
     token.cancel();
 }
 
@@ -228,7 +221,6 @@ async fn test_execute_tx_returns_tx_key() {
         _ => panic!("Expected TxCommited"),
     }
 
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -273,7 +265,6 @@ async fn test_db_as_of() {
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -283,9 +274,10 @@ async fn test_db_as_of() {
 
 async fn start_dev_server() -> (String, CancellationToken) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
 
-    let server = DevServer::new(1024);
+    let server = DevHttpServer::new(1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -293,7 +285,7 @@ async fn start_dev_server() -> (String, CancellationToken) {
         let _ = server.listen_on(listener, server_token).await;
     });
 
-    (addr, token)
+    (url, token)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -333,8 +325,6 @@ async fn test_dev_server_connections_are_isolated() {
 
     db1.close().await.unwrap();
     db2.close().await.unwrap();
-    client1.close().await.unwrap();
-    client2.close().await.unwrap();
     token.cancel();
 }
 
@@ -412,7 +402,6 @@ async fn test_query_keyword_value_comparison_via_wire() {
     assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -485,7 +474,6 @@ async fn test_aggregates_and_or() {
     ]));
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -516,7 +504,6 @@ async fn test_aggregate_set_semantics() {
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -555,7 +542,6 @@ async fn test_datascript_aggregates() {
     assert_eq!(row[4], DataType::Long(2), "count-distinct");
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -585,7 +571,6 @@ async fn test_aggregate_avg() {
     assert_eq!(result, vec![vec![DataType::Double(22.0)]]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -617,7 +602,6 @@ async fn test_aggregate_min_max_strings() {
     assert_eq!(result[0][1], DataType::String("Charlie".to_string()));
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -637,7 +621,6 @@ async fn test_aggregate_empty_result() {
     assert_eq!(result, vec![vec![DataType::Long(0)]]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -727,7 +710,6 @@ async fn test_order_and_limit() {
     );
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -755,7 +737,6 @@ async fn test_aggregate_min_incompatible_types() {
     assert!(result.is_err(), "min over incompatible types should error");
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -804,7 +785,6 @@ async fn test_join_ref_with_plain_long() {
     assert_eq!(result[0], vec![DataType::String("Bob".to_string())]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -859,7 +839,6 @@ async fn test_upsert_with_resolved_entity_id() {
     );
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
 
@@ -906,6 +885,5 @@ async fn test_year_and_month_extraction() {
     assert_eq!(result[0], vec![DataType::Long(6)]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
