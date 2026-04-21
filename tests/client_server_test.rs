@@ -885,6 +885,5 @@ async fn test_year_and_month_extraction() {
     assert_eq!(result[0], vec![DataType::Long(6)]);
 
     db.close().await.unwrap();
-    client.close().await.unwrap();
     token.cancel();
 }
