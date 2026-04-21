@@ -874,9 +874,9 @@ All error responses (non-200) carry a binary ErrorResponse body with the same en
 
 ### 13.2 DB Handle Lifecycle
 
-DB handles are scoped to an HTTP/2 connection (identified by the underlying TCP connection). Two cleanup mechanisms ensure handles are released:
+DB handles are scoped to an HTTP/2 connection. Each connection is assigned a unique `conn_id` on accept, and all handles opened on that connection are tracked against it. Two cleanup mechanisms ensure handles are released:
 
-1. **Connection-drop** (fast path): When the TCP connection closes, all handles belonging to that connection are released immediately.
+1. **Connection-drop** (fast path): When an HTTP/2 connection closes, all handles belonging to that connection are released immediately.
 2. **TTL reaper** (safety net): A background task periodically evicts handles that have not been used for 24 hours.
 
 ---
