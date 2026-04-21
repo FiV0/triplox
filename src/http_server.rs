@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
@@ -161,6 +161,7 @@ impl HandleStore {
         Ok(db_id)
     }
 
+    // TODO(P1): Validate conn_id in get_db/remove so global db_ids cannot cross connection boundaries.
     async fn get_db(&self, db_id: u32) -> Option<Arc<DB>> {
         let mut handles = self.handles.write().await;
         if let Some(entry) = handles.get_mut(&db_id) {
@@ -407,6 +408,7 @@ fn build_router<L: TxLog + 'static>(state: Arc<HttpServer<L>>) -> Router {
         .route("/db/{db_id}/query", post(query::<L>))
         .route("/tx/submit", post(submit_tx::<L>))
         .route("/tx/execute", post(execute_tx::<L>))
+        .layer(DefaultBodyLimit::max(DEFAULT_MAX_MESSAGE_SIZE as usize))
         .with_state(state)
 }
 
