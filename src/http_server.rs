@@ -10,6 +10,7 @@
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,14 +22,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::Router;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
-use tower::Service;
+use hyper_util::service::TowerToHyperService;
 
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
@@ -429,11 +431,6 @@ impl<L: TxLog + 'static> HttpServer<L> {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
-        info!("Triplox HTTP server listening on {}", listener.local_addr()?);
-
-        let handle_store = self.handle_store.clone();
-
-        // TTL reaper task
         let reaper_handle_store = self.handle_store.clone();
         let reaper_token = token.clone();
         tokio::spawn(async move {
@@ -442,95 +439,33 @@ impl<L: TxLog + 'static> HttpServer<L> {
             loop {
                 tokio::select! {
                     _ = reaper_token.cancelled() => break,
-                    _ = interval.tick() => {
-                        reaper_handle_store.reap_expired(ttl).await;
-                    }
+                    _ = interval.tick() => reaper_handle_store.reap_expired(ttl).await,
                 }
             }
         });
 
-        // Accept loop with per-connection tracking
         let app_state = Arc::new(HttpServer {
             node: self.node.clone(),
             handle_store: self.handle_store.clone(),
         });
+        let handle_store = self.handle_store.clone();
 
-        // Use hyper directly for per-connection lifecycle control
-
-        let mut join_set = tokio::task::JoinSet::new();
-
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    info!("Shutdown signal received, stopping HTTP server");
-                    break;
-                }
-                result = listener.accept() => {
-                    let (stream, peer_addr) = result?;
-                    stream.set_nodelay(true)?;
-                    let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-                    info!("New HTTP connection from {} (conn_id={})", peer_addr, conn_id);
-
-                    let handle_store = handle_store.clone();
-
-                    // Build a per-connection router with ConnId extension
-                    let router = build_router(app_state.clone())
-                        .layer(axum::Extension(ConnId(conn_id)));
-
-                    let conn_token = token.child_token();
-                    join_set.spawn(async move {
-                        let io = TokioIo::new(stream);
-                        let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                            let mut router = router.clone();
-                            async move {
-                                router.call(req).await
-                            }
-                        });
-
-                        let builder = Builder::new(TokioExecutor::new());
-                        let conn = builder.serve_connection(io, service);
-                        tokio::pin!(conn);
-
-                        tokio::select! {
-                            result = &mut conn => {
-                                if let Err(e) = result {
-                                    warn!("HTTP connection {} error: {}", conn_id, e);
-                                }
-                            }
-                            _ = conn_token.cancelled() => {
-                                info!("Shutdown: closing HTTP connection {}", conn_id);
-                                conn.as_mut().graceful_shutdown();
-                                let _ = conn.await;
-                            }
-                        }
-
-                        // Connection-drop cleanup: release all handles for this connection
-                        handle_store.remove_by_conn(conn_id).await;
-                        info!("HTTP connection {} closed", conn_id);
-                    });
-                }
-            }
-        }
-
-        // Drain remaining connections
-        let remaining = join_set.len();
-        if remaining > 0 {
-            info!("Waiting for {} HTTP connection(s) to drain...", remaining);
-            match tokio::time::timeout(Duration::from_secs(30), async {
-                while let Some(result) = join_set.join_next().await {
-                    if let Err(e) = result {
-                        warn!("Connection task error during drain: {}", e);
-                    }
-                }
-            })
-            .await
-            {
-                Ok(()) => info!("All HTTP connections drained"),
-                Err(_) => warn!("Drain timeout (30s) exceeded"),
-            }
-        }
-
-        Ok(())
+        accept_loop(
+            listener,
+            token,
+            "HTTP",
+            move |stream, _peer, conn_id, conn_token, join_set| {
+                let router = build_router(app_state.clone())
+                    .layer(axum::Extension(ConnId(conn_id)));
+                let handle_store = handle_store.clone();
+                join_set.spawn(async move {
+                    serve_connection(stream, router, conn_id, conn_token, "HTTP").await;
+                    handle_store.remove_by_conn(conn_id).await;
+                    info!("HTTP connection {} closed", conn_id);
+                });
+            },
+        )
+        .await
     }
 }
 
@@ -553,96 +488,118 @@ impl DevHttpServer {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
-        info!(
-            "Triplox Dev HTTP server listening on {}",
-            listener.local_addr()?
-        );
-
-
         let max_open_dbs = self.max_open_dbs;
-        let mut join_set = tokio::task::JoinSet::new();
+        accept_loop(
+            listener,
+            token,
+            "Dev HTTP",
+            move |stream, _peer, conn_id, conn_token, join_set| {
+                join_set.spawn(async move {
+                    let node = Arc::new(Node::memory_node().await);
+                    let db_cache = Arc::new(DbCache::new(max_open_dbs));
+                    let handle_store = Arc::new(HandleStore::new(db_cache));
 
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    info!("Shutdown signal received, stopping Dev HTTP server");
-                    break;
-                }
-                result = listener.accept() => {
-                    let (stream, peer_addr) = result?;
-                    stream.set_nodelay(true)?;
-                    let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-                    info!("New dev HTTP connection from {} (conn_id={})", peer_addr, conn_id);
-
-                    let conn_token = token.child_token();
-                    join_set.spawn(async move {
-                        let node = Arc::new(Node::memory_node().await);
-                        let db_cache = Arc::new(DbCache::new(max_open_dbs));
-                        let handle_store = Arc::new(HandleStore::new(db_cache));
-
-                        let app_state = Arc::new(HttpServer {
-                            node: node.clone(),
-                            handle_store: handle_store.clone(),
-                        });
-
-                        let router = build_router(app_state)
-                            .layer(axum::Extension(ConnId(conn_id)));
-
-                        let io = TokioIo::new(stream);
-                        let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                            let mut router = router.clone();
-                            async move {
-                                router.call(req).await
-                            }
-                        });
-
-                        let builder = Builder::new(TokioExecutor::new());
-                        let conn = builder.serve_connection(io, service);
-                        tokio::pin!(conn);
-
-                        tokio::select! {
-                            result = &mut conn => {
-                                if let Err(e) = result {
-                                    warn!("Dev HTTP connection {} error: {}", conn_id, e);
-                                }
-                            }
-                            _ = conn_token.cancelled() => {
-                                conn.as_mut().graceful_shutdown();
-                                let _ = conn.await;
-                            }
-                        }
-
-                        // Cleanup
-                        handle_store.remove_by_conn(conn_id).await;
-
-                        let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
-                            panic!("dev node Arc should have refcount 1 after connection close")
-                        });
-                        node.close().await;
-                        info!("Dev HTTP connection {} closed", conn_id);
+                    let app_state = Arc::new(HttpServer {
+                        node: node.clone(),
+                        handle_store: handle_store.clone(),
                     });
-                }
+                    let router = build_router(app_state)
+                        .layer(axum::Extension(ConnId(conn_id)));
+
+                    serve_connection(stream, router, conn_id, conn_token, "Dev HTTP").await;
+
+                    handle_store.remove_by_conn(conn_id).await;
+                    let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
+                        panic!("dev node Arc should have refcount 1 after connection close")
+                    });
+                    node.close().await;
+                    info!("Dev HTTP connection {} closed", conn_id);
+                });
+            },
+        )
+        .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accept loop / per-connection serving (shared)
+// ---------------------------------------------------------------------------
+
+async fn accept_loop<F>(
+    listener: TcpListener,
+    token: CancellationToken,
+    name: &'static str,
+    mut spawn_handler: F,
+) -> Result<()>
+where
+    F: FnMut(TcpStream, SocketAddr, u64, CancellationToken, &mut JoinSet<()>),
+{
+    info!("Triplox {} server listening on {}", name, listener.local_addr()?);
+    let mut join_set = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                info!("Shutdown signal received, stopping {} server", name);
+                break;
+            }
+            result = listener.accept() => {
+                let (stream, peer_addr) = result?;
+                stream.set_nodelay(true)?;
+                let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+                info!("New {} connection from {} (conn_id={})", name, peer_addr, conn_id);
+                spawn_handler(stream, peer_addr, conn_id, token.child_token(), &mut join_set);
             }
         }
+    }
 
-        // Drain
-        let remaining = join_set.len();
-        if remaining > 0 {
-            info!("Waiting for {} dev connection(s) to drain...", remaining);
-            match tokio::time::timeout(Duration::from_secs(30), async {
-                while let Some(result) = join_set.join_next().await {
-                    if let Err(e) = result {
-                        warn!("Dev connection task error during drain: {}", e);
-                    }
-                }
-            })
-            .await
-            {
-                Ok(()) => info!("All dev connections drained"),
-                Err(_) => warn!("Drain timeout (30s) exceeded"),
+    drain_connections(&mut join_set, name).await;
+    Ok(())
+}
+
+async fn drain_connections(join_set: &mut JoinSet<()>, name: &str) {
+    let remaining = join_set.len();
+    if remaining == 0 {
+        return;
+    }
+    info!("Waiting for {} {} connection(s) to drain...", remaining, name);
+    match tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(result) = join_set.join_next().await {
+            if let Err(e) = result {
+                warn!("{} connection task error during drain: {}", name, e);
             }
         }
+    })
+    .await
+    {
+        Ok(()) => info!("All {} connections drained", name),
+        Err(_) => warn!("Drain timeout (30s) exceeded"),
+    }
+}
 
-        Ok(())
+async fn serve_connection(
+    stream: TcpStream,
+    router: Router,
+    conn_id: u64,
+    conn_token: CancellationToken,
+    name: &'static str,
+) {
+    let io = TokioIo::new(stream);
+    let service = TowerToHyperService::new(router);
+    let builder = Builder::new(TokioExecutor::new());
+    let conn = builder.serve_connection(io, service);
+    tokio::pin!(conn);
+
+    tokio::select! {
+        result = &mut conn => {
+            if let Err(e) = result {
+                warn!("{} connection {} error: {}", name, conn_id, e);
+            }
+        }
+        _ = conn_token.cancelled() => {
+            info!("Shutdown: closing {} connection {}", name, conn_id);
+            conn.as_mut().graceful_shutdown();
+            let _ = conn.await;
+        }
     }
 }
