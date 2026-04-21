@@ -281,6 +281,71 @@ impl Node<FileLog> {
     }
 }
 
+#[cfg(feature = "kafka")]
+impl Node<crate::kafka_log::KafkaLog> {
+    pub async fn kafka_node(
+        bootstrap_servers: &str,
+        topic: &str,
+        endpoint: &str,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        region: &str,
+        cache_path: &Path,
+    ) -> Result<Self, Error> {
+        let slate =
+            remote_slate(endpoint, bucket, access_key, secret_key, region, cache_path).await?;
+        let metadata = crate::bootstrap::init_db(&slate).await?;
+
+        let snapshot = Arc::new(slate.db.snapshot().await?);
+        let latest_indexed = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let latest_indexed_tx = if latest_indexed.tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
+            Some(latest_indexed)
+        } else {
+            None
+        };
+
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+            slate.db.clone(),
+            metadata,
+            latest_indexed_tx,
+        )));
+
+        let log = Arc::new(
+            crate::kafka_log::KafkaLog::new(
+                bootstrap_servers,
+                topic.to_string(),
+                Box::new(clock::SystemClock),
+            )
+            .await?,
+        );
+
+        let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
+
+        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
+        let last_tx_key = records.last().map(|r| r.tx_key);
+
+        let waiter = match last_tx_key {
+            Some(_) => Some(indexer.read().await.tx_waiter()),
+            None => None,
+        };
+
+        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+
+        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+            let completion = waiter.await_tx(tx_key).await?;
+            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+        }
+
+        Ok(Node {
+            log,
+            indexer,
+            slate,
+            subscription,
+        })
+    }
+}
+
 impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
         let incremental_result = self.incremental.shutdown().await;

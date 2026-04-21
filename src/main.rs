@@ -89,6 +89,33 @@ async fn run_server(config: Config) -> Result<()> {
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
+        #[cfg(feature = "kafka")]
+        StorageConfig::Kafka {
+            bootstrap_servers,
+            topic,
+            endpoint,
+            bucket,
+            access_key,
+            secret_key,
+            region,
+            cache_path,
+        } => {
+            let node = Arc::new(
+                Node::kafka_node(
+                    &bootstrap_servers,
+                    &topic,
+                    &endpoint,
+                    &bucket,
+                    &access_key,
+                    &secret_key,
+                    &region,
+                    &cache_path,
+                )
+                .await?,
+            );
+            let server = Server::new(node);
+            server.listen(&bind_addr, token).await
+        }
     }
 }
 

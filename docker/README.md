@@ -108,6 +108,21 @@ and clears the contents of `docker/data/minio/` (keeping the ext4 mount). It
 does not unmount or delete the loopback image. After it finishes, re-run
 `docker compose -f docker/docker-compose.yml up --build`.
 
+### Kafka mode (AutoMQ)
+
+Using docker-compose with AutoMQ as the Kafka-compatible broker backed by S3:
+
+```bash
+docker compose -f docker/docker-compose-kafka.yml up --build
+```
+
+This starts:
+- **RustFS** on port 9000 (S3 API) and 9001 (console)
+- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by RustFS
+- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on RustFS
+
+The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total ordering (WAL semantics).
+
 ### Custom config
 
 Mount your own config file and pass its path as an argument:
@@ -122,13 +137,14 @@ docker run -p 5490:5490 \
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRIPLOX_STORAGE` | `memory` | Storage mode: `dev`, `memory`, `local`, or `remote` |
+| `TRIPLOX_STORAGE` | `memory` | Storage mode: `dev`, `memory`, `local`, `remote`, or `kafka` |
 
 ## Ports
 
 | Port | Protocol | Description |
 |---|---|---|
 | 5490 | TCP | Triplox wire protocol |
+| 9092 | TCP | Kafka broker (AutoMQ, kafka mode only) |
 
 ## Volumes
 

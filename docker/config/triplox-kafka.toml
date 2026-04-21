@@ -1,0 +1,13 @@
+[storage]
+type = "kafka"
+bootstrap_servers = "automq:9092"
+topic = "triplox-tx-log"
+endpoint = "http://rustfs:9000"
+bucket = "triplox"
+access_key = "triplox"
+secret_key = "triplox123"
+cache_path = "/var/lib/triplox/cache"
+
+[server]
+host = "0.0.0.0"
+port = 5490

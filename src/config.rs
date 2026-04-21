@@ -31,6 +31,19 @@ pub enum StorageConfig {
         region: String,
         file_log_path: PathBuf,
     },
+    #[cfg(feature = "kafka")]
+    Kafka {
+        bootstrap_servers: String,
+        #[serde(default = "default_kafka_topic")]
+        topic: String,
+        endpoint: String,
+        bucket: String,
+        access_key: String,
+        secret_key: String,
+        #[serde(default = "default_region")]
+        region: String,
+        cache_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -44,6 +57,11 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+}
+
+#[cfg(feature = "kafka")]
+fn default_kafka_topic() -> String {
+    "triplox-tx-log".to_string()
 }
 
 fn default_region() -> String {
