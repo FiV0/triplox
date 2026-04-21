@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use chrono::Datelike;
+
 use crate::ops::DataType;
 use edn::query::{ToVariable, Variable};
 
@@ -36,6 +38,9 @@ pub enum UnaryOp {
     Lower,
     Strlen,
     Str,
+    // Date/Time
+    Year,
+    Month,
 }
 
 /// A binary expression node (inspired by DataFusion's BinaryExpr).
@@ -250,6 +255,14 @@ fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
             };
             Some(DataType::String(s))
         }
+        UnaryOp::Year => match val {
+            DataType::Instant(dt) => Some(DataType::Long(dt.year() as i64)),
+            _ => None,
+        },
+        UnaryOp::Month => match val {
+            DataType::Instant(dt) => Some(DataType::Long(dt.month() as i64)),
+            _ => None,
+        },
     }
 }
 
@@ -669,5 +682,39 @@ mod tests {
         let age = DataType::Long(25);
         let ctx = EvalContext::new(HashMap::from([("?age".to_var(), &age)]));
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(26)));
+    }
+
+    // --- Date/Time extraction tests ---
+
+    #[test]
+    fn test_year_from_instant() {
+        use chrono::TimeZone;
+        let dt = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let expr = unary(UnaryOp::Year, Expr::Literal(DataType::Instant(dt)));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(2024)));
+    }
+
+    #[test]
+    fn test_month_from_instant() {
+        use chrono::TimeZone;
+        let dt = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+        let expr = unary(UnaryOp::Month, Expr::Literal(DataType::Instant(dt)));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), Some(DataType::Long(6)));
+    }
+
+    #[test]
+    fn test_year_non_instant() {
+        let expr = unary(UnaryOp::Year, lit_long(42));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
+    }
+
+    #[test]
+    fn test_month_non_instant() {
+        let expr = unary(UnaryOp::Month, lit_string("2024-06-15"));
+        let ctx = EvalContext::new(HashMap::new());
+        assert_eq!(eval(&expr, &ctx), None);
     }
 }

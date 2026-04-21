@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use chrono::TimeZone;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
@@ -838,5 +839,52 @@ async fn test_upsert_with_resolved_entity_id() {
     );
 
     db.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_year_and_month_extraction() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+    define_schema_attr(&client, "birthday", "instant").await;
+
+    let dt = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+    client
+        .execute_tx(vec![
+            TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            },
+            TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:birthday),
+                value: DataType::Instant(dt),
+            },
+        ])
+        .await
+        .unwrap();
+
+    let db = client.db().await.unwrap();
+
+    // Test year extraction
+    let result = db
+        .query("{:find [?y] :where [[?e :birthday ?d] [(year ?d) ?y]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::Long(2024)]);
+
+    // Test month extraction
+    let result = db
+        .query("{:find [?m] :where [[?e :birthday ?d] [(month ?d) ?m]]}")
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::Long(6)]);
+
+    db.close().await.unwrap();
+    client.close().await.unwrap();
     token.cancel();
 }

@@ -18,7 +18,7 @@ use edn::query::{
 use crate::aggregate::{make_accumulator, Accumulator};
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple, SingleLevelExtender};
 use crate::codec::{Decode, Encode};
-use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr};
+use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr, UnaryExpr, UnaryOp};
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
@@ -218,6 +218,20 @@ fn convert_binary_op(name: &str) -> Result<BinaryOp, Error> {
     }
 }
 
+fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
+    match name {
+        "not" => Ok(UnaryOp::Not),
+        "abs" => Ok(UnaryOp::Abs),
+        "upper" => Ok(UnaryOp::Upper),
+        "lower" => Ok(UnaryOp::Lower),
+        "strlen" => Ok(UnaryOp::Strlen),
+        "str" => Ok(UnaryOp::Str),
+        "year" => Ok(UnaryOp::Year),
+        "month" => Ok(UnaryOp::Month),
+        _ => Err(anyhow::anyhow!("Unsupported unary operator: {}", name)),
+    }
+}
+
 fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
     match arg {
         edn::query::FnArg::Variable(v) => Ok(Expr::Variable(v.clone())),
@@ -253,21 +267,33 @@ fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
 
 fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
     let op_name = wf.operator.0.as_str();
-    let op = convert_binary_op(op_name)?;
-    if wf.args.len() != 2 {
-        return Err(anyhow::anyhow!(
-            "WhereFn '{}' expects 2 args, got {}",
-            op_name,
-            wf.args.len()
-        ));
-    }
-    let left = convert_fn_arg(&wf.args[0])?;
-    let right = convert_fn_arg(&wf.args[1])?;
-    let expr = Expr::BinaryExpr(BinaryExpr {
-        left: Box::new(left),
-        op,
-        right: Box::new(right),
-    });
+    let expr = match wf.args.len() {
+        1 => {
+            let op = convert_unary_op(op_name)?;
+            let operand = convert_fn_arg(&wf.args[0])?;
+            Expr::UnaryExpr(UnaryExpr {
+                op,
+                operand: Box::new(operand),
+            })
+        }
+        2 => {
+            let op = convert_binary_op(op_name)?;
+            let left = convert_fn_arg(&wf.args[0])?;
+            let right = convert_fn_arg(&wf.args[1])?;
+            Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            })
+        }
+        n => {
+            return Err(anyhow::anyhow!(
+                "WhereFn '{}' has {} args, expected 1 or 2",
+                op_name,
+                n
+            ));
+        }
+    };
     let output = match &wf.binding {
         edn::query::Binding::BindScalar(v) => v.clone(),
         _ => return Err(anyhow::anyhow!("Only scalar binding supported")),
