@@ -469,7 +469,7 @@ impl<L: TxLog + 'static> HttpServer<L> {
         let reaper_db_cache = self.db_cache.clone();
         let reaper_token = token.clone();
         tokio::spawn(async move {
-            let ttl = Duration::from_secs(300); // 5 minutes
+            let ttl = Duration::from_secs(86400); // 24 hours
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tokio::select! {
