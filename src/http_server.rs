@@ -126,21 +126,26 @@ struct HandleEntry {
 struct HandleStore {
     handles: RwLock<HashMap<u32, HandleEntry>>,
     next_id: AtomicU32,
+    db_cache: Arc<DbCache>,
 }
 
 impl HandleStore {
-    fn new() -> Self {
+    fn new(db_cache: Arc<DbCache>) -> Self {
         HandleStore {
             handles: RwLock::new(HashMap::new()),
             next_id: AtomicU32::new(1),
+            db_cache,
         }
     }
 
-    fn alloc_id(&self) -> u32 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
-    }
-
-    async fn insert(&self, db_id: u32, conn_id: u64, tx_id: i64, db: Arc<DB>) {
+    /// Acquire a DB snapshot via the cache and allocate a handle for it.
+    async fn open<F, Fut>(&self, conn_id: u64, tx_id: i64, create: F) -> Result<u32>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<DB>>,
+    {
+        let db = self.db_cache.acquire(tx_id, create).await?;
+        let db_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut handles = self.handles.write().await;
         handles.insert(
             db_id,
@@ -151,6 +156,7 @@ impl HandleStore {
                 last_used: Instant::now(),
             },
         );
+        Ok(db_id)
     }
 
     async fn get_db(&self, db_id: u32) -> Option<Arc<DB>> {
@@ -163,44 +169,59 @@ impl HandleStore {
         }
     }
 
-    async fn remove(&self, db_id: u32) -> Option<i64> {
-        let mut handles = self.handles.write().await;
-        handles.remove(&db_id).map(|e| e.tx_id)
+    /// Remove a handle and release its DbCache refcount. Returns true if the
+    /// handle existed.
+    async fn remove(&self, db_id: u32) -> bool {
+        let tx_id = {
+            let mut handles = self.handles.write().await;
+            match handles.remove(&db_id) {
+                Some(entry) => entry.tx_id,
+                None => return false,
+            }
+        };
+        self.db_cache.release(tx_id).await;
+        true
     }
 
-    /// Remove all handles belonging to a connection. Returns their tx_ids.
-    async fn remove_by_conn(&self, conn_id: u64) -> Vec<i64> {
-        let mut handles = self.handles.write().await;
-        let to_remove: Vec<u32> = handles
-            .iter()
-            .filter(|(_, e)| e.conn_id == conn_id)
-            .map(|(id, _)| *id)
-            .collect();
-        let mut tx_ids = Vec::new();
-        for id in to_remove {
-            if let Some(entry) = handles.remove(&id) {
-                tx_ids.push(entry.tx_id);
-            }
+    /// Remove all handles belonging to a connection, releasing their DbCache
+    /// refcounts.
+    async fn remove_by_conn(&self, conn_id: u64) {
+        let tx_ids: Vec<i64> = {
+            let mut handles = self.handles.write().await;
+            let to_remove: Vec<u32> = handles
+                .iter()
+                .filter(|(_, e)| e.conn_id == conn_id)
+                .map(|(id, _)| *id)
+                .collect();
+            to_remove
+                .into_iter()
+                .filter_map(|id| handles.remove(&id).map(|e| e.tx_id))
+                .collect()
+        };
+        for tx_id in tx_ids {
+            self.db_cache.release(tx_id).await;
         }
-        tx_ids
     }
 
-    /// Remove handles idle for longer than `ttl`. Returns their tx_ids.
-    async fn reap_expired(&self, ttl: Duration) -> Vec<i64> {
-        let mut handles = self.handles.write().await;
-        let now = Instant::now();
-        let to_remove: Vec<u32> = handles
-            .iter()
-            .filter(|(_, e)| now.duration_since(e.last_used) > ttl)
-            .map(|(id, _)| *id)
-            .collect();
-        let mut tx_ids = Vec::new();
-        for id in to_remove {
-            if let Some(entry) = handles.remove(&id) {
-                tx_ids.push(entry.tx_id);
-            }
+    /// Remove handles idle for longer than `ttl`, releasing their DbCache
+    /// refcounts.
+    async fn reap_expired(&self, ttl: Duration) {
+        let tx_ids: Vec<i64> = {
+            let mut handles = self.handles.write().await;
+            let now = Instant::now();
+            let to_remove: Vec<u32> = handles
+                .iter()
+                .filter(|(_, e)| now.duration_since(e.last_used) > ttl)
+                .map(|(id, _)| *id)
+                .collect();
+            to_remove
+                .into_iter()
+                .filter_map(|id| handles.remove(&id).map(|e| e.tx_id))
+                .collect()
+        };
+        for tx_id in tx_ids {
+            self.db_cache.release(tx_id).await;
         }
-        tx_ids
     }
 }
 
@@ -220,7 +241,6 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 struct AppState<L: TxLog> {
     node: Arc<Node<L>>,
-    db_cache: Arc<DbCache>,
     handle_store: Arc<HandleStore>,
 }
 
@@ -260,7 +280,7 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    let result = match (tx_id, system_time) {
+    let (db_id, tx_id) = match (tx_id, system_time) {
         (None, None) => {
             let db = match state.node.db().await {
                 Ok(db) => db,
@@ -275,11 +295,11 @@ async fn open_db<L: TxLog + 'static>(
             };
             let tx_id = db.tx_key().tx_id;
             match state
-                .db_cache
-                .acquire(tx_id, || async move { Ok(db) })
+                .handle_store
+                .open(conn_id.0, tx_id, || async move { Ok(db) })
                 .await
             {
-                Ok(arc_db) => (arc_db, tx_id),
+                Ok(db_id) => (db_id, tx_id),
                 Err(e) => {
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -308,11 +328,11 @@ async fn open_db<L: TxLog + 'static>(
             };
             let node = state.node.clone();
             match state
-                .db_cache
-                .acquire(tid, || async move { node.db_as_of(tx_key).await })
+                .handle_store
+                .open(conn_id.0, tid, || async move { node.db_as_of(tx_key).await })
                 .await
             {
-                Ok(arc_db) => (arc_db, tid),
+                Ok(db_id) => (db_id, tid),
                 Err(e) => {
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -333,13 +353,6 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    let (arc_db, tx_id) = result;
-    let db_id = state.handle_store.alloc_id();
-    state
-        .handle_store
-        .insert(db_id, conn_id.0, tx_id, arc_db)
-        .await;
-
     ok_response(encode_db_opened_response(db_id, tx_id))
 }
 
@@ -347,17 +360,15 @@ async fn close_db<L: TxLog + 'static>(
     State(state): State<Arc<AppState<L>>>,
     Path(db_id): Path<u32>,
 ) -> Response {
-    match state.handle_store.remove(db_id).await {
-        Some(tx_id) => {
-            state.db_cache.release(tx_id).await;
-            ok_response(encode_db_closed_response(db_id))
-        }
-        None => error_response(
+    if state.handle_store.remove(db_id).await {
+        ok_response(encode_db_closed_response(db_id))
+    } else {
+        error_response(
             StatusCode::NOT_FOUND,
             SEVERITY_ERROR,
             ErrorCode::InvalidDbHandle,
             &format!("Invalid DB handle: {}", db_id),
-        ),
+        )
     }
 }
 
@@ -517,16 +528,16 @@ fn build_router<L: TxLog + 'static>(state: Arc<AppState<L>>) -> Router {
 
 pub struct HttpServer<L: TxLog> {
     node: Arc<Node<L>>,
-    db_cache: Arc<DbCache>,
     handle_store: Arc<HandleStore>,
 }
 
 impl<L: TxLog + 'static> HttpServer<L> {
     pub fn new(node: Arc<Node<L>>, max_open_dbs: usize) -> Self {
+        let db_cache = Arc::new(DbCache::new(max_open_dbs));
+        let handle_store = Arc::new(HandleStore::new(db_cache));
         HttpServer {
             node,
-            db_cache: Arc::new(DbCache::new(max_open_dbs)),
-            handle_store: Arc::new(HandleStore::new()),
+            handle_store,
         }
     }
 
@@ -539,11 +550,9 @@ impl<L: TxLog + 'static> HttpServer<L> {
         info!("Triplox HTTP server listening on {}", listener.local_addr()?);
 
         let handle_store = self.handle_store.clone();
-        let db_cache = self.db_cache.clone();
 
         // TTL reaper task
         let reaper_handle_store = self.handle_store.clone();
-        let reaper_db_cache = self.db_cache.clone();
         let reaper_token = token.clone();
         tokio::spawn(async move {
             let ttl = Duration::from_secs(86400); // 24 hours
@@ -552,10 +561,7 @@ impl<L: TxLog + 'static> HttpServer<L> {
                 tokio::select! {
                     _ = reaper_token.cancelled() => break,
                     _ = interval.tick() => {
-                        let expired = reaper_handle_store.reap_expired(ttl).await;
-                        for tx_id in expired {
-                            reaper_db_cache.release(tx_id).await;
-                        }
+                        reaper_handle_store.reap_expired(ttl).await;
                     }
                 }
             }
@@ -564,7 +570,6 @@ impl<L: TxLog + 'static> HttpServer<L> {
         // Accept loop with per-connection tracking
         let app_state = Arc::new(AppState {
             node: self.node.clone(),
-            db_cache: self.db_cache.clone(),
             handle_store: self.handle_store.clone(),
         });
 
@@ -585,7 +590,6 @@ impl<L: TxLog + 'static> HttpServer<L> {
                     info!("New HTTP connection from {} (conn_id={})", peer_addr, conn_id);
 
                     let handle_store = handle_store.clone();
-                    let db_cache = db_cache.clone();
 
                     // Build a per-connection router with ConnId extension
                     let router = build_router(app_state.clone())
@@ -619,10 +623,7 @@ impl<L: TxLog + 'static> HttpServer<L> {
                         }
 
                         // Connection-drop cleanup: release all handles for this connection
-                        let tx_ids = handle_store.remove_by_conn(conn_id).await;
-                        for tx_id in tx_ids {
-                            db_cache.release(tx_id).await;
-                        }
+                        handle_store.remove_by_conn(conn_id).await;
                         info!("HTTP connection {} closed", conn_id);
                     });
                 }
@@ -695,11 +696,10 @@ impl DevHttpServer {
                     join_set.spawn(async move {
                         let node = Arc::new(Node::memory_node().await);
                         let db_cache = Arc::new(DbCache::new(max_open_dbs));
-                        let handle_store = Arc::new(HandleStore::new());
+                        let handle_store = Arc::new(HandleStore::new(db_cache));
 
                         let app_state = Arc::new(AppState {
                             node: node.clone(),
-                            db_cache: db_cache.clone(),
                             handle_store: handle_store.clone(),
                         });
 
@@ -731,10 +731,7 @@ impl DevHttpServer {
                         }
 
                         // Cleanup
-                        let tx_ids = handle_store.remove_by_conn(conn_id).await;
-                        for tx_id in tx_ids {
-                            db_cache.release(tx_id).await;
-                        }
+                        handle_store.remove_by_conn(conn_id).await;
 
                         let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
                             panic!("dev node Arc should have refcount 1 after connection close")
