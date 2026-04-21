@@ -85,11 +85,6 @@ impl ClientNode {
             base_url: self.base_url.clone(),
         })
     }
-
-    /// Graceful close. With HTTP, handles are cleaned up on connection drop.
-    pub async fn close(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 impl SubmitNode for ClientNode {

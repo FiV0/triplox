@@ -438,7 +438,7 @@ impl<L: TxLog + 'static> HttpServer<L> {
         let reaper_token = token.clone();
         tokio::spawn(async move {
             let ttl = Duration::from_secs(86400); // 24 hours
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
             loop {
                 tokio::select! {
                     _ = reaper_token.cancelled() => break,

@@ -115,9 +115,8 @@ public class TriploxNode implements AutoCloseable {
      * Close the HTTP client.
      */
     @Override
-    public void close() throws IOException {
-        // HttpClient does not require explicit close in Java 21;
-        // connection cleanup happens on GC or JVM shutdown.
+    public void close() {
+        httpClient.close();
     }
 
     // ---------------------------------------------------------------
