@@ -236,18 +236,44 @@ struct ConnId(u64);
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 // ---------------------------------------------------------------------------
-// Error response helper
+// Response helpers and error type
 // ---------------------------------------------------------------------------
 
 const CONTENT_TYPE: &str = "application/x-triplox";
 
-fn error_response(status: StatusCode, severity: u8, code: ErrorCode, message: &str) -> Response {
-    let body = encode_error_body(severity, code.as_u16(), message, &None, &None);
-    (status, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
-}
-
 fn ok_response(body: Vec<u8>) -> Response {
     (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
+}
+
+struct ApiError {
+    status: StatusCode,
+    code: ErrorCode,
+    message: String,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
+        ApiError { status, code, message: message.into() }
+    }
+
+    fn bad_request(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, code, message)
+    }
+
+    fn not_found(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, code, message)
+    }
+
+    fn internal(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = encode_error_body(SEVERITY_ERROR, self.code.as_u16(), &self.message, &None, &None);
+        (self.status, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,108 +284,49 @@ async fn open_db<L: TxLog + 'static>(
     State(state): State<Arc<HttpServer<L>>>,
     axum::Extension(conn_id): axum::Extension<ConnId>,
     body: Bytes,
-) -> Response {
-    let (tx_id, system_time) = match decode_open_db_request(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::InvalidStartup,
-                &format!("Invalid open_db request: {}", e),
-            );
-        }
-    };
+) -> Result<Response, ApiError> {
+    let (tx_id, system_time) = decode_open_db_request(&body)
+        .map_err(|e| ApiError::bad_request(ErrorCode::InvalidStartup, format!("Invalid open_db request: {}", e)))?;
 
     let (db_id, tx_id) = match (tx_id, system_time) {
         (None, None) => {
-            let db = match state.node.db().await {
-                Ok(db) => db,
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        SEVERITY_ERROR,
-                        ErrorCode::InternalError,
-                        &e.to_string(),
-                    );
-                }
-            };
+            let db = state.node.db().await
+                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
             let tx_id = db.tx_key().tx_id;
-            match state
-                .handle_store
+            let db_id = state.handle_store
                 .open(conn_id.0, tx_id, || async move { Ok(db) })
                 .await
-            {
-                Ok(db_id) => (db_id, tx_id),
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        SEVERITY_ERROR,
-                        ErrorCode::TooManyOpenDbs,
-                        &e.to_string(),
-                    );
-                }
-            }
+                .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
+            (db_id, tx_id)
         }
         (Some(tid), Some(st)) => {
-            let system_time_dt = match micros_to_datetime(st) {
-                Ok(dt) => dt,
-                Err(e) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        SEVERITY_ERROR,
-                        ErrorCode::InvalidDbHandle,
-                        &e.to_string(),
-                    );
-                }
-            };
-            let tx_key = crate::transaction::TxKey {
-                tx_id: tid,
-                system_time: system_time_dt,
-            };
+            let system_time = micros_to_datetime(st)
+                .map_err(|e| ApiError::bad_request(ErrorCode::InvalidDbHandle, e.to_string()))?;
+            let tx_key = crate::transaction::TxKey { tx_id: tid, system_time };
             let node = state.node.clone();
-            match state
-                .handle_store
+            let db_id = state.handle_store
                 .open(conn_id.0, tid, || async move { node.db_as_of(tx_key).await })
                 .await
-            {
-                Ok(db_id) => (db_id, tid),
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        SEVERITY_ERROR,
-                        ErrorCode::InternalError,
-                        &e.to_string(),
-                    );
-                }
-            }
+                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+            (db_id, tid)
         }
-        _ => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::InvalidStartup,
-                "OpenDb requires both tx_id and system_time, or neither",
-            );
-        }
+        _ => return Err(ApiError::bad_request(
+            ErrorCode::InvalidStartup,
+            "OpenDb requires both tx_id and system_time, or neither",
+        )),
     };
 
-    ok_response(encode_db_opened_response(db_id, tx_id))
+    Ok(ok_response(encode_db_opened_response(db_id, tx_id)))
 }
 
 async fn close_db<L: TxLog + 'static>(
     State(state): State<Arc<HttpServer<L>>>,
     Path(db_id): Path<u32>,
-) -> Response {
+) -> Result<Response, ApiError> {
     if state.handle_store.remove(db_id).await {
-        ok_response(encode_db_closed_response(db_id))
+        Ok(ok_response(encode_db_closed_response(db_id)))
     } else {
-        error_response(
-            StatusCode::NOT_FOUND,
-            SEVERITY_ERROR,
-            ErrorCode::InvalidDbHandle,
-            &format!("Invalid DB handle: {}", db_id),
-        )
+        Err(ApiError::not_found(ErrorCode::InvalidDbHandle, format!("Invalid DB handle: {}", db_id)))
     }
 }
 
@@ -367,42 +334,15 @@ async fn query<L: TxLog + 'static>(
     State(state): State<Arc<HttpServer<L>>>,
     Path(db_id): Path<u32>,
     body: Bytes,
-) -> Response {
-    let db = match state.handle_store.get_db(db_id).await {
-        Some(db) => db,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                SEVERITY_ERROR,
-                ErrorCode::InvalidDbHandle,
-                &format!("Invalid DB handle: {}", db_id),
-            );
-        }
-    };
+) -> Result<Response, ApiError> {
+    let db = state.handle_store.get_db(db_id).await
+        .ok_or_else(|| ApiError::not_found(ErrorCode::InvalidDbHandle, format!("Invalid DB handle: {}", db_id)))?;
 
-    let (query_string, args) = match decode_query_request(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::ParseError,
-                &format!("Invalid query request: {}", e),
-            );
-        }
-    };
+    let (query_string, args) = decode_query_request(&body)
+        .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, format!("Invalid query request: {}", e)))?;
 
-    let parsed = match query_string.into_query() {
-        Ok(p) => p,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::ParseError,
-                &e.to_string(),
-            );
-        }
-    };
+    let parsed = query_string.into_query()
+        .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, e.to_string()))?;
 
     // Extract find variable names for RowDescription
     let find_vars: Vec<String> = match &parsed.find_spec {
@@ -410,97 +350,48 @@ async fn query<L: TxLog + 'static>(
         _ => vec![],
     };
 
-    let result = match db.query_with_args(&parsed, &args).await {
-        Ok(r) => r,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                SEVERITY_ERROR,
-                ErrorCode::QueryError,
-                &e.to_string(),
-            );
-        }
-    };
+    let result = db.query_with_args(&parsed, &args).await
+        .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
     let columns: Vec<ColumnDescription> = find_vars
-        .iter()
-        .map(|name| ColumnDescription {
-            name: name.clone(),
-            data_type: TAG_UNKNOWN,
-        })
+        .into_iter()
+        .map(|name| ColumnDescription { name, data_type: TAG_UNKNOWN })
         .collect();
 
-    ok_response(encode_query_response(&columns, &result))
+    Ok(ok_response(encode_query_response(&columns, &result)))
 }
 
 async fn submit_tx<L: TxLog + 'static>(
     State(state): State<Arc<HttpServer<L>>>,
     body: Bytes,
-) -> Response {
-    let ops = match decode_execute_request(&body) {
-        Ok(ops) => ops,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::TxError,
-                &format!("Invalid execute request: {}", e),
-            );
-        }
-    };
+) -> Result<Response, ApiError> {
+    let ops = decode_execute_request(&body)
+        .map_err(|e| ApiError::bad_request(ErrorCode::TxError, format!("Invalid execute request: {}", e)))?;
 
-    match state.node.submit_tx(ops).await {
-        Ok(tx_key) => ok_response(encode_tx_key_response(
-            tx_key.tx_id,
-            tx_key.system_time.timestamp_micros(),
-        )),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            SEVERITY_ERROR,
-            ErrorCode::TxError,
-            &e.to_string(),
-        ),
-    }
+    let tx_key = state.node.submit_tx(ops).await
+        .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
+
+    Ok(ok_response(encode_tx_key_response(tx_key.tx_id, tx_key.system_time.timestamp_micros())))
 }
 
 async fn execute_tx<L: TxLog + 'static>(
     State(state): State<Arc<HttpServer<L>>>,
     body: Bytes,
-) -> Response {
-    let ops = match decode_execute_request(&body) {
-        Ok(ops) => ops,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                SEVERITY_ERROR,
-                ErrorCode::TxError,
-                &format!("Invalid execute request: {}", e),
-            );
-        }
-    };
+) -> Result<Response, ApiError> {
+    let ops = decode_execute_request(&body)
+        .map_err(|e| ApiError::bad_request(ErrorCode::TxError, format!("Invalid execute request: {}", e)))?;
 
-    match state.node.execute_tx(ops).await {
-        Ok(result) => match result {
-            TransactionResult::TxCommited(tx_key) => ok_response(encode_tx_result_response(
-                0,
-                tx_key.tx_id,
-                tx_key.system_time.timestamp_micros(),
-                &None,
-            )),
-            TransactionResult::TxAborted(tx_key, err) => ok_response(encode_tx_result_response(
-                1,
-                tx_key.tx_id,
-                tx_key.system_time.timestamp_micros(),
-                &Some(err.to_string()),
-            )),
-        },
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            SEVERITY_ERROR,
-            ErrorCode::TxError,
-            &e.to_string(),
-        ),
-    }
+    let result = state.node.execute_tx(ops).await
+        .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
+
+    Ok(match result {
+        TransactionResult::TxCommited(tx_key) => ok_response(encode_tx_result_response(
+            0, tx_key.tx_id, tx_key.system_time.timestamp_micros(), &None,
+        )),
+        TransactionResult::TxAborted(tx_key, err) => ok_response(encode_tx_result_response(
+            1, tx_key.tx_id, tx_key.system_time.timestamp_micros(), &Some(err.to_string()),
+        )),
+    })
 }
 
 // ---------------------------------------------------------------------------
