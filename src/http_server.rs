@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -33,7 +33,84 @@ use tower::Service;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
 use crate::protocol::*;
-use crate::server::DbCache;
+
+// ---------------------------------------------------------------------------
+// DB Cache
+// ---------------------------------------------------------------------------
+
+/// A shared, reference-counted cache of DB snapshots.
+/// Keyed by tx_id (the point-in-time identifier for the snapshot).
+/// DBs are read-only and safe to share across connections.
+struct DbCacheEntry {
+    db: Arc<DB>,
+    refcount: usize,
+}
+
+pub(crate) struct DbCache {
+    entries: RwLock<HashMap<i64, DbCacheEntry>>,
+    max_open: usize,
+}
+
+impl DbCache {
+    pub(crate) fn new(max_open: usize) -> Self {
+        DbCache {
+            entries: RwLock::new(HashMap::new()),
+            max_open,
+        }
+    }
+
+    /// Get or create a DB snapshot for the given tx_id.
+    /// The `create` future is only evaluated on cache miss.
+    pub(crate) async fn acquire<F, Fut>(&self, tx_id: i64, create: F) -> Result<Arc<DB>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<DB>>,
+    {
+        // Fast path: cache hit (uses write lock because we mutate refcount)
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(&tx_id) {
+                entry.refcount += 1;
+                return Ok(entry.db.clone());
+            }
+            if entries.len() >= self.max_open {
+                bail!("Too many open DB snapshots (max {})", self.max_open);
+            }
+        }
+
+        let db = create().await?;
+        let arc_db = Arc::new(db);
+
+        let mut entries = self.entries.write().await;
+        if let Some(entry) = entries.get_mut(&tx_id) {
+            entry.refcount += 1;
+            return Ok(entry.db.clone());
+        }
+        if entries.len() >= self.max_open {
+            bail!("Too many open DB snapshots (max {})", self.max_open);
+        }
+        entries.insert(
+            tx_id,
+            DbCacheEntry {
+                db: arc_db.clone(),
+                refcount: 1,
+            },
+        );
+        Ok(arc_db)
+    }
+
+    /// Release a reference to a DB snapshot.
+    /// Evicts the entry when refcount reaches 0.
+    pub(crate) async fn release(&self, tx_id: i64) {
+        let mut entries = self.entries.write().await;
+        if let Some(entry) = entries.get_mut(&tx_id) {
+            entry.refcount -= 1;
+            if entry.refcount == 0 {
+                entries.remove(&tx_id);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Handle Store
