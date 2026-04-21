@@ -29,7 +29,7 @@ impl MemoryLog {
 }
 
 impl TxLogReader for MemoryLog {
-    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
+    async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
         let start = match after_tx_id {
             None => 0,
             Some(id) => id as usize + 1,
