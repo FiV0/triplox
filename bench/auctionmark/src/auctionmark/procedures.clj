@@ -419,43 +419,43 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
     (let [buyer-id (pick-random-user rng state)
-          item-id (:item-id item)]
-      ;; read current state
-      (let [[current-price num-bids]
-            (with-open [db (tc/db conn)]
-              (first (tc/q db
-                           '{:find [?price ?nbids]
-                             :in [?item-id]
-                             :where [[?e :item/id ?item-id]
-                                     [?e :item/current-price ?price]
-                                     [?e :item/num-bids ?nbids]
-                                     [?e :item/status :open]]}
-                           item-id)))]
-        (when current-price
-          (let [new-price (* (double current-price) (+ 1.0 (* (.nextDouble rng) 0.1)))
-                bid-id (next-id (:bid-counter state))
-                max-bid-id (next-id (:max-bid-counter state))
-                now (now-instant)]
-            (tc/transact conn
-              [{:item-bid/id bid-id
-                :item-bid/item-id [:item/id item-id]
-                :item-bid/user-id [:user/id (:seller-id item)]
-                :item-bid/buyer-id [:user/id buyer-id]
-                :item-bid/bid new-price
-                :item-bid/max-bid new-price
-                :item-bid/created-at now
-                :item-bid/updated now}
-               {:db/id [:item/id item-id]
-                :item/current-price new-price
-                :item/num-bids (inc (long num-bids))}
-               ;; always create a new max-bid record (first bid has no existing record to upsert)
-               {:item-max-bid/id max-bid-id
-                :item-max-bid/item-id [:item/id item-id]
-                :item-max-bid/user-id [:user/id (:seller-id item)]
-                :item-max-bid/bid-id [:item-bid/id bid-id]
-                :item-max-bid/buyer-id [:user/id buyer-id]
-                :item-max-bid/created now
-                :item-max-bid/updated now}])))))))
+          item-id (:item-id item)
+          ;; read current state
+          [current-price num-bids]
+          (with-open [db (tc/db conn)]
+            (first (tc/q db
+                         '{:find [?price ?nbids]
+                           :in [?item-id]
+                           :where [[?e :item/id ?item-id]
+                                   [?e :item/current-price ?price]
+                                   [?e :item/num-bids ?nbids]
+                                   [?e :item/status :open]]}
+                         item-id)))]
+      (when current-price
+        (let [new-price (* (double current-price) (+ 1.0 (* (.nextDouble rng) 0.1)))
+              bid-id (next-id (:bid-counter state))
+              max-bid-id (next-id (:max-bid-counter state))
+              now (now-instant)]
+          (tc/transact conn
+                       [{:item-bid/id bid-id
+                         :item-bid/item-id [:item/id item-id]
+                         :item-bid/user-id [:user/id (:seller-id item)]
+                         :item-bid/buyer-id [:user/id buyer-id]
+                         :item-bid/bid new-price
+                         :item-bid/max-bid new-price
+                         :item-bid/created-at now
+                         :item-bid/updated now}
+                        {:db/id [:item/id item-id]
+                         :item/current-price new-price
+                         :item/num-bids (inc (long num-bids))}
+                        ;; always create a new max-bid record (first bid has no existing record to upsert)
+                        {:item-max-bid/id max-bid-id
+                         :item-max-bid/item-id [:item/id item-id]
+                         :item-max-bid/user-id [:user/id (:seller-id item)]
+                         :item-max-bid/bid-id [:item-bid/id bid-id]
+                         :item-max-bid/buyer-id [:user/id buyer-id]
+                         :item-max-bid/created now
+                         :item-max-bid/updated now}]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 3: new-item (10%)
