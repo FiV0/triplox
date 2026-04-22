@@ -266,8 +266,17 @@ impl Node<FileLog> {
         secret_key: &str,
         region: &str,
     ) -> Result<Self, Error> {
-        let slate = remote_slate(endpoint, bucket, access_key, secret_key, region).await;
         std::fs::create_dir_all(log_path)?;
+        let cache_path = log_path.join("cache");
+        let slate = remote_slate(
+            endpoint,
+            bucket,
+            access_key,
+            secret_key,
+            region,
+            &cache_path,
+        )
+        .await;
         Self::from_slate_and_log(slate, &log_path.join("log")).await
     }
 }

@@ -2,14 +2,39 @@
 
 pub mod cdc;
 
-use slatedb::config::{DurabilityLevel, ReadOptions, ScanOptions, WriteOptions};
+use slatedb::config::{
+    DurabilityLevel, ObjectStoreCacheOptions, ReadOptions, ScanOptions, Settings, WriteOptions,
+};
 use object_store::aws::AmazonS3Builder;
+use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
+use slatedb::db_cache::{DbCache, SplitCache};
 use slatedb::object_store::local::LocalFileSystem;
 use slatedb::object_store::{memory::InMemory, ObjectStore};
 use slatedb::Db;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::util::random_string;
+
+pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+pub const DEFAULT_META_CACHE_BYTES: u64 = 128 * 1024 * 1024;
+
+pub fn default_db_cache() -> Arc<dyn DbCache> {
+    let block_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
+        max_capacity: DEFAULT_BLOCK_CACHE_BYTES,
+        ..Default::default()
+    });
+    let meta_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
+        max_capacity: DEFAULT_META_CACHE_BYTES,
+        ..Default::default()
+    });
+    Arc::new(
+        SplitCache::new()
+            .with_block_cache(Some(Arc::new(block_cache)))
+            .with_meta_cache(Some(Arc::new(meta_cache)))
+            .build(),
+    )
+}
 
 pub struct SlateComponents {
     pub db: Arc<Db>,
@@ -31,6 +56,7 @@ pub async fn in_memory_slate() -> SlateComponents {
     let path = format!("tmp/triplox-{}", random_string(10));
     let db = Arc::new(
         Db::builder(path.clone(), object_store.clone())
+            .with_db_cache(default_db_cache())
             .build()
             .await
             .unwrap(),
@@ -56,6 +82,7 @@ pub async fn local_slate(path: &str) -> SlateComponents {
     let slate_path = "triplox".to_string();
     let db = Arc::new(
         Db::builder(slate_path.clone(), object_store.clone())
+            .with_db_cache(default_db_cache())
             .build()
             .await
             .unwrap(),
@@ -81,6 +108,7 @@ pub async fn remote_slate(
     access_key: &str,
     secret_key: &str,
     region: &str,
+    cache_path: &Path,
 ) -> SlateComponents {
     let s3 = AmazonS3Builder::new()
         .with_endpoint(endpoint)
@@ -93,9 +121,19 @@ pub async fn remote_slate(
         .expect("failed to build S3 object store");
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
+    std::fs::create_dir_all(cache_path).expect("failed to create object store cache directory");
+    let settings = Settings {
+        object_store_cache_options: ObjectStoreCacheOptions {
+            root_folder: Some(cache_path.to_path_buf()),
+            ..ObjectStoreCacheOptions::default()
+        },
+        ..Settings::default()
+    };
     // TODO: hardcoded path — reconsider when adding database creation functions
     let db = Arc::new(
         Db::builder("triplox", object_store.clone())
+            .with_settings(settings)
+            .with_db_cache(default_db_cache())
             .build()
             .await
             .unwrap(),
@@ -124,7 +162,7 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     durability_filter: DurabilityLevel::Memory,
     dirty: false,
     read_ahead_bytes: 1,
-    cache_blocks: false,
+    cache_blocks: true,
     max_fetch_tasks: 1,
     order: slatedb::IterationOrder::Ascending,
 };
