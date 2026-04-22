@@ -27,7 +27,25 @@ docker run -p 5490:5490 \
   triplox:latest
 ```
 
-### Remote mode (S3-compatible with RustFS)
+### Remote mode (S3-compatible with MinIO)
+
+#### First-time setup
+
+MinIO data lives on a loopback ext4 image on disk (MinIO's sanity check treats
+btrfs as corrupt, so a plain bind mount to a btrfs host FS won't work). Create
+and mount the image once, then re-run after each reboot:
+
+```bash
+./docker/scripts/setup-minio-disk.sh
+```
+
+This creates a 50G sparse image at `docker/data/minio.img`, formats it ext4,
+and mounts it at `docker/data/minio/`. Override the size with
+`MINIO_IMG_SIZE=100G ./docker/scripts/setup-minio-disk.sh`.
+
+To unmount later: `sudo umount docker/data/minio`.
+
+#### Starting the stack
 
 Using docker-compose:
 
@@ -36,8 +54,22 @@ docker compose -f docker/docker-compose.yml up --build
 ```
 
 This starts:
-- **RustFS** on port 9000 (S3 API) and 9001 (console)
-- **Triplox** on port 5490 with SlateDB backed by RustFS
+- **MinIO** on port 9000 (S3 API) and 9001 (console)
+- **Triplox** on port 5490 with SlateDB backed by MinIO
+
+#### Resetting the stack
+
+Wipe all MinIO data and the triplox local log, and bring everything back to a
+clean slate:
+
+```bash
+./docker/scripts/reset-remote-stack.sh
+```
+
+This runs `docker compose down -v` (removing the `triplox-log` named volume)
+and clears the contents of `docker/data/minio/` (keeping the ext4 mount). It
+does not unmount or delete the loopback image. After it finishes, re-run
+`docker compose -f docker/docker-compose.yml up --build`.
 
 ### Custom config
 

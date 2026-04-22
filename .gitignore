@@ -10,3 +10,5 @@
 .clj-kondo/
 .cpcache/
 .nrepl-port
+
+docker/data/
