@@ -1,6 +1,7 @@
 (ns auctionmark.main
   "AuctionMark benchmark entry point, workload driver, and reporting."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.tools.cli :as cli]
+            [clojure.tools.logging :as log]
             [io.triplox.api :as tc]
             [auctionmark.procedures :as proc])
   (:import [java.util Random]
@@ -11,14 +12,38 @@
 ;; Config
 ;; ---------------------------------------------------------------------------
 
+(def cli-options
+  [["-H" "--host HOST" "Triplox server host"
+    :default (or (System/getenv "TRIPLOX_HOST") "localhost")]
+   ["-p" "--port PORT" "Triplox server port"
+    :default (Long/parseLong (or (System/getenv "TRIPLOX_PORT") "5490"))
+    :parse-fn #(Long/parseLong %)]
+   ["-s" "--scale-factor SF" "Scale factor (fraction of full AuctionMark size)"
+    :default (Double/parseDouble (or (System/getenv "SCALE_FACTOR") "0.1"))
+    :parse-fn #(Double/parseDouble %)]
+   ["-t" "--threads N" "Number of worker threads"
+    :default (Long/parseLong (or (System/getenv "THREADS") "8"))
+    :parse-fn #(Long/parseLong %)]
+   ["-d" "--duration SECONDS" "Benchmark duration in seconds"
+    :default (Long/parseLong (or (System/getenv "DURATION") "120"))
+    :parse-fn #(Long/parseLong %)]
+   ["-h" "--help" "Show this help message"]])
+
 (defn parse-config
-  "Build config from environment variables."
-  []
-  {:host         (or (System/getenv "TRIPLOX_HOST") "localhost")
-   :port         (Long/parseLong (or (System/getenv "TRIPLOX_PORT") "5490"))
-   :scale-factor (Double/parseDouble (or (System/getenv "SCALE_FACTOR") "0.1"))
-   :threads      (Long/parseLong (or (System/getenv "THREADS") "8"))
-   :duration     (Long/parseLong (or (System/getenv "DURATION") "120"))})
+  "Parse CLI args (falling back to env vars and built-in defaults)."
+  [args]
+  (let [{:keys [options errors summary]} (cli/parse-opts args cli-options)]
+    (cond
+      (:help options)
+      (do (println "Usage: auctionmark [options]")
+          (println summary)
+          (System/exit 0))
+
+      errors
+      (do (doseq [e errors] (log/error e))
+          (System/exit 1))
+
+      :else options)))
 
 ;; ---------------------------------------------------------------------------
 ;; Weighted procedure selection
@@ -123,8 +148,8 @@
 ;; Entry point
 ;; ---------------------------------------------------------------------------
 
-(defn -main [& _args]
-  (let [config (parse-config)]
+(defn -main [& args]
+  (let [config (parse-config args)]
     (log/info "=== AuctionMark Benchmark for Triplox ===")
     (log/info (format "Host: %s:%d" (:host config) (:port config)))
     (log/info (format "Scale factor: %.2f" (:scale-factor config)))
