@@ -2,6 +2,7 @@
   "AuctionMark data generation, loading, and all 14 benchmark procedures."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [io.triplox.api :as tc]
             [auctionmark.schema :as schema])
   (:import [java.util Random]
@@ -319,42 +320,42 @@
         num-user-attrs (long (* scale-factor 1300000))
         num-items (long (* scale-factor 10000000))
         categories-data (load-categories-tsv)]
-    (println "Installing schema...")
+    (log/info "Installing schema...")
     (tc/transact conn schema/schema-tx)
 
-    (println (str "Generating " (count categories-data) " categories..."))
+    (log/info "Generating" (count categories-data) "categories...")
     (generate-categories! conn state categories-data)
 
-    (println "Generating 75 regions...")
+    (log/info "Generating 75 regions...")
     (generate-regions! conn state rng 75)
 
-    (println "Generating 100 global attribute groups...")
+    (log/info "Generating 100 global attribute groups...")
     (generate-gags! conn state rng 100)
 
-    (println "Generating 1000 global attribute values...")
+    (log/info "Generating 1000 global attribute values...")
     (generate-gavs! conn state rng 1000)
 
-    (println (str "Generating " num-users " users..."))
+    (log/info "Generating" num-users "users...")
     (generate-users! conn state rng num-users)
 
-    (println (str "Generating " num-user-attrs " user attributes..."))
+    (log/info "Generating" num-user-attrs "user attributes...")
     (generate-user-attributes! conn state rng num-user-attrs)
 
-    (println (str "Generating " num-items " items + images..."))
+    (log/info "Generating" num-items "items + images...")
     (generate-items! conn state rng num-items)
 
-    (println "Generating user watches...")
+    (log/info "Generating user watches...")
     (generate-user-watches! conn state rng)
 
     ;; fence: wait for all submit-tx to be indexed
-    (println "Waiting for indexing to complete...")
+    (log/info "Waiting for indexing to complete...")
     (tc/transact conn [[:db/add [:region/id 0] :region/name
                         (str "Region-0-fence-" (System/currentTimeMillis))]])
 
-    (println (str "Load complete. Items: open="
-                  (.size ^ConcurrentLinkedQueue (:items-open state))
-                  " waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
-                  " closed=" (.size ^ConcurrentLinkedQueue (:items-closed state))))
+    (log/info "Load complete. Items: open="
+              (.size ^ConcurrentLinkedQueue (:items-open state))
+              "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
+              "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state)))
     state))
 
 ;; ---------------------------------------------------------------------------
