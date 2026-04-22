@@ -7,7 +7,7 @@ use chrono::TimeZone;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
-use triplox::http_server::{DevHttpServer, HttpServer};
+use triplox::server::{DevServer, Server};
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
@@ -26,7 +26,7 @@ async fn start_test_server() -> (String, CancellationToken) {
     let url = format!("http://{}", addr);
 
     let node = Arc::new(Node::memory_node().await);
-    let server = HttpServer::new(node, 1024);
+    let server = Server::new(node, 1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -277,7 +277,7 @@ async fn start_dev_server() -> (String, CancellationToken) {
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
 
-    let server = DevHttpServer::new(1024);
+    let server = DevServer::new(1024);
 
     let token = CancellationToken::new();
     let server_token = token.clone();

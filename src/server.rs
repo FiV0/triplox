@@ -284,7 +284,7 @@ impl IntoResponse for ApiError {
 // ---------------------------------------------------------------------------
 
 async fn open_db<L: TxLog + 'static>(
-    State(state): State<Arc<HttpServer<L>>>,
+    State(state): State<Arc<Server<L>>>,
     axum::Extension(conn_id): axum::Extension<ConnId>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
@@ -323,7 +323,7 @@ async fn open_db<L: TxLog + 'static>(
 }
 
 async fn close_db<L: TxLog + 'static>(
-    State(state): State<Arc<HttpServer<L>>>,
+    State(state): State<Arc<Server<L>>>,
     Path(db_id): Path<u32>,
 ) -> Result<Response, ApiError> {
     if state.handle_store.remove(db_id).await {
@@ -334,7 +334,7 @@ async fn close_db<L: TxLog + 'static>(
 }
 
 async fn query<L: TxLog + 'static>(
-    State(state): State<Arc<HttpServer<L>>>,
+    State(state): State<Arc<Server<L>>>,
     Path(db_id): Path<u32>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
@@ -365,7 +365,7 @@ async fn query<L: TxLog + 'static>(
 }
 
 async fn submit_tx<L: TxLog + 'static>(
-    State(state): State<Arc<HttpServer<L>>>,
+    State(state): State<Arc<Server<L>>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let ops = decode_execute_request(&body)
@@ -378,7 +378,7 @@ async fn submit_tx<L: TxLog + 'static>(
 }
 
 async fn execute_tx<L: TxLog + 'static>(
-    State(state): State<Arc<HttpServer<L>>>,
+    State(state): State<Arc<Server<L>>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let ops = decode_execute_request(&body)
@@ -401,7 +401,7 @@ async fn execute_tx<L: TxLog + 'static>(
 // Server
 // ---------------------------------------------------------------------------
 
-fn build_router<L: TxLog + 'static>(state: Arc<HttpServer<L>>) -> Router {
+fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
     Router::new()
         .route("/db/open", post(open_db::<L>))
         .route("/db/{db_id}", delete(close_db::<L>))
@@ -412,16 +412,16 @@ fn build_router<L: TxLog + 'static>(state: Arc<HttpServer<L>>) -> Router {
         .with_state(state)
 }
 
-pub struct HttpServer<L: TxLog> {
+pub struct Server<L: TxLog> {
     node: Arc<Node<L>>,
     handle_store: Arc<HandleStore>,
 }
 
-impl<L: TxLog + 'static> HttpServer<L> {
+impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>, max_open_dbs: usize) -> Self {
         let db_cache = Arc::new(DbCache::new(max_open_dbs));
         let handle_store = Arc::new(HandleStore::new(db_cache));
-        HttpServer {
+        Server {
             node,
             handle_store,
         }
@@ -446,7 +446,7 @@ impl<L: TxLog + 'static> HttpServer<L> {
             }
         });
 
-        let app_state = Arc::new(HttpServer {
+        let app_state = Arc::new(Server {
             node: self.node.clone(),
             handle_store: self.handle_store.clone(),
         });
@@ -475,13 +475,13 @@ impl<L: TxLog + 'static> HttpServer<L> {
 // Dev Server (per-connection in-memory nodes)
 // ---------------------------------------------------------------------------
 
-pub struct DevHttpServer {
+pub struct DevServer {
     max_open_dbs: usize,
 }
 
-impl DevHttpServer {
+impl DevServer {
     pub fn new(max_open_dbs: usize) -> Self {
-        DevHttpServer { max_open_dbs }
+        DevServer { max_open_dbs }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -501,7 +501,7 @@ impl DevHttpServer {
                     let db_cache = Arc::new(DbCache::new(max_open_dbs));
                     let handle_store = Arc::new(HandleStore::new(db_cache));
 
-                    let app_state = Arc::new(HttpServer {
+                    let app_state = Arc::new(Server {
                         node: node.clone(),
                         handle_store: handle_store.clone(),
                     });
