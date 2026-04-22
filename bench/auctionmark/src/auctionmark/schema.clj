@@ -31,19 +31,19 @@
    (attr :gav/name :db.type/string)
 
    ;; --- User ---
-   [(attr :user/id :db.type/long)
-    (attr :user/region-id :db.type/ref)
-    (attr :user/rating :db.type/long)
-    (attr :user/balance :db.type/double)
-    (attr :user/created :db.type/instant)
-    (attr :user/sattr0 :db.type/string)
-    (attr :user/sattr1 :db.type/string)
-    (attr :user/sattr2 :db.type/string)
-    (attr :user/sattr3 :db.type/string)
-    (attr :user/sattr4 :db.type/string)
-    (attr :user/sattr5 :db.type/string)
-    (attr :user/sattr6 :db.type/string)
-    (attr :user/sattr7 :db.type/string)]
+   (attr :user/id :db.type/long)
+   (attr :user/region-id :db.type/ref)
+   (attr :user/rating :db.type/long)
+   (attr :user/balance :db.type/double)
+   (attr :user/created :db.type/instant)
+   (attr :user/sattr0 :db.type/string)
+   (attr :user/sattr1 :db.type/string)
+   (attr :user/sattr2 :db.type/string)
+   (attr :user/sattr3 :db.type/string)
+   (attr :user/sattr4 :db.type/string)
+   (attr :user/sattr5 :db.type/string)
+   (attr :user/sattr6 :db.type/string)
+   (attr :user/sattr7 :db.type/string)
 
    ;; --- User Attribute ---
    (attr :user-attribute/id :db.type/long)
