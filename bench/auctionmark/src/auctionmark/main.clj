@@ -173,3 +173,32 @@
 
     (log/info "Done.")
     (System/exit 0)))
+
+
+(comment
+  (def host "localhost")
+  (def port 5490)
+  (def conn (tc/connect host 5490))
+
+  (.close conn)
+
+  (require '[auctionmark.schema :as schema])
+
+  (proc/load-data! conn {:scale-factor 0.01})
+
+  (tc/transact conn [{:db/ident :name
+                      :db/valueType :db.type/string
+                      :db/cardinality :db.cardinality/one}
+                     {:db/ident :age
+                      :db/valueType :db.type/long
+                      :db/cardinality :db.cardinality/one}])
+
+  (with-open [db (tc/db conn)]
+    (tc/q db '{:find [?ident, ?value-type, ?cardinality]
+               :where [[?attr :db/ident ?ident]
+                       [?attr :db/valueType ?value-ref]
+                       [?attr :db/cardinality ?card-ref]
+                       [?value-ref :db/ident ?value-type]
+                       [?card-ref :db/ident ?cardinality]]}))
+
+  )
