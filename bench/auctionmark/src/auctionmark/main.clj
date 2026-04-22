@@ -8,6 +8,10 @@
            [java.util.concurrent Executors TimeUnit]
            [java.util.concurrent.atomic AtomicBoolean]))
 
+;; TODO move to deps.edn
+(set! *print-namespace-maps* false)
+(set! *warn-on-reflection* true)
+
 ;; ---------------------------------------------------------------------------
 ;; Config
 ;; ---------------------------------------------------------------------------
