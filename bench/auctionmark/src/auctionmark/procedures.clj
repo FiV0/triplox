@@ -248,6 +248,7 @@
             (reduce
              (fn [acc _]
                (let [item-id (next-id (:item-counter state))
+                     item-tempid (str "item-" item-id)
                      seller-id (nth user-ids (rand-gaussian rng (count user-ids)))
                      cat-idx (weighted-sample rng cat-weights)
                      cat-id (:id (nth categories cat-idx))
@@ -257,7 +258,8 @@
                      duration-days (+ 1 (.nextInt rng 43))
                      start-ms (- now-ms (* (.nextInt rng 30) day-ms))
                      end-ms (+ start-ms (* duration-days day-ms))
-                     item-doc {:item/id item-id
+                     item-doc {:db/id item-tempid
+                               :item/id item-id
                                :item/user-id [:user/id seller-id]
                                :item/category-id [:category/id cat-id]
                                :item/name (str "Item-" item-id)
@@ -272,7 +274,7 @@
                      image-docs (mapv (fn [i]
                                         (let [img-id (next-id (:image-counter state))]
                                           {:item-image/id img-id
-                                           :item-image/item-id [:item/id item-id]
+                                           :item-image/item-id item-tempid
                                            :item-image/user-id [:user/id seller-id]
                                            :item-image/path (str "/img/" item-id "/" i ".jpg")}))
                                       (range num-images))
@@ -435,10 +437,12 @@
       (when current-price
         (let [new-price (* (double current-price) (+ 1.0 (* (.nextDouble rng) 0.1)))
               bid-id (next-id (:bid-counter state))
+              bid-tempid (str "bid-" bid-id)
               max-bid-id (next-id (:max-bid-counter state))
               now (now-instant)]
           (tc/transact conn
-                       [{:item-bid/id bid-id
+                       [{:db/id bid-tempid
+                         :item-bid/id bid-id
                          :item-bid/item-id [:item/id item-id]
                          :item-bid/user-id [:user/id (:seller-id item)]
                          :item-bid/buyer-id [:user/id buyer-id]
@@ -453,7 +457,7 @@
                         {:item-max-bid/id max-bid-id
                          :item-max-bid/item-id [:item/id item-id]
                          :item-max-bid/user-id [:user/id (:seller-id item)]
-                         :item-max-bid/bid-id [:item-bid/id bid-id]
+                         :item-max-bid/bid-id bid-tempid
                          :item-max-bid/buyer-id [:user/id buyer-id]
                          :item-max-bid/created now
                          :item-max-bid/updated now}]))))))
@@ -471,6 +475,7 @@
         cat-idx (weighted-sample rng cat-weights)
         cat-id (:id (nth categories cat-idx))
         item-id (next-id (:item-counter state))
+        item-tempid (str "item-" item-id)
         num-images (+ 1 (.nextInt rng 5))
         initial-price (+ 1.0 (* (.nextDouble rng) 100.0))
         now (now-instant)
@@ -478,11 +483,12 @@
         end-ms (+ now-ms (* (+ 1 (.nextInt rng 14)) 24 60 60 1000))
         image-docs (mapv (fn [i]
                            {:item-image/id (next-id (:image-counter state))
-                            :item-image/item-id [:item/id item-id]
+                            :item-image/item-id item-tempid
                             :item-image/user-id [:user/id seller-id]
                             :item-image/path (str "/img/" item-id "/" i ".jpg")})
                          (range num-images))
-        item-doc {:item/id item-id
+        item-doc {:db/id item-tempid
+                  :item/id item-id
                   :item/user-id [:user/id seller-id]
                   :item/category-id [:category/id cat-id]
                   :item/name (str "Item-" item-id)
