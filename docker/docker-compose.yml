@@ -1,19 +1,18 @@
 services:
-  rustfs:
-    image: rustfs/rustfs:1.0.0-alpha.93
+  minio:
+    image: minio/minio:latest
     command: server /data --console-address ":9001"
     # Dev-only credentials — do not use in production
     environment:
-      RUSTFS_ROOT_USER: triplox
-      RUSTFS_ROOT_PASSWORD: triplox123
+      MINIO_ROOT_USER: triplox
+      MINIO_ROOT_PASSWORD: triplox123
     ports:
       - "9000:9000"
       - "9001:9001"
-    tmpfs:
-      - /data:mode=1777
-      - /logs:mode=1777
+    volumes:
+      - ./data/minio:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -21,13 +20,13 @@ services:
   createbucket:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
-      rustfs:
+      minio:
         condition: service_healthy
     entrypoint: /bin/sh
     command: >
       -c "
-      mc alias set myrustfs http://rustfs:9000 triplox triplox123 &&
-      mc mb --ignore-existing myrustfs/triplox
+      mc alias set myminio http://minio:9000 triplox triplox123 &&
+      mc mb --ignore-existing myminio/triplox
       "
 
   triplox:
