@@ -1,0 +1,11 @@
+[storage]
+type = "remote"
+endpoint = "http://localhost:9000"
+bucket = "triplox"
+access_key = "triplox"
+secret_key = "triplox123"
+log_path = "/tmp/triplox-log"
+
+[server]
+host = "127.0.0.1"
+port = 5490

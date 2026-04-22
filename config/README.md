@@ -1,0 +1,63 @@
+# Triplox Configs
+
+TOML configs for running triplox directly via `cargo run`. Pick a file that
+matches the storage backend you want and pass its path as the first argument:
+
+```bash
+cargo run -- config/triplox.toml
+```
+
+If no argument is passed, triplox loads `config/triplox.toml` by default (see
+`src/main.rs`).
+
+| File | `storage.type` | Notes |
+|---|---|---|
+| `triplox.toml` | `memory` | In-process, no persistence. Default. |
+| `triplox-dev.toml` | `dev` | Dev-only SlateDB backed by an in-memory object store. |
+| `triplox-local.toml` | `local` | Persistent local FS at `./data/`. |
+| `triplox-remote.toml` | `remote` | S3-compatible (MinIO) at `http://localhost:9000`. |
+
+## Running locally against MinIO in Docker
+
+Useful when you want to exercise the remote-storage code path while iterating
+on triplox natively. MinIO stays in Docker; triplox runs from `cargo`.
+
+### 1. One-time ext4 loopback setup
+
+MinIO refuses to start on btrfs, so `docker/data/minio/` is a loopback ext4
+image. Create and mount it once (and re-run after each reboot):
+
+```bash
+./docker/scripts/setup-minio-disk.sh
+```
+
+### 2. Start only MinIO (not triplox) in Docker
+
+```bash
+docker compose -f docker/docker-compose.yml up minio createbucket
+```
+
+`createbucket` exits after creating the `triplox` bucket; `minio` keeps
+running on `localhost:9000` (S3 API) and `localhost:9001` (console).
+
+### 3. Run triplox locally
+
+```bash
+cargo run -- config/triplox-remote.toml              # debug build
+cargo run --release -- config/triplox-remote.toml    # release build
+```
+
+Logs go to `/tmp/triplox-log/` (configured in `triplox-remote.toml`). The
+slatedb disk-backed object-store cache lives at `/tmp/triplox-log/cache/` and
+is capped at slatedb's default 16 GiB. It grows across restarts and must be
+wiped manually when you want a cold read path.
+
+### 4. Reset
+
+Wipe MinIO contents and the local log (including the object-store cache)
+before the next run:
+
+```bash
+./docker/scripts/reset-remote-stack.sh    # wipes MinIO only
+rm -rf /tmp/triplox-log                   # wipes triplox log + object-store cache
+```
