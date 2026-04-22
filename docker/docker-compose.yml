@@ -9,8 +9,9 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-    volumes:
-      - rustfs-data:/data
+    tmpfs:
+      - /data:mode=1777
+      - /logs:mode=1777
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
       interval: 5s
@@ -44,5 +45,4 @@ services:
         condition: service_completed_successfully
 
 volumes:
-  rustfs-data:
   triplox-log:
