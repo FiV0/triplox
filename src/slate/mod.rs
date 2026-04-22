@@ -109,7 +109,7 @@ pub async fn remote_slate(
     secret_key: &str,
     region: &str,
     cache_path: &Path,
-) -> SlateComponents {
+) -> Result<SlateComponents, anyhow::Error> {
     let s3 = AmazonS3Builder::new()
         .with_endpoint(endpoint)
         .with_bucket_name(bucket)
@@ -121,7 +121,7 @@ pub async fn remote_slate(
         .expect("failed to build S3 object store");
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
-    std::fs::create_dir_all(cache_path).expect("failed to create object store cache directory");
+    std::fs::create_dir_all(cache_path)?;
     let settings = Settings {
         object_store_cache_options: ObjectStoreCacheOptions {
             root_folder: Some(cache_path.to_path_buf()),
@@ -146,12 +146,12 @@ pub async fn remote_slate(
         None,
         None,
     ));
-    SlateComponents {
+    Ok(SlateComponents {
         db,
         path,
         object_store,
         range_stats,
-    }
+    })
 }
 
 pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {

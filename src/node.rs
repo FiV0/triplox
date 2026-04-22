@@ -276,7 +276,7 @@ impl Node<FileLog> {
             region,
             &cache_path,
         )
-        .await;
+        .await?;
         Self::from_slate_and_log(slate, &log_path.join("log")).await
     }
 }
