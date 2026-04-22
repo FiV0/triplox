@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use crate::util::random_string;
 
-pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 512 * 1024 * 1024;
-pub const DEFAULT_META_CACHE_BYTES: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_META_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub fn default_db_cache() -> Arc<dyn DbCache> {
     let block_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
