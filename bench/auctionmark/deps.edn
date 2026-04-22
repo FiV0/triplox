@@ -6,4 +6,7 @@
         ch.qos.logback/logback-classic {:mvn/version "1.4.5"}
 
         xyz.triplox/triplox {:mvn/version "0.1.0-alpha"}}
- :aliases {:run {:main-opts ["-m" "auctionmark.main"]}}}
+ :aliases {:run {:main-opts ["-m" "auctionmark.main"]}}
+
+ :mvn/repos {"clojars" {:url "https://repo.clojars.org/"
+                        :snapshots {:update :always}}}}
