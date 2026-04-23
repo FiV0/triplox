@@ -41,6 +41,8 @@ pub(crate) fn write_index_entries(
     let tx_eid_bytes = encode_i64_bytes(tx_eid);
     let mut key_buf: Vec<u8> = Vec::with_capacity(64);
     let mut value_buf: Vec<u8> = Vec::with_capacity(32);
+    // DataType::Long encodes as 1 type-tag byte + 8 big-endian bytes.
+    let mut entity_buf: Vec<u8> = Vec::with_capacity(9);
 
     for datom in datoms {
         let attribute_id = schema
@@ -48,9 +50,11 @@ pub(crate) fn write_index_entries(
             .map(|(eid, _)| eid)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
         let attr_bytes = encode_i64_bytes(attribute_id);
-        // Entity IDs are stored in value-position encoding (DataType::Long),
-        // which for i64 is just the same big-endian bytes as encode_i64_bytes.
-        let entity_bytes = DataType::Long(datom.entity).encode();
+        // Entity IDs use value-position encoding (DataType::Long) so they can
+        // share the value slot in EAV/AVE/AEV keys.
+        entity_buf.clear();
+        encode_datatype(&DataType::Long(datom.entity), &mut entity_buf);
+        let entity_bytes = entity_buf.as_slice();
 
         value_buf.clear();
         encode_datatype(&datom.value, &mut value_buf);
@@ -64,7 +68,7 @@ pub(crate) fn write_index_entries(
         // EAV
         key_buf.clear();
         key_buf.push(codec::EAV);
-        key_buf.extend_from_slice(&entity_bytes);
+        key_buf.extend_from_slice(entity_bytes);
         key_buf.extend_from_slice(&attr_bytes);
         key_buf.extend_from_slice(value);
         key_buf.extend_from_slice(&tx_eid_bytes);
@@ -76,7 +80,7 @@ pub(crate) fn write_index_entries(
         key_buf.push(codec::AVE);
         key_buf.extend_from_slice(&attr_bytes);
         key_buf.extend_from_slice(value);
-        key_buf.extend_from_slice(&entity_bytes);
+        key_buf.extend_from_slice(entity_bytes);
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
         txn.put(&key_buf, [])?;
@@ -85,7 +89,7 @@ pub(crate) fn write_index_entries(
         key_buf.clear();
         key_buf.push(codec::AEV);
         key_buf.extend_from_slice(&attr_bytes);
-        key_buf.extend_from_slice(&entity_bytes);
+        key_buf.extend_from_slice(entity_bytes);
         key_buf.extend_from_slice(value);
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
@@ -97,7 +101,7 @@ pub(crate) fn write_index_entries(
             key_buf.clear();
             key_buf.push(codec::AE);
             key_buf.extend_from_slice(&attr_bytes);
-            key_buf.extend_from_slice(&entity_bytes);
+            key_buf.extend_from_slice(entity_bytes);
             txn.put(&key_buf, [])?;
 
             key_buf.clear();
