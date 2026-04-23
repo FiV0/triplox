@@ -4,7 +4,8 @@
             [clojure.tools.logging :as log]
             [io.triplox.api :as tc]
             [auctionmark.procedures :as proc])
-  (:import [java.util Random]
+  (:import [java.io Closeable]
+           [java.util Random]
            [java.util.concurrent Executors TimeUnit]
            [java.util.concurrent.atomic AtomicBoolean]))
 
@@ -106,28 +107,28 @@
     ;; start worker threads
     (doseq [i (range threads)]
       (.submit pool
-        ^Runnable (fn []
-                    (let [conn (nth conns i)
-                          rng (Random. (+ 1000 i))]
-                      (run-worker conn rng state running?)))))
+               ^Runnable (fn []
+                           (let [conn (nth conns i)
+                                 rng (Random. (+ 1000 i))]
+                             (run-worker conn rng state running?)))))
 
     ;; start background thread for check-winning-bid + post-auction
     (.submit pool
-      ^Runnable (fn []
-                  (let [conn (last conns)
-                        rng (Random. 9999)]
-                    (while (.get running?)
-                      (try
-                        (Thread/sleep 10000)
-                        (proc/proc-check-winning-bid conn rng state)
-                        (proc/proc-post-auction conn rng state)
-                        (catch InterruptedException _)
-                        (catch Exception e
-                          (log/warn e "Background error")))))))
+             ^Runnable (fn []
+                         (let [conn (last conns)
+                               rng (Random. 9999)]
+                           (while (.get running?)
+                             (try
+                               (Thread/sleep 10000)
+                               (proc/proc-check-winning-bid conn rng state)
+                               (proc/proc-post-auction conn rng state)
+                               (catch InterruptedException _)
+                               (catch Exception e
+                                 (log/warn e "Background error")))))))
 
     ;; wait for duration
     (log/info "Running benchmark for" duration "seconds...")
-    (Thread/sleep (* duration 1000))
+    (Thread/sleep ^int (* duration 1000))
     (.set running? false)
     (.shutdown pool)
     (.awaitTermination pool 30 TimeUnit/SECONDS)
@@ -136,7 +137,7 @@
           elapsed-secs (/ elapsed-ns 1e9)]
 
       ;; close connections
-      (doseq [c conns] (.close c))
+      (doseq [^Closeable c conns] (.close c))
 
       {:elapsed-secs elapsed-secs})))
 
@@ -184,7 +185,8 @@
 
   (require '[auctionmark.schema :as schema])
 
-  (proc/load-data! conn {:scale-factor 0.01})
+  (time
+   (proc/load-data! conn {:scale-factor 0.01}))
 
   (tc/transact conn [{:db/ident :name
                       :db/valueType :db.type/string
