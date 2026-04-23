@@ -39,65 +39,76 @@ pub(crate) fn write_index_entries(
     tx_eid: i64,
 ) -> Result<(), Error> {
     let tx_eid_bytes = encode_i64_bytes(tx_eid);
+    let mut key_buf: Vec<u8> = Vec::with_capacity(64);
+    let mut value_buf: Vec<u8> = Vec::with_capacity(32);
+    // DataType::Long encodes as 1 type-tag byte + 8 big-endian bytes.
+    let mut entity_buf: Vec<u8> = Vec::with_capacity(9);
 
     for datom in datoms {
-        // TODO: entity IDs encoded as DataType::Long to match value-position encoding.
-        // Revisit with schema/custom encoding.
-        let entity_id = DataType::Long(datom.entity).encode();
         let attribute_id = schema
             .get_attribute(&datom.attribute)
             .map(|(eid, _)| eid)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
-        let attribute = encode_i64_bytes(attribute_id);
-        let mut value = Vec::new();
-        encode_datatype(&datom.value, &mut value);
+        let attr_bytes = encode_i64_bytes(attribute_id);
+        // Entity IDs use value-position encoding (DataType::Long) so they can
+        // share the value slot in EAV/AVE/AEV keys.
+        entity_buf.clear();
+        encode_datatype(&DataType::Long(datom.entity), &mut entity_buf);
+        let entity_bytes = entity_buf.as_slice();
+
+        value_buf.clear();
+        encode_datatype(&datom.value, &mut value_buf);
+        let value = value_buf.as_slice();
+
         let op_byte = match datom.op {
             DatomOp::Assert => codec::ADD,
             DatomOp::Retract => codec::RETRACT,
         };
 
-        // Temporal indices include tx_eid + op
-        // TODO(#69): concat_bytes allocates intermediate Vecs per component;
-        // encoding directly into a single buffer would be faster.
-        txn.put(
-            concat_bytes(&[
-                &[codec::EAV],
-                &entity_id,
-                &attribute,
-                &value,
-                &tx_eid_bytes,
-                &[op_byte],
-            ]),
-            [],
-        )?;
-        txn.put(
-            concat_bytes(&[
-                &[codec::AVE],
-                &attribute,
-                &value,
-                &entity_id,
-                &tx_eid_bytes,
-                &[op_byte],
-            ]),
-            [],
-        )?;
-        txn.put(
-            concat_bytes(&[
-                &[codec::AEV],
-                &attribute,
-                &entity_id,
-                &value,
-                &tx_eid_bytes,
-                &[op_byte],
-            ]),
-            [],
-        )?;
+        // EAV
+        key_buf.clear();
+        key_buf.push(codec::EAV);
+        key_buf.extend_from_slice(entity_bytes);
+        key_buf.extend_from_slice(&attr_bytes);
+        key_buf.extend_from_slice(value);
+        key_buf.extend_from_slice(&tx_eid_bytes);
+        key_buf.push(op_byte);
+        txn.put(&key_buf, [])?;
+
+        // AVE
+        key_buf.clear();
+        key_buf.push(codec::AVE);
+        key_buf.extend_from_slice(&attr_bytes);
+        key_buf.extend_from_slice(value);
+        key_buf.extend_from_slice(entity_bytes);
+        key_buf.extend_from_slice(&tx_eid_bytes);
+        key_buf.push(op_byte);
+        txn.put(&key_buf, [])?;
+
+        // AEV
+        key_buf.clear();
+        key_buf.push(codec::AEV);
+        key_buf.extend_from_slice(&attr_bytes);
+        key_buf.extend_from_slice(entity_bytes);
+        key_buf.extend_from_slice(value);
+        key_buf.extend_from_slice(&tx_eid_bytes);
+        key_buf.push(op_byte);
+        txn.put(&key_buf, [])?;
 
         // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
         if datom.op == DatomOp::Assert {
-            txn.put(concat_bytes(&[&[codec::AE], &attribute, &entity_id]), [])?;
-            txn.put(concat_bytes(&[&[codec::AV], &attribute, &value]), [])?;
+            key_buf.clear();
+            key_buf.push(codec::AE);
+            key_buf.extend_from_slice(&attr_bytes);
+            key_buf.extend_from_slice(entity_bytes);
+            txn.put(&key_buf, [])?;
+
+            key_buf.clear();
+            key_buf.push(codec::AV);
+            key_buf.extend_from_slice(&attr_bytes);
+            key_buf.extend_from_slice(value);
+            txn.put(&key_buf, [])?;
         }
     }
 
