@@ -257,7 +257,7 @@ fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> any
 pub async fn resolve_lookup_refs(
     datoms: Vec<DatomExpanded>,
     schema: &Schema,
-    txn: &slatedb::DbTransaction,
+    db: &slatedb::Db,
 ) -> Result<Vec<DatomWithTempids>> {
     // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
     let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
