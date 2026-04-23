@@ -135,8 +135,7 @@ pub async fn remote_slate(
             .with_settings(settings)
             .with_db_cache(default_db_cache())
             .build()
-            .await
-            .unwrap(),
+            .await?,
     );
     let path = "triplox".to_string();
     let range_stats = Arc::new(slatedb_estimates::RangeStats::new(
