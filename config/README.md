@@ -58,6 +58,5 @@ Wipe MinIO contents and the local log (including the object-store cache)
 before the next run:
 
 ```bash
-./docker/scripts/reset-remote-stack.sh    # wipes MinIO only
-rm -rf /tmp/triplox-log                   # wipes triplox log + object-store cache
+./config/scripts/reset-local-remote.sh
 ```
