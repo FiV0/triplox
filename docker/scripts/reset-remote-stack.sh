@@ -11,10 +11,13 @@ echo "Stopping stack and removing named volumes (triplox-log)"
 docker compose -f "$COMPOSE_FILE" down -v
 
 if mountpoint -q "$MINIO_MNT"; then
-    echo "Wiping minio data under $MINIO_MNT"
+    echo "Wiping minio data under $MINIO_MNT (loopback mount)"
     find "$MINIO_MNT" -mindepth 1 -maxdepth 1 ! -name 'lost+found' -exec rm -rf {} +
+elif [ -d "$MINIO_MNT" ]; then
+    echo "Wiping minio data under $MINIO_MNT"
+    find "$MINIO_MNT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 else
-    echo "Skipping minio wipe — $MINIO_MNT is not mounted"
+    echo "Skipping minio wipe — $MINIO_MNT does not exist"
 fi
 
 echo "Done. Bring the stack back up with:"
