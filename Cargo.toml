@@ -25,7 +25,7 @@ log = "0.4"
 object_store = { version = "0.12.3", features = ["aws"] }
 rand = "0.9"
 serde = { workspace = true, features = ["derive"] }
-slatedb = "0.12.0"
+slatedb = { version = "0.12.0", features = ["wal_disable"] }
 slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "e3ff9dca2a9adc0bf5629c5ff9b2272c7052826c" }
 thiserror = "2.0.1"
 time = { version = "0.3.36", features = ["serde"] }
@@ -41,10 +41,12 @@ tower = "0.5"
 hyper = { version = "1", features = ["http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "http2"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+console-subscriber = { version = "0.5", optional = true }
 
 [features]
 test-helpers = []
 remote-test = []
+console = ["dep:console-subscriber"]
 
 [dev-dependencies]
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
@@ -57,3 +59,6 @@ unused = "allow"
 
 [profile.bench]
 debug-assertions = true
+
+[profile.release]
+debug = "line-tables-only"

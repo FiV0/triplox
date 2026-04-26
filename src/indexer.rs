@@ -306,9 +306,7 @@ impl Indexer {
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self
-            .finalize_datoms_for_commit(&txn, datoms)
-            .await?;
+        let datoms = self.finalize_datoms_for_commit(&txn, datoms).await?;
 
         // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
@@ -373,15 +371,17 @@ impl Indexer {
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
 
             // Scan EAV prefix to find the current value for this (entity, attribute).
-            let old_value: Option<DataType> = match first_live_key(txn, &eav_prefix).await? {
-                Some(key) => {
-                    let value_bytes =
-                        &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
-                    let mut cursor = value_bytes;
-                    Some(decode_datatype(&mut cursor)?)
-                }
-                None => None,
-            };
+            // let old_value: Option<DataType> = match first_live_key(txn, &eav_prefix).await? {
+            //     Some(key) => {
+            //         let value_bytes =
+            //             &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
+            //         let mut cursor = value_bytes;
+            //         Some(decode_datatype(&mut cursor)?)
+            //     }
+            //     None => None,
+            // };
+
+            let old_value = None;
 
             if let Some(old_value) = old_value {
                 if old_value == datom.value {

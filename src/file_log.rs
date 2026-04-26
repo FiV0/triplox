@@ -103,13 +103,107 @@ impl TxLog for FileLog {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::{st_from_unix_epoch, MockClock};
+    use crate::clock::{st_from_unix_epoch, MockClock, SystemClock};
     use crate::log::{subscribe, MockSubscriber};
     use std::sync::Arc;
+    use std::time::Instant;
     use tempfile::tempdir;
     use tokio::sync::RwLock;
 
     use crate::logging::init;
+
+    /// Directory on the real ext4 fs (not /tmp = tmpfs) so fsync is a real disk
+    /// flush. We need this to demonstrate the per-call fsync bottleneck.
+    fn ext4_test_dir() -> std::path::PathBuf {
+        let p = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("file_log_perf_test");
+        let _ = std::fs::create_dir_all(&p);
+        p
+    }
+
+    /// Forces real fsync to the real disk. With per-call fsync, N concurrent
+    /// appends serialize through the RwLock and each pays ~disk-fsync latency.
+    /// Run with `cargo test --release` for representative timings.
+    async fn run_perf(n: usize, payload_bytes: usize, label: &str) {
+        let dir = ext4_test_dir();
+        let file_path = dir.join(format!("perf_{}_{}.log", std::process::id(), label));
+        let _ = std::fs::remove_file(&file_path);
+
+        let log = Arc::new(RwLock::new(
+            FileLog::new(&file_path, Box::new(SystemClock)).unwrap(),
+        ));
+
+        let start = Instant::now();
+        let mut handles = Vec::with_capacity(n);
+        for i in 0..n {
+            let log = log.clone();
+            let payload = vec![i as u8; payload_bytes];
+            handles.push(tokio::spawn(async move {
+                log.write().await.append_tx(payload).await
+            }));
+        }
+        for h in handles {
+            let _ = h.await.unwrap();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "[{}] N={} payload={}B elapsed={:?} per-append={:?}",
+            label,
+            n,
+            payload_bytes,
+            elapsed,
+            elapsed / n as u32
+        );
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "perf — uses real disk fsync"]
+    async fn perf_payload_sizes() {
+        init();
+        run_perf(100, 64, "small_64B").await;
+        run_perf(100, 1024, "med_1KiB").await;
+        run_perf(100, 16 * 1024, "big_16KiB").await;
+        run_perf(100, 256 * 1024, "huge_256KiB").await;
+        run_perf(100, 1_900_000, "wal_size_1.9MB").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "perf — uses real disk fsync, slow under per-call fsync"]
+    async fn perf_concurrent_appends_real_disk() {
+        init();
+        let dir = ext4_test_dir();
+        let file_path = dir.join(format!("perf_{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&file_path);
+
+        let log = Arc::new(RwLock::new(
+            FileLog::new(&file_path, Box::new(SystemClock)).unwrap(),
+        ));
+
+        const N: usize = 100;
+        let start = Instant::now();
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let log = log.clone();
+            handles.push(tokio::spawn(async move {
+                log.write().await.append_tx(vec![i as u8; 64]).await
+            }));
+        }
+        for h in handles {
+            let _ = h.await.unwrap();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "perf_concurrent_appends_real_disk: N={} elapsed={:?}  per-append={:?}",
+            N,
+            elapsed,
+            elapsed / N as u32
+        );
+        let _ = std::fs::remove_file(&file_path);
+    }
+
     // Reuse your MockSubscriber implementation here...
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
