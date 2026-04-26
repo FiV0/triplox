@@ -1852,6 +1852,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lookup_ref_batch_resolves_multiple_refs() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Bob".into()),
+            (kw!(:email), "bob@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: EntityRef::LookupRef(
+                        kw!(:email),
+                        DataType::String("bob@example.com".into()),
+                    ),
+                    attribute: kw!(:follows),
+                    value: DataType::Vector(vec![
+                        DataType::Keyword(kw!(:email)),
+                        DataType::String("alice@example.com".into()),
+                    ]),
+                },
+                TxOp::Add {
+                    entity: EntityRef::LookupRef(
+                        kw!(:email),
+                        DataType::String("alice@example.com".into()),
+                    ),
+                    attribute: kw!(:age),
+                    value: DataType::Long(30),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(
+                "[:find ?follower ?followed ?age :where \
+                 [?e1 :name ?follower] [?e1 :follows ?e2] \
+                 [?e2 :name ?followed] [?e2 :age ?age]]",
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::String("Bob".into()));
+        assert_eq!(result[0][1], DataType::String("Alice".into()));
+        assert_eq!(result[0][2], DataType::Long(30));
+    }
+
+    #[tokio::test]
+    async fn test_lookup_ref_batch_deduplicates_repeated_ref() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Bob".into()),
+            (kw!(:email), "bob@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        let bob_lookup = DataType::String("bob@example.com".into());
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(kw!(:email), bob_lookup.clone()),
+                attribute: kw!(:follows),
+                value: DataType::Vector(vec![DataType::Keyword(kw!(:email)), bob_lookup]),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(
+                r#"[:find ?follower ?followed
+                   :where [?e1 :name ?follower] [?e1 :follows ?e2] [?e2 :name ?followed]]"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![
+                DataType::String("Bob".into()),
+                DataType::String("Bob".into())
+            ]]
+        );
+    }
+
+    #[tokio::test]
     async fn test_lookup_ref_in_put_db_id() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
