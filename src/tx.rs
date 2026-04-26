@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use edn::kw;
@@ -264,6 +264,22 @@ pub async fn first_live_key(
     }
 }
 
+fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
+    let attr_bytes = encode_i64_bytes(attr_eid);
+    let mut value_bytes = Vec::new();
+    encode_datatype(value, &mut value_bytes);
+    concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes])
+}
+
+fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> anyhow::Error {
+    let attr_kw = schema
+        .entid_map
+        .get(&attr_eid)
+        .map(|kw| kw.to_string())
+        .unwrap_or_else(|| attr_eid.to_string());
+    anyhow::anyhow!("No entity found for lookup ref [{} {:?}]", attr_kw, value)
+}
+
 /// Batch-resolve all lookup refs via the AVE index.
 /// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
@@ -273,57 +289,55 @@ pub async fn resolve_lookup_refs(
     schema: &Schema,
     txn: &slatedb::DbTransaction,
 ) -> Result<Vec<DatomWithTempids>> {
-    // Collect all unique (attr_entid, value) lookup ref pairs.
-    let mut lookup_refs: HashSet<(i64, DataType)> = HashSet::new();
+    // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
+    let mut lookup_refs: BTreeMap<Vec<u8>, (i64, DataType)> = BTreeMap::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
-            lookup_refs.insert((*a, v.clone()));
+            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
         }
         if let ValueExpanded::LookupRef(a, v) = &d.value {
-            lookup_refs.insert((*a, v.clone()));
+            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
         }
     }
 
-    // Batch resolve via AVE index.
-    // TODO(#196): parallelize AVE scans with try_join_all.
     let mut resolved_map: HashMap<(i64, DataType), i64> = HashMap::new();
-    for (attr_eid, value) in &lookup_refs {
-        let attr_bytes = encode_i64_bytes(*attr_eid);
-        let mut value_bytes = Vec::new();
-        encode_datatype(value, &mut value_bytes);
-        let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
 
-        let resolved_eid = match first_live_key(txn, &ave_prefix).await? {
-            Some(key) => {
-                let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(key)?;
-                match entity_dt {
-                    DataType::Long(eid) => Some(eid),
-                    other => {
-                        return Err(anyhow::anyhow!(
-                            "Expected Long entity ID in AVE key, got {:?}",
-                            other
-                        ));
-                    }
+    if let Some(first_prefix) = lookup_refs.keys().next() {
+        let mut iter = txn
+            .scan_with_options(
+                first_prefix.clone()..vec![codec::AVE_END],
+                &DEFAULT_SCAN_OPTIONS,
+            )
+            .await?;
+
+        for (ave_prefix, (attr_eid, value)) in &lookup_refs {
+            iter.seek(ave_prefix).await?;
+
+            let key = match iter.next().await? {
+                Some(kv) if kv.key.starts_with(ave_prefix) => kv.key,
+                _ => return Err(lookup_ref_not_found(schema, *attr_eid, value)),
+            };
+
+            assert!(
+                key.len() >= codec::TX_EID_OP_SUFFIX,
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            );
+            if key[key.len() - 1] == codec::RETRACT {
+                return Err(lookup_ref_not_found(schema, *attr_eid, value));
+            }
+
+            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(key)?;
+            match entity_dt {
+                DataType::Long(eid) => {
+                    resolved_map.insert((*attr_eid, value.clone()), eid);
                 }
-            }
-            None => None,
-        };
-
-        match resolved_eid {
-            Some(eid) => {
-                resolved_map.insert((*attr_eid, value.clone()), eid);
-            }
-            None => {
-                let attr_kw = schema
-                    .entid_map
-                    .get(attr_eid)
-                    .map(|kw| kw.to_string())
-                    .unwrap_or_else(|| attr_eid.to_string());
-                return Err(anyhow::anyhow!(
-                    "No entity found for lookup ref [{} {:?}]",
-                    attr_kw,
-                    value
-                ));
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Expected Long entity ID in AVE key, got {:?}",
+                        other
+                    ));
+                }
             }
         }
     }
