@@ -264,6 +264,22 @@ pub async fn first_live_key(
     }
 }
 
+fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
+    let attr_bytes = encode_i64_bytes(attr_eid);
+    let mut value_bytes = Vec::new();
+    encode_datatype(value, &mut value_bytes);
+    concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes])
+}
+
+fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> anyhow::Error {
+    let attr_kw = schema
+        .entid_map
+        .get(&attr_eid)
+        .map(|kw| kw.to_string())
+        .unwrap_or_else(|| attr_eid.to_string());
+    anyhow::anyhow!("No entity found for lookup ref [{} {:?}]", attr_kw, value)
+}
+
 /// Batch-resolve all lookup refs via the AVE index.
 /// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
@@ -353,22 +369,6 @@ pub async fn resolve_lookup_refs(
         });
     }
     Ok(result)
-}
-
-fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
-    let attr_bytes = encode_i64_bytes(attr_eid);
-    let mut value_bytes = Vec::new();
-    encode_datatype(value, &mut value_bytes);
-    concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes])
-}
-
-fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> anyhow::Error {
-    let attr_kw = schema
-        .entid_map
-        .get(&attr_eid)
-        .map(|kw| kw.to_string())
-        .unwrap_or_else(|| attr_eid.to_string());
-    anyhow::anyhow!("No entity found for lookup ref [{} {:?}]", attr_kw, value)
 }
 
 /// Resolve tempids in DatomWithTempids to produce final Datoms.
