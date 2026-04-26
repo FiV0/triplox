@@ -5,10 +5,11 @@
             [clojure.tools.logging :as log]
             [io.triplox.api :as tc]
             [auctionmark.schema :as schema])
-  (:import [java.util Random]
+  (:import [java.util Random Comparator]
            [java.util.concurrent ConcurrentLinkedQueue]
            [java.util.concurrent.atomic AtomicLong]
-           [java.time Instant]))
+           [java.time Instant]
+           [com.google.common.collect MinMaxPriorityQueue]))
 
 ;; ---------------------------------------------------------------------------
 ;; State
@@ -74,18 +75,38 @@
         scaled (int (* (/ raw 3.0) n))]
     (min (max scaled 0) (dec n))))
 
-(defn weighted-sample
-  "Select a random index according to weights (doubles).
-   Uses linear scan — fine for the category count we have."
-  [^Random rng weights]
-  (let [total (reduce + 0.0 weights)
-        r (* (.nextDouble rng) total)]
-    (loop [i 0
-           acc 0.0]
-      (if (>= i (count weights))
-        (dec (count weights))
-        (let [acc' (+ acc (double (nth weights i)))]
-          (if (>= acc' r) i (recur (inc i) acc')))))))
+(defn weighted-sample-fn
+  "Aliased random sampler:
+
+  https://www.peterstefek.me/alias-method.html
+
+  Given a seq of weight, return a function who when given a Random will return an index according to the weight distribution."
+  [weights]
+  (case (count weights)
+    0 nil
+    1 1
+    (let [total (reduce + weights)
+          normalized-weights (mapv (fn [weight] (double (/ weight total))) weights)
+          len (count normalized-weights)
+          pq (doto (.create (MinMaxPriorityQueue/orderedBy ^Comparator (fn [[_ w] [_ w2]] (compare w w2))))
+               (.addAll (mapv vector (range len) normalized-weights)))
+          avg (/ 1.0 len)
+          parts (object-array len)
+          epsilon 0.00001]
+      (dotimes [i len]
+        (let [[smallest small-weight] (.pollFirst pq)
+              overfill (- avg small-weight)]
+          (if (< epsilon overfill)
+            (let [[largest large-weight] (.pollLast pq)
+                  new-weight (- large-weight overfill)]
+              (when (< epsilon new-weight)
+                (.add pq [largest new-weight]))
+              (aset parts i [small-weight smallest largest]))
+            (aset parts i [small-weight smallest smallest]))))
+      (fn weighted-sample [^Random rng]
+        (let [i (.nextInt rng len)
+              [split small large] (aget parts i)]
+          (if (< (.nextDouble rng) (double split)) small large))))))
 
 (defn batch-transact!
   "Submit tx-data in batches of batch-size. Uses submit-tx (fire-and-forget)."
@@ -239,6 +260,7 @@
   (let [user-ids @(:users state)
         categories @(:categories state)
         cat-weights (mapv :weight categories)
+        cat-idx-fn (weighted-sample-fn cat-weights)
         now-ms (instant->millis (now-instant))
         day-ms (* 24 60 60 1000)]
     ;; generate in chunks to avoid holding all docs in memory
@@ -250,7 +272,7 @@
                (let [item-id (next-id (:item-counter state))
                      item-tempid (str "item-" item-id)
                      seller-id (nth user-ids (rand-gaussian rng (count user-ids)))
-                     cat-idx (weighted-sample rng cat-weights)
+                     cat-idx (cat-idx-fn rng)
                      cat-id (:id (nth categories cat-idx))
                      status (sample-status rng)
                      num-images (inc (.nextInt rng 5))
@@ -322,6 +344,7 @@
         num-user-attrs (long (* scale-factor 1300000))
         num-items (long (* scale-factor 10000000))
         categories-data (load-categories-tsv)]
+
     (log/info "Installing schema...")
     (tc/transact conn schema/schema-tx)
 
@@ -358,7 +381,7 @@
               (.size ^ConcurrentLinkedQueue (:items-open state))
               "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
               "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state)))
-    state))
+    #_state))
 
 ;; ---------------------------------------------------------------------------
 ;; Helper: pick random items from queues
@@ -472,7 +495,9 @@
   (let [seller-id (pick-random-user rng state)
         categories @(:categories state)
         cat-weights (mapv :weight categories)
-        cat-idx (weighted-sample rng cat-weights)
+        ;; TODO this should be moved out
+        cat-idx-fn (weighted-sample-fn cat-weights)
+        cat-idx (cat-idx-fn rng)
         cat-id (:id (nth categories cat-idx))
         item-id (next-id (:item-counter state))
         item-tempid (str "item-" item-id)
@@ -504,15 +529,15 @@
     ;; apply seller fee — read current balance then decrement
     (let [balance (with-open [db (tc/db conn)]
                     (or (ffirst (tc/q db
-                                     '{:find [?b]
-                                       :in [?uid]
-                                       :where [[?e :user/id ?uid]
-                                               [?e :user/balance ?b]]}
-                                     seller-id))
+                                      '{:find [?b]
+                                        :in [?uid]
+                                        :where [[?e :user/id ?uid]
+                                                [?e :user/balance ?b]]}
+                                      seller-id))
                         0.0))]
       (tc/transact conn
-        [{:db/id [:user/id seller-id]
-          :user/balance (- (double balance) 1.0)}]))
+                   [{:db/id [:user/id seller-id]
+                     :user/balance (- (double balance) 1.0)}]))
     (.add ^ConcurrentLinkedQueue (:items-open state)
           (->ItemSample item-id seller-id))))
 
