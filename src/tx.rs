@@ -305,7 +305,7 @@ pub async fn resolve_lookup_refs(
     if let Some(first_prefix) = lookup_refs.keys().next() {
         let mut iter = txn
             .scan_with_options(
-                first_prefix.clone()..vec![codec::AEV],
+                first_prefix.clone()..vec![codec::AVE_END],
                 &DEFAULT_SCAN_OPTIONS,
             )
             .await?;
