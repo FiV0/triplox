@@ -1856,17 +1856,16 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:name), "Alice".into()),
-            (kw!(:email), "alice@example.com".into()),
-        ])])
-        .await
-        .unwrap();
-
-        node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:name), "Bob".into()),
-            (kw!(:email), "bob@example.com".into()),
-        ])])
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:name), "Alice".into()),
+                (kw!(:email), "alice@example.com".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:name), "Bob".into()),
+                (kw!(:email), "bob@example.com".into()),
+            ]),
+        ])
         .await
         .unwrap();
 
@@ -1899,9 +1898,8 @@ mod tests {
         let db = node.db().await.unwrap();
         let result = db
             .query(
-                "[:find ?follower ?followed ?age :where \
-                 [?e1 :name ?follower] [?e1 :follows ?e2] \
-                 [?e2 :name ?followed] [?e2 :age ?age]]",
+                r#"[:find ?follower ?followed ?age
+                   :where [?e1 :name ?follower] [?e1 :follows ?e2] [?e2 :name ?followed] [?e2 :age ?age]]"#,
             )
             .await
             .unwrap();
