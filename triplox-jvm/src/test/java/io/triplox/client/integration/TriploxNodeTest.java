@@ -25,7 +25,6 @@ class TriploxNodeTest {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
             var schema = new TreeMap<Keyword, Object>();
-            schema.put(Keyword.intern("db", "id"), 200L);
             schema.put(Keyword.intern("db", "ident"), Keyword.intern("name"));
             schema.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", "string"));
             schema.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
@@ -33,7 +32,6 @@ class TriploxNodeTest {
 
             // Data
             var data = new TreeMap<Keyword, Object>();
-            data.put(Keyword.intern("db", "id"), 1000L);
             data.put(Keyword.intern("name"), "alice");
             var txResult = node.executeTx(List.of(new TxOp.Put(data)));
             assertTrue(txResult.isCommitted());
