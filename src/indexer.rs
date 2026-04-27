@@ -3,7 +3,7 @@ use bytes::Bytes;
 use log::{error, trace, warn};
 use slatedb::Db;
 use slatedb::IsolationLevel;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -20,7 +20,7 @@ use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::transaction::TxKey;
-use crate::tx::{self, first_live_key};
+use crate::tx;
 use crate::util::concat_bytes;
 use edn::symbols::Keyword;
 
@@ -306,9 +306,7 @@ impl Indexer {
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self
-            .finalize_datoms_for_commit(&txn, datoms)
-            .await?;
+        let datoms = self.finalize_datoms_for_commit(&txn, datoms).await?;
 
         // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
@@ -350,6 +348,63 @@ impl Indexer {
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
+        let mut eav_prefixes: BTreeMap<Vec<u8>, (i64, Keyword)> = BTreeMap::new();
+        for datom in &datoms {
+            if datom.op != DatomOp::Assert {
+                continue;
+            }
+
+            let (attribute_id, attr) = self
+                .metadata
+                .schema
+                .get_attribute(&datom.attribute)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+
+            if attr.multival || !self.metadata.partition_map.contains_entid(datom.entity) {
+                continue;
+            }
+
+            let entity_id_bytes = DataType::Long(datom.entity).encode();
+            let attr_id_bytes = encode_i64_bytes(attribute_id);
+            let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
+            eav_prefixes.insert(eav_prefix, (datom.entity, datom.attribute.clone()));
+        }
+
+        let mut old_values: HashMap<(i64, Keyword), DataType> =
+            HashMap::with_capacity(eav_prefixes.len());
+        if let Some(first_prefix) = eav_prefixes.keys().next() {
+            let mut iter = txn
+                .scan_with_options(
+                    first_prefix.clone()..vec![codec::EAV_END],
+                    &DEFAULT_SCAN_OPTIONS,
+                )
+                .await?;
+
+            for (eav_prefix, (entity, attribute)) in &eav_prefixes {
+                iter.seek(eav_prefix).await?;
+
+                if let Some(kv) = iter.next().await? {
+                    let key = &kv.key;
+                    if key.starts_with(eav_prefix) {
+                        assert!(
+                            key.len() >= codec::TX_EID_OP_SUFFIX,
+                            "Key too short ({} bytes) to contain tx_eid + op suffix",
+                            key.len()
+                        );
+                        if key[key.len() - 1] != codec::RETRACT {
+                            let value_bytes =
+                                &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
+                            let mut cursor = value_bytes;
+                            old_values.insert(
+                                (*entity, attribute.clone()),
+                                decode_datatype(&mut cursor)?,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let mut resolved_datoms: HashSet<Datom> = HashSet::with_capacity(datoms.len());
         for datom in datoms {
             if datom.op != DatomOp::Assert {
@@ -357,7 +412,7 @@ impl Indexer {
                 continue;
             }
 
-            let (attribute_id, attr) = self
+            let (_attribute_id, attr) = self
                 .metadata
                 .schema
                 .get_attribute(&datom.attribute)
@@ -368,29 +423,14 @@ impl Indexer {
                 continue;
             }
 
-            let entity_id_bytes = DataType::Long(datom.entity).encode();
-            let attr_id_bytes = encode_i64_bytes(attribute_id);
-            let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
-
-            // Scan EAV prefix to find the current value for this (entity, attribute).
-            let old_value: Option<DataType> = match first_live_key(txn, &eav_prefix).await? {
-                Some(key) => {
-                    let value_bytes =
-                        &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
-                    let mut cursor = value_bytes;
-                    Some(decode_datatype(&mut cursor)?)
-                }
-                None => None,
-            };
-
-            if let Some(old_value) = old_value {
-                if old_value == datom.value {
+            if let Some(old_value) = old_values.get(&(datom.entity, datom.attribute.clone())) {
+                if old_value == &datom.value {
                     continue;
                 }
                 resolved_datoms.insert(Datom {
                     entity: datom.entity,
                     attribute: datom.attribute.clone(),
-                    value: old_value,
+                    value: old_value.clone(),
                     op: DatomOp::Retract,
                 });
             }
@@ -1219,6 +1259,122 @@ mod tests {
             }
         }
         panic!("No user-partition entity found in EAV index");
+    }
+
+    async fn find_user_entities_by_name(
+        slate: &Arc<slatedb::Db>,
+        name_id: i64,
+    ) -> Result<std::collections::HashMap<String, i64>, Error> {
+        let mut entities = std::collections::HashMap::new();
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
+            let DataType::Long(entity_id) = eid else {
+                continue;
+            };
+            if crate::partition::extract_partition(entity_id) != crate::partition::USER_PARTITION {
+                continue;
+            }
+            if attribute != name_id || op != codec::ADD {
+                continue;
+            }
+            if let DataType::String(name) = value {
+                entities.insert(name, entity_id);
+            }
+        }
+        Ok(entities)
+    }
+
+    #[tokio::test]
+    async fn test_retract_on_multiple_overwrites() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        let tx1 = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        indexer
+            .transact_tx(
+                tx1,
+                vec![
+                    TxOp::Add {
+                        entity: "alice".into(),
+                        attribute: kw!(:name),
+                        value: "alice".into(),
+                    },
+                    TxOp::Add {
+                        entity: "bob".into(),
+                        attribute: kw!(:name),
+                        value: "bob".into(),
+                    },
+                ],
+            )
+            .await?;
+
+        let entities = find_user_entities_by_name(&slate, name_id).await?;
+        let alice_eid = entities["alice"];
+        let bob_eid = entities["bob"];
+
+        let tx2 = TxKey {
+            tx_id: 2,
+            system_time: st_from_unix_epoch(200),
+        };
+        indexer
+            .transact_tx(
+                tx2,
+                vec![
+                    TxOp::Add {
+                        entity: EntityRef::Id(alice_eid),
+                        attribute: kw!(:name),
+                        value: "alicia".into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(bob_eid),
+                        attribute: kw!(:name),
+                        value: "robert".into(),
+                    },
+                ],
+            )
+            .await?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if attribute != name_id {
+                continue;
+            }
+            let DataType::Long(entity_id) = eid else {
+                continue;
+            };
+            let DataType::String(name) = value else {
+                continue;
+            };
+            if entity_id == alice_eid || entity_id == bob_eid {
+                seen.insert((entity_id, name, op));
+            }
+        }
+
+        assert!(seen.contains(&(alice_eid, "alice".to_string(), codec::ADD)));
+        assert!(seen.contains(&(alice_eid, "alice".to_string(), codec::RETRACT)));
+        assert!(seen.contains(&(alice_eid, "alicia".to_string(), codec::ADD)));
+        assert!(seen.contains(&(bob_eid, "bob".to_string(), codec::ADD)));
+        assert!(seen.contains(&(bob_eid, "bob".to_string(), codec::RETRACT)));
+        assert!(seen.contains(&(bob_eid, "robert".to_string(), codec::ADD)));
+
+        Ok(())
     }
 
     #[tokio::test]

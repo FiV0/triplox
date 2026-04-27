@@ -36,6 +36,9 @@ pub const AEV: u8 = 2;
 pub const AE: u8 = 3;
 pub const AV: u8 = 4;
 
+/// Exclusive upper bound for EAV-prefixed scans.
+pub const EAV_END: u8 = AVE;
+
 /// Exclusive upper bound for AVE-prefixed scans.
 pub const AVE_END: u8 = AEV;
 
