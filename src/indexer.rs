@@ -344,7 +344,7 @@ impl Indexer {
         txn: &slatedb::DbTransaction,
         datoms: Vec<Datom>,
     ) -> Result<Vec<Datom>, Error> {
-        // For each Assert datom, scan EAV for the current value of (entity, attribute).
+        // Batch resolve all cardinality one assertion old values via an EAV scan
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
@@ -354,6 +354,7 @@ impl Indexer {
                 continue;
             }
 
+            // TODO: this attribute lookup is done twice. Here and in the final loop. Refactor
             let (attribute_id, attr) = self
                 .metadata
                 .schema
