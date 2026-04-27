@@ -381,24 +381,28 @@ impl Indexer {
                 )
                 .await?;
 
+            let mut last_returned = Bytes::new();
             for (eav_prefix, (entity, attribute_id)) in &eav_prefixes {
-                iter.seek(eav_prefix).await?;
+                if last_returned.as_ref() < eav_prefix.as_slice() {
+                    iter.seek(eav_prefix).await?;
+                    let Some(kv) = iter.next().await? else {
+                        // Prefixes are sorted, so no later prefix can match once the range is exhausted.
+                        break;
+                    };
+                    last_returned = kv.key;
+                }
 
-                if let Some(kv) = iter.next().await? {
-                    let key = &kv.key;
-                    if key.starts_with(eav_prefix) {
-                        assert!(
-                            key.len() >= codec::TX_EID_OP_SUFFIX,
-                            "Key too short ({} bytes) to contain tx_eid + op suffix",
-                            key.len()
-                        );
-                        if key[key.len() - 1] != codec::RETRACT {
-                            let value_bytes =
-                                &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
-                            let mut cursor = value_bytes;
-                            old_values
-                                .insert((*entity, *attribute_id), decode_datatype(&mut cursor)?);
-                        }
+                if last_returned.starts_with(eav_prefix) {
+                    assert!(
+                        last_returned.len() >= codec::TX_EID_OP_SUFFIX,
+                        "Key too short ({} bytes) to contain tx_eid + op suffix",
+                        last_returned.len()
+                    );
+                    if last_returned[last_returned.len() - 1] != codec::RETRACT {
+                        let value_bytes = &last_returned
+                            [eav_prefix.len()..last_returned.len() - codec::TX_EID_OP_SUFFIX];
+                        let mut cursor = value_bytes;
+                        old_values.insert((*entity, *attribute_id), decode_datatype(&mut cursor)?);
                     }
                 }
             }
@@ -1374,6 +1378,98 @@ mod tests {
         assert!(seen.contains(&(bob_eid, "bob".to_string(), codec::ADD)));
         assert!(seen.contains(&(bob_eid, "bob".to_string(), codec::RETRACT)));
         assert!(seen.contains(&(bob_eid, "robert".to_string(), codec::ADD)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_old_value_scan_handles_missing_prefix() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+
+        let mut attrs = vec![
+            (
+                kw!(:name),
+                DataType::String("old-name".to_string()),
+                DataType::String("new-name".to_string()),
+                DataType::String("missing-name".to_string()),
+            ),
+            (
+                kw!(:age),
+                DataType::Long(1),
+                DataType::Long(2),
+                DataType::Long(3),
+            ),
+            (
+                kw!(:email),
+                DataType::String("old@example.com".to_string()),
+                DataType::String("new@example.com".to_string()),
+                DataType::String("missing@example.com".to_string()),
+            ),
+        ];
+        attrs.sort_by_key(|(attr, _, _, _)| {
+            indexer.metadata().schema.get_attribute(attr).unwrap().0
+        });
+        let (missing_attr, _, _, missing_value) = attrs.first().unwrap().clone();
+        let (existing_attr, old_value, new_value, _) = attrs.last().unwrap().clone();
+
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 1,
+                    system_time: st_from_unix_epoch(100),
+                },
+                vec![TxOp::Add {
+                    entity: "entity".into(),
+                    attribute: existing_attr.clone(),
+                    value: old_value.clone(),
+                }],
+            )
+            .await?;
+
+        let entity_id = find_first_user_entity(&slate).await?;
+
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 2,
+                    system_time: st_from_unix_epoch(200),
+                },
+                vec![
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: missing_attr,
+                        value: missing_value,
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: existing_attr.clone(),
+                        value: new_value.clone(),
+                    },
+                ],
+            )
+            .await?;
+
+        let existing_attr_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&existing_attr)
+            .unwrap()
+            .0;
+        let mut seen = std::collections::HashSet::new();
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid == DataType::Long(entity_id) && attribute == existing_attr_id {
+                seen.insert((value, op));
+            }
+        }
+
+        assert!(seen.contains(&(old_value, codec::RETRACT)));
+        assert!(seen.contains(&(new_value, codec::ADD)));
 
         Ok(())
     }
