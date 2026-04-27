@@ -1,6 +1,9 @@
 # Agent Instructions
 
-**New to the project?** See [GLOSSARY.md](GLOSSARY.md) for explanations of key concepts.
+See [GLOSSARY.md](GLOSSARY.md) for explanations of key concepts.
+
+Use `gh`, the github CLI, for any interactions with github. Meaning opening PRs, listing issues, finding comments etc..
+
 
 ## Issue Tracking
 
