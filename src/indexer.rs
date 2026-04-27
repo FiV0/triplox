@@ -633,8 +633,10 @@ mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::ops::{DataType, EntityRef};
+    use crate::query::execute_query;
     use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
     use crate::slate::{in_memory_slate, SlateComponents};
+    use edn::query::ParsedQuery;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
@@ -1261,32 +1263,6 @@ mod tests {
         panic!("No user-partition entity found in EAV index");
     }
 
-    async fn find_user_entities_by_name(
-        slate: &Arc<slatedb::Db>,
-        name_id: i64,
-    ) -> Result<std::collections::HashMap<String, i64>, Error> {
-        let mut entities = std::collections::HashMap::new();
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
-            let DataType::Long(entity_id) = eid else {
-                continue;
-            };
-            if crate::partition::extract_partition(entity_id) != crate::partition::USER_PARTITION {
-                continue;
-            }
-            if attribute != name_id || op != codec::ADD {
-                continue;
-            }
-            if let DataType::String(name) = value {
-                entities.insert(name, entity_id);
-            }
-        }
-        Ok(entities)
-    }
-
     #[tokio::test]
     async fn test_retract_on_multiple_overwrites() -> Result<(), Error> {
         let components = in_memory_slate().await;
@@ -1321,9 +1297,34 @@ mod tests {
             )
             .await?;
 
-        let entities = find_user_entities_by_name(&slate, name_id).await?;
-        let alice_eid = entities["alice"];
-        let bob_eid = entities["bob"];
+        let query: ParsedQuery = r#"[:find ?e ?name :where [?e :name ?name]]"#.parse()?;
+        let snapshot = slate.snapshot().await?;
+        let handle = tokio::runtime::Handle::current();
+        let ident_map = indexer.metadata().schema.ident_map.clone();
+        let range_stats = components.range_stats.clone();
+        let rows = tokio::task::spawn_blocking(move || {
+            execute_query(
+                &query,
+                &[],
+                snapshot,
+                handle,
+                &ident_map,
+                i64::MAX,
+                range_stats,
+            )
+        })
+        .await??;
+
+        let mut entities = std::collections::HashMap::new();
+        for row in rows {
+            if let [DataType::Long(eid), DataType::String(name)] = row.as_slice() {
+                if name == "alice" || name == "bob" {
+                    entities.insert(name.clone(), *eid);
+                }
+            }
+        }
+        let alice_eid = *entities.get("alice").expect("alice entity should exist");
+        let bob_eid = *entities.get("bob").expect("bob entity should exist");
 
         let tx2 = TxKey {
             tx_id: 2,
