@@ -4,12 +4,10 @@ use anyhow::Result;
 use edn::kw;
 use edn::symbols::Keyword;
 
-use bytes::Bytes;
-
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::ave_key_to_parts;
 use crate::metadata::PartitionMap;
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -236,34 +234,6 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
     Ok(datoms)
 }
 
-/// Scan a prefix and return the first non-retracted entry's key, or None.
-/// The first entry is the most recent (tx_eid is descending-encoded) — if
-/// its op byte is RETRACT, the logical value is absent.
-pub async fn first_live_key(
-    txn: &slatedb::DbTransaction,
-    prefix: &[u8],
-) -> Result<Option<Bytes>> {
-    let mut iter = txn
-        .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    match iter.next().await? {
-        Some(kv) => {
-            let key = &kv.key;
-            assert!(
-                key.len() >= codec::TX_EID_OP_SUFFIX,
-                "Key too short ({} bytes) to contain tx_eid + op suffix",
-                key.len()
-            );
-            if key[key.len() - 1] == codec::RETRACT {
-                Ok(None)
-            } else {
-                Ok(Some(kv.key))
-            }
-        }
-        None => Ok(None),
-    }
-}
-
 fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
     let attr_bytes = encode_i64_bytes(attr_eid);
     let mut value_bytes = Vec::new();
@@ -290,7 +260,7 @@ pub async fn resolve_lookup_refs(
     txn: &slatedb::DbTransaction,
 ) -> Result<Vec<DatomWithTempids>> {
     // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
-    let mut lookup_refs: BTreeMap<Vec<u8>, (i64, DataType)> = BTreeMap::new();
+    let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
             lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
@@ -300,7 +270,8 @@ pub async fn resolve_lookup_refs(
         }
     }
 
-    let mut resolved_map: HashMap<(i64, DataType), i64> = HashMap::new();
+    // Attribute entid + value → resolved entid lookup map.
+    let mut resolved_map: HashMap<(Entid, DataType), Entid> = HashMap::new();
 
     if let Some(first_prefix) = lookup_refs.keys().next() {
         let mut iter = txn
