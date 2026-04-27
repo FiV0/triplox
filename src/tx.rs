@@ -7,7 +7,7 @@ use edn::symbols::Keyword;
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::ave_key_to_parts;
 use crate::metadata::PartitionMap;
-use crate::ops::{DataType, Datom, DatomOp, EntityRef, TxOp};
+use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -260,7 +260,7 @@ pub async fn resolve_lookup_refs(
     txn: &slatedb::DbTransaction,
 ) -> Result<Vec<DatomWithTempids>> {
     // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
-    let mut lookup_refs: BTreeMap<Vec<u8>, (i64, DataType)> = BTreeMap::new();
+    let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
             lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
@@ -270,7 +270,8 @@ pub async fn resolve_lookup_refs(
         }
     }
 
-    let mut resolved_map: HashMap<(i64, DataType), i64> = HashMap::new();
+    // Attribute entid + value → resolved entid lookup map.
+    let mut resolved_map: HashMap<(Entid, DataType), Entid> = HashMap::new();
 
     if let Some(first_prefix) = lookup_refs.keys().next() {
         let mut iter = txn

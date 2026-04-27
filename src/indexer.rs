@@ -15,14 +15,13 @@ use crate::codec::{
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
-use crate::ops::{Datom, DatomOp, TxOp};
+use crate::ops::{Datom, DatomOp, Entid, TxOp};
 use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::transaction::TxKey;
 use crate::tx;
 use crate::util::concat_bytes;
-use edn::symbols::Keyword;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
@@ -348,7 +347,7 @@ impl Indexer {
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
         // Collect into HashSet to deduplicate explicit + auto-generated retractions.
-        let mut eav_prefixes: BTreeMap<Vec<u8>, (i64, Keyword)> = BTreeMap::new();
+        let mut eav_prefixes: BTreeMap<Vec<u8>, (Entid, Entid)> = BTreeMap::new();
         for datom in &datoms {
             if datom.op != DatomOp::Assert {
                 continue;
@@ -368,10 +367,11 @@ impl Indexer {
             let entity_id_bytes = DataType::Long(datom.entity).encode();
             let attr_id_bytes = encode_i64_bytes(attribute_id);
             let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_id_bytes, &attr_id_bytes]);
-            eav_prefixes.insert(eav_prefix, (datom.entity, datom.attribute.clone()));
+            eav_prefixes.insert(eav_prefix, (datom.entity, attribute_id));
         }
 
-        let mut old_values: HashMap<(i64, Keyword), DataType> =
+        // uses entity entid and attribute entid
+        let mut old_values: HashMap<(Entid, Entid), DataType> =
             HashMap::with_capacity(eav_prefixes.len());
         if let Some(first_prefix) = eav_prefixes.keys().next() {
             let mut iter = txn
@@ -381,7 +381,7 @@ impl Indexer {
                 )
                 .await?;
 
-            for (eav_prefix, (entity, attribute)) in &eav_prefixes {
+            for (eav_prefix, (entity, attribute_id)) in &eav_prefixes {
                 iter.seek(eav_prefix).await?;
 
                 if let Some(kv) = iter.next().await? {
@@ -396,10 +396,8 @@ impl Indexer {
                             let value_bytes =
                                 &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
                             let mut cursor = value_bytes;
-                            old_values.insert(
-                                (*entity, attribute.clone()),
-                                decode_datatype(&mut cursor)?,
-                            );
+                            old_values
+                                .insert((*entity, *attribute_id), decode_datatype(&mut cursor)?);
                         }
                     }
                 }
@@ -413,7 +411,7 @@ impl Indexer {
                 continue;
             }
 
-            let (_attribute_id, attr) = self
+            let (attribute_id, attr) = self
                 .metadata
                 .schema
                 .get_attribute(&datom.attribute)
@@ -424,7 +422,7 @@ impl Indexer {
                 continue;
             }
 
-            if let Some(old_value) = old_values.get(&(datom.entity, datom.attribute.clone())) {
+            if let Some(old_value) = old_values.get(&(datom.entity, attribute_id)) {
                 if old_value == &datom.value {
                     continue;
                 }
