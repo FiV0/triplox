@@ -1263,6 +1263,7 @@ mod tests {
         panic!("No user-partition entity found in EAV index");
     }
 
+    // TODO move this test to a proper node level test once we support historic queries
     #[tokio::test]
     async fn test_retract_on_multiple_overwrites() -> Result<(), Error> {
         let components = in_memory_slate().await;
