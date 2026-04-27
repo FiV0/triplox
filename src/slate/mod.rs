@@ -2,10 +2,10 @@
 
 pub mod cdc;
 
+use object_store::aws::AmazonS3Builder;
 use slatedb::config::{
     DurabilityLevel, ObjectStoreCacheOptions, ReadOptions, ScanOptions, Settings, WriteOptions,
 };
-use object_store::aws::AmazonS3Builder;
 use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slatedb::db_cache::{DbCache, SplitCache};
 use slatedb::object_store::local::LocalFileSystem;
@@ -123,8 +123,13 @@ pub async fn remote_slate(
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
     std::fs::create_dir_all(cache_path)?;
     let settings = Settings {
+        flush_interval: None,
+        max_unflushed_bytes: 2 * 1024 * 1024 * 1024,
+        l0_max_ssts: 16,
+        wal_enabled: false,
         object_store_cache_options: ObjectStoreCacheOptions {
             root_folder: Some(cache_path.to_path_buf()),
+            cache_puts: true,
             ..ObjectStoreCacheOptions::default()
         },
         ..Settings::default()
