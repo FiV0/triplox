@@ -141,15 +141,6 @@ class DataTypeCodecTest {
     }
 
     @Test
-    void testTuple() throws IOException {
-        var tuple = new DataTypeCodec.TaggedTuple(new ArrayList<>(List.of(42L, true)));
-        var result = (DataTypeCodec.TaggedTuple) roundtrip(tuple);
-        assertEquals(2, result.elements().size());
-        assertEquals(42L, result.elements().get(0));
-        assertEquals(true, result.elements().get(1));
-    }
-
-    @Test
     void testMap() throws IOException {
         var map = new TreeMap<String, Object>();
         map.put("age", 30L);

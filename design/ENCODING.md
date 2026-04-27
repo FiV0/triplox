@@ -88,7 +88,7 @@ Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
 | 7   | Long                                                             | `i64`                          |
 | 8   | *(reserved — Ref shares tag 7/Long, differentiated via schema)*  | —                              |
 | 9   | String                                                           | `String`                       |
-| 10  | Tuple                                                            | `Vec<DataType>`                |
+| 10  | *(reserved — formerly Tuple)*                                    | —                              |
 | 11  | Uuid                                                             | `Uuid` (16 bytes)              |
 | 12  | Vector                                                           | `Vec<DataType>`                |
 | 13  | Map                                                              | `BTreeMap<String, DataType>`   |

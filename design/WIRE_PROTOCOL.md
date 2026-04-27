@@ -559,7 +559,7 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 | 7   | Long    |
 | 8   | Ref     |
 | 9   | String  |
-| 10  | Tuple   |
+| 10  | *(reserved — formerly Tuple)* |
 | 11  | Uuid    |
 | 12  | Vector  |
 | 13  | Map     |
@@ -658,7 +658,7 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 10](#10-data-t
 | 7   | Long    | `i64` (8 bytes)                                  |
 | 8   | Ref     | `i64` (8 bytes, entity reference)                |
 | 9   | String  | `String` (u32 length + UTF-8 bytes)              |
-| 10  | Tuple   | `Vec<DataType>` (u32 count + elements)           |
+| 10  | *(reserved — formerly Tuple)* | —                                  |
 | 11  | Uuid    | 16 bytes, raw RFC 4122 layout                    |
 | 12  | Vector  | `Vec<DataType>` (u32 count + elements)           |
 | 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |

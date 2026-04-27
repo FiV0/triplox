@@ -51,7 +51,7 @@ public final class MessageTypes {
     public static final byte TAG_LONG     = 7;
     public static final byte TAG_REF      = 8;
     public static final byte TAG_STRING   = 9;
-    public static final byte TAG_TUPLE    = 10;
+    // 10 reserved (formerly TAG_TUPLE)
     public static final byte TAG_UUID     = 11;
     public static final byte TAG_VECTOR   = 12;
     public static final byte TAG_MAP      = 13;

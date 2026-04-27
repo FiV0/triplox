@@ -83,7 +83,7 @@ pub const TAG_INSTANT: u8 = 6;
 pub const TAG_LONG: u8 = 7;
 pub const TAG_REF: u8 = 8;
 pub const TAG_STRING: u8 = 9;
-pub const TAG_TUPLE: u8 = 10;
+// 10 reserved (formerly TAG_TUPLE)
 pub const TAG_UUID: u8 = 11;
 pub const TAG_VECTOR: u8 = 12;
 pub const TAG_MAP: u8 = 13;
@@ -382,7 +382,6 @@ pub fn data_type_tag(dt: &DataType) -> u8 {
         DataType::Keyword(_) => TAG_KEYWORD,
         DataType::Long(_) => TAG_LONG,
         DataType::String(_) => TAG_STRING,
-        DataType::Tuple(_) => TAG_TUPLE,
         DataType::Uuid(_) => TAG_UUID,
         DataType::Vector(_) => TAG_VECTOR,
         DataType::Map(_) => TAG_MAP,
@@ -401,7 +400,6 @@ fn encode_data_type(buf: &mut Vec<u8>, dt: &DataType) {
         DataType::Keyword(v) => encode_string(buf, &v.to_string()),
         DataType::Long(v) => encode_i64(buf, *v),
         DataType::String(v) => encode_string(buf, v),
-        DataType::Tuple(v) => encode_data_type_vec(buf, v),
         DataType::Uuid(v) => buf.extend_from_slice(v.as_bytes()),
         DataType::Vector(v) => encode_data_type_vec(buf, v),
         DataType::Map(v) => encode_data_type_map(buf, v),
@@ -689,7 +687,6 @@ fn decode_data_type(cursor: &mut Cursor) -> Result<DataType> {
         // TODO: support TAG_REF once DataType::Ref is added
         TAG_REF => bail!("TAG_REF is not currently supported"),
         TAG_STRING => Ok(DataType::String(cursor.read_string()?)),
-        TAG_TUPLE => Ok(DataType::Tuple(decode_data_type_vec(cursor)?)),
         TAG_UUID => Ok(DataType::Uuid(Uuid::from_bytes(cursor.read_array()?))),
         TAG_VECTOR => Ok(DataType::Vector(decode_data_type_vec(cursor)?)),
         TAG_MAP => Ok(DataType::Map(decode_data_type_map(cursor)?)),
@@ -1447,12 +1444,6 @@ mod tests {
     }
 
     #[test]
-    fn test_data_type_tuple() {
-        let dt = DataType::Tuple(vec![DataType::Long(42), DataType::Boolean(true)]);
-        assert_eq!(roundtrip_data_type(&dt), dt);
-    }
-
-    #[test]
     fn test_data_type_map() {
         let mut map = BTreeMap::new();
         map.insert("name".to_string(), DataType::String("alice".to_string()));
@@ -1467,7 +1458,7 @@ mod tests {
         inner_map.insert("x".to_string(), DataType::Long(1));
         let dt = DataType::Vector(vec![
             DataType::Map(inner_map),
-            DataType::Tuple(vec![
+            DataType::Vector(vec![
                 DataType::String("hello".to_string()),
                 DataType::Boolean(false),
             ]),

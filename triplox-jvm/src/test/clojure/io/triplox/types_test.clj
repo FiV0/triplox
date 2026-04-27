@@ -1,8 +1,7 @@
 (ns io.triplox.types-test
   (:require [clojure.test :refer [deftest is testing]]
             [io.triplox.types :as types])
-  (:import [java.util TreeMap ArrayList]
-           [io.triplox.client DataTypeCodec$TaggedTuple]))
+  (:import [java.util TreeMap ArrayList]))
 
 (deftest wire->clj-primitives
   (testing "Primitives pass through unchanged"
@@ -30,8 +29,3 @@
   (testing "Java List → Clojure vector"
     (let [list (ArrayList. [1 "two" true])]
       (is (= [1 "two" true] (types/wire->clj list))))))
-
-(deftest wire->clj-tagged-tuple
-  (testing "TaggedTuple → Clojure vector"
-    (let [tuple (DataTypeCodec$TaggedTuple. (ArrayList. [42 true]))]
-      (is (= [42 true] (types/wire->clj tuple))))))

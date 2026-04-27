@@ -61,8 +61,7 @@ pub enum DataType {
     Long(i64),              // Long integers (also used for Ref values; see ValueType::Ref)
     String(String),         // Strings
     // Symbol(NamespacedSymbol),                  // Symbols (can be represented as strings)
-    Tuple(Vec<DataType>), // Tuples (can be represented as a vector of DataTypes)
-    Uuid(Uuid),           // Universally unique identifier
+    Uuid(Uuid), // Universally unique identifier
     // TODO
     //Uri(Uri),                        // URIs (could also be represented as strings)
 
@@ -88,7 +87,6 @@ impl std::hash::Hash for DataType {
             DataType::Keyword(v) => v.hash(state),
             DataType::Long(v) => v.hash(state),
             DataType::String(v) => v.hash(state),
-            DataType::Tuple(v) => v.hash(state),
             DataType::Uuid(v) => v.hash(state),
             DataType::Vector(v) => v.hash(state),
             DataType::Map(v) => v.hash(state),
@@ -110,7 +108,6 @@ impl DataType {
             DataType::Keyword(_) => ValueType::Keyword,
             DataType::Long(_) => ValueType::Long,
             DataType::String(_) => ValueType::String,
-            DataType::Tuple(_) => ValueType::Tuple,
             DataType::Uuid(_) => ValueType::Uuid,
             DataType::Vector(_) => ValueType::Vector,
             DataType::Map(_) => ValueType::Map,

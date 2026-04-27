@@ -12,7 +12,7 @@ use crate::index::IndexType;
 use crate::ops::DataType;
 use crate::protocol::{
     data_type_tag, micros_to_datetime, TAG_BIG_INT, TAG_BOOLEAN, TAG_BYTES, TAG_DOUBLE, TAG_FLOAT,
-    TAG_INSTANT, TAG_KEYWORD, TAG_LONG, TAG_MAP, TAG_STRING, TAG_TUPLE, TAG_UUID, TAG_VECTOR,
+    TAG_INSTANT, TAG_KEYWORD, TAG_LONG, TAG_MAP, TAG_STRING, TAG_UUID, TAG_VECTOR,
 };
 
 // ---------------------------------------------------------------------------
@@ -351,7 +351,6 @@ pub fn encode_datatype(value: &DataType, buf: &mut Vec<u8>) {
         DataType::Keyword(v) => encode_keyword(v, buf),
         DataType::Long(v) => encode_i64(*v, buf),
         DataType::String(v) => encode_string(v, buf),
-        DataType::Tuple(v) => encode_composite(v, buf),
         DataType::Uuid(v) => encode_uuid(v, buf),
         DataType::Vector(v) => encode_composite(v, buf),
         DataType::Map(v) => encode_map(v, buf),
@@ -394,7 +393,6 @@ fn decode_datatype_payload(tag: u8, cursor: &mut &[u8]) -> Result<DataType, Deco
         TAG_KEYWORD => Ok(DataType::Keyword(decode_keyword(cursor)?)),
         TAG_LONG => Ok(DataType::Long(decode_i64(cursor)?)),
         TAG_STRING => Ok(DataType::String(decode_string(cursor)?)),
-        TAG_TUPLE => Ok(DataType::Tuple(decode_composite(cursor)?)),
         TAG_UUID => Ok(DataType::Uuid(decode_uuid(cursor)?)),
         TAG_VECTOR => Ok(DataType::Vector(decode_composite(cursor)?)),
         TAG_MAP => Ok(DataType::Map(decode_map(cursor)?)),
@@ -462,7 +460,7 @@ pub fn skip_datatype(cursor: &mut &[u8]) -> Result<(), DecodeError> {
         TAG_LONG => skip_n(cursor, 8),
         TAG_STRING => skip_terminated(cursor),
         TAG_UUID => skip_n(cursor, 16),
-        TAG_TUPLE | TAG_VECTOR => skip_composite(cursor),
+        TAG_VECTOR => skip_composite(cursor),
         TAG_MAP => skip_map(cursor),
         _ => Err(format!("unknown type tag in skip: 0x{:02x}", tag).into()),
     }
@@ -797,7 +795,6 @@ mod tests {
             DataType::Long(i64::MIN),
             DataType::String("hello".to_string()),
             DataType::String("".to_string()),
-            DataType::Tuple(vec![DataType::Long(1), DataType::String("a".to_string())]),
             DataType::Uuid(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
             DataType::Vector(vec![DataType::Long(1), DataType::Long(2)]),
             DataType::Map({
@@ -816,7 +813,6 @@ mod tests {
     #[test]
     fn roundtrip_datatype_empty_composites() {
         let values = vec![
-            DataType::Tuple(vec![]),
             DataType::Vector(vec![]),
             DataType::Map(BTreeMap::new()),
             DataType::Bytes(vec![]),
@@ -832,7 +828,7 @@ mod tests {
     #[test]
     fn roundtrip_datatype_nested_composite() {
         let nested = DataType::Vector(vec![
-            DataType::Tuple(vec![
+            DataType::Vector(vec![
                 DataType::Long(1),
                 DataType::String("inner".to_string()),
             ]),
@@ -1008,13 +1004,6 @@ mod tests {
     // --- Composite ordering tests ---
 
     #[test]
-    fn tuple_prefix_ordering() {
-        let short = DataType::Tuple(vec![DataType::Long(1)]).encode();
-        let long = DataType::Tuple(vec![DataType::Long(1), DataType::Long(2)]).encode();
-        assert!(short < long);
-    }
-
-    #[test]
     fn vector_prefix_ordering() {
         let short = DataType::Vector(vec![DataType::Long(1)]).encode();
         let long = DataType::Vector(vec![DataType::Long(1), DataType::Long(2)]).encode();
@@ -1051,7 +1040,6 @@ mod tests {
             DataType::Keyword(kw!(:db/id)),
             DataType::Long(99),
             DataType::String("test".to_string()),
-            DataType::Tuple(vec![DataType::Long(1)]),
             DataType::Uuid(Uuid::nil()),
             DataType::Vector(vec![DataType::Boolean(false)]),
             DataType::Map({

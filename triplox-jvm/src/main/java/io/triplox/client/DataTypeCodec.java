@@ -30,7 +30,6 @@ import static io.triplox.client.MessageTypes.*;
  *   Long           → Long
  *   Ref            → UnsupportedOperationException
  *   String         → String
- *   Tuple          → List<Object>
  *   Uuid           → UUID
  *   Vector         → List<Object>
  *   Map            → TreeMap<String, Object>
@@ -98,10 +97,6 @@ public final class DataTypeCodec {
                 out.writeByte(TAG_VECTOR);
                 encodeDataTypeVec(out, list);
             }
-            case TaggedTuple tt -> {
-                out.writeByte(TAG_TUPLE);
-                encodeDataTypeVec(out, tt.elements());
-            }
             default -> throw new IllegalArgumentException("Cannot encode value of type: " + value.getClass().getName());
         }
     }
@@ -131,12 +126,6 @@ public final class DataTypeCodec {
             case TAG_LONG -> in.readLong();
             case TAG_REF -> throw new UnsupportedOperationException("Ref type is not yet supported");
             case TAG_STRING -> decodeString(in);
-            case TAG_TUPLE -> {
-                int count = in.readInt();
-                var list = new ArrayList<>(count);
-                for (int i = 0; i < count; i++) list.add(decode(in));
-                yield new TaggedTuple(list);
-            }
             case TAG_UUID -> new UUID(in.readLong(), in.readLong());
             case TAG_VECTOR -> decodeDataTypeVec(in);
             case TAG_MAP -> decodeDataTypeMap(in);
@@ -318,9 +307,4 @@ public final class DataTypeCodec {
         }
     }
 
-    /**
-     * Wrapper to distinguish Tuple from Vector during encoding.
-     * Decoded tuples come back as TaggedTuple; vectors as List.
-     */
-    public record TaggedTuple(List<Object> elements) {}
 }
