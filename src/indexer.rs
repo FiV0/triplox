@@ -1382,6 +1382,9 @@ mod tests {
         Ok(())
     }
 
+    // Regression: a batched-scan prefix with no entries must not swallow the
+    // next prefix's first key. Sorting by attribute_id ensures the missing
+    // prefix sorts first so the seek-past-missing path is exercised.
     #[tokio::test]
     async fn test_batch_old_value_scan_handles_missing_prefix() -> Result<(), Error> {
         let components = in_memory_slate().await;
