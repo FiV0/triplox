@@ -51,11 +51,10 @@ public final class MessageTypes {
     public static final byte TAG_LONG     = 7;
     public static final byte TAG_REF      = 8;
     public static final byte TAG_STRING   = 9;
-    public static final byte TAG_TUPLE    = 10;
-    public static final byte TAG_UUID     = 11;
-    public static final byte TAG_VECTOR   = 12;
-    public static final byte TAG_MAP      = 13;
-    public static final byte TAG_KEYWORD  = 14;
+    public static final byte TAG_UUID     = 10;
+    public static final byte TAG_VECTOR   = 11;
+    public static final byte TAG_MAP      = 12;
+    public static final byte TAG_KEYWORD  = 13;
     public static final byte TAG_UNKNOWN  = (byte) 255;
 
     // TxOp tag bytes

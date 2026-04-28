@@ -48,7 +48,6 @@ granular schema evolvement. This will require more work in the indexer so likely
 | `:db.type/uuid`      | 128-bit UUID                                                      |
 | `:db.type/bytes`     | Arbitrary binary data                                             |
 | `:db.type/bigint`    | Arbitrary precision integer                                       |
-| `:db.type/tuple`     | Ordered heterogeneous collection                                  |
 | `:db.type/vector`    | Ordered homogeneous collection                                    |
 | `:db.type/map`       | String-keyed map                                                  |
 

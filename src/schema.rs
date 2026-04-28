@@ -30,9 +30,8 @@ pub const DB_TYPE_INSTANT: i64 = 17;
 pub const DB_TYPE_UUID: i64 = 18;
 pub const DB_TYPE_BYTES: i64 = 19;
 pub const DB_TYPE_BIGINT: i64 = 20;
-pub const DB_TYPE_TUPLE: i64 = 21;
-pub const DB_TYPE_VECTOR: i64 = 22;
-pub const DB_TYPE_MAP: i64 = 23;
+pub const DB_TYPE_VECTOR: i64 = 21;
+pub const DB_TYPE_MAP: i64 = 22;
 
 // Cardinality enum entities
 pub const DB_CARDINALITY_ONE: i64 = 30;
@@ -69,7 +68,6 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
         (kw!(:db.type/uuid), DB_TYPE_UUID),
         (kw!(:db.type/bytes), DB_TYPE_BYTES),
         (kw!(:db.type/bigint), DB_TYPE_BIGINT),
-        (kw!(:db.type/tuple), DB_TYPE_TUPLE),
         (kw!(:db.type/vector), DB_TYPE_VECTOR),
         (kw!(:db.type/map), DB_TYPE_MAP),
         // Cardinality enum entities
@@ -141,7 +139,6 @@ pub enum ValueType {
     Uuid,
     Bytes,
     BigInt,
-    Tuple,
     Vector,
     Map,
 }
@@ -160,7 +157,6 @@ impl std::fmt::Display for ValueType {
             ValueType::Uuid => write!(f, "uuid"),
             ValueType::Bytes => write!(f, "bytes"),
             ValueType::BigInt => write!(f, "bigint"),
-            ValueType::Tuple => write!(f, "tuple"),
             ValueType::Vector => write!(f, "vector"),
             ValueType::Map => write!(f, "map"),
         }
@@ -182,7 +178,6 @@ impl ValueType {
             DB_TYPE_UUID => Ok(ValueType::Uuid),
             DB_TYPE_BYTES => Ok(ValueType::Bytes),
             DB_TYPE_BIGINT => Ok(ValueType::BigInt),
-            DB_TYPE_TUPLE => Ok(ValueType::Tuple),
             DB_TYPE_VECTOR => Ok(ValueType::Vector),
             DB_TYPE_MAP => Ok(ValueType::Map),
             _ => Err(anyhow::anyhow!("Unknown value type entity ID: {}", id)),
@@ -203,7 +198,6 @@ impl ValueType {
             ValueType::Uuid => DB_TYPE_UUID,
             ValueType::Bytes => DB_TYPE_BYTES,
             ValueType::BigInt => DB_TYPE_BIGINT,
-            ValueType::Tuple => DB_TYPE_TUPLE,
             ValueType::Vector => DB_TYPE_VECTOR,
             ValueType::Map => DB_TYPE_MAP,
         }
@@ -1060,7 +1054,6 @@ mod tests {
             ValueType::Uuid,
             ValueType::Bytes,
             ValueType::BigInt,
-            ValueType::Tuple,
             ValueType::Vector,
             ValueType::Map,
         ] {
