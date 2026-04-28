@@ -30,9 +30,8 @@ pub const DB_TYPE_INSTANT: i64 = 17;
 pub const DB_TYPE_UUID: i64 = 18;
 pub const DB_TYPE_BYTES: i64 = 19;
 pub const DB_TYPE_BIGINT: i64 = 20;
-// 21 reserved (formerly DB_TYPE_TUPLE)
-pub const DB_TYPE_VECTOR: i64 = 22;
-pub const DB_TYPE_MAP: i64 = 23;
+pub const DB_TYPE_VECTOR: i64 = 21;
+pub const DB_TYPE_MAP: i64 = 22;
 
 // Cardinality enum entities
 pub const DB_CARDINALITY_ONE: i64 = 30;

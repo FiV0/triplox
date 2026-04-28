@@ -559,15 +559,14 @@ Used in RowDescription to describe column types and as the discriminant byte in 
 | 7   | Long    |
 | 8   | Ref     |
 | 9   | String  |
-| 10  | *(reserved — formerly Tuple)* |
-| 11  | Uuid    |
-| 12  | Vector  |
-| 13  | Map     |
-| 14  | Keyword |
+| 10  | Uuid    |
+| 11  | Vector  |
+| 12  | Map     |
+| 13  | Keyword |
 | 127 | Union   |
 | 255 | Unknown |
 
-Tags 1–14 (and future concrete types up to 126) are used in two contexts: as the discriminant byte in DataRow value encoding, and as a column type in ColumnDescription.
+Tags 1–13 (and future concrete types up to 126) are used in two contexts: as the discriminant byte in DataRow value encoding, and as a column type in ColumnDescription.
 
 Tag 127 (Union) and tag 255 (Unknown) are **ColumnDescription-only** — they never appear as DataRow value discriminants. `Union` means the column contains values from a known, finite set of concrete types (members listed inline in the ColumnDescription). `Unknown` means the type is truly indeterminate.
 
@@ -658,11 +657,10 @@ A `DataType` value is encoded as a 1-byte type tag (from [Section 10](#10-data-t
 | 7   | Long    | `i64` (8 bytes)                                  |
 | 8   | Ref     | `i64` (8 bytes, entity reference)                |
 | 9   | String  | `String` (u32 length + UTF-8 bytes)              |
-| 10  | *(reserved — formerly Tuple)* | —                                  |
-| 11  | Uuid    | 16 bytes, raw RFC 4122 layout                    |
-| 12  | Vector  | `Vec<DataType>` (u32 count + elements)           |
-| 13  | Map     | `Map<String, DataType>` (u32 count + entries)    |
-| 14  | Keyword | `String` (u32 length + UTF-8 bytes)              |
+| 10  | Uuid    | 16 bytes, raw RFC 4122 layout                    |
+| 11  | Vector  | `Vec<DataType>` (u32 count + elements)           |
+| 12  | Map     | `Map<String, DataType>` (u32 count + entries)    |
+| 13  | Keyword | `String` (u32 length + UTF-8 bytes)              |
 
 ### 11.8 EntityRef Encoding
 

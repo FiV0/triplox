@@ -83,11 +83,10 @@ pub const TAG_INSTANT: u8 = 6;
 pub const TAG_LONG: u8 = 7;
 pub const TAG_REF: u8 = 8;
 pub const TAG_STRING: u8 = 9;
-// 10 reserved (formerly TAG_TUPLE)
-pub const TAG_UUID: u8 = 11;
-pub const TAG_VECTOR: u8 = 12;
-pub const TAG_MAP: u8 = 13;
-pub const TAG_KEYWORD: u8 = 14;
+pub const TAG_UUID: u8 = 10;
+pub const TAG_VECTOR: u8 = 11;
+pub const TAG_MAP: u8 = 12;
+pub const TAG_KEYWORD: u8 = 13;
 pub const TAG_UNKNOWN: u8 = 255;
 
 // TxOp tag bytes
