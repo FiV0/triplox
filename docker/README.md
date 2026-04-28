@@ -57,6 +57,16 @@ This starts:
 - **MinIO** on port 9000 (S3 API) and 9001 (console)
 - **Triplox** on port 5490 with SlateDB backed by MinIO
 
+#### Tracing object-store operations
+
+Stream real-time S3 calls against MinIO from the host:
+
+```bash
+docker compose -f docker/docker-compose.yml exec mc mc admin trace -v triplox
+```
+
+Useful filters: `--call s3`, `--status-code 4xx,5xx`, `--funcname s3.GetObject`.
+
 #### Resetting the stack
 
 Wipe all MinIO data and the triplox local log, and bring everything back to a
