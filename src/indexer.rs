@@ -2,7 +2,7 @@ use anyhow::{bail, Error, Result};
 use bytes::Bytes;
 use log::{error, trace, warn};
 use slatedb::Db;
-use slatedb::IsolationLevel;
+use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -304,7 +304,9 @@ impl Indexer {
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self.finalize_datoms_for_commit(&txn, datoms).await?;
+        let datoms = self
+            .finalize_datoms_for_commit(&self.slatedb, datoms)
+            .await?;
 
         // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
@@ -376,7 +378,7 @@ impl Indexer {
         let mut old_values: HashMap<(Entid, Entid), DataType> =
             HashMap::with_capacity(eav_prefixes.len());
         if let Some(first_prefix) = eav_prefixes.keys().next() {
-            let mut iter = txn
+            let mut iter = db
                 .scan_with_options(
                     first_prefix.clone()..vec![codec::EAV_END],
                     &DEFAULT_SCAN_OPTIONS,

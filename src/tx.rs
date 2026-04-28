@@ -274,7 +274,7 @@ pub async fn resolve_lookup_refs(
     let mut resolved_map: HashMap<(Entid, DataType), Entid> = HashMap::new();
 
     if let Some(first_prefix) = lookup_refs.keys().next() {
-        let mut iter = txn
+        let mut iter = db
             .scan_with_options(
                 first_prefix.clone()..vec![codec::AVE_END],
                 &DEFAULT_SCAN_OPTIONS,
