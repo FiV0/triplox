@@ -183,7 +183,15 @@ impl Database for DB {
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, snapshot, handle, &ident_map, as_of, range_stats)
+            execute_query(
+                &query,
+                &args,
+                snapshot,
+                handle,
+                &ident_map,
+                as_of,
+                range_stats,
+            )
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -223,10 +231,7 @@ impl Node<MemoryLog> {
 impl Node<FileLog> {
     /// Shared setup: given a slate and a path to the log file, bootstrap the
     /// database, create the indexer & FileLog, subscribe, and catch up.
-    async fn from_slate_and_log(
-        slate: SlateComponents,
-        log_file: &Path,
-    ) -> Result<Self, Error> {
+    async fn from_slate_and_log(slate: SlateComponents, log_file: &Path) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
@@ -374,7 +379,14 @@ impl<L: TxLog> QueryNode for Node<L> {
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid, range_stats))
+        Ok(DB::new(
+            snapshot,
+            ident_map,
+            handle,
+            tx_key,
+            tx_eid,
+            range_stats,
+        ))
     }
 }
 
@@ -384,7 +396,9 @@ mod tests {
 
     use super::*;
     use crate::ops::{DataType, EntityRef, TxOp};
-    use crate::schema::test_schema_tx;
+    use crate::schema::{
+        test_schema_tx, unique_identity_schema_attribute, unique_value_schema_attribute,
+    };
     use crate::transaction::TransactionResult;
     use edn::kw;
     use edn::Keyword;
@@ -771,26 +785,19 @@ mod tests {
         let db = node.db().await.unwrap();
 
         // Collection binding: match names in a set
-        let parsed = edn::parse::parse_query(
-            "[:find ?name :in [?name ...] :where [?e :name ?name]]",
-        )
-        .unwrap();
+        let parsed =
+            edn::parse::parse_query("[:find ?name :in [?name ...] :where [?e :name ?name]]")
+                .unwrap();
 
         let result = db
             .query_with_args(
                 &parsed,
-                &[QueryArg::Collection(vec![
-                    "Ivan".into(),
-                    "Petr".into(),
-                ])],
+                &[QueryArg::Collection(vec!["Ivan".into(), "Petr".into()])],
             )
             .await
             .unwrap();
         assert_eq!(result.len(), 2);
-        let names: HashSet<_> = result
-            .iter()
-            .map(|row| row[0].clone())
-            .collect();
+        let names: HashSet<_> = result.iter().map(|row| row[0].clone()).collect();
         assert!(names.contains(&DataType::String("Ivan".to_string())));
         assert!(names.contains(&DataType::String("Petr".to_string())));
 
@@ -798,17 +805,11 @@ mod tests {
         let result = db
             .query_with_args(
                 &parsed,
-                &[QueryArg::Collection(vec![
-                    "Ivan".into(),
-                    "Nobody".into(),
-                ])],
+                &[QueryArg::Collection(vec!["Ivan".into(), "Nobody".into()])],
             )
             .await
             .unwrap();
-        assert_eq!(
-            result,
-            vec![vec![DataType::String("Ivan".to_string())]]
-        );
+        assert_eq!(result, vec![vec![DataType::String("Ivan".to_string())]]);
 
         // Empty collection: no rows
         let result = db
@@ -2047,6 +2048,195 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxAborted(_, _)));
+    }
+
+    #[tokio::test]
+    async fn test_unique_identity_tempid_upserts_existing_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:email),
+                    value: "alice@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:age),
+                    value: 31_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("Alice".into()), DataType::Long(31)]]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_two_tempids_same_new_identity_allocate_one_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "t1".into(),
+                    attribute: kw!(:email),
+                    value: "shared@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "t1".into(),
+                    attribute: kw!(:name),
+                    value: "Shared".into(),
+                },
+                TxOp::Add {
+                    entity: "t2".into(),
+                    attribute: kw!(:email),
+                    value: "shared@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "t2".into(),
+                    attribute: kw!(:age),
+                    value: 42_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][1], DataType::String("Shared".into()));
+        assert_eq!(result[0][2], DataType::Long(42));
+    }
+
+    #[tokio::test]
+    async fn test_multistage_upsert_with_tempids_in_entity_and_value_position() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        assert!(matches!(
+            node.execute_tx(vec![unique_identity_schema_attribute(kw!(:ref-id), "ref")])
+                .await
+                .unwrap(),
+            TransactionResult::TxCommited(_)
+        ));
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+        let db = node.db().await.unwrap();
+        let alice = match &db
+            .query(r#"[:find ?e :where [?e :email "alice@example.com"]]"#)
+            .await
+            .unwrap()[0][0]
+        {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID, got {:?}", other),
+        };
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Bob".into()),
+            (kw!(:ref-id), DataType::Long(alice)),
+        ])])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:email),
+                    value: "alice@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:ref-id),
+                    value: DataType::String("alice-temp".into()),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:age),
+                    value: 7_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("Bob".into()), DataType::Long(7)]]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unique_value_rejects_duplicate_and_lookup_ref() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        assert!(matches!(
+            node.execute_tx(vec![unique_value_schema_attribute(kw!(:ssn), "string")])
+                .await
+                .unwrap(),
+            TransactionResult::TxCommited(_)
+        ));
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "p1".into(),
+            attribute: kw!(:ssn),
+            value: "123".into(),
+        }])
+        .await
+        .unwrap();
+
+        let duplicate = node
+            .execute_tx(vec![TxOp::Add {
+                entity: "p2".into(),
+                attribute: kw!(:ssn),
+                value: "123".into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(duplicate, TransactionResult::TxAborted(_, _)));
+
+        let lookup_ref = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(kw!(:ssn), DataType::String("123".into())),
+                attribute: kw!(:age),
+                value: 1_i64.into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(lookup_ref, TransactionResult::TxAborted(_, _)));
     }
 
     #[tokio::test(flavor = "multi_thread")]

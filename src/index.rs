@@ -4,6 +4,7 @@ pub enum IndexType {
     EAV,
     AVE,
     AEV,
+    VAE,
     AE,
     AV,
 }

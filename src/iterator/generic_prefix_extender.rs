@@ -109,7 +109,7 @@ impl GenericPrefixExtender {
                 )
                 .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
             ),
-            IndexType::EAV | IndexType::AVE | IndexType::AEV => Box::new(
+            IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => Box::new(
                 TemporalFilterIterator::new(
                     slate_prefix,
                     self.slate.as_ref(),
@@ -132,7 +132,11 @@ impl GenericPrefixExtender {
         let position = match index_type {
             // 3-component indices: if this is a single-variable pattern,
             // the variable is at position 2 (after attribute and the constant)
-            IndexType::AVE | IndexType::AEV if self.participating_levels.len() == 1 => 2,
+            IndexType::AVE | IndexType::AEV | IndexType::VAE
+                if self.participating_levels.len() == 1 =>
+            {
+                2
+            }
             _ => pattern_level + 1,
         };
 

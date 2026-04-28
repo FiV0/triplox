@@ -17,6 +17,7 @@ use edn::query::ParsedQuery;
 pub const DB_IDENT: i64 = 1;
 pub const DB_VALUE_TYPE: i64 = 2;
 pub const DB_CARDINALITY: i64 = 3;
+pub const DB_UNIQUE: i64 = 4;
 
 // Value type enum entities
 pub const DB_TYPE_KEYWORD: i64 = 10;
@@ -37,6 +38,10 @@ pub const DB_TYPE_MAP: i64 = 22;
 pub const DB_CARDINALITY_ONE: i64 = 30;
 pub const DB_CARDINALITY_MANY: i64 = 31;
 
+// Unique enum entities
+pub const DB_UNIQUE_VALUE: i64 = 32;
+pub const DB_UNIQUE_IDENTITY: i64 = 33;
+
 // Transaction schema attribute entities
 pub const DB_TX_INSTANT: i64 = 40;
 pub const DB_TX_ID: i64 = 41;
@@ -56,6 +61,7 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
         (kw!(:db/ident), DB_IDENT),
         (kw!(:db/valueType), DB_VALUE_TYPE),
         (kw!(:db/cardinality), DB_CARDINALITY),
+        (kw!(:db/unique), DB_UNIQUE),
         // Value type enum entities
         (kw!(:db.type/keyword), DB_TYPE_KEYWORD),
         (kw!(:db.type/string), DB_TYPE_STRING),
@@ -73,6 +79,9 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
         // Cardinality enum entities
         (kw!(:db.cardinality/one), DB_CARDINALITY_ONE),
         (kw!(:db.cardinality/many), DB_CARDINALITY_MANY),
+        // Unique enum entities
+        (kw!(:db.unique/value), DB_UNIQUE_VALUE),
+        (kw!(:db.unique/identity), DB_UNIQUE_IDENTITY),
         // Transaction schema attribute entities
         (kw!(:db/txInstant), DB_TX_INSTANT),
         (kw!(:db/txId), DB_TX_ID),
@@ -85,42 +94,60 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
 });
 
 /// Schema properties for bootstrap attributes using symbolic keywords.
-/// (ident, value_type_ident, cardinality_ident)
-static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword)>> = LazyLock::new(|| {
-    vec![
-        (
-            kw!(:db/ident),
-            kw!(:db.type/keyword),
-            kw!(:db.cardinality/one),
-        ),
-        (
-            kw!(:db/valueType),
-            kw!(:db.type/ref),
-            kw!(:db.cardinality/one),
-        ),
-        (
-            kw!(:db/cardinality),
-            kw!(:db.type/ref),
-            kw!(:db.cardinality/one),
-        ),
-        (
-            kw!(:db/txInstant),
-            kw!(:db.type/instant),
-            kw!(:db.cardinality/one),
-        ),
-        (kw!(:db/txId), kw!(:db.type/long), kw!(:db.cardinality/one)),
-        (
-            kw!(:db/txResult),
-            kw!(:db.type/ref),
-            kw!(:db.cardinality/one),
-        ),
-        (
-            kw!(:db.tx/error),
-            kw!(:db.type/string),
-            kw!(:db.cardinality/one),
-        ),
-    ]
-});
+/// (ident, value_type_ident, cardinality_ident, unique_ident)
+static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword, Option<Keyword>)>> =
+    LazyLock::new(|| {
+        vec![
+            (
+                kw!(:db/ident),
+                kw!(:db.type/keyword),
+                kw!(:db.cardinality/one),
+                Some(kw!(:db.unique/identity)),
+            ),
+            (
+                kw!(:db/valueType),
+                kw!(:db.type/ref),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db/cardinality),
+                kw!(:db.type/ref),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db/unique),
+                kw!(:db.type/ref),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db/txInstant),
+                kw!(:db.type/instant),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db/txId),
+                kw!(:db.type/long),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db/txResult),
+                kw!(:db.type/ref),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+            (
+                kw!(:db.tx/error),
+                kw!(:db.type/string),
+                kw!(:db.cardinality/one),
+                None,
+            ),
+        ]
+    });
 
 // --- Schema types ---
 
@@ -247,6 +274,38 @@ impl Cardinality {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Unique {
+    Value,
+    Identity,
+}
+
+impl std::fmt::Display for Unique {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unique::Value => write!(f, "db.unique/value"),
+            Unique::Identity => write!(f, "db.unique/identity"),
+        }
+    }
+}
+
+impl Unique {
+    pub fn from_entity_id(id: i64) -> Result<Self> {
+        match id {
+            DB_UNIQUE_VALUE => Ok(Unique::Value),
+            DB_UNIQUE_IDENTITY => Ok(Unique::Identity),
+            _ => Err(anyhow::anyhow!("Unknown unique entity ID: {}", id)),
+        }
+    }
+
+    pub fn entity_id(&self) -> i64 {
+        match self {
+            Unique::Value => DB_UNIQUE_VALUE,
+            Unique::Identity => DB_UNIQUE_IDENTITY,
+        }
+    }
+}
+
 /// ident → entity_id (ALL named entities: enums + schema attrs)
 pub type IdentMap = HashMap<Keyword, Entid>;
 /// entity_id → ident (ALL named entities: enums + schema attrs)
@@ -259,6 +318,7 @@ pub type AttributeMap = HashMap<Entid, Attribute>;
 pub struct Attribute {
     pub value_type: ValueType,
     pub multival: bool,
+    pub unique: Option<Unique>,
 }
 
 /// Builder for accumulating attribute properties from (e, a, v) assertions.
@@ -269,6 +329,7 @@ pub struct Attribute {
 pub struct AttributeBuilder {
     pub value_type: Option<ValueType>,
     pub multival: Option<bool>,
+    pub unique: Option<Option<Unique>>,
 }
 
 impl AttributeBuilder {
@@ -292,6 +353,7 @@ impl AttributeBuilder {
         Attribute {
             value_type: self.value_type.expect("value_type must be set"),
             multival: self.multival.expect("multival must be set"),
+            unique: self.unique.unwrap_or(None),
         }
     }
 }
@@ -355,7 +417,7 @@ enum ValidationConflict {
 fn is_schema_attribute(attribute: &Keyword) -> bool {
     matches!(
         attribute.components(),
-        ("db", "ident" | "valueType" | "cardinality")
+        ("db", "ident" | "valueType" | "cardinality" | "unique")
     )
 }
 
@@ -488,6 +550,13 @@ impl Schema {
                             "db/cardinality must be a Ref (Long entity ID)"
                         ))
                     }
+                },
+                ("db", "unique") => match &datom.value {
+                    DataType::Long(id) => {
+                        let unique = Unique::from_entity_id(*id)?;
+                        builders.entry(datom.entity).or_default().unique = Some(Some(unique));
+                    }
+                    _ => return Err(anyhow::anyhow!("db/unique must be a Ref (Long entity ID)")),
                 },
                 _ => {}
             }
@@ -652,7 +721,7 @@ pub fn bootstrap_schema() -> Schema {
         schema.entid_map.insert(*eid, ident.clone());
     }
 
-    for (ident, vt_ident, card_ident) in V1_ATTRIBUTES.iter() {
+    for (ident, vt_ident, card_ident, unique_ident) in V1_ATTRIBUTES.iter() {
         let eid = *schema
             .ident_map
             .get(ident)
@@ -665,12 +734,20 @@ pub fn bootstrap_schema() -> Schema {
             .ident_map
             .get(card_ident)
             .expect("cardinality ident not in V1_IDENTS");
+        let unique = unique_ident.as_ref().map(|ident| {
+            let id = *schema
+                .ident_map
+                .get(ident)
+                .expect("unique ident not in V1_IDENTS");
+            Unique::from_entity_id(id).expect("invalid unique entity ID in V1_ATTRIBUTES")
+        });
         schema.attribute_map.insert(
             eid,
             Attribute {
                 value_type: ValueType::from_entity_id(vt_id)
                     .expect("invalid value type entity ID in V1_ATTRIBUTES"),
                 multival: card_id == DB_CARDINALITY_MANY,
+                unique,
             },
         );
     }
@@ -682,20 +759,24 @@ pub fn bootstrap_schema() -> Schema {
 /// This is the first transaction on a fresh database.
 pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     let attrs = &*V1_ATTRIBUTES;
-    let attr_idents: Vec<&Keyword> = attrs.iter().map(|(kw, _, _)| kw).collect();
+    let attr_idents: Vec<&Keyword> = attrs.iter().map(|(kw, _, _, _)| kw).collect();
     let idents = &*V1_IDENTS;
 
     let mut ops = Vec::new();
 
     // Schema attribute entities
-    for (ident, vt_ident, card_ident) in attrs {
+    for (ident, vt_ident, card_ident, unique_ident) in attrs {
         let eid = idents.iter().find(|(kw, _)| kw == ident).unwrap().1;
-        ops.push(TxOp::put(vec![
+        let mut fields = vec![
             (kw!(:db/id), DataType::Long(eid)),
             (kw!(:db/ident), DataType::Keyword(ident.clone())),
             (kw!(:db/valueType), DataType::Keyword(vt_ident.clone())),
             (kw!(:db/cardinality), DataType::Keyword(card_ident.clone())),
-        ]));
+        ];
+        if let Some(unique_ident) = unique_ident {
+            fields.push((kw!(:db/unique), DataType::Keyword(unique_ident.clone())));
+        }
+        ops.push(TxOp::put(fields));
     }
 
     // Enum entities
@@ -718,7 +799,17 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// Build a Put for a schema attribute without explicit db/id.
 #[cfg(any(test, feature = "test-helpers"))]
 fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
-    TxOp::put(vec![
+    schema_attribute_with_cardinality_and_unique(ident, value_type, cardinality, None)
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+fn schema_attribute_with_cardinality_and_unique(
+    ident: Keyword,
+    value_type: &str,
+    cardinality: &str,
+    unique: Option<&str>,
+) -> TxOp {
+    let mut fields = vec![
         (kw!(:db/ident), DataType::Keyword(ident)),
         (
             kw!(:db/valueType),
@@ -728,12 +819,29 @@ fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinali
             kw!(:db/cardinality),
             DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
         ),
-    ])
+    ];
+    if let Some(unique) = unique {
+        fields.push((
+            kw!(:db/unique),
+            DataType::Keyword(Keyword::namespaced("db.unique", unique)),
+        ));
+    }
+    TxOp::put(fields)
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
 fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
     schema_attribute_with_cardinality(ident, value_type, "one")
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn unique_identity_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("identity"))
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn unique_value_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("value"))
 }
 
 /// Load the Schema from indices by querying with the Datalog engine.
@@ -751,7 +859,12 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
     bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
-    let snapshot = slate.db.snapshot().await.expect("Failed to create snapshot");
+    bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
+    let snapshot = slate
+        .db
+        .snapshot()
+        .await
+        .expect("Failed to create snapshot");
     let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
 
@@ -784,9 +897,33 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         .parse()
         .expect("Attribute query parse failed");
 
+    // Query 3: optional db/unique for schema attributes.
+    let unique_query: ParsedQuery = "[:find ?e ?unique :where [?e :db/unique ?unique]]"
+        .parse()
+        .expect("Unique query parse failed");
+
+    let snapshot_clone = snapshot.clone();
+    let handle_clone = handle.clone();
+    let bootstrap_ident_map_clone = bootstrap_ident_map.clone();
+    let range_stats_clone = range_stats.clone();
     let attr_results = tokio::task::spawn_blocking(move || {
         execute_query(
             &attr_query,
+            &[],
+            snapshot_clone,
+            handle_clone,
+            &bootstrap_ident_map_clone,
+            i64::MAX,
+            range_stats_clone,
+        )
+    })
+    .await
+    .expect("Attribute query task failed")
+    .expect("Attribute query execution failed");
+
+    let unique_results = tokio::task::spawn_blocking(move || {
+        execute_query(
+            &unique_query,
             &[],
             snapshot,
             handle,
@@ -796,8 +933,8 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         )
     })
     .await
-    .expect("Attribute query task failed")
-    .expect("Attribute query execution failed");
+    .expect("Unique query task failed")
+    .expect("Unique query execution failed");
 
     let mut schema = Schema::default();
 
@@ -815,7 +952,22 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         schema.entid_map.insert(entity_id, ident);
     }
 
-    // Populate attribute_map from entities with all three schema properties
+    let mut unique_map = HashMap::new();
+    for row in unique_results {
+        let entity_id = match &row[0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long for entity_id, got {:?}", other),
+        };
+        let unique = match &row[1] {
+            DataType::Long(id) => {
+                Unique::from_entity_id(*id).unwrap_or_else(|e| panic!("Invalid unique: {}", e))
+            }
+            other => panic!("Expected Long for unique, got {:?}", other),
+        };
+        unique_map.insert(entity_id, unique);
+    }
+
+    // Populate attribute_map from entities with all required schema properties.
     for row in attr_results {
         let entity_id = match &row[0] {
             DataType::Long(id) => *id,
@@ -837,6 +989,7 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
             Attribute {
                 value_type,
                 multival: cardinality == Cardinality::Many,
+                unique: unique_map.remove(&entity_id),
             },
         );
     }
@@ -851,7 +1004,7 @@ pub fn test_schema_tx() -> Vec<TxOp> {
     vec![
         schema_attribute(kw!(:name), "string"),
         schema_attribute(kw!(:age), "long"),
-        schema_attribute(kw!(:email), "string"),
+        unique_identity_schema_attribute(kw!(:email), "string"),
         schema_attribute(kw!(:follows), "ref"),
         schema_attribute_with_cardinality(kw!(:tags), "string", "many"),
     ]
@@ -913,8 +1066,8 @@ mod tests {
     #[test]
     fn test_schema_from_bootstrap() {
         let schema = bootstrapped_schema();
-        // 7 schema attrs (3 core + 4 tx); enum entities go into ident_map but not attribute_map
-        assert_eq!(schema.len(), 7);
+        // 8 schema attrs (4 core + 4 tx); enum entities go into ident_map but not attribute_map
+        assert_eq!(schema.len(), 8);
 
         let (eid, attr) = schema.get_attribute(&kw!(:db/ident)).unwrap();
         assert_eq!(eid, DB_IDENT);
@@ -928,6 +1081,13 @@ mod tests {
         assert_eq!(eid, DB_CARDINALITY);
         assert_eq!(attr.value_type, ValueType::Ref);
 
+        let (eid, attr) = schema.get_attribute(&kw!(:db/unique)).unwrap();
+        assert_eq!(eid, DB_UNIQUE);
+        assert_eq!(attr.value_type, ValueType::Ref);
+
+        let (_eid, attr) = schema.get_attribute(&kw!(:db/ident)).unwrap();
+        assert_eq!(attr.unique, Some(Unique::Identity));
+
         // Enum entities are in ident_map but not attribute_map
         assert!(schema.ident_map.contains_key(&kw!(:db.type/string)));
         assert_eq!(schema.ident_map[&kw!(:db.type/string)], DB_TYPE_STRING);
@@ -936,7 +1096,7 @@ mod tests {
     #[test]
     fn test_apply_schema_update_user_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        assert_eq!(schema.len(), 8);
+        assert_eq!(schema.len(), 9);
 
         let (_eid, attr) = schema.get_attribute(&kw!(:name)).unwrap();
         assert_eq!(attr.value_type, ValueType::String);

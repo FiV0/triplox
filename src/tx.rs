@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use edn::kw;
 use edn::symbols::Keyword;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
-use crate::indexer::ave_key_to_parts;
+use crate::indexer::vae_key_to_parts;
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
-use crate::schema::{Schema, ValueType};
+use crate::schema::{Schema, Unique, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::concat_bytes;
 
@@ -56,7 +56,7 @@ pub enum IdOrTempId {
 }
 
 /// Value after lookup ref resolution: either concrete data or a tempid reference.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ValueWithTempIds {
     Data(DataType),
     TempRef(String),
@@ -234,11 +234,11 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
     Ok(datoms)
 }
 
-fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
-    let attr_bytes = encode_i64_bytes(attr_eid);
+fn unique_vae_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
     let mut value_bytes = Vec::new();
     encode_datatype(value, &mut value_bytes);
-    concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes])
+    let attr_bytes = encode_i64_bytes(attr_eid);
+    concat_bytes(&[&[codec::VAE], &value_bytes, &attr_bytes])
 }
 
 fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> anyhow::Error {
@@ -250,23 +250,91 @@ fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> any
     anyhow::anyhow!("No entity found for lookup ref [{} {:?}]", attr_kw, value)
 }
 
-/// Batch-resolve all lookup refs via the AVE index.
+fn validate_unique_identity_lookup(
+    schema: &Schema,
+    attr_eid: Entid,
+    value: &DataType,
+) -> Result<()> {
+    let attr = schema
+        .attribute_map
+        .get(&attr_eid)
+        .ok_or_else(|| anyhow::anyhow!("Unknown lookup ref attribute entid: {}", attr_eid))?;
+    if attr.unique != Some(Unique::Identity) {
+        let attr_kw = schema
+            .entid_map
+            .get(&attr_eid)
+            .map(|kw| kw.to_string())
+            .unwrap_or_else(|| attr_eid.to_string());
+        return Err(anyhow::anyhow!(
+            "Lookup ref attribute {} must be :db.unique/identity",
+            attr_kw
+        ));
+    }
+    if !attr.value_type.matches(value) {
+        let attr_kw = schema
+            .entid_map
+            .get(&attr_eid)
+            .map(|kw| kw.to_string())
+            .unwrap_or_else(|| attr_eid.to_string());
+        return Err(anyhow::anyhow!(
+            "Lookup ref value {:?} does not match attribute {} type {}",
+            value,
+            attr_kw,
+            attr.value_type
+        ));
+    }
+    Ok(())
+}
+
+pub async fn lookup_unique_eid(
+    db: &slatedb::Db,
+    attr_eid: Entid,
+    value: &DataType,
+) -> Result<Option<Entid>> {
+    let prefix = unique_vae_prefix(attr_eid, value);
+    let mut iter = db
+        .scan_with_options(prefix.clone()..vec![codec::VAE_END], &DEFAULT_SCAN_OPTIONS)
+        .await?;
+    iter.seek(&prefix).await?;
+
+    let Some(kv) = iter.next().await? else {
+        return Ok(None);
+    };
+    if !kv.key.starts_with(&prefix) {
+        return Ok(None);
+    }
+    if kv.key[kv.key.len() - 1] == codec::RETRACT {
+        return Ok(None);
+    }
+
+    let (_value, _attribute, entity_dt, _tx_eid, _op) = vae_key_to_parts(kv.key)?;
+    match entity_dt {
+        DataType::Long(eid) => Ok(Some(eid)),
+        other => Err(anyhow::anyhow!(
+            "Expected Long entity ID in VAE key, got {:?}",
+            other
+        )),
+    }
+}
+
+/// Batch-resolve all lookup refs via the unique-only VAE index.
 /// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
-// TODO(#62): validate that lookup ref attributes have :db/unique set.
 pub async fn resolve_lookup_refs(
     datoms: Vec<DatomExpanded>,
     schema: &Schema,
     db: &slatedb::Db,
 ) -> Result<Vec<DatomWithTempids>> {
-    // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
+    // Collect all unique lookup refs keyed by their encoded VAE lookup prefix.
     let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
-            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
+            validate_unique_identity_lookup(schema, *a, v)?;
+            lookup_refs.insert(unique_vae_prefix(*a, v), (*a, v.clone()));
         }
         if let ValueExpanded::LookupRef(a, v) = &d.value {
-            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
+            validate_unique_identity_lookup(schema, *a, v)?;
+            lookup_refs.insert(unique_vae_prefix(*a, v), (*a, v.clone()));
         }
     }
 
@@ -276,16 +344,16 @@ pub async fn resolve_lookup_refs(
     if let Some(first_prefix) = lookup_refs.keys().next() {
         let mut iter = db
             .scan_with_options(
-                first_prefix.clone()..vec![codec::AVE_END],
+                first_prefix.clone()..vec![codec::VAE_END],
                 &DEFAULT_SCAN_OPTIONS,
             )
             .await?;
 
-        for (ave_prefix, (attr_eid, value)) in &lookup_refs {
-            iter.seek(ave_prefix).await?;
+        for (vae_prefix, (attr_eid, value)) in &lookup_refs {
+            iter.seek(vae_prefix).await?;
 
             let key = match iter.next().await? {
-                Some(kv) if kv.key.starts_with(ave_prefix) => kv.key,
+                Some(kv) if kv.key.starts_with(vae_prefix) => kv.key,
                 _ => return Err(lookup_ref_not_found(schema, *attr_eid, value)),
             };
 
@@ -298,7 +366,7 @@ pub async fn resolve_lookup_refs(
                 return Err(lookup_ref_not_found(schema, *attr_eid, value));
             }
 
-            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(key)?;
+            let (_value, _attribute, entity_dt, _tx_eid, _op) = vae_key_to_parts(key)?;
             match entity_dt {
                 DataType::Long(eid) => {
                     resolved_map.insert((*attr_eid, value.clone()), eid);
@@ -340,6 +408,443 @@ pub async fn resolve_lookup_refs(
         });
     }
     Ok(result)
+}
+
+type TempIdMap = HashMap<String, Entid>;
+type UniqueLookup = (Entid, DataType);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UpsertE(String, Entid, DataType);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UpsertEV(String, Entid, String);
+
+#[derive(Debug, Default)]
+struct Generation {
+    upserts_e: Vec<UpsertE>,
+    upserts_ev: Vec<UpsertEV>,
+    allocations: Vec<DatomWithTempids>,
+    upserted: Vec<Datom>,
+    resolved: Vec<Datom>,
+}
+
+#[derive(Debug, Default)]
+struct FinalPopulations {
+    upserted: Vec<Datom>,
+    resolved: Vec<Datom>,
+    allocated: Vec<Datom>,
+}
+
+#[derive(Debug)]
+struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
+    }
+
+    fn find(&mut self, x: usize) -> usize {
+        if self.parent[x] != x {
+            self.parent[x] = self.find(self.parent[x]);
+        }
+        self.parent[x]
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let a_root = self.find(a);
+        let b_root = self.find(b);
+        if a_root != b_root {
+            self.parent[b_root] = a_root;
+        }
+    }
+}
+
+fn is_identity_attr(schema: &Schema, attr_eid: Entid) -> Result<bool> {
+    Ok(schema
+        .attribute_map
+        .get(&attr_eid)
+        .ok_or_else(|| anyhow::anyhow!("Unknown attribute entid: {}", attr_eid))?
+        .unique
+        == Some(Unique::Identity))
+}
+
+fn datom_with_entid_attr(d: &DatomWithTempids, schema: &Schema) -> Result<(Entid, bool)> {
+    let (attr_eid, attr) = schema
+        .get_attribute(&d.attribute)
+        .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", d.attribute))?;
+    Ok((attr_eid, attr.unique == Some(Unique::Identity)))
+}
+
+fn substitute_datom(d: DatomWithTempids, temp_id_map: &TempIdMap) -> Result<EitherDatom> {
+    let entity = match d.entity {
+        IdOrTempId::Id(id) => IdOrTempId::Id(id),
+        IdOrTempId::TempId(s) => match temp_id_map.get(&s) {
+            Some(eid) => IdOrTempId::Id(*eid),
+            None => IdOrTempId::TempId(s),
+        },
+    };
+    let value = match d.value {
+        ValueWithTempIds::Data(dt) => ValueWithTempIds::Data(dt),
+        ValueWithTempIds::TempRef(s) => match temp_id_map.get(&s) {
+            Some(eid) => ValueWithTempIds::Data(DataType::Long(*eid)),
+            None => ValueWithTempIds::TempRef(s),
+        },
+    };
+
+    match (&entity, &value) {
+        (IdOrTempId::Id(entity), ValueWithTempIds::Data(value)) => {
+            Ok(EitherDatom::Concrete(Datom {
+                entity: *entity,
+                attribute: d.attribute,
+                value: value.clone(),
+                op: d.op,
+            }))
+        }
+        _ => Ok(EitherDatom::WithTempids(DatomWithTempids {
+            entity,
+            attribute: d.attribute,
+            value,
+            op: d.op,
+        })),
+    }
+}
+
+enum EitherDatom {
+    Concrete(Datom),
+    WithTempids(DatomWithTempids),
+}
+
+impl Generation {
+    fn from(datoms: Vec<DatomWithTempids>, schema: &Schema) -> Result<(Self, Vec<Datom>)> {
+        let mut generation = Generation::default();
+        let mut inert = Vec::new();
+
+        for d in datoms {
+            let (attr_eid, identity) = datom_with_entid_attr(&d, schema)?;
+            match (&d.entity, &d.value) {
+                (IdOrTempId::TempId(t), ValueWithTempIds::Data(v))
+                    if d.op == DatomOp::Assert && identity =>
+                {
+                    generation
+                        .upserts_e
+                        .push(UpsertE(t.clone(), attr_eid, v.clone()));
+                }
+                (IdOrTempId::TempId(t1), ValueWithTempIds::TempRef(t2))
+                    if d.op == DatomOp::Assert && identity =>
+                {
+                    generation
+                        .upserts_ev
+                        .push(UpsertEV(t1.clone(), attr_eid, t2.clone()));
+                }
+                (IdOrTempId::Id(entity), ValueWithTempIds::Data(value)) => {
+                    inert.push(Datom {
+                        entity: *entity,
+                        attribute: d.attribute,
+                        value: value.clone(),
+                        op: d.op,
+                    });
+                }
+                _ => generation.allocations.push(d),
+            }
+        }
+
+        Ok((generation, inert))
+    }
+
+    fn can_evolve(&self) -> bool {
+        !self.upserts_e.is_empty()
+    }
+
+    fn temp_id_avs(&self) -> Vec<(String, UniqueLookup)> {
+        self.upserts_e
+            .iter()
+            .map(|UpsertE(t, a, v)| (t.clone(), (*a, v.clone())))
+            .collect()
+    }
+
+    fn allocate_unresolved_upserts(&mut self, schema: &Schema) -> Result<()> {
+        for UpsertEV(t1, attr_eid, t2) in self.upserts_ev.drain(..) {
+            let attr = schema
+                .entid_map
+                .get(&attr_eid)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute entid: {}", attr_eid))?;
+            self.allocations.push(DatomWithTempids {
+                entity: IdOrTempId::TempId(t1),
+                attribute: attr,
+                value: ValueWithTempIds::TempRef(t2),
+                op: DatomOp::Assert,
+            });
+        }
+        Ok(())
+    }
+
+    fn evolve_one_step(
+        self,
+        temp_id_map: &TempIdMap,
+        resolved_tempids: &BTreeMap<String, Entid>,
+        schema: &Schema,
+    ) -> Result<Generation> {
+        let mut next = Generation {
+            resolved: self.resolved,
+            ..Generation::default()
+        };
+
+        for UpsertE(t, a, v) in self.upserts_e {
+            let attr = schema
+                .entid_map
+                .get(&a)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute entid: {}", a))?;
+            match temp_id_map.get(&t) {
+                Some(eid) => next.upserted.push(Datom {
+                    entity: *eid,
+                    attribute: attr,
+                    value: v,
+                    op: DatomOp::Assert,
+                }),
+                None if resolved_tempids.contains_key(&t) => next.resolved.push(Datom {
+                    entity: resolved_tempids[&t],
+                    attribute: attr,
+                    value: v,
+                    op: DatomOp::Assert,
+                }),
+                None => next.allocations.push(DatomWithTempids {
+                    entity: IdOrTempId::TempId(t),
+                    attribute: attr,
+                    value: ValueWithTempIds::Data(v),
+                    op: DatomOp::Assert,
+                }),
+            }
+        }
+
+        for UpsertEV(t1, a, t2) in self.upserts_ev {
+            let attr = schema
+                .entid_map
+                .get(&a)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute entid: {}", a))?;
+            let t1_eid = temp_id_map.get(&t1).or_else(|| resolved_tempids.get(&t1));
+            let t2_eid = temp_id_map.get(&t2).or_else(|| resolved_tempids.get(&t2));
+            match (t1_eid, t2_eid) {
+                (Some(_), Some(t2_eid)) | (None, Some(t2_eid)) => {
+                    next.upserts_e.push(UpsertE(t1, a, DataType::Long(*t2_eid)));
+                }
+                (Some(t1_eid), None) => next.allocations.push(DatomWithTempids {
+                    entity: IdOrTempId::Id(*t1_eid),
+                    attribute: attr,
+                    value: ValueWithTempIds::TempRef(t2),
+                    op: DatomOp::Assert,
+                }),
+                (None, None) => next.upserts_ev.push(UpsertEV(t1, a, t2)),
+            }
+        }
+
+        let combined: TempIdMap = resolved_tempids
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .chain(temp_id_map.iter().map(|(k, v)| (k.clone(), *v)))
+            .collect();
+        for d in self.allocations {
+            match substitute_datom(d, &combined)? {
+                EitherDatom::Concrete(d) => next.resolved.push(d),
+                EitherDatom::WithTempids(d) => next.allocations.push(d),
+            }
+        }
+
+        Ok(next)
+    }
+
+    fn temp_ids_in_allocations(&self, schema: &Schema) -> Result<BTreeMap<String, usize>> {
+        let mut tempids = BTreeSet::new();
+        let mut identity_groups: HashMap<(Entid, ValueWithTempIds), Vec<String>> = HashMap::new();
+
+        for d in &self.allocations {
+            if d.op == DatomOp::Retract {
+                if matches!(d.entity, IdOrTempId::TempId(_))
+                    || matches!(d.value, ValueWithTempIds::TempRef(_))
+                {
+                    return Err(anyhow::anyhow!(
+                        "[:db/retract ...] referenced tempid that did not upsert"
+                    ));
+                }
+            }
+
+            if d.op != DatomOp::Assert {
+                continue;
+            }
+
+            if let IdOrTempId::TempId(t) = &d.entity {
+                tempids.insert(t.clone());
+            }
+            if let ValueWithTempIds::TempRef(t) = &d.value {
+                tempids.insert(t.clone());
+            }
+
+            let (attr_eid, identity) = datom_with_entid_attr(d, schema)?;
+            if identity {
+                if let IdOrTempId::TempId(t) = &d.entity {
+                    identity_groups
+                        .entry((attr_eid, d.value.clone()))
+                        .or_default()
+                        .push(t.clone());
+                }
+            }
+        }
+
+        let tempid_indices: BTreeMap<String, usize> = tempids
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| (t, i))
+            .collect();
+        let mut uf = UnionFind::new(tempid_indices.len());
+
+        for group in identity_groups.values() {
+            if let Some(first) = group.first().and_then(|t| tempid_indices.get(t)) {
+                for t in group {
+                    if let Some(i) = tempid_indices.get(t) {
+                        uf.union(*first, *i);
+                    }
+                }
+            }
+        }
+
+        let mut rep_labels: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut tempid_labels = BTreeMap::new();
+        for (tempid, index) in tempid_indices {
+            let rep = uf.find(index);
+            let next_label = rep_labels.len();
+            let label = *rep_labels.entry(rep).or_insert(next_label);
+            tempid_labels.insert(tempid, label);
+        }
+
+        Ok(tempid_labels)
+    }
+
+    fn into_final_populations(self, temp_id_map: &TempIdMap) -> Result<FinalPopulations> {
+        let mut populations = FinalPopulations {
+            upserted: self.upserted,
+            resolved: self.resolved,
+            allocated: Vec::new(),
+        };
+
+        for d in self.allocations {
+            match substitute_datom(d, temp_id_map)? {
+                EitherDatom::Concrete(d) => populations.allocated.push(d),
+                EitherDatom::WithTempids(_) => {
+                    return Err(anyhow::anyhow!("Unresolved tempid after allocation"))
+                }
+            }
+        }
+
+        Ok(populations)
+    }
+}
+
+async fn resolve_temp_id_avs(
+    tempid_avs: &[(String, UniqueLookup)],
+    db: &slatedb::Db,
+) -> Result<TempIdMap> {
+    let mut unique_lookups: HashMap<UniqueLookup, Vec<String>> = HashMap::new();
+    for (tempid, lookup) in tempid_avs {
+        unique_lookups
+            .entry(lookup.clone())
+            .or_default()
+            .push(tempid.clone());
+    }
+
+    let mut temp_id_map = HashMap::new();
+    for ((attr, value), tempids) in unique_lookups {
+        if let Some(eid) = lookup_unique_eid(db, attr, &value).await? {
+            for tempid in tempids {
+                temp_id_map.insert(tempid, eid);
+            }
+        }
+    }
+    Ok(temp_id_map)
+}
+
+fn record_resolutions(
+    resolved_tempids: &mut BTreeMap<String, Entid>,
+    temp_id_map: TempIdMap,
+) -> Result<()> {
+    let mut conflicts: BTreeMap<String, BTreeSet<Entid>> = BTreeMap::new();
+    for (tempid, entid) in temp_id_map {
+        if let Some(previous) = resolved_tempids.insert(tempid.clone(), entid) {
+            if previous != entid {
+                conflicts
+                    .entry(tempid)
+                    .or_default()
+                    .extend([previous, entid]);
+            }
+        }
+    }
+
+    if !conflicts.is_empty() {
+        return Err(anyhow::anyhow!("Conflicting upserts: {:?}", conflicts));
+    }
+    Ok(())
+}
+
+fn allocation_partitions(
+    allocations: &[DatomWithTempids],
+    tempid_labels: &BTreeMap<String, usize>,
+) -> Vec<u32> {
+    let label_count = tempid_labels.values().copied().max().map_or(0, |n| n + 1);
+    let mut partitions = vec![USER_PARTITION; label_count];
+    for d in allocations {
+        if d.op == DatomOp::Assert && d.attribute == kw!(:db/ident) {
+            if let IdOrTempId::TempId(t) = &d.entity {
+                if let Some(label) = tempid_labels.get(t) {
+                    partitions[*label] = DB_PARTITION;
+                }
+            }
+        }
+    }
+    partitions
+}
+
+/// Resolve tempids using Mentat-style :db.unique/identity upsert generations.
+pub async fn resolve_tempids_with_upserts(
+    datoms: Vec<DatomWithTempids>,
+    schema: &Schema,
+    db: &slatedb::Db,
+    partition_map: &mut PartitionMap,
+) -> Result<Vec<Datom>> {
+    let (mut generation, inert_terms) = Generation::from(datoms, schema)?;
+    let mut resolved_tempids = BTreeMap::new();
+
+    while generation.can_evolve() {
+        let tempid_avs = generation.temp_id_avs();
+        let temp_id_map = resolve_temp_id_avs(&tempid_avs, db).await?;
+        record_resolutions(&mut resolved_tempids, temp_id_map.clone())?;
+        generation = generation.evolve_one_step(&temp_id_map, &resolved_tempids, schema)?;
+    }
+
+    generation.allocate_unresolved_upserts(schema)?;
+    let tempid_labels = generation.temp_ids_in_allocations(schema)?;
+    let partitions = allocation_partitions(&generation.allocations, &tempid_labels);
+
+    let mut allocated_tempids = HashMap::new();
+    let mut label_entids = Vec::with_capacity(partitions.len());
+    for partition in partitions {
+        label_entids.push(partition_map.allocate_entid(partition));
+    }
+    for (tempid, label) in tempid_labels {
+        allocated_tempids.insert(tempid, label_entids[label]);
+    }
+
+    let final_populations = generation.into_final_populations(&allocated_tempids)?;
+    let mut datoms = Vec::new();
+    datoms.extend(final_populations.upserted);
+    datoms.extend(final_populations.resolved);
+    datoms.extend(final_populations.allocated);
+    datoms.extend(inert_terms);
+    Ok(datoms)
 }
 
 /// Resolve tempids in DatomWithTempids to produce final Datoms.
@@ -424,6 +929,7 @@ mod tests {
             Attribute {
                 value_type: ValueType::Ref,
                 multival: false,
+                unique: None,
             },
         );
         schema

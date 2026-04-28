@@ -34,11 +34,7 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> Result<PartitionMap
             .await
             .context("Failed to scan EAV partition prefix")?;
 
-        if let Some(kv) = iter
-            .next()
-            .await
-            .context("Failed to read EAV key")?
-        {
+        if let Some(kv) = iter.next().await.context("Failed to read EAV key")? {
             let mut cursor: &[u8] =
                 &kv.key[codec::CODEC_LENGTH..codec::CODEC_LENGTH + codec::ENTITY_LENGTH];
             let eid = match codec::decode_datatype(&mut cursor)
@@ -141,14 +137,15 @@ mod tests {
     async fn test_init_db_fresh() {
         let slate = in_memory_slate().await;
         let metadata = init_db(&slate).await.unwrap();
-        // Bootstrap defines 7 schema attributes (3 core + 4 tx)
-        assert_eq!(metadata.schema.len(), 7);
+        // Bootstrap defines 8 schema attributes (4 core + 4 tx)
+        assert_eq!(metadata.schema.len(), 8);
         assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/valueType)).is_some());
         assert!(metadata
             .schema
             .get_attribute(&kw!(:db/cardinality))
             .is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/unique)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
@@ -176,7 +173,7 @@ mod tests {
         // Second call takes the existing-DB path (scan EAV for counters)
         let metadata2 = init_db(&slate).await.unwrap();
         assert_eq!(metadata1.schema.len(), metadata2.schema.len());
-        assert_eq!(metadata1.schema.len(), 7);
+        assert_eq!(metadata1.schema.len(), 8);
         assert_eq!(
             metadata1.partition_map[&DB_PARTITION],
             metadata2.partition_map[&DB_PARTITION]
@@ -195,7 +192,10 @@ mod tests {
         let metadata = init_db(&slate).await.unwrap();
         assert_eq!(metadata.schema.len(), 0);
         // No EAV entries → partition counters initialized to 0 (DB clamped to floor)
-        assert_eq!(metadata.partition_map[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
+        assert_eq!(
+            metadata.partition_map[&DB_PARTITION],
+            DB_PARTITION_COUNTER_FLOOR
+        );
         assert_eq!(metadata.partition_map[&TX_PARTITION], 0);
         assert_eq!(metadata.partition_map[&USER_PARTITION], 0);
     }
