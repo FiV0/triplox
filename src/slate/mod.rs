@@ -126,7 +126,7 @@ pub async fn remote_slate(
         flush_interval: None,
         max_unflushed_bytes: 2 * 1024 * 1024 * 1024,
         l0_max_ssts: 16,
-        wal_enabled: false,
+        wal_enabled: true,
         // compactor_options: None,
         object_store_cache_options: ObjectStoreCacheOptions {
             root_folder: Some(cache_path.to_path_buf()),
