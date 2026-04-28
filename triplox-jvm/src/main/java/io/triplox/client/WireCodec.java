@@ -1,154 +1,222 @@
 package io.triplox.client;
 
-import java.io.*;
+import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
-import static io.triplox.client.MessageTypes.*;
+import org.msgpack.core.MessagePack;
+import org.msgpack.core.MessagePacker;
+import org.msgpack.core.MessageUnpacker;
 
 /**
- * Codec for encoding/decoding Triplox binary payloads for HTTP transport.
+ * MessagePack codec for the HTTP/2 request and response bodies.
  *
- * Produces and consumes raw byte arrays suitable for HTTP request/response bodies.
- * The binary encoding of values (DataType, TxOp, QueryArg) is unchanged from
- * the TCP wire protocol — only the framing layer is replaced by HTTP.
+ * <p>Each body is a single msgpack map with string keys. See
+ * {@code design/WIRE_PROTOCOL.md} for the schemas.</p>
  */
 public final class WireCodec {
     private WireCodec() {}
 
     // ---------------------------------------------------------------
-    // Request body encoding (client → server)
+    // Request bodies (client → server)
     // ---------------------------------------------------------------
 
     /**
-     * Encode an OpenDb request body: option_i64(txId) + option_i64(null).
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
      */
     public static byte[] encodeOpenDbBody(Long txId) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        DataTypeCodec.encodeOptionalLong(dos, txId);   // tx_id
-        DataTypeCodec.encodeOptionalLong(dos, null);   // system_time (always null from client)
-        dos.flush();
-        return baos.toByteArray();
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString("tx_id");
+            if (txId == null) packer.packNil();
+            else packer.packLong(txId);
+            packer.packString("system_time");
+            packer.packNil(); // client never opens at a specific system_time today
+            return packer.toByteArray();
+        }
     }
 
     /**
-     * Encode a Query request body: string(query) + query_args(args).
+     * {@code POST /db/{id}/query} body: {@code {"query": str, "args": [QueryArg, ...]}}.
      */
     public static byte[] encodeQueryBody(String query, List<QueryArg> args) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        DataTypeCodec.encodeString(dos, query);
-        QueryArg.encodeArgs(dos, args);
-        dos.flush();
-        return baos.toByteArray();
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString("query"); packer.packString(query);
+            packer.packString("args"); QueryArg.packAll(packer, args);
+            return packer.toByteArray();
+        }
     }
 
     /**
-     * Encode an Execute request body: tx_ops(ops).
+     * {@code POST /tx/{submit,execute}} body: {@code {"ops": [TxOp, ...]}}.
      */
     public static byte[] encodeExecuteBody(List<TxOp> ops) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        TxOpCodec.encode(dos, ops);
-        dos.flush();
-        return baos.toByteArray();
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(1);
+            packer.packString("ops"); TxOpCodec.packOps(packer, ops);
+            return packer.toByteArray();
+        }
     }
 
     // ---------------------------------------------------------------
-    // Response body decoding (server → client)
+    // Response bodies (server → client)
     // ---------------------------------------------------------------
 
-    /**
-     * Decode a DbOpened response body: u32(db_id) + i64(tx_id).
-     */
     public static BackendMessage.DbOpened decodeDbOpened(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        return new BackendMessage.DbOpened(dis.readInt(), dis.readLong());
+        var fields = readFields(body);
+        long dbId = expectLong(fields, "db_id");
+        long txId = expectLong(fields, "tx_id");
+        return new BackendMessage.DbOpened(toInt(dbId), txId);
     }
 
-    /**
-     * Decode a DbClosed response body: u32(db_id).
-     */
     public static BackendMessage.DbClosed decodeDbClosed(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        return new BackendMessage.DbClosed(dis.readInt());
+        var fields = readFields(body);
+        long dbId = expectLong(fields, "db_id");
+        return new BackendMessage.DbClosed(toInt(dbId));
     }
 
-    /**
-     * Decode a query response from concatenated framed backend messages.
-     * Format: [type:1][length:4][payload]* where messages are RowDescription + DataRows.
-     */
     public static QueryResult decodeQueryResponse(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        List<ColumnDesc> columns = null;
-        var rows = new ArrayList<List<Object>>();
-
-        while (dis.available() > 0) {
-            byte type = dis.readByte();
-            int length = dis.readInt();
-            if (length < 4) {
-                throw new IOException("Invalid message length: " + length);
-            }
-            int payloadSize = length - 4;
-            byte[] payload = new byte[payloadSize];
-            if (payloadSize > 0) {
-                dis.readFully(payload);
-            }
-
-            var pin = new DataInputStream(new ByteArrayInputStream(payload));
-            switch (type) {
-                case MSG_ROW_DESCRIPTION -> {
-                    int count = pin.readInt();
-                    columns = new ArrayList<>(count);
-                    for (int i = 0; i < count; i++) {
-                        columns.add(new ColumnDesc(DataTypeCodec.decodeString(pin), pin.readByte()));
-                    }
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            int fieldCount = unpacker.unpackMapHeader();
+            List<ColumnDesc> columns = null;
+            List<List<Object>> rows = null;
+            for (int i = 0; i < fieldCount; i++) {
+                String key = unpacker.unpackString();
+                switch (key) {
+                    case "columns" -> columns = decodeColumns(unpacker);
+                    case "rows" -> rows = decodeRows(unpacker);
+                    default -> unpacker.skipValue();
                 }
-                case MSG_DATA_ROW -> {
-                    int count = pin.readInt();
-                    var values = new ArrayList<>(count);
-                    for (int i = 0; i < count; i++) {
-                        values.add(DataTypeCodec.decode(pin));
-                    }
-                    rows.add(values);
-                }
-                default -> throw new IOException("Unexpected message type in query response: 0x" +
-                        Integer.toHexString(type & 0xFF));
             }
+            if (columns == null) throw new IOException("query response missing \"columns\"");
+            if (rows == null) throw new IOException("query response missing \"rows\"");
+            return new QueryResult(columns, rows);
         }
-
-        if (columns == null) {
-            throw new IOException("Missing RowDescription in query response");
-        }
-        return new QueryResult(columns, rows);
     }
 
-    /**
-     * Decode a TxKey response body: i64(tx_id) + i64(system_time).
-     */
+    private static List<ColumnDesc> decodeColumns(MessageUnpacker unpacker) throws IOException {
+        int n = unpacker.unpackArrayHeader();
+        var out = new ArrayList<ColumnDesc>(n);
+        for (int i = 0; i < n; i++) {
+            int fieldCount = unpacker.unpackMapHeader();
+            String name = null;
+            byte type = 0;
+            List<Byte> members = null;
+            for (int j = 0; j < fieldCount; j++) {
+                String key = unpacker.unpackString();
+                switch (key) {
+                    case "name" -> name = unpacker.unpackString();
+                    case "type" -> type = (byte) unpacker.unpackInt();
+                    case "members" -> {
+                        int m = unpacker.unpackArrayHeader();
+                        members = new ArrayList<>(m);
+                        for (int k = 0; k < m; k++) members.add((byte) unpacker.unpackInt());
+                    }
+                    default -> unpacker.skipValue();
+                }
+            }
+            if (name == null) throw new IOException("column missing \"name\"");
+            out.add(new ColumnDesc(name, type, members));
+        }
+        return out;
+    }
+
+    private static List<List<Object>> decodeRows(MessageUnpacker unpacker) throws IOException {
+        int n = unpacker.unpackArrayHeader();
+        var rows = new ArrayList<List<Object>>(n);
+        for (int i = 0; i < n; i++) {
+            int rowLen = unpacker.unpackArrayHeader();
+            var row = new ArrayList<>(rowLen);
+            for (int j = 0; j < rowLen; j++) row.add(DataTypeCodec.unpack(unpacker));
+            rows.add(row);
+        }
+        return rows;
+    }
+
     public static BackendMessage.TxKey decodeTxKey(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        return new BackendMessage.TxKey(dis.readLong(), dis.readLong());
+        var fields = readFields(body);
+        long txId = expectLong(fields, "tx_id");
+        Instant systemTime = expectInstant(fields, "system_time");
+        return new BackendMessage.TxKey(txId, systemTime);
     }
 
-    /**
-     * Decode a TxResult response body: u8(status) + i64(tx_id) + i64(system_time) + option_string(error).
-     */
     public static BackendMessage.TxResult decodeTxResult(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        return new BackendMessage.TxResult(
-                dis.readByte(), dis.readLong(), dis.readLong(),
-                DataTypeCodec.decodeOptionalString(dis));
+        var fields = readFields(body);
+        byte status = (byte) expectLong(fields, "status");
+        long txId = expectLong(fields, "tx_id");
+        Instant systemTime = expectInstant(fields, "system_time");
+        String err = optionalString(fields, "error_message");
+        return new BackendMessage.TxResult(status, txId, systemTime, err);
     }
 
-    /**
-     * Decode an ErrorResponse body: u8(severity) + u16(code) + string(message) + option(detail) + option(hint).
-     */
     public static BackendMessage.ErrorResponse decodeErrorResponse(byte[] body) throws IOException {
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        return new BackendMessage.ErrorResponse(
-                dis.readByte(), dis.readShort(), DataTypeCodec.decodeString(dis),
-                DataTypeCodec.decodeOptionalString(dis), DataTypeCodec.decodeOptionalString(dis));
+        var fields = readFields(body);
+        String severityStr = expectString(fields, "severity");
+        byte severity = switch (severityStr) {
+            case "E" -> MessageTypes.SEVERITY_ERROR;
+            case "F" -> MessageTypes.SEVERITY_FATAL;
+            default -> throw new IOException("invalid severity: " + severityStr);
+        };
+        short code = (short) expectLong(fields, "code");
+        String message = expectString(fields, "message");
+        String detail = optionalString(fields, "detail");
+        String hint = optionalString(fields, "hint");
+        return new BackendMessage.ErrorResponse(severity, code, message, detail, hint);
+    }
+
+    // ---------------------------------------------------------------
+    // Field-map helpers
+    // ---------------------------------------------------------------
+
+    private static Map<String, Object> readFields(byte[] body) throws IOException {
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            int n = unpacker.unpackMapHeader();
+            var map = new LinkedHashMap<String, Object>();
+            for (int i = 0; i < n; i++) {
+                String key = unpacker.unpackString();
+                map.put(key, DataTypeCodec.unpack(unpacker));
+            }
+            return map;
+        }
+    }
+
+    private static Object require(Map<String, Object> fields, String name) throws IOException {
+        Object v = fields.get(name);
+        if (v == null) throw new IOException("missing field: " + name);
+        return v;
+    }
+
+    private static long expectLong(Map<String, Object> fields, String name) throws IOException {
+        Object v = require(fields, name);
+        if (v instanceof Long l) return l;
+        throw new IOException("field " + name + " expected integer, got " + v.getClass().getName());
+    }
+
+    private static String expectString(Map<String, Object> fields, String name) throws IOException {
+        Object v = require(fields, name);
+        if (v instanceof String s) return s;
+        throw new IOException("field " + name + " expected string, got " + v.getClass().getName());
+    }
+
+    private static Instant expectInstant(Map<String, Object> fields, String name) throws IOException {
+        Object v = require(fields, name);
+        if (v instanceof Instant inst) return inst;
+        throw new IOException("field " + name + " expected timestamp, got " + v.getClass().getName());
+    }
+
+    private static String optionalString(Map<String, Object> fields, String name) throws IOException {
+        Object v = fields.get(name);
+        if (v == null) return null;
+        if (v instanceof String s) return s;
+        throw new IOException("field " + name + " expected string or nil, got " + v.getClass().getName());
+    }
+
+    private static int toInt(long v) {
+        if (v < 0 || v > 0xFFFFFFFFL) throw new IllegalArgumentException("u32 out of range: " + v);
+        return (int) v;
     }
 }

@@ -13,6 +13,9 @@ dependencies {
     // Clojure
     implementation("org.clojure", "clojure", "1.12.3")
 
+    // MessagePack wire codec
+    implementation("org.msgpack:msgpack-core:0.9.8")
+
     // logging
     implementation("org.clojure", "tools.logging", "1.3.0")
     implementation("ch.qos.logback", "logback-classic", "1.4.5")

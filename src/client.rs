@@ -6,11 +6,15 @@
 use anyhow::{bail, Error, Result};
 use reqwest::Client;
 
+use crate::msgpack_codec::{
+    decode_db_opened_response, decode_error_body, decode_query_response,
+    decode_tx_key_response, decode_tx_result_response, encode_execute_request,
+    encode_open_db_request, encode_query_request,
+};
 use crate::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode, TransactionResult, TxKey,
 };
-use crate::ops::{DataType, QueryArg, TxOp};
-use crate::protocol::*;
+use crate::ops::QueryArg;
 use crate::query::QueryResult;
 use edn::query::ParsedQuery;
 
@@ -18,7 +22,7 @@ use edn::query::ParsedQuery;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CONTENT_TYPE: &str = "application/x-triplox";
+const CONTENT_TYPE: &str = "application/vnd.triplox+msgpack";
 
 /// Check an HTTP response for errors. If the status is not success,
 /// attempt to decode a binary ErrorResponse from the body.
@@ -63,9 +67,9 @@ impl ClientNode {
     }
 
     async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
-        let (tx_id, system_time) = match &tx_key {
+        let (tx_id, system_time) = match tx_key {
             None => (None, None),
-            Some(tk) => (Some(tk.tx_id), Some(tk.system_time.timestamp_micros())),
+            Some(tk) => (Some(tk.tx_id), Some(tk.system_time)),
         };
 
         let body = encode_open_db_request(tx_id, system_time);
@@ -103,11 +107,7 @@ impl SubmitNode for ClientNode {
 
         let data = check_response(resp).await?;
         let (tx_id, system_time) = decode_tx_key_response(&data)?;
-        let dt = micros_to_datetime(system_time)?;
-        Ok(TxKey {
-            tx_id,
-            system_time: dt,
-        })
+        Ok(TxKey { tx_id, system_time })
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
@@ -123,11 +123,7 @@ impl SubmitNode for ClientNode {
 
         let data = check_response(resp).await?;
         let (status, tx_id, system_time, error_message) = decode_tx_result_response(&data)?;
-        let dt = micros_to_datetime(system_time)?;
-        let tx_key = TxKey {
-            tx_id,
-            system_time: dt,
-        };
+        let tx_key = TxKey { tx_id, system_time };
 
         if status == 0 {
             Ok(TransactionResult::TxCommited(tx_key))

@@ -18,7 +18,7 @@ public class TriploxNode implements AutoCloseable {
     private final HttpClient httpClient;
     private final String baseUrl;
 
-    private static final String CONTENT_TYPE = "application/x-triplox";
+    private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
 
     private TriploxNode(HttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;

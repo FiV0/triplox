@@ -2,8 +2,11 @@ package io.triplox.client;
 
 import clojure.lang.Keyword;
 import org.junit.jupiter.api.Test;
+import org.msgpack.core.MessagePack;
+import org.msgpack.core.MessagePacker;
 
-import java.io.*;
+import java.io.IOException;
+import java.time.Instant;
 import java.util.List;
 import java.util.TreeMap;
 
@@ -13,39 +16,44 @@ import static org.junit.jupiter.api.Assertions.*;
 class WireCodecTest {
 
     // ---------------------------------------------------------------
-    // Request body encoding tests
+    // Request body encoding
     // ---------------------------------------------------------------
 
     @Test
     void testEncodeOpenDbBodyNull() throws IOException {
         byte[] body = WireCodec.encodeOpenDbBody(null);
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        // Two None tags (tx_id, system_time)
-        assertEquals(0x00, dis.readByte());
-        assertEquals(0x00, dis.readByte());
-        assertEquals(0, dis.available());
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(2, unpacker.unpackMapHeader());
+            assertEquals("tx_id", unpacker.unpackString());
+            unpacker.unpackNil();
+            assertEquals("system_time", unpacker.unpackString());
+            unpacker.unpackNil();
+            assertFalse(unpacker.hasNext());
+        }
     }
 
     @Test
     void testEncodeOpenDbBodyWithTxId() throws IOException {
         byte[] body = WireCodec.encodeOpenDbBody(42L);
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        // Some(42) for tx_id
-        assertEquals(0x01, dis.readByte());
-        assertEquals(42L, dis.readLong());
-        // None for system_time
-        assertEquals(0x00, dis.readByte());
-        assertEquals(0, dis.available());
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(2, unpacker.unpackMapHeader());
+            assertEquals("tx_id", unpacker.unpackString());
+            assertEquals(42L, unpacker.unpackLong());
+            assertEquals("system_time", unpacker.unpackString());
+            unpacker.unpackNil();
+        }
     }
 
     @Test
     void testEncodeQueryBody() throws IOException {
         byte[] body = WireCodec.encodeQueryBody("{:find [?e]}", List.of());
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        String query = DataTypeCodec.decodeString(dis);
-        assertEquals("{:find [?e]}", query);
-        int argsCount = dis.readInt();
-        assertEquals(0, argsCount);
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(2, unpacker.unpackMapHeader());
+            assertEquals("query", unpacker.unpackString());
+            assertEquals("{:find [?e]}", unpacker.unpackString());
+            assertEquals("args", unpacker.unpackString());
+            assertEquals(0, unpacker.unpackArrayHeader());
+        }
     }
 
     @Test
@@ -55,99 +63,100 @@ class WireCodecTest {
         var ops = List.<TxOp>of(new TxOp.Put(doc));
 
         byte[] body = WireCodec.encodeExecuteBody(ops);
-        var dis = new DataInputStream(new ByteArrayInputStream(body));
-        int count = dis.readInt();
-        assertEquals(1, count);
-        // First byte is the op type tag
-        assertEquals(TXOP_PUT, dis.readByte());
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(1, unpacker.unpackMapHeader());
+            assertEquals("ops", unpacker.unpackString());
+            var decoded = TxOpCodec.unpackOps(unpacker);
+            assertEquals(1, decoded.size());
+            assertInstanceOf(TxOp.Put.class, decoded.get(0));
+        }
     }
 
     // ---------------------------------------------------------------
-    // Response body decoding tests
+    // Response body decoding
     // ---------------------------------------------------------------
 
     @Test
     void testDecodeDbOpened() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeInt(5);
-        dos.writeLong(42);
-        dos.flush();
-
-        var opened = WireCodec.decodeDbOpened(baos.toByteArray());
+        byte[] body = packMap2("db_id", 5L, "tx_id", 42L);
+        var opened = WireCodec.decodeDbOpened(body);
         assertEquals(5, opened.dbId());
-        assertEquals(42, opened.txId());
+        assertEquals(42L, opened.txId());
     }
 
     @Test
     void testDecodeDbClosed() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeInt(5);
-        dos.flush();
-
-        var closed = WireCodec.decodeDbClosed(baos.toByteArray());
+        byte[] body = packMap1("db_id", 5L);
+        var closed = WireCodec.decodeDbClosed(body);
         assertEquals(5, closed.dbId());
     }
 
     @Test
     void testDecodeTxKey() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeLong(42);
-        dos.writeLong(1700000000000000L);
-        dos.flush();
-
-        var txKey = WireCodec.decodeTxKey(baos.toByteArray());
-        assertEquals(42, txKey.txId());
-        assertEquals(1700000000000000L, txKey.systemTime());
+        Instant now = Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString("tx_id"); packer.packLong(42);
+            packer.packString("system_time"); packer.packTimestamp(now);
+            body = packer.toByteArray();
+        }
+        var txKey = WireCodec.decodeTxKey(body);
+        assertEquals(42L, txKey.txId());
+        assertEquals(now, txKey.systemTime());
     }
 
     @Test
     void testDecodeTxResultCommitted() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeByte(0);
-        dos.writeLong(42);
-        dos.writeLong(1700000000000000L);
-        DataTypeCodec.encodeOptionalString(dos, null);
-        dos.flush();
-
-        var result = WireCodec.decodeTxResult(baos.toByteArray());
-        assertEquals(0, result.status());
-        assertEquals(42, result.txId());
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(4);
+            packer.packString("status"); packer.packLong(0);
+            packer.packString("tx_id"); packer.packLong(42);
+            packer.packString("system_time"); packer.packTimestamp(now);
+            packer.packString("error_message"); packer.packNil();
+            body = packer.toByteArray();
+        }
+        var result = WireCodec.decodeTxResult(body);
+        assertEquals((byte) 0, result.status());
+        assertEquals(42L, result.txId());
+        assertEquals(now, result.systemTime());
         assertNull(result.errorMessage());
     }
 
     @Test
     void testDecodeTxResultAborted() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeByte(1);
-        dos.writeLong(42);
-        dos.writeLong(1700000000000000L);
-        DataTypeCodec.encodeOptionalString(dos, "constraint violation");
-        dos.flush();
-
-        var result = WireCodec.decodeTxResult(baos.toByteArray());
-        assertEquals(1, result.status());
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(4);
+            packer.packString("status"); packer.packLong(1);
+            packer.packString("tx_id"); packer.packLong(42);
+            packer.packString("system_time"); packer.packTimestamp(now);
+            packer.packString("error_message"); packer.packString("constraint violation");
+            body = packer.toByteArray();
+        }
+        var result = WireCodec.decodeTxResult(body);
+        assertEquals((byte) 1, result.status());
         assertEquals("constraint violation", result.errorMessage());
     }
 
     @Test
     void testDecodeErrorResponse() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        dos.writeByte(SEVERITY_ERROR);
-        dos.writeShort(2000);
-        DataTypeCodec.encodeString(dos, "parse error");
-        DataTypeCodec.encodeOptionalString(dos, "unexpected token");
-        DataTypeCodec.encodeOptionalString(dos, "check syntax");
-        dos.flush();
-
-        var err = WireCodec.decodeErrorResponse(baos.toByteArray());
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(5);
+            packer.packString("severity"); packer.packString("E");
+            packer.packString("code"); packer.packLong(2000);
+            packer.packString("message"); packer.packString("parse error");
+            packer.packString("detail"); packer.packString("unexpected token");
+            packer.packString("hint"); packer.packString("check syntax");
+            body = packer.toByteArray();
+        }
+        var err = WireCodec.decodeErrorResponse(body);
         assertEquals(SEVERITY_ERROR, err.severity());
-        assertEquals(2000, err.code());
+        assertEquals((short) 2000, err.code());
         assertEquals("parse error", err.message());
         assertEquals("unexpected token", err.detail());
         assertEquals("check syntax", err.hint());
@@ -155,39 +164,23 @@ class WireCodecTest {
 
     @Test
     void testDecodeQueryResponse() throws IOException {
-        // Build a query response: RowDescription + 2 DataRows
-        var response = new ByteArrayOutputStream();
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString("columns");
+            packer.packArrayHeader(2);
+            packColumn(packer, "?e", TAG_LONG);
+            packColumn(packer, "?name", TAG_STRING);
+            packer.packString("rows");
+            packer.packArrayHeader(2);
+            packer.packArrayHeader(2);
+            packer.packLong(1); packer.packString("alice");
+            packer.packArrayHeader(2);
+            packer.packLong(2); packer.packString("bob");
+            body = packer.toByteArray();
+        }
 
-        // RowDescription frame
-        var rowDescPayload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(rowDescPayload);
-        dos.writeInt(2); // 2 columns
-        DataTypeCodec.encodeString(dos, "?e");
-        dos.writeByte(TAG_LONG);
-        DataTypeCodec.encodeString(dos, "?name");
-        dos.writeByte(TAG_STRING);
-        dos.flush();
-        writeFrame(response, MSG_ROW_DESCRIPTION, rowDescPayload.toByteArray());
-
-        // DataRow 1
-        var row1Payload = new ByteArrayOutputStream();
-        dos = new DataOutputStream(row1Payload);
-        dos.writeInt(2); // 2 values
-        DataTypeCodec.encode(dos, 1L);
-        DataTypeCodec.encode(dos, "alice");
-        dos.flush();
-        writeFrame(response, MSG_DATA_ROW, row1Payload.toByteArray());
-
-        // DataRow 2
-        var row2Payload = new ByteArrayOutputStream();
-        dos = new DataOutputStream(row2Payload);
-        dos.writeInt(2);
-        DataTypeCodec.encode(dos, 2L);
-        DataTypeCodec.encode(dos, "bob");
-        dos.flush();
-        writeFrame(response, MSG_DATA_ROW, row2Payload.toByteArray());
-
-        var result = WireCodec.decodeQueryResponse(response.toByteArray());
+        var result = WireCodec.decodeQueryResponse(body);
         assertEquals(2, result.columns().size());
         assertEquals("?e", result.columns().get(0).name());
         assertEquals(TAG_LONG, result.columns().get(0).dataType());
@@ -200,31 +193,45 @@ class WireCodecTest {
 
     @Test
     void testDecodeQueryResponseEmpty() throws IOException {
-        var response = new ByteArrayOutputStream();
-
-        // RowDescription with 1 column, no DataRows
-        var rowDescPayload = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(rowDescPayload);
-        dos.writeInt(1);
-        DataTypeCodec.encodeString(dos, "?e");
-        dos.writeByte(TAG_LONG);
-        dos.flush();
-        writeFrame(response, MSG_ROW_DESCRIPTION, rowDescPayload.toByteArray());
-
-        var result = WireCodec.decodeQueryResponse(response.toByteArray());
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString("columns");
+            packer.packArrayHeader(1);
+            packColumn(packer, "?e", TAG_LONG);
+            packer.packString("rows");
+            packer.packArrayHeader(0);
+            body = packer.toByteArray();
+        }
+        var result = WireCodec.decodeQueryResponse(body);
         assertEquals(1, result.columns().size());
         assertTrue(result.rows().isEmpty());
     }
 
     // ---------------------------------------------------------------
-    // Helper
+    // Helpers
     // ---------------------------------------------------------------
 
-    private void writeFrame(OutputStream out, byte type, byte[] payload) throws IOException {
-        var dos = new DataOutputStream(out);
-        dos.writeByte(type);
-        dos.writeInt(payload.length + 4);
-        dos.write(payload);
-        dos.flush();
+    private static void packColumn(MessagePacker packer, String name, byte type) throws IOException {
+        packer.packMapHeader(2);
+        packer.packString("name"); packer.packString(name);
+        packer.packString("type"); packer.packLong(Byte.toUnsignedLong(type));
+    }
+
+    private static byte[] packMap1(String k1, long v1) throws IOException {
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(1);
+            packer.packString(k1); packer.packLong(v1);
+            return packer.toByteArray();
+        }
+    }
+
+    private static byte[] packMap2(String k1, long v1, String k2, long v2) throws IOException {
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(2);
+            packer.packString(k1); packer.packLong(v1);
+            packer.packString(k2); packer.packLong(v2);
+            return packer.toByteArray();
+        }
     }
 }

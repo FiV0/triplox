@@ -33,8 +33,15 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::log::TxLog;
+use crate::msgpack_codec::{
+    decode_execute_request, decode_open_db_request, decode_query_request,
+    encode_db_closed_response, encode_db_opened_response, encode_error_body,
+    encode_query_response, encode_tx_key_response, encode_tx_result_response,
+};
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
-use crate::protocol::*;
+use crate::protocol::{
+    ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
+};
 
 // ---------------------------------------------------------------------------
 // DB Cache
@@ -242,7 +249,7 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 // Response helpers and error type
 // ---------------------------------------------------------------------------
 
-const CONTENT_TYPE: &str = "application/x-triplox";
+const CONTENT_TYPE: &str = "application/vnd.triplox+msgpack";
 
 fn ok_response(body: Vec<u8>) -> Response {
     (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
@@ -302,9 +309,7 @@ async fn open_db<L: TxLog + 'static>(
                 .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tx_id)
         }
-        (Some(tid), Some(st)) => {
-            let system_time = micros_to_datetime(st)
-                .map_err(|e| ApiError::bad_request(ErrorCode::InvalidDbHandle, e.to_string()))?;
+        (Some(tid), Some(system_time)) => {
             let tx_key = crate::transaction::TxKey { tx_id: tid, system_time };
             let node = state.node.clone();
             let db_id = state.handle_store
@@ -358,7 +363,7 @@ async fn query<L: TxLog + 'static>(
 
     let columns: Vec<ColumnDescription> = find_vars
         .into_iter()
-        .map(|name| ColumnDescription { name, data_type: TAG_UNKNOWN })
+        .map(|name| ColumnDescription { name, data_type: TAG_UNKNOWN, members: None })
         .collect();
 
     Ok(ok_response(encode_query_response(&columns, &result)))
@@ -374,7 +379,7 @@ async fn submit_tx<L: TxLog + 'static>(
     let tx_key = state.node.submit_tx(ops).await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    Ok(ok_response(encode_tx_key_response(tx_key.tx_id, tx_key.system_time.timestamp_micros())))
+    Ok(ok_response(encode_tx_key_response(tx_key.tx_id, tx_key.system_time)))
 }
 
 async fn execute_tx<L: TxLog + 'static>(
@@ -389,10 +394,10 @@ async fn execute_tx<L: TxLog + 'static>(
 
     Ok(match result {
         TransactionResult::TxCommited(tx_key) => ok_response(encode_tx_result_response(
-            0, tx_key.tx_id, tx_key.system_time.timestamp_micros(), &None,
+            0, tx_key.tx_id, tx_key.system_time, &None,
         )),
         TransactionResult::TxAborted(tx_key, err) => ok_response(encode_tx_result_response(
-            1, tx_key.tx_id, tx_key.system_time.timestamp_micros(), &Some(err.to_string()),
+            1, tx_key.tx_id, tx_key.system_time, &Some(err.to_string()),
         )),
     })
 }

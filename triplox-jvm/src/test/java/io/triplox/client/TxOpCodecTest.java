@@ -2,8 +2,9 @@ package io.triplox.client;
 
 import clojure.lang.Keyword;
 import org.junit.jupiter.api.Test;
+import org.msgpack.core.MessagePack;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.List;
 import java.util.TreeMap;
 
@@ -12,14 +13,13 @@ import static org.junit.jupiter.api.Assertions.*;
 class TxOpCodecTest {
 
     private List<TxOp> roundtrip(List<TxOp> ops) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        TxOpCodec.encode(dos, ops);
-        dos.flush();
-
-        var bin = new ByteArrayInputStream(baos.toByteArray());
-        var dis = new DataInputStream(bin);
-        return TxOpCodec.decode(dis);
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            TxOpCodec.packOps(packer, ops);
+            byte[] bytes = packer.toByteArray();
+            try (var unpacker = MessagePack.newDefaultUnpacker(bytes)) {
+                return TxOpCodec.unpackOps(unpacker);
+            }
+        }
     }
 
     @Test
@@ -114,7 +114,6 @@ class TxOpCodecTest {
 
     @Test
     void testRefValueAsLong() throws IOException {
-        // Ref values are now just DataType values (Long for entity IDs)
         var result = roundtrip(List.of(new TxOp.Add(
                 new EntityRef.Id(1),
                 Keyword.intern("friend"),
