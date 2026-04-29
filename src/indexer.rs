@@ -304,9 +304,7 @@ impl Indexer {
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self
-            .finalize_datoms_for_commit(&self.slatedb, datoms)
-            .await?;
+        let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
@@ -342,11 +340,7 @@ impl Indexer {
         Ok(tx_key)
     }
 
-    async fn finalize_datoms_for_commit(
-        &self,
-        db: &Db,
-        datoms: Vec<Datom>,
-    ) -> Result<Vec<Datom>, Error> {
+    async fn finalize_datoms_for_commit(&self, datoms: Vec<Datom>) -> Result<Vec<Datom>, Error> {
         // Batch resolve all cardinality one assertion old values via an EAV scan
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
@@ -378,7 +372,8 @@ impl Indexer {
         let mut old_values: HashMap<(Entid, Entid), DataType> =
             HashMap::with_capacity(eav_prefixes.len());
         if let Some(first_prefix) = eav_prefixes.keys().next() {
-            let mut iter = db
+            let mut iter = self
+                .slatedb
                 .scan_with_options(
                     first_prefix.clone()..vec![codec::EAV_END],
                     &DEFAULT_SCAN_OPTIONS,
