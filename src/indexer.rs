@@ -2,7 +2,7 @@ use anyhow::{bail, Error, Result};
 use bytes::Bytes;
 use log::{error, trace, warn};
 use slatedb::Db;
-use slatedb::IsolationLevel;
+use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -30,9 +30,9 @@ pub struct Indexer {
     tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
 }
 
-/// Write index entries for datoms into a SlateDB transaction.
+/// Write index entries for datoms into a SlateDB WriteBatch.
 pub(crate) fn write_index_entries(
-    txn: &slatedb::DbTransaction,
+    batch: &mut WriteBatch,
     datoms: &[Datom],
     schema: &Schema,
     tx_eid: i64,
@@ -72,7 +72,7 @@ pub(crate) fn write_index_entries(
         key_buf.extend_from_slice(value);
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
-        txn.put(&key_buf, [])?;
+        batch.put(&key_buf, b"");
 
         // AVE
         key_buf.clear();
@@ -82,7 +82,7 @@ pub(crate) fn write_index_entries(
         key_buf.extend_from_slice(entity_bytes);
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
-        txn.put(&key_buf, [])?;
+        batch.put(&key_buf, b"");
 
         // AEV
         key_buf.clear();
@@ -92,7 +92,7 @@ pub(crate) fn write_index_entries(
         key_buf.extend_from_slice(value);
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
-        txn.put(&key_buf, [])?;
+        batch.put(&key_buf, b"");
 
         // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
@@ -101,13 +101,13 @@ pub(crate) fn write_index_entries(
             key_buf.push(codec::AE);
             key_buf.extend_from_slice(&attr_bytes);
             key_buf.extend_from_slice(entity_bytes);
-            txn.put(&key_buf, [])?;
+            batch.put(&key_buf, b"");
 
             key_buf.clear();
             key_buf.push(codec::AV);
             key_buf.extend_from_slice(&attr_bytes);
             key_buf.extend_from_slice(value);
-            txn.put(&key_buf, [])?;
+            batch.put(&key_buf, b"");
         }
     }
 
@@ -265,8 +265,9 @@ impl Indexer {
     /// Transact a set of operations, automatically retracting old values for
     /// cardinality:one attributes when a new value is asserted.
     ///
-    /// Uses a SlateDB transaction for atomic read-then-write: the EAV index scan
-    /// and all index writes happen in a single transaction.
+    /// Pipeline reads go directly against the DB (the indexer is the only
+    /// writer, so they see the latest committed state). Pipeline writes are
+    /// buffered in a `WriteBatch` and committed atomically at the end.
     pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
         match self.transact_tx_inner(tx_key, tx_ops).await {
             Ok(tx_key) => Ok(tx_key),
@@ -291,28 +292,29 @@ impl Indexer {
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
-        // Create txn early — needed for lookup ref resolution AND finalize
-        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
-
         // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
         let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
 
         // 3. Resolve lookup refs via AVE index → DatomWithTempids
-        let with_tempids = tx::resolve_lookup_refs(expanded, &self.metadata.schema, &txn).await?;
+        let with_tempids =
+            tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
 
         // 4. Resolve tempids + build tx entity datoms
         let mut datoms = tx::resolve_tempids(&with_tempids, &mut pending_pm)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self.finalize_datoms_for_commit(&txn, datoms).await?;
+        let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 6. General validation
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Write indices + commit
-        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
-        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        let mut batch = WriteBatch::new();
+        write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
+        self.slatedb
+            .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await?;
 
         // 8. Apply on success only
         self.metadata.partition_map = pending_pm;
@@ -338,11 +340,7 @@ impl Indexer {
         Ok(tx_key)
     }
 
-    async fn finalize_datoms_for_commit(
-        &self,
-        txn: &slatedb::DbTransaction,
-        datoms: Vec<Datom>,
-    ) -> Result<Vec<Datom>, Error> {
+    async fn finalize_datoms_for_commit(&self, datoms: Vec<Datom>) -> Result<Vec<Datom>, Error> {
         // Batch resolve all cardinality one assertion old values via an EAV scan
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
@@ -374,7 +372,8 @@ impl Indexer {
         let mut old_values: HashMap<(Entid, Entid), DataType> =
             HashMap::with_capacity(eav_prefixes.len());
         if let Some(first_prefix) = eav_prefixes.keys().next() {
-            let mut iter = txn
+            let mut iter = self
+                .slatedb
                 .scan_with_options(
                     first_prefix.clone()..vec![codec::EAV_END],
                     &DEFAULT_SCAN_OPTIONS,
@@ -468,9 +467,11 @@ impl Indexer {
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
         let datoms = build_tx_entity_datoms(tx_eid, tx_key, false, Some(error));
-        let txn = self.slatedb.begin(IsolationLevel::Snapshot).await?;
-        write_index_entries(&txn, &datoms, &self.metadata.schema, tx_eid)?;
-        txn.commit_with_options(&DEFAULT_WRITE_OPTIONS).await?;
+        let mut batch = WriteBatch::new();
+        write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
+        self.slatedb
+            .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await?;
         // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
         self.latest_indexed_tx = Some(tx_key);
@@ -1603,6 +1604,39 @@ mod tests {
             "Expected 2 ADD entries for same value on cardinality-many"
         );
 
+        Ok(())
+    }
+
+    /// A lookup ref pointing at an entity being created in the SAME transaction
+    /// must not resolve — the target isn't committed yet. Guards against
+    /// accidentally reintroducing read-your-own-writes into the pipeline.
+    #[tokio::test]
+    async fn test_lookup_ref_to_same_tx_entity_is_rejected() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let tx_ops = vec![
+            TxOp::put(vec![
+                (kw!(:name), "Alice".into()),
+                (kw!(:email), "alice@example.com".into()),
+            ]),
+            TxOp::Add {
+                entity: EntityRef::LookupRef(
+                    kw!(:email),
+                    DataType::String("alice@example.com".into()),
+                ),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            },
+        ];
+        let err = indexer.transact_tx(tx_key, tx_ops).await.unwrap_err();
+        assert!(
+            err.to_string().contains("No entity found for lookup ref"),
+            "expected lookup-ref failure, got: {err}"
+        );
         Ok(())
     }
 }

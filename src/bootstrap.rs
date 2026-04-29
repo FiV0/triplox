@@ -10,7 +10,7 @@ use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indi
 use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tx;
 use crate::util::concat_bytes;
-use slatedb::{Db, IsolationLevel};
+use slatedb::{Db, WriteBatch};
 
 const META_KEY_VERSION: &[u8] = b"version";
 
@@ -88,9 +88,8 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
             // Same 3-stage pipeline as the indexer
-            let txn = slate.db.begin(IsolationLevel::Snapshot).await.unwrap();
             let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
-            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &txn)
+            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
                 .await
                 .unwrap();
             let mut boot_pm = PartitionMap::new();
@@ -113,11 +112,14 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
                 "bootstrap attribute_map mismatch"
             );
 
-            write_index_entries(&txn, &datoms, &bootstrap_schema, 0_i64).unwrap();
+            let mut batch = WriteBatch::new();
+            write_index_entries(&mut batch, &datoms, &bootstrap_schema, 0_i64).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
-            txn.put(&version_key, version.as_bytes()).unwrap();
-            txn.commit_with_options(&DEFAULT_WRITE_OPTIONS)
+            batch.put(&version_key, version.as_bytes());
+            slate
+                .db
+                .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
                 .await
                 .unwrap();
 
