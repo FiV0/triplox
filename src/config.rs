@@ -34,8 +34,6 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_max_open_dbs")]
-    pub max_open_dbs: usize,
 }
 
 fn default_region() -> String {
@@ -50,16 +48,11 @@ fn default_port() -> u16 {
     5490
 }
 
-fn default_max_open_dbs() -> usize {
-    1024
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         ServerConfig {
             host: default_host(),
             port: default_port(),
-            max_open_dbs: default_max_open_dbs(),
         }
     }
 }

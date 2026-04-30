@@ -26,7 +26,7 @@ async fn start_test_server() -> (String, CancellationToken) {
     let url = format!("http://{}", addr);
 
     let node = Arc::new(Node::memory_node().await);
-    let server = Server::new(node, 1024);
+    let server = Server::new(node);
 
     let token = CancellationToken::new();
     let server_token = token.clone();
@@ -317,7 +317,7 @@ async fn start_dev_server() -> (String, CancellationToken) {
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
 
-    let server = DevServer::new(1024);
+    let server = DevServer::new();
 
     let token = CancellationToken::new();
     let server_token = token.clone();
