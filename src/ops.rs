@@ -230,10 +230,8 @@ pub(crate) fn value_to_data_type(value: Value) -> Result<DataType> {
             Ok(DataType::Map(out))
         }
         Value::Nil => anyhow::bail!("nil is not a valid TxOp value"),
-        Value::List(_) => {
-            anyhow::bail!("lookup-ref / tx-function in value position is not supported")
-        }
         Value::Set(_) => anyhow::bail!("set is not a valid TxOp value"),
+        v @ Value::List(_) => anyhow::bail!("invalid TxOp value: {:?}", v),
         Value::PlainSymbol(s) => anyhow::bail!("symbol {} is not a valid TxOp value", s),
         Value::NamespacedSymbol(s) => anyhow::bail!("symbol {} is not a valid TxOp value", s),
     }
@@ -241,7 +239,7 @@ pub(crate) fn value_to_data_type(value: Value) -> Result<DataType> {
 
 /// Convert an EDN `Value` to an `EntityRef`.
 /// Accepts: integer (`Id`), text (`TempId`), namespaced keyword (`Ident`),
-/// or `(lookup-ref :attr value)` list (`LookupRef`).
+/// or `[:attr value]` 2-vector (`LookupRef`, Datomic-style).
 pub(crate) fn value_to_entity_ref(value: Value) -> Result<EntityRef> {
     match value {
         Value::Integer(i) => Ok(EntityRef::Id(i)),
@@ -252,40 +250,26 @@ pub(crate) fn value_to_entity_ref(value: Value) -> Result<EntityRef> {
             }
             Ok(EntityRef::Ident(k))
         }
-        Value::List(items) => {
-            let mut iter = items.into_iter();
-            match iter.next() {
-                Some(Value::PlainSymbol(sym)) if sym.0 == "lookup-ref" => {
-                    let attr = match iter.next() {
-                        Some(Value::Keyword(k)) => k,
-                        Some(other) => {
-                            anyhow::bail!(
-                                "lookup-ref attribute must be a keyword, got {:?}",
-                                other
-                            )
-                        }
-                        None => anyhow::bail!("lookup-ref missing attribute"),
-                    };
-                    let v = match iter.next() {
-                        Some(v) => value_to_data_type(v)?,
-                        None => anyhow::bail!("lookup-ref missing value"),
-                    };
-                    if iter.next().is_some() {
-                        anyhow::bail!("lookup-ref takes exactly two arguments");
-                    }
-                    Ok(EntityRef::LookupRef(attr, v))
-                }
-                Some(Value::PlainSymbol(sym)) => {
-                    anyhow::bail!("unsupported list form: ({} ...)", sym.0)
-                }
-                Some(other) => {
-                    anyhow::bail!("expected entity ref, got list starting with {:?}", other)
-                }
-                None => anyhow::bail!("empty list is not a valid entity ref"),
+        Value::Vector(items) => {
+            if items.len() != 2 {
+                anyhow::bail!(
+                    "lookup ref must be [:attr value] 2-vector, got {} elements",
+                    items.len()
+                );
             }
+            let mut iter = items.into_iter();
+            let attr = match iter.next().unwrap() {
+                Value::Keyword(k) => k,
+                other => anyhow::bail!(
+                    "lookup ref attribute must be a keyword, got {:?}",
+                    other
+                ),
+            };
+            let v = value_to_data_type(iter.next().unwrap())?;
+            Ok(EntityRef::LookupRef(attr, v))
         }
         other => anyhow::bail!(
-            "expected entity ref (integer, string, keyword, or lookup-ref), got {:?}",
+            "expected entity ref (integer, string, keyword, or [:attr value] lookup ref), got {:?}",
             other
         ),
     }
@@ -690,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_parse_add_with_lookup_ref() {
-        let op: TxOp = "[:db/add (lookup-ref :user/email \"a@b.c\") :user/name \"A\"]"
+        let op: TxOp = "[:db/add [:user/email \"a@b.c\"] :user/name \"A\"]"
             .parse()
             .unwrap();
         assert_eq!(
