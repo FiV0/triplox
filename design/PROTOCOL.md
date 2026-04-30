@@ -103,8 +103,6 @@ maps themselves (`BTreeMap` in Rust, `TreeMap` in JVM tests).
 | 2        | Uuid    | 16 bytes, RFC 4122 raw layout.                                                           |
 | 3        | Keyword | UTF-8 bytes of `"ns/name"` (or just `"name"` for un-namespaced). No leading colon.       |
 
-Ext code `4` is reserved for a future `DataType::Ref` variant.
-
 ### 2.3 Tagged Unions
 
 `EntityRef`, `TxOp`, and `QueryArg` are encoded as msgpack maps with a `kind`
@@ -303,8 +301,6 @@ a numeric error code (see §5).
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted                                       |
 | 5xxx  | Internal/protocol     | 5000 InternalError, 5001 MessageTooLarge, 5002 InvalidMessageType, 5003 QueryCancelled, 5004 ServerShuttingDown |
 | 6xxx  | DB handle errors      | 6000 InvalidDbHandle, 6001 TooManyOpenDbs                          |
-
-The `4xxx` range was previously assigned to subscription errors and is reserved.
 
 ---
 
