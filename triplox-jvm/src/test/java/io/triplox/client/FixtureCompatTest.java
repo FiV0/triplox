@@ -81,8 +81,7 @@ class FixtureCompatTest {
             assertArrayEquals(new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF},
                     (byte[]) decoded.get("bytes"));
             assertEquals(Math.PI, (Double) decoded.get("double"));
-            // float32 round-trips as Double via msgpack-core's unpack
-            assertEquals(1.5, ((Double) decoded.get("float")).doubleValue(), 1e-9);
+            assertEquals(1.5f, (Float) decoded.get("float"), 1e-6f);
             assertEquals(Instant.ofEpochSecond(1_700_000_000L, 123_456_789),
                     decoded.get("instant"));
             assertEquals(Keyword.intern("person", "name"), decoded.get("keyword"));

@@ -122,4 +122,28 @@ class TxOpCodecTest {
         var add = (TxOp.Add) result.get(0);
         assertEquals(2L, add.value());
     }
+
+    @Test
+    void testUnpackOpAcceptsAnyFieldOrder() throws IOException {
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packArrayHeader(1);
+            packer.packMapHeader(4);
+            packer.packString("value"); packer.packString("alice");
+            packer.packString("attr"); packer.packString("name");
+            packer.packString("entity");
+            packer.packMapHeader(2);
+            packer.packString("id"); packer.packLong(42L);
+            packer.packString("kind"); packer.packString("id");
+            packer.packString("kind"); packer.packString("add");
+
+            try (var unpacker = MessagePack.newDefaultUnpacker(packer.toByteArray())) {
+                var result = TxOpCodec.unpackOps(unpacker);
+                assertEquals(1, result.size());
+                var add = (TxOp.Add) result.get(0);
+                assertEquals(new EntityRef.Id(42), add.entity());
+                assertEquals(Keyword.intern("name"), add.attribute());
+                assertEquals("alice", add.value());
+            }
+        }
+    }
 }

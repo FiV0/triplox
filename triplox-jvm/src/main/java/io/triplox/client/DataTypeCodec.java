@@ -14,6 +14,7 @@ import java.util.UUID;
 import clojure.lang.Keyword;
 import org.msgpack.core.MessagePacker;
 import org.msgpack.core.MessageUnpacker;
+import org.msgpack.core.MessageFormat;
 import org.msgpack.value.ValueType;
 
 import static io.triplox.client.MessageTypes.*;
@@ -44,6 +45,9 @@ import static io.triplox.client.MessageTypes.*;
  */
 public final class DataTypeCodec {
     private DataTypeCodec() {}
+
+    private static final BigInteger I128_MIN = BigInteger.ONE.shiftLeft(127).negate();
+    private static final BigInteger I128_MAX = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
 
     // ---------------------------------------------------------------
     // Pack
@@ -123,8 +127,10 @@ public final class DataTypeCodec {
             case BOOLEAN -> unpacker.unpackBoolean();
             case INTEGER -> unpacker.unpackLong();
             case FLOAT -> {
-                double d = unpacker.unpackDouble();
-                yield d;
+                if (unpacker.getNextFormat() == MessageFormat.FLOAT32) {
+                    yield Float.valueOf(unpacker.unpackFloat());
+                }
+                yield Double.valueOf(unpacker.unpackDouble());
             }
             case STRING -> unpacker.unpackString();
             case BINARY -> {
@@ -223,7 +229,10 @@ public final class DataTypeCodec {
     // i128 BigInteger helpers
     // ---------------------------------------------------------------
 
-    static byte[] toBigEndianI128(BigInteger bi) {
+    static byte[] toBigEndianI128(BigInteger bi) throws IOException {
+        if (bi.compareTo(I128_MIN) < 0 || bi.compareTo(I128_MAX) > 0) {
+            throw new IOException("BigInteger out of i128 range: " + bi);
+        }
         byte[] raw = bi.toByteArray();
         byte[] buf = new byte[16];
         byte fill = (bi.signum() < 0) ? (byte) 0xFF : (byte) 0x00;

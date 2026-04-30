@@ -69,7 +69,11 @@ public final class TxOpCodec {
     }
 
     public static EntityRef unpackEntityRef(MessageUnpacker unpacker) throws IOException {
-        Map<String, Object> map = unpackTaggedMap(unpacker);
+        Map<String, Object> map = expectStringMap(DataTypeCodec.unpack(unpacker), "EntityRef");
+        return entityRefFromMap(map);
+    }
+
+    private static EntityRef entityRefFromMap(Map<String, Object> map) throws IOException {
         String kind = takeString(map, "kind");
         return switch (kind) {
             case "id" -> new EntityRef.Id((Long) requireField(map, "id"));
@@ -129,109 +133,55 @@ public final class TxOpCodec {
     }
 
     public static TxOp unpackOp(MessageUnpacker unpacker) throws IOException {
-        int count = unpacker.unpackMapHeader();
-        // Parse the map. We need special-case handling for "entity" (an EntityRef map),
-        // so we can't fully buffer with `unpack(...)` for those fields. Read kind first
-        // then dispatch.
-        String kind = null;
-        Map<String, Object> simple = new LinkedHashMap<>();
-        EntityRef entity = null;
-        // Two-pass: collect field names+values, but EntityRef must be unpacked inline.
-        // Easier: read the first key (must be "kind"), then dispatch by kind and
-        // read the rest in declared order.
-        if (count < 1) {
-            throw new IOException("TxOp map must contain at least \"kind\"");
-        }
-        String firstKey = unpacker.unpackString();
-        if (!"kind".equals(firstKey)) {
-            throw new IOException("TxOp map first key must be \"kind\", got: " + firstKey);
-        }
-        kind = unpacker.unpackString();
+        Map<String, Object> map = expectStringMap(DataTypeCodec.unpack(unpacker), "TxOp");
+        String kind = takeString(map, "kind");
         return switch (kind) {
-            case "put" -> readPut(unpacker, count - 1);
-            case "add" -> readAddOrRetract(unpacker, count - 1, /*retract=*/false);
-            case "retract" -> readAddOrRetract(unpacker, count - 1, /*retract=*/true);
-            case "delete" -> {
-                EntityRef e = readEntityField(unpacker, count - 1);
-                yield new TxOp.Delete(e);
-            }
-            case "erase" -> {
-                EntityRef e = readEntityField(unpacker, count - 1);
-                yield new TxOp.Erase(e);
-            }
+            case "put" -> readPut(map);
+            case "add" -> readAddOrRetract(map, /*retract=*/false);
+            case "retract" -> readAddOrRetract(map, /*retract=*/true);
+            case "delete" -> new TxOp.Delete(takeEntityRef(map, "entity"));
+            case "erase" -> new TxOp.Erase(takeEntityRef(map, "entity"));
             default -> throw new IOException("Unknown TxOp kind: " + kind);
         };
     }
 
-    private static TxOp.Put readPut(MessageUnpacker unpacker, int remainingFields) throws IOException {
-        Map<Keyword, Object> doc = null;
-        for (int i = 0; i < remainingFields; i++) {
-            String key = unpacker.unpackString();
-            switch (key) {
-                case "doc" -> {
-                    int docSize = unpacker.unpackMapHeader();
-                    doc = new LinkedHashMap<>();
-                    for (int j = 0; j < docSize; j++) {
-                        String kStr = unpacker.unpackString();
-                        Object v = DataTypeCodec.unpack(unpacker);
-                        doc.put(DataTypeCodec.keywordFromWire(kStr), v);
-                    }
-                }
-                default -> unpacker.skipValue();
-            }
+    private static TxOp.Put readPut(Map<String, Object> map) throws IOException {
+        Map<String, Object> rawDoc = expectStringMap(requireField(map, "doc"), "Put.doc");
+        Map<Keyword, Object> doc = new LinkedHashMap<>();
+        for (var entry : rawDoc.entrySet()) {
+            doc.put(DataTypeCodec.keywordFromWire(entry.getKey()), entry.getValue());
         }
-        if (doc == null) throw new IOException("Put missing \"doc\" field");
         return new TxOp.Put(doc);
     }
 
-    private static TxOp readAddOrRetract(MessageUnpacker unpacker, int remainingFields, boolean retract)
+    private static TxOp readAddOrRetract(Map<String, Object> map, boolean retract)
             throws IOException {
-        EntityRef entity = null;
-        Keyword attr = null;
-        Object value = null;
-        boolean valueSet = false;
-        for (int i = 0; i < remainingFields; i++) {
-            String key = unpacker.unpackString();
-            switch (key) {
-                case "entity" -> entity = unpackEntityRef(unpacker);
-                case "attr" -> attr = DataTypeCodec.keywordFromWire(unpacker.unpackString());
-                case "value" -> { value = DataTypeCodec.unpack(unpacker); valueSet = true; }
-                default -> unpacker.skipValue();
-            }
-        }
-        if (entity == null || attr == null || !valueSet) {
-            throw new IOException((retract ? "Retract" : "Add") + " missing required field(s)");
-        }
+        EntityRef entity = takeEntityRef(map, "entity");
+        Keyword attr = DataTypeCodec.keywordFromWire(takeString(map, "attr"));
+        Object value = requireField(map, "value");
         return retract ? new TxOp.Retract(entity, attr, value) : new TxOp.Add(entity, attr, value);
     }
 
-    private static EntityRef readEntityField(MessageUnpacker unpacker, int remainingFields)
-            throws IOException {
-        EntityRef entity = null;
-        for (int i = 0; i < remainingFields; i++) {
-            String key = unpacker.unpackString();
-            if ("entity".equals(key)) {
-                entity = unpackEntityRef(unpacker);
-            } else {
-                unpacker.skipValue();
-            }
-        }
-        if (entity == null) throw new IOException("missing \"entity\" field");
-        return entity;
+    private static EntityRef takeEntityRef(Map<String, Object> map, String name) throws IOException {
+        return entityRefFromMap(expectStringMap(requireField(map, name), name));
     }
 
     // ---------------------------------------------------------------
     // EntityRef map decode helpers
     // ---------------------------------------------------------------
 
-    private static Map<String, Object> unpackTaggedMap(MessageUnpacker unpacker) throws IOException {
-        int count = unpacker.unpackMapHeader();
-        var map = new LinkedHashMap<String, Object>();
-        for (int i = 0; i < count; i++) {
-            String key = unpacker.unpackString();
-            map.put(key, DataTypeCodec.unpack(unpacker));
+    private static Map<String, Object> expectStringMap(Object value, String context) throws IOException {
+        if (!(value instanceof Map<?, ?> raw)) {
+            throw new IOException(context + " expected map, got " + value.getClass().getName());
         }
-        return map;
+        var out = new LinkedHashMap<String, Object>();
+        for (var entry : raw.entrySet()) {
+            if (!(entry.getKey() instanceof String key)) {
+                throw new IOException(context + " map key expected String, got " + entry.getKey().getClass().getName());
+            }
+            out.put(key, entry.getValue());
+        }
+        return out;
     }
 
     private static String takeString(Map<String, Object> map, String name) throws IOException {

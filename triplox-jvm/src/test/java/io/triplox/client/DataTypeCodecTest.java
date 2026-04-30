@@ -48,6 +48,22 @@ class DataTypeCodecTest {
     }
 
     @Test
+    void testBigIntI128Bounds() throws IOException {
+        var min = BigInteger.ONE.shiftLeft(127).negate();
+        var max = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+        assertEquals(min, roundtrip(min));
+        assertEquals(max, roundtrip(max));
+    }
+
+    @Test
+    void testBigIntRejectsOutOfI128Range() {
+        var belowMin = BigInteger.ONE.shiftLeft(127).negate().subtract(BigInteger.ONE);
+        var aboveMax = BigInteger.ONE.shiftLeft(127);
+        assertThrows(IOException.class, () -> roundtrip(belowMin));
+        assertThrows(IOException.class, () -> roundtrip(aboveMax));
+    }
+
+    @Test
     void testBoolean() throws IOException {
         assertEquals(true, roundtrip(true));
         assertEquals(false, roundtrip(false));
@@ -62,15 +78,16 @@ class DataTypeCodecTest {
 
     @Test
     void testDouble() throws IOException {
-        assertEquals(Math.PI, roundtrip(Math.PI));
+        Object r = roundtrip(Math.PI);
+        assertInstanceOf(Double.class, r);
+        assertEquals(Math.PI, (Double) r);
     }
 
     @Test
     void testFloat() throws IOException {
-        // unpack always returns Double; check via cast
         Object r = roundtrip((float) Math.E);
-        assertTrue(r instanceof Double, "msgpack-core unpack returns Double for both float32 and float64");
-        assertEquals((double) (float) Math.E, ((Double) r).doubleValue(), 1e-6);
+        assertInstanceOf(Float.class, r);
+        assertEquals((float) Math.E, (Float) r, 1e-6f);
     }
 
     @Test
