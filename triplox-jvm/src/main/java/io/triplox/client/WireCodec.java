@@ -28,13 +28,24 @@ public final class WireCodec {
      * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
      */
     public static byte[] encodeOpenDbBody(Long txId) throws IOException {
+        return encodeOpenDbBody(txId, null);
+    }
+
+    /**
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
+     */
+    public static byte[] encodeOpenDbBody(Long txId, Instant systemTime) throws IOException {
+        if ((txId == null) != (systemTime == null)) {
+            throw new IOException("tx_id and system_time must both be set, or both be nil");
+        }
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(2);
             packer.packString("tx_id");
             if (txId == null) packer.packNil();
             else packer.packLong(txId);
             packer.packString("system_time");
-            packer.packNil(); // client never opens at a specific system_time today
+            if (systemTime == null) packer.packNil();
+            else packer.packTimestamp(systemTime);
             return packer.toByteArray();
         }
     }

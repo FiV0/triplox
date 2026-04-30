@@ -44,4 +44,30 @@ class TriploxNodeTest {
             }
         }
     }
+
+    @Test
+    void testOpenDbAtHistoricalTx() throws Exception {
+        try (var node = TriploxNode.connect(host(), port())) {
+            var schema = new TreeMap<Keyword, Object>();
+            schema.put(Keyword.intern("db", "ident"), Keyword.intern("historical-name"));
+            schema.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", "string"));
+            schema.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
+            node.executeTx(List.of(new TxOp.Put(schema)));
+
+            var alice = new TreeMap<Keyword, Object>();
+            alice.put(Keyword.intern("historical-name"), "alice");
+            var tx1 = node.executeTx(List.of(new TxOp.Put(alice)));
+            assertTrue(tx1.isCommitted());
+
+            var bob = new TreeMap<Keyword, Object>();
+            bob.put(Keyword.intern("historical-name"), "bob");
+            var tx2 = node.executeTx(List.of(new TxOp.Put(bob)));
+            assertTrue(tx2.isCommitted());
+
+            try (var db = node.openDbAsOf(new TxKeyResult(tx1.txId(), tx1.systemTime()))) {
+                var rows = db.query("{:find [?name] :where [[?e :historical-name ?name]]}");
+                assertEquals(List.of(List.of("alice")), rows);
+            }
+        }
+    }
 }

@@ -34,14 +34,21 @@ class WireCodecTest {
 
     @Test
     void testEncodeOpenDbBodyWithTxId() throws IOException {
-        byte[] body = WireCodec.encodeOpenDbBody(42L);
+        Instant now = Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
+        byte[] body = WireCodec.encodeOpenDbBody(42L, now);
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(42L, unpacker.unpackLong());
             assertEquals("system_time", unpacker.unpackString());
-            unpacker.unpackNil();
+            assertEquals(now, unpacker.unpackTimestamp());
         }
+    }
+
+    @Test
+    void testEncodeOpenDbBodyRejectsPartialTxKey() {
+        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(42L));
+        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(null, Instant.EPOCH));
     }
 
     @Test
