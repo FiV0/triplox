@@ -35,8 +35,9 @@ use hyper_util::service::TowerToHyperService;
 use crate::log::TxLog;
 use crate::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request,
-    encode_db_closed_response, encode_db_opened_response, encode_error_body,
-    encode_query_response, encode_tx_key_response, encode_tx_result_response,
+    encode_db_closed_response, encode_db_opened_response, encode_error_body, encode_query_response,
+    encode_tx_key_response, encode_tx_result_response, DbClosedResponse, DbOpenedResponse,
+    ErrorResponseBody, QueryResponse, TxKeyResponse, TxResultResponse,
 };
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
 use crate::protocol::{
@@ -252,7 +253,12 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 const CONTENT_TYPE: &str = "application/vnd.triplox+msgpack";
 
 fn ok_response(body: Vec<u8>) -> Response {
-    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+        body,
+    )
+        .into_response()
 }
 
 struct ApiError {
@@ -263,7 +269,11 @@ struct ApiError {
 
 impl ApiError {
     fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
-        ApiError { status, code, message: message.into() }
+        ApiError {
+            status,
+            code,
+            message: message.into(),
+        }
     }
 
     fn bad_request(code: ErrorCode, message: impl Into<String>) -> Self {
@@ -281,8 +291,19 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = encode_error_body(SEVERITY_ERROR, self.code.as_u16(), &self.message, &None, &None);
-        (self.status, [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], body).into_response()
+        let body = encode_error_body(&ErrorResponseBody {
+            severity: SEVERITY_ERROR,
+            code: self.code.as_u16(),
+            message: self.message,
+            detail: None,
+            hint: None,
+        });
+        (
+            self.status,
+            [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+            body,
+        )
+            .into_response()
     }
 }
 
@@ -295,36 +316,57 @@ async fn open_db<L: TxLog + 'static>(
     axum::Extension(conn_id): axum::Extension<ConnId>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let (tx_id, system_time) = decode_open_db_request(&body)
-        .map_err(|e| ApiError::bad_request(ErrorCode::InvalidStartup, format!("Invalid open_db request: {}", e)))?;
+    let open_request = decode_open_db_request(&body).map_err(|e| {
+        ApiError::bad_request(
+            ErrorCode::InvalidStartup,
+            format!("Invalid open_db request: {}", e),
+        )
+    })?;
 
-    let (db_id, tx_id) = match (tx_id, system_time) {
+    let (db_id, tx_id) = match (open_request.tx_id, open_request.system_time) {
         (None, None) => {
-            let db = state.node.db().await
+            let db = state
+                .node
+                .db()
+                .await
                 .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
             let tx_id = db.tx_key().tx_id;
-            let db_id = state.handle_store
+            let db_id = state
+                .handle_store
                 .open(conn_id.0, tx_id, || async move { Ok(db) })
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tx_id)
         }
         (Some(tid), Some(system_time)) => {
-            let tx_key = crate::transaction::TxKey { tx_id: tid, system_time };
+            let tx_key = crate::transaction::TxKey {
+                tx_id: tid,
+                system_time,
+            };
             let node = state.node.clone();
-            let db_id = state.handle_store
-                .open(conn_id.0, tid, || async move { node.db_as_of(tx_key).await })
+            let db_id = state
+                .handle_store
+                .open(
+                    conn_id.0,
+                    tid,
+                    || async move { node.db_as_of(tx_key).await },
+                )
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tid)
         }
-        _ => return Err(ApiError::bad_request(
-            ErrorCode::InvalidStartup,
-            "OpenDb requires both tx_id and system_time, or neither",
-        )),
+        _ => {
+            return Err(ApiError::bad_request(
+                ErrorCode::InvalidStartup,
+                "OpenDb requires both tx_id and system_time, or neither",
+            ))
+        }
     };
 
-    Ok(ok_response(encode_db_opened_response(db_id, tx_id)))
+    Ok(ok_response(encode_db_opened_response(&DbOpenedResponse {
+        db_id,
+        tx_id,
+    })))
 }
 
 async fn close_db<L: TxLog + 'static>(
@@ -332,9 +374,14 @@ async fn close_db<L: TxLog + 'static>(
     Path(db_id): Path<u32>,
 ) -> Result<Response, ApiError> {
     if state.handle_store.remove(db_id).await {
-        Ok(ok_response(encode_db_closed_response(db_id)))
+        Ok(ok_response(encode_db_closed_response(&DbClosedResponse {
+            db_id,
+        })))
     } else {
-        Err(ApiError::not_found(ErrorCode::InvalidDbHandle, format!("Invalid DB handle: {}", db_id)))
+        Err(ApiError::not_found(
+            ErrorCode::InvalidDbHandle,
+            format!("Invalid DB handle: {}", db_id),
+        ))
     }
 }
 
@@ -343,13 +390,23 @@ async fn query<L: TxLog + 'static>(
     Path(db_id): Path<u32>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let db = state.handle_store.get_db(db_id).await
-        .ok_or_else(|| ApiError::not_found(ErrorCode::InvalidDbHandle, format!("Invalid DB handle: {}", db_id)))?;
+    let db = state.handle_store.get_db(db_id).await.ok_or_else(|| {
+        ApiError::not_found(
+            ErrorCode::InvalidDbHandle,
+            format!("Invalid DB handle: {}", db_id),
+        )
+    })?;
 
-    let (query_string, args) = decode_query_request(&body)
-        .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, format!("Invalid query request: {}", e)))?;
+    let query_request = decode_query_request(&body).map_err(|e| {
+        ApiError::bad_request(
+            ErrorCode::ParseError,
+            format!("Invalid query request: {}", e),
+        )
+    })?;
 
-    let parsed = query_string.into_query()
+    let parsed = query_request
+        .query
+        .into_query()
         .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, e.to_string()))?;
 
     // Extract find variable names for RowDescription
@@ -358,47 +415,83 @@ async fn query<L: TxLog + 'static>(
         _ => vec![],
     };
 
-    let result = db.query_with_args(&parsed, &args).await
+    let result = db
+        .query_with_args(&parsed, &query_request.args)
+        .await
         .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
     let columns: Vec<ColumnDescription> = find_vars
         .into_iter()
-        .map(|name| ColumnDescription { name, data_type: TAG_UNKNOWN, members: None })
+        .map(|name| ColumnDescription {
+            name,
+            data_type: TAG_UNKNOWN,
+            members: None,
+        })
         .collect();
 
-    Ok(ok_response(encode_query_response(&columns, &result)))
+    Ok(ok_response(encode_query_response(&QueryResponse {
+        columns,
+        rows: result,
+    })))
 }
 
 async fn submit_tx<L: TxLog + 'static>(
     State(state): State<Arc<Server<L>>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let ops = decode_execute_request(&body)
-        .map_err(|e| ApiError::bad_request(ErrorCode::TxError, format!("Invalid execute request: {}", e)))?;
+    let request = decode_execute_request(&body).map_err(|e| {
+        ApiError::bad_request(
+            ErrorCode::TxError,
+            format!("Invalid execute request: {}", e),
+        )
+    })?;
 
-    let tx_key = state.node.submit_tx(ops).await
+    let tx_key = state
+        .node
+        .submit_tx(request.ops)
+        .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    Ok(ok_response(encode_tx_key_response(tx_key.tx_id, tx_key.system_time)))
+    Ok(ok_response(encode_tx_key_response(&TxKeyResponse {
+        tx_id: tx_key.tx_id,
+        system_time: tx_key.system_time,
+    })))
 }
 
 async fn execute_tx<L: TxLog + 'static>(
     State(state): State<Arc<Server<L>>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let ops = decode_execute_request(&body)
-        .map_err(|e| ApiError::bad_request(ErrorCode::TxError, format!("Invalid execute request: {}", e)))?;
+    let request = decode_execute_request(&body).map_err(|e| {
+        ApiError::bad_request(
+            ErrorCode::TxError,
+            format!("Invalid execute request: {}", e),
+        )
+    })?;
 
-    let result = state.node.execute_tx(ops).await
+    let result = state
+        .node
+        .execute_tx(request.ops)
+        .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
     Ok(match result {
-        TransactionResult::TxCommited(tx_key) => ok_response(encode_tx_result_response(
-            0, tx_key.tx_id, tx_key.system_time, &None,
-        )),
-        TransactionResult::TxAborted(tx_key, err) => ok_response(encode_tx_result_response(
-            1, tx_key.tx_id, tx_key.system_time, &Some(err.to_string()),
-        )),
+        TransactionResult::TxCommited(tx_key) => {
+            ok_response(encode_tx_result_response(&TxResultResponse {
+                status: 0,
+                tx_id: tx_key.tx_id,
+                system_time: tx_key.system_time,
+                error_message: None,
+            }))
+        }
+        TransactionResult::TxAborted(tx_key, err) => {
+            ok_response(encode_tx_result_response(&TxResultResponse {
+                status: 1,
+                tx_id: tx_key.tx_id,
+                system_time: tx_key.system_time,
+                error_message: Some(err.to_string()),
+            }))
+        }
     })
 }
 
@@ -426,10 +519,7 @@ impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>) -> Self {
         let db_cache = Arc::new(DbCache::new());
         let handle_store = Arc::new(HandleStore::new(db_cache));
-        Server {
-            node,
-            handle_store,
-        }
+        Server { node, handle_store }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -462,8 +552,8 @@ impl<L: TxLog + 'static> Server<L> {
             token,
             "HTTP",
             move |stream, _peer, conn_id, conn_token, join_set| {
-                let router = build_router(app_state.clone())
-                    .layer(axum::Extension(ConnId(conn_id)));
+                let router =
+                    build_router(app_state.clone()).layer(axum::Extension(ConnId(conn_id)));
                 let handle_store = handle_store.clone();
                 join_set.spawn(async move {
                     serve_connection(stream, router, conn_id, conn_token, "HTTP").await;
@@ -507,8 +597,7 @@ impl DevServer {
                         node: node.clone(),
                         handle_store: handle_store.clone(),
                     });
-                    let router = build_router(app_state)
-                        .layer(axum::Extension(ConnId(conn_id)));
+                    let router = build_router(app_state).layer(axum::Extension(ConnId(conn_id)));
 
                     serve_connection(stream, router, conn_id, conn_token, "Dev HTTP").await;
 
@@ -538,7 +627,11 @@ async fn accept_loop<F>(
 where
     F: FnMut(TcpStream, SocketAddr, u64, CancellationToken, &mut JoinSet<()>),
 {
-    info!("Triplox {} server listening on {}", name, listener.local_addr()?);
+    info!(
+        "Triplox {} server listening on {}",
+        name,
+        listener.local_addr()?
+    );
     let mut join_set = JoinSet::new();
 
     loop {
@@ -566,7 +659,10 @@ async fn drain_connections(join_set: &mut JoinSet<()>, name: &str) {
     if remaining == 0 {
         return;
     }
-    info!("Waiting for {} {} connection(s) to drain...", remaining, name);
+    info!(
+        "Waiting for {} {} connection(s) to drain...",
+        remaining, name
+    );
     match tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(result) = join_set.join_next().await {
             if let Err(e) = result {

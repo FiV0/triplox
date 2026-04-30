@@ -47,9 +47,7 @@ fn keyword_to_wire(kw: &Keyword) -> String {
 
 fn keyword_from_wire(s: &str) -> Result<Keyword> {
     match s.split_once('/') {
-        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => {
-            Ok(Keyword::namespaced(ns, name))
-        }
+        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => Ok(Keyword::namespaced(ns, name)),
         Some(_) => bail!("invalid keyword wire format: {:?}", s),
         None if s.is_empty() => bail!("empty keyword"),
         None => Ok(Keyword::plain(s)),
@@ -222,8 +220,8 @@ pub fn data_type_from_value(v: Value) -> Result<DataType> {
 
 pub fn read_data_type(buf: &[u8]) -> Result<(DataType, &[u8])> {
     let mut cursor = buf;
-    let value = rmpv::decode::read_value(&mut cursor)
-        .map_err(|e| anyhow!("msgpack decode error: {e}"))?;
+    let value =
+        rmpv::decode::read_value(&mut cursor).map_err(|e| anyhow!("msgpack decode error: {e}"))?;
     let dt = data_type_from_value(value)?;
     Ok((dt, cursor))
 }
@@ -523,10 +521,7 @@ pub fn query_arg_from_value(v: Value) -> Result<QueryArg> {
     }
 }
 
-fn take_data_type_array(
-    map: &mut BTreeMap<String, Value>,
-    name: &str,
-) -> Result<Vec<DataType>> {
+fn take_data_type_array(map: &mut BTreeMap<String, Value>, name: &str) -> Result<Vec<DataType>> {
     let v = take_field(map, name)?;
     let arr = match v {
         Value::Array(arr) => arr,
@@ -539,10 +534,7 @@ fn take_data_type_array(
     Ok(out)
 }
 
-fn take_optional_string(
-    map: &mut BTreeMap<String, Value>,
-    name: &str,
-) -> Result<Option<String>> {
+fn take_optional_string(map: &mut BTreeMap<String, Value>, name: &str) -> Result<Option<String>> {
     let Some(v) = map.remove(name) else {
         return Ok(None);
     };
@@ -627,8 +619,8 @@ fn write_optional_timestamp<W: Write>(w: &mut W, opt: Option<DateTime<Utc>>) -> 
 
 fn read_body_value(data: &[u8]) -> Result<Value> {
     let mut cursor = data;
-    let v = rmpv::decode::read_value(&mut cursor)
-        .map_err(|e| anyhow!("msgpack decode error: {e}"))?;
+    let v =
+        rmpv::decode::read_value(&mut cursor).map_err(|e| anyhow!("msgpack decode error: {e}"))?;
     if !cursor.is_empty() {
         bail!("trailing bytes after msgpack body");
     }
@@ -639,81 +631,140 @@ fn read_body_value(data: &[u8]) -> Result<Value> {
 // HTTP body encode / decode
 // =============================================================================
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenDbRequest {
+    pub tx_id: Option<i64>,
+    pub system_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbOpenedResponse {
+    pub db_id: u32,
+    pub tx_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbClosedResponse {
+    pub db_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryRequest {
+    pub query: String,
+    pub args: Vec<QueryArg>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryResponse {
+    pub columns: Vec<ColumnDescription>,
+    pub rows: Vec<Vec<DataType>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecuteRequest {
+    pub ops: Vec<TxOp>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TxKeyResponse {
+    pub tx_id: i64,
+    pub system_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TxResultResponse {
+    pub status: u8,
+    pub tx_id: i64,
+    pub system_time: DateTime<Utc>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorResponseBody {
+    pub severity: u8,
+    pub code: u16,
+    pub message: String,
+    pub detail: Option<String>,
+    pub hint: Option<String>,
+}
+
 /// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil}`.
-pub fn encode_open_db_request(
-    tx_id: Option<i64>,
-    system_time: Option<DateTime<Utc>>,
-) -> Vec<u8> {
+pub fn encode_open_db_request(req: &OpenDbRequest) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2).unwrap();
     rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    write_optional_i64(&mut buf, tx_id).unwrap();
+    write_optional_i64(&mut buf, req.tx_id).unwrap();
     rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_optional_timestamp(&mut buf, system_time).unwrap();
+    write_optional_timestamp(&mut buf, req.system_time).unwrap();
     buf
 }
 
-pub fn decode_open_db_request(data: &[u8]) -> Result<(Option<i64>, Option<DateTime<Utc>>)> {
+pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let tx_id = take_optional_i64(&mut map, "tx_id")?;
     let system_time = take_optional_timestamp(&mut map, "system_time")?;
-    Ok((tx_id, system_time))
+    Ok(OpenDbRequest { tx_id, system_time })
 }
 
 /// Encode a DbOpened response: `{"db_id": int, "tx_id": int}`.
-pub fn encode_db_opened_response(db_id: u32, tx_id: i64) -> Vec<u8> {
+pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2).unwrap();
     rmp::encode::write_str(&mut buf, "db_id").unwrap();
-    rmp::encode::write_uint(&mut buf, db_id as u64).unwrap();
+    rmp::encode::write_uint(&mut buf, resp.db_id as u64).unwrap();
     rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, tx_id).unwrap();
+    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
     buf
 }
 
-pub fn decode_db_opened_response(data: &[u8]) -> Result<(u32, i64)> {
+pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let db_id = take_i64(&mut map, "db_id")?;
     let tx_id = take_i64(&mut map, "tx_id")?;
     if db_id < 0 || db_id > u32::MAX as i64 {
         bail!("db_id out of u32 range: {db_id}");
     }
-    Ok((db_id as u32, tx_id))
+    Ok(DbOpenedResponse {
+        db_id: db_id as u32,
+        tx_id,
+    })
 }
 
 /// Encode a DbClosed response: `{"db_id": int}`.
-pub fn encode_db_closed_response(db_id: u32) -> Vec<u8> {
+pub fn encode_db_closed_response(resp: &DbClosedResponse) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 1).unwrap();
     rmp::encode::write_str(&mut buf, "db_id").unwrap();
-    rmp::encode::write_uint(&mut buf, db_id as u64).unwrap();
+    rmp::encode::write_uint(&mut buf, resp.db_id as u64).unwrap();
     buf
 }
 
-pub fn decode_db_closed_response(data: &[u8]) -> Result<u32> {
+pub fn decode_db_closed_response(data: &[u8]) -> Result<DbClosedResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let db_id = take_i64(&mut map, "db_id")?;
     if db_id < 0 || db_id > u32::MAX as i64 {
         bail!("db_id out of u32 range: {db_id}");
     }
-    Ok(db_id as u32)
+    Ok(DbClosedResponse {
+        db_id: db_id as u32,
+    })
 }
 
 /// Encode a Query request: `{"query": str, "args": [QueryArg, ...]}`.
-pub fn encode_query_request(query: &str, args: &[QueryArg]) -> Vec<u8> {
+pub fn encode_query_request(req: &QueryRequest) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2).unwrap();
     rmp::encode::write_str(&mut buf, "query").unwrap();
-    rmp::encode::write_str(&mut buf, query).unwrap();
+    rmp::encode::write_str(&mut buf, &req.query).unwrap();
     rmp::encode::write_str(&mut buf, "args").unwrap();
-    rmp::encode::write_array_len(&mut buf, args.len() as u32).unwrap();
-    for arg in args {
+    rmp::encode::write_array_len(&mut buf, req.args.len() as u32).unwrap();
+    for arg in &req.args {
         write_query_arg(&mut buf, arg).unwrap();
     }
     buf
 }
 
-pub fn decode_query_request(data: &[u8]) -> Result<(String, Vec<QueryArg>)> {
+pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
@@ -724,21 +775,21 @@ pub fn decode_query_request(data: &[u8]) -> Result<(String, Vec<QueryArg>)> {
     for item in arr {
         args.push(query_arg_from_value(item)?);
     }
-    Ok((query, args))
+    Ok(QueryRequest { query, args })
 }
 
 /// Encode a query response: `{"columns": [...], "rows": [[...], ...]}`.
-pub fn encode_query_response(columns: &[ColumnDescription], rows: &[Vec<DataType>]) -> Vec<u8> {
+pub fn encode_query_response(resp: &QueryResponse) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2).unwrap();
     rmp::encode::write_str(&mut buf, "columns").unwrap();
-    rmp::encode::write_array_len(&mut buf, columns.len() as u32).unwrap();
-    for col in columns {
+    rmp::encode::write_array_len(&mut buf, resp.columns.len() as u32).unwrap();
+    for col in &resp.columns {
         write_column_description(&mut buf, col).unwrap();
     }
     rmp::encode::write_str(&mut buf, "rows").unwrap();
-    rmp::encode::write_array_len(&mut buf, rows.len() as u32).unwrap();
-    for row in rows {
+    rmp::encode::write_array_len(&mut buf, resp.rows.len() as u32).unwrap();
+    for row in &resp.rows {
         rmp::encode::write_array_len(&mut buf, row.len() as u32).unwrap();
         for v in row {
             write_data_type(&mut buf, v).unwrap();
@@ -747,9 +798,7 @@ pub fn encode_query_response(columns: &[ColumnDescription], rows: &[Vec<DataType
     buf
 }
 
-pub fn decode_query_response(
-    data: &[u8],
-) -> Result<(Vec<ColumnDescription>, Vec<Vec<DataType>>)> {
+pub fn decode_query_response(data: &[u8]) -> Result<QueryResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let cols_arr = match take_field(&mut map, "columns")? {
         Value::Array(arr) => arr,
@@ -775,7 +824,7 @@ pub fn decode_query_response(
         }
         rows.push(typed);
     }
-    Ok((columns, rows))
+    Ok(QueryResponse { columns, rows })
 }
 
 fn write_column_description<W: Write>(w: &mut W, col: &ColumnDescription) -> Result<()> {
@@ -832,18 +881,18 @@ fn column_description_from_value(v: Value) -> Result<ColumnDescription> {
 }
 
 /// Encode an Execute request: `{"ops": [TxOp, ...]}`.
-pub fn encode_execute_request(ops: &[TxOp]) -> Vec<u8> {
+pub fn encode_execute_request(req: &ExecuteRequest) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 1).unwrap();
     rmp::encode::write_str(&mut buf, "ops").unwrap();
-    rmp::encode::write_array_len(&mut buf, ops.len() as u32).unwrap();
-    for op in ops {
+    rmp::encode::write_array_len(&mut buf, req.ops.len() as u32).unwrap();
+    for op in &req.ops {
         write_tx_op(&mut buf, op).unwrap();
     }
     buf
 }
 
-pub fn decode_execute_request(data: &[u8]) -> Result<Vec<TxOp>> {
+pub fn decode_execute_request(data: &[u8]) -> Result<ExecuteRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let arr = match take_field(&mut map, "ops")? {
         Value::Array(arr) => arr,
@@ -853,50 +902,43 @@ pub fn decode_execute_request(data: &[u8]) -> Result<Vec<TxOp>> {
     for item in arr {
         ops.push(tx_op_from_value(item)?);
     }
-    Ok(ops)
+    Ok(ExecuteRequest { ops })
 }
 
 /// Encode a TxKey response: `{"tx_id": int, "system_time": Timestamp}`.
-pub fn encode_tx_key_response(tx_id: i64, system_time: DateTime<Utc>) -> Vec<u8> {
+pub fn encode_tx_key_response(resp: &TxKeyResponse) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2).unwrap();
     rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, tx_id).unwrap();
+    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
     rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_timestamp(&mut buf, &system_time).unwrap();
+    write_timestamp(&mut buf, &resp.system_time).unwrap();
     buf
 }
 
-pub fn decode_tx_key_response(data: &[u8]) -> Result<(i64, DateTime<Utc>)> {
+pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let tx_id = take_i64(&mut map, "tx_id")?;
     let system_time = take_timestamp(&mut map, "system_time")?;
-    Ok((tx_id, system_time))
+    Ok(TxKeyResponse { tx_id, system_time })
 }
 
 /// Encode a TxResult response.
-pub fn encode_tx_result_response(
-    status: u8,
-    tx_id: i64,
-    system_time: DateTime<Utc>,
-    error_message: &Option<String>,
-) -> Vec<u8> {
+pub fn encode_tx_result_response(resp: &TxResultResponse) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 4).unwrap();
     rmp::encode::write_str(&mut buf, "status").unwrap();
-    rmp::encode::write_uint(&mut buf, status as u64).unwrap();
+    rmp::encode::write_uint(&mut buf, resp.status as u64).unwrap();
     rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, tx_id).unwrap();
+    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
     rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_timestamp(&mut buf, &system_time).unwrap();
+    write_timestamp(&mut buf, &resp.system_time).unwrap();
     rmp::encode::write_str(&mut buf, "error_message").unwrap();
-    write_optional_string(&mut buf, error_message).unwrap();
+    write_optional_string(&mut buf, &resp.error_message).unwrap();
     buf
 }
 
-pub fn decode_tx_result_response(
-    data: &[u8],
-) -> Result<(u8, i64, DateTime<Utc>, Option<String>)> {
+pub fn decode_tx_result_response(data: &[u8]) -> Result<TxResultResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let status_i64 = take_i64(&mut map, "status")?;
     if status_i64 < 0 || status_i64 > u8::MAX as i64 {
@@ -905,40 +947,37 @@ pub fn decode_tx_result_response(
     let tx_id = take_i64(&mut map, "tx_id")?;
     let system_time = take_timestamp(&mut map, "system_time")?;
     let error_message = take_optional_string(&mut map, "error_message")?;
-    Ok((status_i64 as u8, tx_id, system_time, error_message))
+    Ok(TxResultResponse {
+        status: status_i64 as u8,
+        tx_id,
+        system_time,
+        error_message,
+    })
 }
 
 /// Encode an ErrorResponse body.
-pub fn encode_error_body(
-    severity: u8,
-    code: u16,
-    message: &str,
-    detail: &Option<String>,
-    hint: &Option<String>,
-) -> Vec<u8> {
+pub fn encode_error_body(resp: &ErrorResponseBody) -> Vec<u8> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 5).unwrap();
     rmp::encode::write_str(&mut buf, "severity").unwrap();
-    let severity_str = match severity {
+    let severity_str = match resp.severity {
         b'E' => "E",
         b'F' => "F",
         other => panic!("invalid severity byte: {other}"),
     };
     rmp::encode::write_str(&mut buf, severity_str).unwrap();
     rmp::encode::write_str(&mut buf, "code").unwrap();
-    rmp::encode::write_uint(&mut buf, code as u64).unwrap();
+    rmp::encode::write_uint(&mut buf, resp.code as u64).unwrap();
     rmp::encode::write_str(&mut buf, "message").unwrap();
-    rmp::encode::write_str(&mut buf, message).unwrap();
+    rmp::encode::write_str(&mut buf, &resp.message).unwrap();
     rmp::encode::write_str(&mut buf, "detail").unwrap();
-    write_optional_string(&mut buf, detail).unwrap();
+    write_optional_string(&mut buf, &resp.detail).unwrap();
     rmp::encode::write_str(&mut buf, "hint").unwrap();
-    write_optional_string(&mut buf, hint).unwrap();
+    write_optional_string(&mut buf, &resp.hint).unwrap();
     buf
 }
 
-pub fn decode_error_body(
-    data: &[u8],
-) -> Result<(u8, u16, String, Option<String>, Option<String>)> {
+pub fn decode_error_body(data: &[u8]) -> Result<ErrorResponseBody> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let severity_str = take_string(&mut map, "severity")?;
     let severity = match severity_str.as_str() {
@@ -953,7 +992,13 @@ pub fn decode_error_body(
     let message = take_string(&mut map, "message")?;
     let detail = take_optional_string(&mut map, "detail")?;
     let hint = take_optional_string(&mut map, "hint")?;
-    Ok((severity, code_i64 as u16, message, detail, hint))
+    Ok(ErrorResponseBody {
+        severity,
+        code: code_i64 as u16,
+        message,
+        detail,
+        hint,
+    })
 }
 
 #[cfg(test)]
@@ -972,8 +1017,14 @@ mod tests {
 
     #[test]
     fn round_trip_boolean() {
-        assert_eq!(round_trip(&DataType::Boolean(true)), DataType::Boolean(true));
-        assert_eq!(round_trip(&DataType::Boolean(false)), DataType::Boolean(false));
+        assert_eq!(
+            round_trip(&DataType::Boolean(true)),
+            DataType::Boolean(true)
+        );
+        assert_eq!(
+            round_trip(&DataType::Boolean(false)),
+            DataType::Boolean(false)
+        );
     }
 
     #[test]
@@ -1019,10 +1070,7 @@ mod tests {
             );
         }
         for b in [vec![], vec![0u8], vec![0, 1, 255], (0u8..=255).collect()] {
-            assert_eq!(
-                round_trip(&DataType::Bytes(b.clone())),
-                DataType::Bytes(b)
-            );
+            assert_eq!(round_trip(&DataType::Bytes(b.clone())), DataType::Bytes(b));
         }
     }
 
@@ -1041,7 +1089,10 @@ mod tests {
     fn round_trip_uuid() {
         let u = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(round_trip(&DataType::Uuid(u)), DataType::Uuid(u));
-        assert_eq!(round_trip(&DataType::Uuid(Uuid::nil())), DataType::Uuid(Uuid::nil()));
+        assert_eq!(
+            round_trip(&DataType::Uuid(Uuid::nil())),
+            DataType::Uuid(Uuid::nil())
+        );
     }
 
     #[test]
@@ -1187,10 +1238,7 @@ mod tests {
                 DataType::Long(2),
                 DataType::Long(3),
             ]),
-            QueryArg::Tuple(vec![
-                DataType::String("x".into()),
-                DataType::Long(99),
-            ]),
+            QueryArg::Tuple(vec![DataType::String("x".into()), DataType::Long(99)]),
             QueryArg::Relation(vec![
                 vec![DataType::Long(1), DataType::String("a".into())],
                 vec![DataType::Long(2), DataType::String("b".into())],
@@ -1205,26 +1253,33 @@ mod tests {
     fn round_trip_open_db_request_bodies() {
         for (tx_id, system_time) in [
             (None, None),
-            (Some(42i64), Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap())),
+            (
+                Some(42i64),
+                Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
+            ),
             (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap())),
         ] {
-            let buf = encode_open_db_request(tx_id, system_time);
-            let (a, b) = decode_open_db_request(&buf).unwrap();
-            assert_eq!(a, tx_id);
-            assert_eq!(b, system_time);
+            let request = OpenDbRequest { tx_id, system_time };
+            let buf = encode_open_db_request(&request);
+            assert_eq!(decode_open_db_request(&buf).unwrap(), request);
         }
     }
 
     #[test]
     fn round_trip_db_opened_response_body() {
-        let buf = encode_db_opened_response(7, 12345);
-        assert_eq!(decode_db_opened_response(&buf).unwrap(), (7, 12345));
+        let response = DbOpenedResponse {
+            db_id: 7,
+            tx_id: 12345,
+        };
+        let buf = encode_db_opened_response(&response);
+        assert_eq!(decode_db_opened_response(&buf).unwrap(), response);
     }
 
     #[test]
     fn round_trip_db_closed_response_body() {
-        let buf = encode_db_closed_response(11);
-        assert_eq!(decode_db_closed_response(&buf).unwrap(), 11);
+        let response = DbClosedResponse { db_id: 11 };
+        let buf = encode_db_closed_response(&response);
+        assert_eq!(decode_db_closed_response(&buf).unwrap(), response);
     }
 
     #[test]
@@ -1232,12 +1287,17 @@ mod tests {
         let q = "{:find [?n] :where [[?e :name ?n]]}";
         let args = vec![
             QueryArg::Scalar(DataType::Long(7)),
-            QueryArg::Collection(vec![DataType::String("a".into()), DataType::String("b".into())]),
+            QueryArg::Collection(vec![
+                DataType::String("a".into()),
+                DataType::String("b".into()),
+            ]),
         ];
-        let buf = encode_query_request(q, &args);
-        let (q2, a2) = decode_query_request(&buf).unwrap();
-        assert_eq!(q2, q);
-        assert_eq!(a2, args);
+        let request = QueryRequest {
+            query: q.into(),
+            args,
+        };
+        let buf = encode_query_request(&request);
+        assert_eq!(decode_query_request(&buf).unwrap(), request);
     }
 
     #[test]
@@ -1258,10 +1318,9 @@ mod tests {
             vec![DataType::Long(1), DataType::String("x".into())],
             vec![DataType::Long(2), DataType::Long(99)],
         ];
-        let buf = encode_query_response(&columns, &rows);
-        let (c2, r2) = decode_query_response(&buf).unwrap();
-        assert_eq!(c2, columns);
-        assert_eq!(r2, rows);
+        let response = QueryResponse { columns, rows };
+        let buf = encode_query_response(&response);
+        assert_eq!(decode_query_response(&buf).unwrap(), response);
     }
 
     #[test]
@@ -1274,53 +1333,58 @@ mod tests {
                 value: DataType::Long(30),
             },
         ];
-        let buf = encode_execute_request(&ops);
-        assert_eq!(decode_execute_request(&buf).unwrap(), ops);
+        let request = ExecuteRequest { ops };
+        let buf = encode_execute_request(&request);
+        assert_eq!(decode_execute_request(&buf).unwrap(), request);
     }
 
     #[test]
     fn round_trip_tx_key_response_body() {
         let now = Utc.timestamp_opt(1_700_000_000, 123_456).unwrap();
-        let buf = encode_tx_key_response(101, now);
-        assert_eq!(decode_tx_key_response(&buf).unwrap(), (101, now));
+        let response = TxKeyResponse {
+            tx_id: 101,
+            system_time: now,
+        };
+        let buf = encode_tx_key_response(&response);
+        assert_eq!(decode_tx_key_response(&buf).unwrap(), response);
     }
 
     #[test]
     fn round_trip_tx_result_response_body() {
         let now = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
         for (status, err) in [(0u8, None), (1u8, Some("boom".to_string()))] {
-            let buf = encode_tx_result_response(status, 7, now, &err);
-            let (s, t, st, e) = decode_tx_result_response(&buf).unwrap();
-            assert_eq!(s, status);
-            assert_eq!(t, 7);
-            assert_eq!(st, now);
-            assert_eq!(e, err);
+            let response = TxResultResponse {
+                status,
+                tx_id: 7,
+                system_time: now,
+                error_message: err,
+            };
+            let buf = encode_tx_result_response(&response);
+            assert_eq!(decode_tx_result_response(&buf).unwrap(), response);
         }
     }
 
     #[test]
     fn round_trip_error_body() {
-        let buf = encode_error_body(
-            b'E',
-            2001,
-            "parse error",
-            &Some("near token X".into()),
-            &None,
-        );
-        let (sev, code, msg, det, hint) = decode_error_body(&buf).unwrap();
-        assert_eq!(sev, b'E');
-        assert_eq!(code, 2001);
-        assert_eq!(msg, "parse error");
-        assert_eq!(det.as_deref(), Some("near token X"));
-        assert_eq!(hint, None);
+        let response = ErrorResponseBody {
+            severity: b'E',
+            code: 2001,
+            message: "parse error".into(),
+            detail: Some("near token X".into()),
+            hint: None,
+        };
+        let buf = encode_error_body(&response);
+        assert_eq!(decode_error_body(&buf).unwrap(), response);
 
-        let buf = encode_error_body(b'F', 1000, "fatal", &None, &None);
-        let (sev, code, msg, det, hint) = decode_error_body(&buf).unwrap();
-        assert_eq!(sev, b'F');
-        assert_eq!(code, 1000);
-        assert_eq!(msg, "fatal");
-        assert_eq!(det, None);
-        assert_eq!(hint, None);
+        let response = ErrorResponseBody {
+            severity: b'F',
+            code: 1000,
+            message: "fatal".into(),
+            detail: None,
+            hint: None,
+        };
+        let buf = encode_error_body(&response);
+        assert_eq!(decode_error_body(&buf).unwrap(), response);
     }
 
     #[test]

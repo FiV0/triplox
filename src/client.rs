@@ -7,9 +7,9 @@ use anyhow::{bail, Error, Result};
 use reqwest::Client;
 
 use crate::msgpack_codec::{
-    decode_db_opened_response, decode_error_body, decode_query_response,
-    decode_tx_key_response, decode_tx_result_response, encode_execute_request,
-    encode_open_db_request, encode_query_request,
+    decode_db_opened_response, decode_error_body, decode_query_response, decode_tx_key_response,
+    decode_tx_result_response, encode_execute_request, encode_open_db_request,
+    encode_query_request, ExecuteRequest, OpenDbRequest, QueryRequest,
 };
 use crate::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode, TransactionResult, TxKey,
@@ -32,9 +32,9 @@ async fn check_response(resp: reqwest::Response) -> Result<bytes::Bytes> {
         Ok(resp.bytes().await?)
     } else {
         let body = resp.bytes().await?;
-        if let Ok((_, code, message, detail, _)) = decode_error_body(&body) {
-            let mut msg = format!("Server error (code {}): {}", code, message);
-            if let Some(d) = detail {
+        if let Ok(error) = decode_error_body(&body) {
+            let mut msg = format!("Server error (code {}): {}", error.code, error.message);
+            if let Some(d) = error.detail {
                 msg.push_str(&format!(" — {}", d));
             }
             bail!("{}", msg);
@@ -57,9 +57,7 @@ impl ClientNode {
     ///
     /// `url` should be the base URL, e.g. `http://127.0.0.1:5490`.
     pub async fn connect(url: &str) -> Result<Self> {
-        let client = Client::builder()
-            .http2_prior_knowledge()
-            .build()?;
+        let client = Client::builder().http2_prior_knowledge().build()?;
         Ok(ClientNode {
             client,
             base_url: url.trim_end_matches('/').to_string(),
@@ -72,7 +70,7 @@ impl ClientNode {
             Some(tk) => (Some(tk.tx_id), Some(tk.system_time)),
         };
 
-        let body = encode_open_db_request(tx_id, system_time);
+        let body = encode_open_db_request(&OpenDbRequest { tx_id, system_time });
         let resp = self
             .client
             .post(format!("{}/db/open", self.base_url))
@@ -82,11 +80,11 @@ impl ClientNode {
             .await?;
 
         let data = check_response(resp).await?;
-        let (db_id, tx_id) = decode_db_opened_response(&data)?;
+        let opened = decode_db_opened_response(&data)?;
 
         Ok(ClientDb {
-            db_id,
-            tx_id,
+            db_id: opened.db_id,
+            tx_id: opened.tx_id,
             client: self.client.clone(),
             base_url: self.base_url.clone(),
         })
@@ -96,7 +94,7 @@ impl ClientNode {
 impl SubmitNode for ClientNode {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
         let ops = collect_tx_ops(ops)?;
-        let body = encode_execute_request(&ops);
+        let body = encode_execute_request(&ExecuteRequest { ops });
         let resp = self
             .client
             .post(format!("{}/tx/submit", self.base_url))
@@ -106,13 +104,16 @@ impl SubmitNode for ClientNode {
             .await?;
 
         let data = check_response(resp).await?;
-        let (tx_id, system_time) = decode_tx_key_response(&data)?;
-        Ok(TxKey { tx_id, system_time })
+        let tx_key = decode_tx_key_response(&data)?;
+        Ok(TxKey {
+            tx_id: tx_key.tx_id,
+            system_time: tx_key.system_time,
+        })
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
         let ops = collect_tx_ops(ops)?;
-        let body = encode_execute_request(&ops);
+        let body = encode_execute_request(&ExecuteRequest { ops });
         let resp = self
             .client
             .post(format!("{}/tx/execute", self.base_url))
@@ -122,13 +123,18 @@ impl SubmitNode for ClientNode {
             .await?;
 
         let data = check_response(resp).await?;
-        let (status, tx_id, system_time, error_message) = decode_tx_result_response(&data)?;
-        let tx_key = TxKey { tx_id, system_time };
+        let tx_result = decode_tx_result_response(&data)?;
+        let tx_key = TxKey {
+            tx_id: tx_result.tx_id,
+            system_time: tx_result.system_time,
+        };
 
-        if status == 0 {
+        if tx_result.status == 0 {
             Ok(TransactionResult::TxCommited(tx_key))
         } else {
-            let err_msg = error_message.unwrap_or_else(|| "transaction aborted".to_string());
+            let err_msg = tx_result
+                .error_message
+                .unwrap_or_else(|| "transaction aborted".to_string());
             Ok(TransactionResult::TxAborted(
                 tx_key,
                 anyhow::anyhow!("{}", err_msg).into(),
@@ -194,7 +200,10 @@ impl Database for ClientDb {
         query: &ParsedQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
-        let body = encode_query_request(&query.to_string(), args);
+        let body = encode_query_request(&QueryRequest {
+            query: query.to_string(),
+            args: args.to_vec(),
+        });
         let resp = self
             .client
             .post(format!("{}/db/{}/query", self.base_url, self.db_id))
@@ -204,7 +213,7 @@ impl Database for ClientDb {
             .await?;
 
         let data = check_response(resp).await?;
-        let (_columns, rows) = decode_query_response(&data)?;
-        Ok(rows)
+        let query_response = decode_query_response(&data)?;
+        Ok(query_response.rows)
     }
 }

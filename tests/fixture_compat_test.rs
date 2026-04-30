@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use triplox::msgpack_codec::{
     data_type_from_value, encode_error_body, encode_query_response, write_data_type,
+    ErrorResponseBody, QueryResponse,
 };
 use triplox::ops::DataType;
 use triplox::protocol::{ColumnDescription, TAG_LONG, TAG_STRING};
@@ -35,10 +36,15 @@ fn check_or_regen(path: &str, bytes: &[u8]) {
         fs::write(&full, bytes).unwrap();
         return;
     }
-    let expected = fs::read(&full)
-        .unwrap_or_else(|_| panic!("fixture missing: {}; rerun with TRIPLOX_REGEN_FIXTURES=1", full.display()));
+    let expected = fs::read(&full).unwrap_or_else(|_| {
+        panic!(
+            "fixture missing: {}; rerun with TRIPLOX_REGEN_FIXTURES=1",
+            full.display()
+        )
+    });
     assert_eq!(
-        bytes, &expected[..],
+        bytes,
+        &expected[..],
         "encoded bytes do not match fixture {}; rerun with TRIPLOX_REGEN_FIXTURES=1 if intentional",
         path
     );
@@ -50,9 +56,15 @@ fn data_type_zoo() -> DataType {
     let mut inner = BTreeMap::new();
     inner.insert("nested_long".to_string(), DataType::Long(1));
     let mut m = BTreeMap::new();
-    m.insert("bigint".into(), DataType::BigInt(170141183460469231731687303715884105727)); // i128::MAX
+    m.insert(
+        "bigint".into(),
+        DataType::BigInt(170141183460469231731687303715884105727),
+    ); // i128::MAX
     m.insert("boolean".into(), DataType::Boolean(true));
-    m.insert("bytes".into(), DataType::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+    m.insert(
+        "bytes".into(),
+        DataType::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+    );
     m.insert("double".into(), DataType::Double(std::f64::consts::PI));
     m.insert("float".into(), DataType::Float(1.5_f32));
     m.insert(
@@ -69,7 +81,11 @@ fn data_type_zoo() -> DataType {
     );
     m.insert(
         "vector".into(),
-        DataType::Vector(vec![DataType::Long(1), DataType::Long(2), DataType::Long(3)]),
+        DataType::Vector(vec![
+            DataType::Long(1),
+            DataType::Long(2),
+            DataType::Long(3),
+        ]),
     );
     DataType::Map(m)
 }
@@ -107,18 +123,18 @@ fn query_response_fixture_matches() {
         vec![DataType::Long(1), DataType::String("alice".into())],
         vec![DataType::Long(2), DataType::String("bob".into())],
     ];
-    let buf = encode_query_response(&columns, &rows);
+    let buf = encode_query_response(&QueryResponse { columns, rows });
     check_or_regen("query_response.mpk", &buf);
 }
 
 #[test]
 fn error_response_fixture_matches() {
-    let buf = encode_error_body(
-        b'E',
-        2001,
-        "parse error: unexpected token",
-        &Some("near position 17".into()),
-        &None,
-    );
+    let buf = encode_error_body(&ErrorResponseBody {
+        severity: b'E',
+        code: 2001,
+        message: "parse error: unexpected token".into(),
+        detail: Some("near position 17".into()),
+        hint: None,
+    });
     check_or_regen("error_response.mpk", &buf);
 }
