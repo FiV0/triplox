@@ -6,7 +6,9 @@
 use anyhow::{bail, Error, Result};
 use reqwest::Client;
 
-use crate::node::{Database, IntoQuery, QueryNode, SubmitNode, TransactionResult, TxKey};
+use crate::node::{
+    collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode, TransactionResult, TxKey,
+};
 use crate::ops::{DataType, QueryArg, TxOp};
 use crate::protocol::*;
 use crate::query::QueryResult;
@@ -88,7 +90,8 @@ impl ClientNode {
 }
 
 impl SubmitNode for ClientNode {
-    async fn submit_tx(&self, ops: Vec<TxOp>) -> Result<TxKey, Error> {
+    async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
+        let ops = collect_tx_ops(ops)?;
         let body = encode_execute_request(&ops);
         let resp = self
             .client
@@ -107,7 +110,8 @@ impl SubmitNode for ClientNode {
         })
     }
 
-    async fn execute_tx(&self, ops: Vec<TxOp>) -> Result<TransactionResult, Error> {
+    async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
+        let ops = collect_tx_ops(ops)?;
         let body = encode_execute_request(&ops);
         let resp = self
             .client

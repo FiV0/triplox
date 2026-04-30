@@ -76,6 +76,46 @@ async fn test_execute_tx_and_query() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_execute_tx_with_string_ops() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    // Mix [:db/add ...] form and {:db/id ...} map form, both as &str.
+    let result = client
+        .execute_tx(vec![
+            "[:db/add \"alice\" :name \"Alice\"]",
+            "[:db/add \"alice\" :age 30]",
+            "{:db/id \"bob\" :name \"Bob\" :age 42}",
+        ])
+        .await
+        .unwrap();
+    assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+    let db = client.db().await.unwrap();
+    let result = db
+        .query("{:find [?name ?age] :where [[?e :name ?name] [?e :age ?age]]}")
+        .await
+        .unwrap();
+
+    let mut rows: Vec<(String, i64)> = result
+        .into_iter()
+        .map(|row| match row.as_slice() {
+            [DataType::String(n), DataType::Long(a)] => (n.clone(), *a),
+            other => panic!("unexpected row {:?}", other),
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![("Alice".to_string(), 30), ("Bob".to_string(), 42)]
+    );
+
+    db.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_submit_tx() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
