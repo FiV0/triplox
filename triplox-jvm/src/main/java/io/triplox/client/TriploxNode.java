@@ -5,6 +5,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -18,7 +19,7 @@ public class TriploxNode implements AutoCloseable {
     private final HttpClient httpClient;
     private final String baseUrl;
 
-    private static final String CONTENT_TYPE = "application/x-triplox";
+    private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
 
     private TriploxNode(HttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
@@ -40,17 +41,25 @@ public class TriploxNode implements AutoCloseable {
      * Open a DB snapshot at the latest indexed transaction.
      */
     public Db openDb() throws IOException {
-        return openDb(null);
+        return openDbInternal(null, null);
     }
 
     /**
-     * Open a DB snapshot at a specific transaction ID.
+     * Open a DB snapshot at a specific transaction key.
      */
-    public Db openDb(Long txId) throws IOException {
-        byte[] body = WireCodec.encodeOpenDbBody(txId);
+    public Db openDbAsOf(TxKeyResult txKey) throws IOException {
+        return openDbAsOf(txKey.txId(), txKey.systemTime());
+    }
+
+    private Db openDbInternal(Long txId, Instant systemTime) throws IOException {
+        byte[] body = WireCodec.encodeOpenDbBody(txId, systemTime);
         byte[] responseBody = postBinary("/db/open", body);
         var opened = WireCodec.decodeDbOpened(responseBody);
         return new Db(this, opened.dbId(), opened.txId());
+    }
+
+    private Db openDbAsOf(long txId, Instant systemTime) throws IOException {
+        return openDbInternal(txId, systemTime);
     }
 
     /**
@@ -169,4 +178,5 @@ public class TriploxNode implements AutoCloseable {
         }
         throw new IOException("HTTP error " + status + ": " + new String(responseBody));
     }
+
 }

@@ -13,8 +13,10 @@
   "Open a DB snapshot. Returns a Db (AutoCloseable)."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn {:keys [tx-id] :as _opts}]
-   (.openDb ^TriploxNode conn (when tx-id (long tx-id)))))
+  (^Db [conn {:keys [tx-key] :as _opts}]
+   (if tx-key
+     (.openDbAsOf ^TriploxNode conn (TxKeyResult. (long (:tx-id tx-key)) (:system-time tx-key)))
+     (.openDb ^TriploxNode conn))))
 
 (defn q
   "Execute a Datalog query. Returns a vector of vectors."

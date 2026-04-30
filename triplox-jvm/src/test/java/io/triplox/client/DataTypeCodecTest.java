@@ -1,12 +1,14 @@
 package io.triplox.client;
 
 import org.junit.jupiter.api.Test;
+import org.msgpack.core.MessagePack;
 
-import java.io.*;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -17,14 +19,15 @@ import static org.junit.jupiter.api.Assertions.*;
 class DataTypeCodecTest {
 
     private Object roundtrip(Object value) throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var dos = new DataOutputStream(baos);
-        DataTypeCodec.encode(dos, value);
-        dos.flush();
-
-        var bin = new ByteArrayInputStream(baos.toByteArray());
-        var dis = new DataInputStream(bin);
-        return DataTypeCodec.decode(dis);
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            DataTypeCodec.pack(packer, value);
+            byte[] bytes = packer.toByteArray();
+            try (var unpacker = MessagePack.newDefaultUnpacker(bytes)) {
+                Object result = DataTypeCodec.unpack(unpacker);
+                assertFalse(unpacker.hasNext(), "trailing bytes after unpack");
+                return result;
+            }
+        }
     }
 
     @Test
@@ -45,54 +48,58 @@ class DataTypeCodecTest {
     }
 
     @Test
-    void testBooleanTrue() throws IOException {
-        assertEquals(true, roundtrip(true));
+    void testBigIntI128Bounds() throws IOException {
+        var min = BigInteger.ONE.shiftLeft(127).negate();
+        var max = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+        assertEquals(min, roundtrip(min));
+        assertEquals(max, roundtrip(max));
     }
 
     @Test
-    void testBooleanFalse() throws IOException {
+    void testBigIntRejectsOutOfI128Range() {
+        var belowMin = BigInteger.ONE.shiftLeft(127).negate().subtract(BigInteger.ONE);
+        var aboveMax = BigInteger.ONE.shiftLeft(127);
+        assertThrows(IOException.class, () -> roundtrip(belowMin));
+        assertThrows(IOException.class, () -> roundtrip(aboveMax));
+    }
+
+    @Test
+    void testBoolean() throws IOException {
+        assertEquals(true, roundtrip(true));
         assertEquals(false, roundtrip(false));
     }
 
     @Test
     void testBytes() throws IOException {
-        byte[] input = new byte[]{(byte)0xDE, (byte)0xAD, (byte)0xBE, (byte)0xEF};
+        byte[] input = new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF};
         assertArrayEquals(input, (byte[]) roundtrip(input));
-    }
-
-    @Test
-    void testBytesEmpty() throws IOException {
-        byte[] input = new byte[0];
-        assertArrayEquals(input, (byte[]) roundtrip(input));
+        assertArrayEquals(new byte[0], (byte[]) roundtrip(new byte[0]));
     }
 
     @Test
     void testDouble() throws IOException {
-        assertEquals(Math.PI, roundtrip(Math.PI));
+        Object r = roundtrip(Math.PI);
+        assertInstanceOf(Double.class, r);
+        assertEquals(Math.PI, (Double) r);
     }
 
     @Test
     void testFloat() throws IOException {
-        assertEquals((float) Math.E, roundtrip((float) Math.E));
+        Object r = roundtrip((float) Math.E);
+        assertInstanceOf(Float.class, r);
+        assertEquals((float) Math.E, (Float) r, 1e-6f);
     }
 
     @Test
-    void testInstant() throws IOException {
-        // Microsecond precision only
-        Instant original = Instant.ofEpochSecond(1700000000L, 123456000);
-        Object result = roundtrip(original);
-        assertEquals(original, result);
+    void testInstantPostEpoch() throws IOException {
+        Instant original = Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
+        assertEquals(original, roundtrip(original));
     }
 
     @Test
     void testInstantPreEpoch() throws IOException {
-        Instant original = Instant.ofEpochSecond(-100, 500000000);
-        // Pre-epoch timestamps lose sub-microsecond precision
-        long micros = original.getEpochSecond() * 1_000_000 + original.getNano() / 1000;
-        Instant expected = Instant.ofEpochSecond(
-                Math.floorDiv(micros, 1_000_000),
-                Math.floorMod(micros, 1_000_000) * 1000);
-        assertEquals(expected, roundtrip(original));
+        Instant original = Instant.ofEpochSecond(-1_000_000_000L, 500_000_000);
+        assertEquals(original, roundtrip(original));
     }
 
     @Test
@@ -105,15 +112,7 @@ class DataTypeCodecTest {
     @Test
     void testString() throws IOException {
         assertEquals("hello world", roundtrip("hello world"));
-    }
-
-    @Test
-    void testStringEmpty() throws IOException {
         assertEquals("", roundtrip(""));
-    }
-
-    @Test
-    void testStringUnicode() throws IOException {
         assertEquals("hello 世界 🌍", roundtrip("hello 世界 🌍"));
     }
 
@@ -131,13 +130,9 @@ class DataTypeCodecTest {
         assertEquals(1L, result.get(0));
         assertEquals("two", result.get(1));
         assertEquals(true, result.get(2));
-    }
 
-    @Test
-    void testVectorEmpty() throws IOException {
-        var list = new ArrayList<>();
-        var result = (List<?>) roundtrip(list);
-        assertEquals(0, result.size());
+        // Empty
+        assertEquals(0, ((List<?>) roundtrip(new ArrayList<>())).size());
     }
 
     @Test
@@ -146,7 +141,7 @@ class DataTypeCodecTest {
         map.put("age", 30L);
         map.put("name", "alice");
         @SuppressWarnings("unchecked")
-        var result = (TreeMap<String, Object>) roundtrip(map);
+        var result = (Map<String, Object>) roundtrip(map);
         assertEquals(30L, result.get("age"));
         assertEquals("alice", result.get("name"));
     }
@@ -168,12 +163,24 @@ class DataTypeCodecTest {
         var inner = new TreeMap<String, Object>();
         inner.put("x", 1L);
         var list = new ArrayList<>(List.of(inner, "hello"));
-
         var result = (List<?>) roundtrip(list);
         assertEquals(2, result.size());
         @SuppressWarnings("unchecked")
-        var innerResult = (TreeMap<String, Object>) result.get(0);
+        var innerResult = (Map<String, Object>) result.get(0);
         assertEquals(1L, innerResult.get("x"));
         assertEquals("hello", result.get(1));
+    }
+
+    @Test
+    void testKeywordWireFormatStripsLeadingColon() throws IOException {
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            DataTypeCodec.pack(packer, Keyword.intern("person", "name"));
+            byte[] bytes = packer.toByteArray();
+            // ext8 marker + len(11) + type(3) + 11 bytes of "person/name"
+            assertEquals((byte) 0xc7, bytes[0]);
+            assertEquals(11, bytes[1]);
+            assertEquals(MessageTypes.EXT_KEYWORD, bytes[2]);
+            assertEquals("person/name", new String(bytes, 3, 11));
+        }
     }
 }

@@ -1,182 +1,239 @@
 package io.triplox.client;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.UUID;
 
 import clojure.lang.Keyword;
+import org.msgpack.core.MessagePacker;
+import org.msgpack.core.MessageUnpacker;
+import org.msgpack.core.MessageFormat;
+import org.msgpack.value.ValueType;
 
 import static io.triplox.client.MessageTypes.*;
 
 /**
- * Encodes and decodes DataType values on the wire.
+ * MessagePack codec for {@code DataType} values on the HTTP/2 wire.
  *
- * Type mappings:
- *   BigInt (i128)  → BigInteger
- *   Boolean        → Boolean
- *   Bytes          → byte[]
- *   Double         → Double
- *   Float          → Float
- *   Instant        → java.time.Instant
- *   Long           → Long
- *   Ref            → UnsupportedOperationException
- *   String         → String
- *   Uuid           → UUID
- *   Vector         → List<Object>
- *   Map            → TreeMap<String, Object>
- *   Keyword        → clojure.lang.Keyword
+ * <p>Type mappings (must match {@code crate::msgpack_codec}):</p>
+ * <ul>
+ *   <li>BigInteger → ext 1 (16 bytes, big-endian i128)</li>
+ *   <li>Boolean    → bool</li>
+ *   <li>byte[]     → bin</li>
+ *   <li>Double     → float64</li>
+ *   <li>Float      → float32</li>
+ *   <li>Instant    → ext -1 (msgpack Timestamp, nanosecond)</li>
+ *   <li>Long       → int</li>
+ *   <li>String     → str</li>
+ *   <li>UUID       → ext 2 (16 bytes)</li>
+ *   <li>Keyword    → ext 3 (UTF-8 "ns/name", no leading colon)</li>
+ *   <li>List       → array</li>
+ *   <li>Map        → map (string keys)</li>
+ * </ul>
+ *
+ * <p>The encoder iterates the source map as given — no key sorting is imposed.
+ * Tests that need byte-deterministic output should construct deterministic-order
+ * maps themselves (e.g. {@link java.util.TreeMap} or pre-sorted
+ * {@link LinkedHashMap}).</p>
  */
 public final class DataTypeCodec {
     private DataTypeCodec() {}
 
+    private static final BigInteger I128_MIN = BigInteger.ONE.shiftLeft(127).negate();
+    private static final BigInteger I128_MAX = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+
     // ---------------------------------------------------------------
-    // Encoding
+    // Pack
     // ---------------------------------------------------------------
 
-    public static void encode(DataOutputStream out, Object value) throws IOException {
+    public static void pack(MessagePacker packer, Object value) throws IOException {
         switch (value) {
-            case BigInteger bi -> {
-                out.writeByte(TAG_BIG_INT);
-                encodeI128(out, bi);
-            }
-            case Boolean b -> {
-                out.writeByte(TAG_BOOLEAN);
-                out.writeBoolean(b);
-            }
+            case Boolean b -> packer.packBoolean(b);
+            case Long l -> packer.packLong(l);
+            case Float f -> packer.packFloat(f);
+            case Double d -> packer.packDouble(d);
+            case String s -> packer.packString(s);
             case byte[] bytes -> {
-                out.writeByte(TAG_BYTES);
-                encodeBytes(out, bytes);
+                packer.packBinaryHeader(bytes.length);
+                packer.writePayload(bytes);
             }
-            case Double d -> {
-                out.writeByte(TAG_DOUBLE);
-                out.writeDouble(d);
-            }
-            case Float f -> {
-                out.writeByte(TAG_FLOAT);
-                out.writeFloat(f);
-            }
-            case Instant inst -> {
-                out.writeByte(TAG_INSTANT);
-                long micros = inst.getEpochSecond() * 1_000_000 + inst.getNano() / 1000;
-                out.writeLong(micros);
-            }
-            case Long l -> {
-                out.writeByte(TAG_LONG);
-                out.writeLong(l);
-            }
-            case String s -> {
-                out.writeByte(TAG_STRING);
-                encodeString(out, s);
-            }
-            case UUID uuid -> {
-                out.writeByte(TAG_UUID);
-                out.writeLong(uuid.getMostSignificantBits());
-                out.writeLong(uuid.getLeastSignificantBits());
-            }
-            case Keyword kw -> {
-                out.writeByte(TAG_KEYWORD);
-                encodeString(out, kw.toString());
-            }
-            case Map<?, ?> map -> {
-                out.writeByte(TAG_MAP);
-                @SuppressWarnings("unchecked")
-                var typedMap = (Map<String, Object>) map;
-                encodeDataTypeMap(out, typedMap);
-            }
-            case List<?> list -> {
-                // Default lists to Vector encoding
-                out.writeByte(TAG_VECTOR);
-                encodeDataTypeVec(out, list);
-            }
-            default -> throw new IllegalArgumentException("Cannot encode value of type: " + value.getClass().getName());
+            case BigInteger bi -> packBigInteger(packer, bi);
+            case UUID uuid -> packUuid(packer, uuid);
+            case Keyword kw -> packKeyword(packer, kw);
+            case Instant inst -> packer.packTimestamp(inst);
+            case Map<?, ?> map -> packMap(packer, map);
+            case List<?> list -> packList(packer, list);
+            default -> throw new IllegalArgumentException(
+                    "Cannot encode value of type: " + value.getClass().getName());
         }
     }
 
-    // ---------------------------------------------------------------
-    // Decoding
-    // ---------------------------------------------------------------
-
-    public static Object decode(DataInputStream in) throws IOException {
-        byte tag = in.readByte();
-        return decodeByTag(in, tag);
+    private static void packList(MessagePacker packer, List<?> list) throws IOException {
+        packer.packArrayHeader(list.size());
+        for (Object item : list) {
+            pack(packer, item);
+        }
     }
 
-    static Object decodeByTag(DataInputStream in, byte tag) throws IOException {
-        return switch (tag) {
-            case TAG_BIG_INT -> decodeI128(in);
-            case TAG_BOOLEAN -> in.readBoolean();
-            case TAG_BYTES -> decodeByteArray(in);
-            case TAG_DOUBLE -> in.readDouble();
-            case TAG_FLOAT -> in.readFloat();
-            case TAG_INSTANT -> {
-                long micros = in.readLong();
-                long secs = Math.floorDiv(micros, 1_000_000);
-                long microRem = Math.floorMod(micros, 1_000_000);
-                yield Instant.ofEpochSecond(secs, microRem * 1000);
+    private static void packMap(MessagePacker packer, Map<?, ?> map) throws IOException {
+        packer.packMapHeader(map.size());
+        for (var entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String key)) {
+                throw new IllegalArgumentException(
+                        "Map keys must be String, got: " + entry.getKey().getClass().getName());
             }
-            case TAG_LONG -> in.readLong();
-            case TAG_REF -> throw new UnsupportedOperationException("Ref type is not yet supported");
-            case TAG_STRING -> decodeString(in);
-            case TAG_UUID -> new UUID(in.readLong(), in.readLong());
-            case TAG_VECTOR -> decodeDataTypeVec(in);
-            case TAG_MAP -> decodeDataTypeMap(in);
-            case TAG_KEYWORD -> {
-                String s = decodeString(in);
-                yield parseKeyword(s);
+            packer.packString(key);
+            pack(packer, entry.getValue());
+        }
+    }
+
+    public static void packKeyword(MessagePacker packer, Keyword kw) throws IOException {
+        byte[] payload = keywordToWire(kw).getBytes(StandardCharsets.UTF_8);
+        packer.packExtensionTypeHeader(EXT_KEYWORD, payload.length);
+        packer.writePayload(payload);
+    }
+
+    public static void packBigInteger(MessagePacker packer, BigInteger bi) throws IOException {
+        packer.packExtensionTypeHeader(EXT_BIGINT, 16);
+        packer.writePayload(toBigEndianI128(bi));
+    }
+
+    public static void packUuid(MessagePacker packer, UUID uuid) throws IOException {
+        var buf = ByteBuffer.allocate(16);
+        buf.putLong(uuid.getMostSignificantBits());
+        buf.putLong(uuid.getLeastSignificantBits());
+        packer.packExtensionTypeHeader(EXT_UUID, 16);
+        packer.writePayload(buf.array());
+    }
+
+    // ---------------------------------------------------------------
+    // Unpack
+    // ---------------------------------------------------------------
+
+    public static Object unpack(MessageUnpacker unpacker) throws IOException {
+        ValueType type = unpacker.getNextFormat().getValueType();
+        return switch (type) {
+            case NIL -> {
+                unpacker.unpackNil();
+                yield null;
             }
-            default -> throw new IOException("Unknown DataType tag: " + (tag & 0xFF));
+            case BOOLEAN -> unpacker.unpackBoolean();
+            case INTEGER -> unpacker.unpackLong();
+            case FLOAT -> {
+                if (unpacker.getNextFormat() == MessageFormat.FLOAT32) {
+                    yield Float.valueOf(unpacker.unpackFloat());
+                }
+                yield Double.valueOf(unpacker.unpackDouble());
+            }
+            case STRING -> unpacker.unpackString();
+            case BINARY -> {
+                int len = unpacker.unpackBinaryHeader();
+                yield unpacker.readPayload(len);
+            }
+            case ARRAY -> {
+                int count = unpacker.unpackArrayHeader();
+                var list = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) {
+                    list.add(unpack(unpacker));
+                }
+                yield list;
+            }
+            case MAP -> {
+                int count = unpacker.unpackMapHeader();
+                var map = new LinkedHashMap<String, Object>();
+                for (int i = 0; i < count; i++) {
+                    String key = unpacker.unpackString();
+                    map.put(key, unpack(unpacker));
+                }
+                yield map;
+            }
+            case EXTENSION -> {
+                var header = unpacker.unpackExtensionTypeHeader();
+                yield unpackExtension(unpacker, header.getType(), header.getLength());
+            }
+        };
+    }
+
+    private static Object unpackExtension(MessageUnpacker unpacker, byte type, int length)
+            throws IOException {
+        return switch (type) {
+            case EXT_TIMESTAMP -> {
+                // msgpack-core has a built-in helper, but we already consumed the header.
+                // Read the payload bytes and decode manually.
+                byte[] payload = unpacker.readPayload(length);
+                yield decodeTimestamp(payload);
+            }
+            case EXT_BIGINT -> {
+                if (length != 16) {
+                    throw new IOException("BigInt ext payload must be 16 bytes, got " + length);
+                }
+                byte[] payload = unpacker.readPayload(16);
+                yield new BigInteger(payload);
+            }
+            case EXT_UUID -> {
+                if (length != 16) {
+                    throw new IOException("Uuid ext payload must be 16 bytes, got " + length);
+                }
+                byte[] payload = unpacker.readPayload(16);
+                var buf = ByteBuffer.wrap(payload);
+                yield new UUID(buf.getLong(), buf.getLong());
+            }
+            case EXT_KEYWORD -> {
+                byte[] payload = unpacker.readPayload(length);
+                yield keywordFromWire(new String(payload, StandardCharsets.UTF_8));
+            }
+            default -> throw new IOException("Unknown msgpack ext type: " + type);
         };
     }
 
     // ---------------------------------------------------------------
-    // Helpers: String
+    // Keyword wire format (no leading `:`)
     // ---------------------------------------------------------------
 
-    public static void encodeString(DataOutputStream out, String s) throws IOException {
-        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
-        out.writeInt(bytes.length);
-        out.write(bytes);
+    static String keywordToWire(Keyword kw) {
+        String ns = kw.getNamespace();
+        return ns == null ? kw.getName() : ns + "/" + kw.getName();
     }
 
-    public static String decodeString(DataInputStream in) throws IOException {
-        int len = in.readInt();
-        byte[] bytes = new byte[len];
-        in.readFully(bytes);
-        return new String(bytes, StandardCharsets.UTF_8);
+    static Keyword keywordFromWire(String s) {
+        if (s.isEmpty()) {
+            throw new IllegalArgumentException("empty keyword");
+        }
+        int slash = s.indexOf('/');
+        if (slash < 0) {
+            return Keyword.intern(s);
+        }
+        if (slash == 0 || slash == s.length() - 1) {
+            throw new IllegalArgumentException("invalid keyword: " + s);
+        }
+        return Keyword.intern(s.substring(0, slash), s.substring(slash + 1));
+    }
+
+    /**
+     * Parse a Datalog-style keyword string ({@code ":ns/name"} or {@code ":name"})
+     * into a {@link Keyword}. Kept for the Clojure layer.
+     */
+    public static Keyword parseKeyword(String s) {
+        String stripped = s.startsWith(":") ? s.substring(1) : s;
+        return keywordFromWire(stripped);
     }
 
     // ---------------------------------------------------------------
-    // Helpers: Bytes
+    // i128 BigInteger helpers
     // ---------------------------------------------------------------
 
-    static void encodeBytes(DataOutputStream out, byte[] b) throws IOException {
-        out.writeInt(b.length);
-        out.write(b);
-    }
-
-    static byte[] decodeByteArray(DataInputStream in) throws IOException {
-        int len = in.readInt();
-        byte[] b = new byte[len];
-        in.readFully(b);
-        return b;
-    }
-
-    // ---------------------------------------------------------------
-    // Helpers: i128 → BigInteger
-    // ---------------------------------------------------------------
-
-    static void encodeI128(DataOutputStream out, BigInteger bi) throws IOException {
+    static byte[] toBigEndianI128(BigInteger bi) throws IOException {
+        if (bi.compareTo(I128_MIN) < 0 || bi.compareTo(I128_MAX) > 0) {
+            throw new IOException("BigInteger out of i128 range: " + bi);
+        }
         byte[] raw = bi.toByteArray();
-        // Pad or trim to exactly 16 bytes (big-endian, sign-extended)
         byte[] buf = new byte[16];
         byte fill = (bi.signum() < 0) ? (byte) 0xFF : (byte) 0x00;
         java.util.Arrays.fill(buf, fill);
@@ -184,127 +241,33 @@ public final class DataTypeCodec {
         int dstStart = Math.max(0, 16 - raw.length);
         int copyLen = Math.min(raw.length, 16);
         System.arraycopy(raw, srcStart, buf, dstStart, copyLen);
-        out.write(buf);
-    }
-
-    static BigInteger decodeI128(DataInputStream in) throws IOException {
-        byte[] buf = new byte[16];
-        in.readFully(buf);
-        return new BigInteger(buf);
+        return buf;
     }
 
     // ---------------------------------------------------------------
-    // Helpers: Optional
+    // Timestamp ext (-1) decode
     // ---------------------------------------------------------------
 
-    public static void encodeOptionalLong(DataOutputStream out, Long value) throws IOException {
-        if (value == null) {
-            out.writeByte(0x00);
-        } else {
-            out.writeByte(0x01);
-            out.writeLong(value);
+    private static Instant decodeTimestamp(byte[] payload) throws IOException {
+        long secs;
+        long nanos;
+        switch (payload.length) {
+            case 4 -> {
+                secs = ByteBuffer.wrap(payload).getInt() & 0xFFFFFFFFL;
+                nanos = 0;
+            }
+            case 8 -> {
+                long data = ByteBuffer.wrap(payload).getLong();
+                nanos = (data >>> 34) & 0x3FFFFFFFL;
+                secs = data & 0x3FFFFFFFFL;
+            }
+            case 12 -> {
+                ByteBuffer buf = ByteBuffer.wrap(payload);
+                nanos = buf.getInt() & 0xFFFFFFFFL;
+                secs = buf.getLong();
+            }
+            default -> throw new IOException("Invalid Timestamp ext payload length: " + payload.length);
         }
+        return Instant.ofEpochSecond(secs, nanos);
     }
-
-    public static Long decodeOptionalLong(DataInputStream in) throws IOException {
-        byte tag = in.readByte();
-        return switch (tag) {
-            case 0x00 -> null;
-            case 0x01 -> in.readLong();
-            default -> throw new IOException("Invalid option tag: 0x" + Integer.toHexString(tag & 0xFF));
-        };
-    }
-
-    public static void encodeOptionalString(DataOutputStream out, String value) throws IOException {
-        if (value == null) {
-            out.writeByte(0x00);
-        } else {
-            out.writeByte(0x01);
-            encodeString(out, value);
-        }
-    }
-
-    public static String decodeOptionalString(DataInputStream in) throws IOException {
-        byte tag = in.readByte();
-        return switch (tag) {
-            case 0x00 -> null;
-            case 0x01 -> decodeString(in);
-            default -> throw new IOException("Invalid option tag: 0x" + Integer.toHexString(tag & 0xFF));
-        };
-    }
-
-    // ---------------------------------------------------------------
-    // Helpers: Vec<DataType>, Map<String, DataType>
-    // ---------------------------------------------------------------
-
-    static void encodeDataTypeVec(DataOutputStream out, List<?> list) throws IOException {
-        out.writeInt(list.size());
-        for (Object item : list) encode(out, item);
-    }
-
-    static List<Object> decodeDataTypeVec(DataInputStream in) throws IOException {
-        int count = in.readInt();
-        var list = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) list.add(decode(in));
-        return list;
-    }
-
-    public static void encodeDataTypeMap(DataOutputStream out, Map<String, Object> map) throws IOException {
-        var sorted = new TreeMap<>(map);
-        out.writeInt(sorted.size());
-        for (var entry : sorted.entrySet()) {
-            encodeString(out, entry.getKey());
-            encode(out, entry.getValue());
-        }
-    }
-
-    static TreeMap<String, Object> decodeDataTypeMap(DataInputStream in) throws IOException {
-        int count = in.readInt();
-        var map = new TreeMap<String, Object>();
-        for (int i = 0; i < count; i++) {
-            String key = decodeString(in);
-            Object value = decode(in);
-            map.put(key, value);
-        }
-        return map;
-    }
-
-    // ---------------------------------------------------------------
-    // Helpers: String Map (Map<String, String>)
-    // ---------------------------------------------------------------
-
-    public static void encodeStringMap(DataOutputStream out, TreeMap<String, String> map) throws IOException {
-        out.writeInt(map.size());
-        for (var entry : map.entrySet()) {
-            encodeString(out, entry.getKey());
-            encodeString(out, entry.getValue());
-        }
-    }
-
-    public static TreeMap<String, String> decodeStringMap(DataInputStream in) throws IOException {
-        int count = in.readInt();
-        var map = new TreeMap<String, String>();
-        for (int i = 0; i < count; i++) {
-            String key = decodeString(in);
-            String value = decodeString(in);
-            map.put(key, value);
-        }
-        return map;
-    }
-
-    // ---------------------------------------------------------------
-    // Keyword parsing
-    // ---------------------------------------------------------------
-
-    static Keyword parseKeyword(String s) {
-        // Wire format is ":ns/name" or ":name"
-        String stripped = s.startsWith(":") ? s.substring(1) : s;
-        int slash = stripped.indexOf('/');
-        if (slash >= 0) {
-            return Keyword.intern(stripped.substring(0, slash), stripped.substring(slash + 1));
-        } else {
-            return Keyword.intern(stripped);
-        }
-    }
-
 }
