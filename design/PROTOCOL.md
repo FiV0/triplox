@@ -60,10 +60,10 @@ tracked against it. Two cleanup mechanisms ensure handles are released:
 
 Servers should enforce a configurable maximum number of open DB handles per
 connection (default 16). Exceeding the limit returns
-`ErrorResponse(code=6001 TooManyOpenDbs)`.
+`ErrorResponse(code=5001 TooManyOpenDbs)`.
 
 Using an invalid or closed `db_id` returns
-`ErrorResponse(code=6000 InvalidDbHandle)` with HTTP status 404.
+`ErrorResponse(code=5000 InvalidDbHandle)` with HTTP status 404.
 
 ---
 
@@ -299,8 +299,8 @@ a numeric error code (see §5).
 | 1xxx  | Connection errors     | 1000 ProtocolVersionMismatch, 1001 InvalidStartup                  |
 | 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted                                       |
-| 5xxx  | Internal/protocol     | 5000 InternalError, 5001 MessageTooLarge, 5002 InvalidMessageType, 5003 QueryCancelled, 5004 ServerShuttingDown |
-| 6xxx  | DB handle errors      | 6000 InvalidDbHandle, 6001 TooManyOpenDbs                          |
+| 4xxx  | Internal/protocol     | 4000 InternalError, 4001 MessageTooLarge, 4002 InvalidMessageType, 4003 QueryCancelled, 4004 ServerShuttingDown |
+| 5xxx  | DB handle errors      | 5000 InvalidDbHandle, 5001 TooManyOpenDbs                          |
 
 ---
 

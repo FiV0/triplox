@@ -79,15 +79,15 @@ pub enum ErrorCode {
     // Transaction errors (3xxx)
     TxError = 3000,
     TxAborted = 3001,
-    // Internal/protocol errors (5xxx)
-    InternalError = 5000,
-    MessageTooLarge = 5001,
-    InvalidMessageType = 5002,
-    QueryCancelled = 5003,
-    ServerShuttingDown = 5004,
-    // DB handle errors (6xxx)
-    InvalidDbHandle = 6000,
-    TooManyOpenDbs = 6001,
+    // Internal/protocol errors (4xxx)
+    InternalError = 4000,
+    MessageTooLarge = 4001,
+    InvalidMessageType = 4002,
+    QueryCancelled = 4003,
+    ServerShuttingDown = 4004,
+    // DB handle errors (5xxx)
+    InvalidDbHandle = 5000,
+    TooManyOpenDbs = 5001,
 }
 
 impl ErrorCode {
@@ -101,13 +101,13 @@ impl ErrorCode {
             2003 => Ok(ErrorCode::EmptyQuery),
             3000 => Ok(ErrorCode::TxError),
             3001 => Ok(ErrorCode::TxAborted),
-            5000 => Ok(ErrorCode::InternalError),
-            5001 => Ok(ErrorCode::MessageTooLarge),
-            5002 => Ok(ErrorCode::InvalidMessageType),
-            5003 => Ok(ErrorCode::QueryCancelled),
-            5004 => Ok(ErrorCode::ServerShuttingDown),
-            6000 => Ok(ErrorCode::InvalidDbHandle),
-            6001 => Ok(ErrorCode::TooManyOpenDbs),
+            4000 => Ok(ErrorCode::InternalError),
+            4001 => Ok(ErrorCode::MessageTooLarge),
+            4002 => Ok(ErrorCode::InvalidMessageType),
+            4003 => Ok(ErrorCode::QueryCancelled),
+            4004 => Ok(ErrorCode::ServerShuttingDown),
+            5000 => Ok(ErrorCode::InvalidDbHandle),
+            5001 => Ok(ErrorCode::TooManyOpenDbs),
             _ => bail!("Unknown error code: {}", code),
         }
     }
