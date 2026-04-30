@@ -315,7 +315,7 @@ async fn open_db<L: TxLog + 'static>(
             let db_id = state.handle_store
                 .open(conn_id.0, tid, || async move { node.db_as_of(tx_key).await })
                 .await
-                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+                .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tid)
         }
         _ => return Err(ApiError::bad_request(
