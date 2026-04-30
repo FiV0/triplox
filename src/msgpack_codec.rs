@@ -689,14 +689,14 @@ pub struct ErrorResponseBody {
 }
 
 /// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil}`.
-pub fn encode_open_db_request(req: &OpenDbRequest) -> Vec<u8> {
+pub fn encode_open_db_request(req: &OpenDbRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2).unwrap();
-    rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    write_optional_i64(&mut buf, req.tx_id).unwrap();
-    rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_optional_timestamp(&mut buf, req.system_time).unwrap();
-    buf
+    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_str(&mut buf, "tx_id")?;
+    write_optional_i64(&mut buf, req.tx_id)?;
+    rmp::encode::write_str(&mut buf, "system_time")?;
+    write_optional_timestamp(&mut buf, req.system_time)?;
+    Ok(buf)
 }
 
 pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
@@ -707,14 +707,14 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
 }
 
 /// Encode a DbOpened response: `{"db_id": int, "tx_id": int}`.
-pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Vec<u8> {
+pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2).unwrap();
-    rmp::encode::write_str(&mut buf, "db_id").unwrap();
-    rmp::encode::write_uint(&mut buf, resp.db_id as u64).unwrap();
-    rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
-    buf
+    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_str(&mut buf, "db_id")?;
+    rmp::encode::write_uint(&mut buf, resp.db_id as u64)?;
+    rmp::encode::write_str(&mut buf, "tx_id")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
+    Ok(buf)
 }
 
 pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
@@ -731,12 +731,12 @@ pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
 }
 
 /// Encode a DbClosed response: `{"db_id": int}`.
-pub fn encode_db_closed_response(resp: &DbClosedResponse) -> Vec<u8> {
+pub fn encode_db_closed_response(resp: &DbClosedResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 1).unwrap();
-    rmp::encode::write_str(&mut buf, "db_id").unwrap();
-    rmp::encode::write_uint(&mut buf, resp.db_id as u64).unwrap();
-    buf
+    rmp::encode::write_map_len(&mut buf, 1)?;
+    rmp::encode::write_str(&mut buf, "db_id")?;
+    rmp::encode::write_uint(&mut buf, resp.db_id as u64)?;
+    Ok(buf)
 }
 
 pub fn decode_db_closed_response(data: &[u8]) -> Result<DbClosedResponse> {
@@ -751,17 +751,17 @@ pub fn decode_db_closed_response(data: &[u8]) -> Result<DbClosedResponse> {
 }
 
 /// Encode a Query request: `{"query": str, "args": [QueryArg, ...]}`.
-pub fn encode_query_request(req: &QueryRequest) -> Vec<u8> {
+pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2).unwrap();
-    rmp::encode::write_str(&mut buf, "query").unwrap();
-    rmp::encode::write_str(&mut buf, &req.query).unwrap();
-    rmp::encode::write_str(&mut buf, "args").unwrap();
-    rmp::encode::write_array_len(&mut buf, req.args.len() as u32).unwrap();
+    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_str(&mut buf, "query")?;
+    rmp::encode::write_str(&mut buf, &req.query)?;
+    rmp::encode::write_str(&mut buf, "args")?;
+    rmp::encode::write_array_len(&mut buf, req.args.len() as u32)?;
     for arg in &req.args {
-        write_query_arg(&mut buf, arg).unwrap();
+        write_query_arg(&mut buf, arg)?;
     }
-    buf
+    Ok(buf)
 }
 
 pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
@@ -779,23 +779,23 @@ pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
 }
 
 /// Encode a query response: `{"columns": [...], "rows": [[...], ...]}`.
-pub fn encode_query_response(resp: &QueryResponse) -> Vec<u8> {
+pub fn encode_query_response(resp: &QueryResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2).unwrap();
-    rmp::encode::write_str(&mut buf, "columns").unwrap();
-    rmp::encode::write_array_len(&mut buf, resp.columns.len() as u32).unwrap();
+    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_str(&mut buf, "columns")?;
+    rmp::encode::write_array_len(&mut buf, resp.columns.len() as u32)?;
     for col in &resp.columns {
-        write_column_description(&mut buf, col).unwrap();
+        write_column_description(&mut buf, col)?;
     }
-    rmp::encode::write_str(&mut buf, "rows").unwrap();
-    rmp::encode::write_array_len(&mut buf, resp.rows.len() as u32).unwrap();
+    rmp::encode::write_str(&mut buf, "rows")?;
+    rmp::encode::write_array_len(&mut buf, resp.rows.len() as u32)?;
     for row in &resp.rows {
-        rmp::encode::write_array_len(&mut buf, row.len() as u32).unwrap();
+        rmp::encode::write_array_len(&mut buf, row.len() as u32)?;
         for v in row {
-            write_data_type(&mut buf, v).unwrap();
+            write_data_type(&mut buf, v)?;
         }
     }
-    buf
+    Ok(buf)
 }
 
 pub fn decode_query_response(data: &[u8]) -> Result<QueryResponse> {
@@ -881,15 +881,15 @@ fn column_description_from_value(v: Value) -> Result<ColumnDescription> {
 }
 
 /// Encode an Execute request: `{"ops": [TxOp, ...]}`.
-pub fn encode_execute_request(req: &ExecuteRequest) -> Vec<u8> {
+pub fn encode_execute_request(req: &ExecuteRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 1).unwrap();
-    rmp::encode::write_str(&mut buf, "ops").unwrap();
-    rmp::encode::write_array_len(&mut buf, req.ops.len() as u32).unwrap();
+    rmp::encode::write_map_len(&mut buf, 1)?;
+    rmp::encode::write_str(&mut buf, "ops")?;
+    rmp::encode::write_array_len(&mut buf, req.ops.len() as u32)?;
     for op in &req.ops {
-        write_tx_op(&mut buf, op).unwrap();
+        write_tx_op(&mut buf, op)?;
     }
-    buf
+    Ok(buf)
 }
 
 pub fn decode_execute_request(data: &[u8]) -> Result<ExecuteRequest> {
@@ -906,14 +906,14 @@ pub fn decode_execute_request(data: &[u8]) -> Result<ExecuteRequest> {
 }
 
 /// Encode a TxKey response: `{"tx_id": int, "system_time": Timestamp}`.
-pub fn encode_tx_key_response(resp: &TxKeyResponse) -> Vec<u8> {
+pub fn encode_tx_key_response(resp: &TxKeyResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2).unwrap();
-    rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
-    rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_timestamp(&mut buf, &resp.system_time).unwrap();
-    buf
+    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_str(&mut buf, "tx_id")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
+    rmp::encode::write_str(&mut buf, "system_time")?;
+    write_timestamp(&mut buf, &resp.system_time)?;
+    Ok(buf)
 }
 
 pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
@@ -924,18 +924,18 @@ pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
 }
 
 /// Encode a TxResult response.
-pub fn encode_tx_result_response(resp: &TxResultResponse) -> Vec<u8> {
+pub fn encode_tx_result_response(resp: &TxResultResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 4).unwrap();
-    rmp::encode::write_str(&mut buf, "status").unwrap();
-    rmp::encode::write_uint(&mut buf, resp.status as u64).unwrap();
-    rmp::encode::write_str(&mut buf, "tx_id").unwrap();
-    rmp::encode::write_sint(&mut buf, resp.tx_id).unwrap();
-    rmp::encode::write_str(&mut buf, "system_time").unwrap();
-    write_timestamp(&mut buf, &resp.system_time).unwrap();
-    rmp::encode::write_str(&mut buf, "error_message").unwrap();
-    write_optional_string(&mut buf, &resp.error_message).unwrap();
-    buf
+    rmp::encode::write_map_len(&mut buf, 4)?;
+    rmp::encode::write_str(&mut buf, "status")?;
+    rmp::encode::write_uint(&mut buf, resp.status as u64)?;
+    rmp::encode::write_str(&mut buf, "tx_id")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
+    rmp::encode::write_str(&mut buf, "system_time")?;
+    write_timestamp(&mut buf, &resp.system_time)?;
+    rmp::encode::write_str(&mut buf, "error_message")?;
+    write_optional_string(&mut buf, &resp.error_message)?;
+    Ok(buf)
 }
 
 pub fn decode_tx_result_response(data: &[u8]) -> Result<TxResultResponse> {
@@ -956,25 +956,25 @@ pub fn decode_tx_result_response(data: &[u8]) -> Result<TxResultResponse> {
 }
 
 /// Encode an ErrorResponse body.
-pub fn encode_error_body(resp: &ErrorResponseBody) -> Vec<u8> {
-    let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 5).unwrap();
-    rmp::encode::write_str(&mut buf, "severity").unwrap();
+pub fn encode_error_body(resp: &ErrorResponseBody) -> Result<Vec<u8>> {
     let severity_str = match resp.severity {
         b'E' => "E",
         b'F' => "F",
-        other => panic!("invalid severity byte: {other}"),
+        other => bail!("invalid severity byte: {other:#x}"),
     };
-    rmp::encode::write_str(&mut buf, severity_str).unwrap();
-    rmp::encode::write_str(&mut buf, "code").unwrap();
-    rmp::encode::write_uint(&mut buf, resp.code as u64).unwrap();
-    rmp::encode::write_str(&mut buf, "message").unwrap();
-    rmp::encode::write_str(&mut buf, &resp.message).unwrap();
-    rmp::encode::write_str(&mut buf, "detail").unwrap();
-    write_optional_string(&mut buf, &resp.detail).unwrap();
-    rmp::encode::write_str(&mut buf, "hint").unwrap();
-    write_optional_string(&mut buf, &resp.hint).unwrap();
-    buf
+    let mut buf = Vec::new();
+    rmp::encode::write_map_len(&mut buf, 5)?;
+    rmp::encode::write_str(&mut buf, "severity")?;
+    rmp::encode::write_str(&mut buf, severity_str)?;
+    rmp::encode::write_str(&mut buf, "code")?;
+    rmp::encode::write_uint(&mut buf, resp.code as u64)?;
+    rmp::encode::write_str(&mut buf, "message")?;
+    rmp::encode::write_str(&mut buf, &resp.message)?;
+    rmp::encode::write_str(&mut buf, "detail")?;
+    write_optional_string(&mut buf, &resp.detail)?;
+    rmp::encode::write_str(&mut buf, "hint")?;
+    write_optional_string(&mut buf, &resp.hint)?;
+    Ok(buf)
 }
 
 pub fn decode_error_body(data: &[u8]) -> Result<ErrorResponseBody> {
@@ -1260,7 +1260,7 @@ mod tests {
             (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap())),
         ] {
             let request = OpenDbRequest { tx_id, system_time };
-            let buf = encode_open_db_request(&request);
+            let buf = encode_open_db_request(&request).unwrap();
             assert_eq!(decode_open_db_request(&buf).unwrap(), request);
         }
     }
@@ -1271,14 +1271,14 @@ mod tests {
             db_id: 7,
             tx_id: 12345,
         };
-        let buf = encode_db_opened_response(&response);
+        let buf = encode_db_opened_response(&response).unwrap();
         assert_eq!(decode_db_opened_response(&buf).unwrap(), response);
     }
 
     #[test]
     fn round_trip_db_closed_response_body() {
         let response = DbClosedResponse { db_id: 11 };
-        let buf = encode_db_closed_response(&response);
+        let buf = encode_db_closed_response(&response).unwrap();
         assert_eq!(decode_db_closed_response(&buf).unwrap(), response);
     }
 
@@ -1296,7 +1296,7 @@ mod tests {
             query: q.into(),
             args,
         };
-        let buf = encode_query_request(&request);
+        let buf = encode_query_request(&request).unwrap();
         assert_eq!(decode_query_request(&buf).unwrap(), request);
     }
 
@@ -1319,7 +1319,7 @@ mod tests {
             vec![DataType::Long(2), DataType::Long(99)],
         ];
         let response = QueryResponse { columns, rows };
-        let buf = encode_query_response(&response);
+        let buf = encode_query_response(&response).unwrap();
         assert_eq!(decode_query_response(&buf).unwrap(), response);
     }
 
@@ -1334,7 +1334,7 @@ mod tests {
             },
         ];
         let request = ExecuteRequest { ops };
-        let buf = encode_execute_request(&request);
+        let buf = encode_execute_request(&request).unwrap();
         assert_eq!(decode_execute_request(&buf).unwrap(), request);
     }
 
@@ -1345,7 +1345,7 @@ mod tests {
             tx_id: 101,
             system_time: now,
         };
-        let buf = encode_tx_key_response(&response);
+        let buf = encode_tx_key_response(&response).unwrap();
         assert_eq!(decode_tx_key_response(&buf).unwrap(), response);
     }
 
@@ -1359,7 +1359,7 @@ mod tests {
                 system_time: now,
                 error_message: err,
             };
-            let buf = encode_tx_result_response(&response);
+            let buf = encode_tx_result_response(&response).unwrap();
             assert_eq!(decode_tx_result_response(&buf).unwrap(), response);
         }
     }
@@ -1373,7 +1373,7 @@ mod tests {
             detail: Some("near token X".into()),
             hint: None,
         };
-        let buf = encode_error_body(&response);
+        let buf = encode_error_body(&response).unwrap();
         assert_eq!(decode_error_body(&buf).unwrap(), response);
 
         let response = ErrorResponseBody {
@@ -1383,7 +1383,7 @@ mod tests {
             detail: None,
             hint: None,
         };
-        let buf = encode_error_body(&response);
+        let buf = encode_error_body(&response).unwrap();
         assert_eq!(decode_error_body(&buf).unwrap(), response);
     }
 
@@ -1399,5 +1399,151 @@ mod tests {
         assert_eq!(buf[1], 11);
         assert_eq!(buf[2] as i8, EXT_KEYWORD);
         assert_eq!(&buf[3..], b"person/name");
+    }
+
+    // ---------------------------------------------------------------------
+    // Negative-path tests
+    // ---------------------------------------------------------------------
+
+    fn pack(v: Value) -> Vec<u8> {
+        let mut buf = Vec::new();
+        rmpv::encode::write_value(&mut buf, &v).unwrap();
+        buf
+    }
+
+    #[test]
+    fn decode_open_db_rejects_non_map_body() {
+        // Optional fields silently default to None when absent (forward-compat).
+        // But a non-map body is unambiguously malformed.
+        assert!(decode_open_db_request(&pack(Value::Integer(1.into()))).is_err());
+    }
+
+    #[test]
+    fn decode_db_opened_rejects_wrong_type() {
+        // {"db_id": "not an int", "tx_id": 7}
+        let body = pack(Value::Map(vec![
+            (Value::String("db_id".into()), Value::String("nope".into())),
+            (Value::String("tx_id".into()), Value::Integer(7.into())),
+        ]));
+        assert!(decode_db_opened_response(&body).is_err());
+    }
+
+    #[test]
+    fn decode_db_opened_rejects_db_id_overflow() {
+        // db_id > u32::MAX
+        let body = pack(Value::Map(vec![
+            (
+                Value::String("db_id".into()),
+                Value::Integer((u64::from(u32::MAX) + 1).into()),
+            ),
+            (Value::String("tx_id".into()), Value::Integer(0.into())),
+        ]));
+        assert!(decode_db_opened_response(&body).is_err());
+    }
+
+    #[test]
+    fn decode_tx_result_rejects_status_overflow() {
+        // status = 256 — out of u8 range
+        let body = pack(Value::Map(vec![
+            (Value::String("status".into()), Value::Integer(256.into())),
+            (Value::String("tx_id".into()), Value::Integer(1.into())),
+            (
+                Value::String("system_time".into()),
+                Value::Ext(EXT_TIMESTAMP, vec![0, 0, 0, 0]),
+            ),
+            (Value::String("error_message".into()), Value::Nil),
+        ]));
+        assert!(decode_tx_result_response(&body).is_err());
+    }
+
+    #[test]
+    fn decode_error_rejects_invalid_severity() {
+        let body = pack(Value::Map(vec![
+            (Value::String("severity".into()), Value::String("Q".into())),
+            (Value::String("code".into()), Value::Integer(1.into())),
+            (Value::String("message".into()), Value::String("x".into())),
+            (Value::String("detail".into()), Value::Nil),
+            (Value::String("hint".into()), Value::Nil),
+        ]));
+        assert!(decode_error_body(&body).is_err());
+    }
+
+    #[test]
+    fn encode_error_rejects_invalid_severity() {
+        let r = encode_error_body(&ErrorResponseBody {
+            severity: b'X',
+            code: 1,
+            message: "x".into(),
+            detail: None,
+            hint: None,
+        });
+        assert!(r.is_err(), "expected bail on invalid severity");
+    }
+
+    #[test]
+    fn decode_unknown_msgpack_ext_fails() {
+        // ext code 99 is not assigned
+        let body = pack(Value::Ext(99, vec![0; 4]));
+        assert!(read_data_type(&body).is_err());
+    }
+
+    #[test]
+    fn decode_data_type_rejects_nil() {
+        let body = pack(Value::Nil);
+        assert!(read_data_type(&body).is_err());
+    }
+
+    #[test]
+    fn decode_bigint_rejects_wrong_payload_length() {
+        // BigInt payload must be exactly 16 bytes
+        let body = pack(Value::Ext(EXT_BIGINT, vec![0; 8]));
+        assert!(read_data_type(&body).is_err());
+        let body = pack(Value::Ext(EXT_UUID, vec![0; 4]));
+        assert!(read_data_type(&body).is_err());
+    }
+
+    #[test]
+    fn decode_keyword_rejects_empty_or_partial() {
+        // Empty keyword
+        let body = pack(Value::Ext(EXT_KEYWORD, b"".to_vec()));
+        assert!(read_data_type(&body).is_err());
+        // ":foo" (with leading colon — wire form should never include it)
+        let body = pack(Value::Ext(EXT_KEYWORD, b"/name".to_vec()));
+        assert!(read_data_type(&body).is_err());
+    }
+
+    #[test]
+    fn decode_tagged_union_rejects_unknown_kind() {
+        let body = pack(Value::Map(vec![
+            (Value::String("kind".into()), Value::String("xyzzy".into())),
+        ]));
+        assert!(entity_ref_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
+        assert!(tx_op_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
+        assert!(query_arg_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
+    }
+
+    #[test]
+    fn decode_body_rejects_trailing_bytes() {
+        // Two consecutive valid maps — only one body is allowed.
+        let one = pack(Value::Map(vec![(
+            Value::String("db_id".into()),
+            Value::Integer(7.into()),
+        )]));
+        let mut two = one.clone();
+        two.extend_from_slice(&one);
+        assert!(decode_db_closed_response(&two).is_err());
+    }
+
+    #[test]
+    fn decode_tagged_union_accepts_any_key_order() {
+        // Spec requires decoders to accept any field order; "kind" doesn't
+        // have to come first.
+        let body = pack(Value::Map(vec![
+            (Value::String("id".into()), Value::Integer(42.into())),
+            (Value::String("kind".into()), Value::String("id".into())),
+        ]));
+        let er =
+            entity_ref_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).unwrap();
+        assert_eq!(er, EntityRef::Id(42));
     }
 }

@@ -94,6 +94,10 @@ The encoder iterates the source map as given — **no key sorting is imposed**.
 Tests asserting byte-identical output should construct deterministic-order
 maps themselves (`BTreeMap` in Rust, `TreeMap` in JVM tests).
 
+**Decoders MUST accept any key order** for every map defined in this document
+(including the tagged-union `kind` discriminator). Encoder field order is for
+test determinism only and is not part of the protocol contract.
+
 ### 2.2 Extension Type Table
 
 | Ext code | Type    | Payload                                                                                  |

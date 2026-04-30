@@ -157,7 +157,7 @@ public final class WireCodec {
 
     public static BackendMessage.TxResult decodeTxResult(byte[] body) throws IOException {
         var fields = readFields(body);
-        byte status = (byte) expectLong(fields, "status");
+        byte status = toU8(expectLong(fields, "status"), "status");
         long txId = expectLong(fields, "tx_id");
         Instant systemTime = expectInstant(fields, "system_time");
         String err = optionalString(fields, "error_message");
@@ -172,7 +172,7 @@ public final class WireCodec {
             case "F" -> MessageTypes.SEVERITY_FATAL;
             default -> throw new IOException("invalid severity: " + severityStr);
         };
-        short code = (short) expectLong(fields, "code");
+        short code = toU16(expectLong(fields, "code"), "code");
         String message = expectString(fields, "message");
         String detail = optionalString(fields, "detail");
         String hint = optionalString(fields, "hint");
@@ -229,5 +229,15 @@ public final class WireCodec {
     private static int toInt(long v) {
         if (v < 0 || v > 0xFFFFFFFFL) throw new IllegalArgumentException("u32 out of range: " + v);
         return (int) v;
+    }
+
+    private static byte toU8(long v, String field) throws IOException {
+        if (v < 0 || v > 0xFFL) throw new IOException(field + " out of u8 range: " + v);
+        return (byte) v;
+    }
+
+    private static short toU16(long v, String field) throws IOException {
+        if (v < 0 || v > 0xFFFFL) throw new IOException(field + " out of u16 range: " + v);
+        return (short) v;
     }
 }

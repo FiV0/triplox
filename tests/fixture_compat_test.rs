@@ -123,7 +123,7 @@ fn query_response_fixture_matches() {
         vec![DataType::Long(1), DataType::String("alice".into())],
         vec![DataType::Long(2), DataType::String("bob".into())],
     ];
-    let buf = encode_query_response(&QueryResponse { columns, rows });
+    let buf = encode_query_response(&QueryResponse { columns, rows }).unwrap();
     check_or_regen("query_response.mpk", &buf);
 }
 
@@ -135,6 +135,7 @@ fn error_response_fixture_matches() {
         message: "parse error: unexpected token".into(),
         detail: Some("near position 17".into()),
         hint: None,
-    });
+    })
+    .unwrap();
     check_or_regen("error_response.mpk", &buf);
 }

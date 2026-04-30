@@ -70,7 +70,7 @@ impl ClientNode {
             Some(tk) => (Some(tk.tx_id), Some(tk.system_time)),
         };
 
-        let body = encode_open_db_request(&OpenDbRequest { tx_id, system_time });
+        let body = encode_open_db_request(&OpenDbRequest { tx_id, system_time })?;
         let resp = self
             .client
             .post(format!("{}/db/open", self.base_url))
@@ -94,7 +94,7 @@ impl ClientNode {
 impl SubmitNode for ClientNode {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
         let ops = collect_tx_ops(ops)?;
-        let body = encode_execute_request(&ExecuteRequest { ops });
+        let body = encode_execute_request(&ExecuteRequest { ops })?;
         let resp = self
             .client
             .post(format!("{}/tx/submit", self.base_url))
@@ -113,7 +113,7 @@ impl SubmitNode for ClientNode {
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
         let ops = collect_tx_ops(ops)?;
-        let body = encode_execute_request(&ExecuteRequest { ops });
+        let body = encode_execute_request(&ExecuteRequest { ops })?;
         let resp = self
             .client
             .post(format!("{}/tx/execute", self.base_url))
@@ -203,7 +203,7 @@ impl Database for ClientDb {
         let body = encode_query_request(&QueryRequest {
             query: query.to_string(),
             args: args.to_vec(),
-        });
+        })?;
         let resp = self
             .client
             .post(format!("{}/db/{}/query", self.base_url, self.db_id))

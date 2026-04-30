@@ -297,7 +297,8 @@ impl IntoResponse for ApiError {
             message: self.message,
             detail: None,
             hint: None,
-        });
+        })
+        .expect("ErrorResponseBody encoding is infallible for fixed inputs");
         (
             self.status,
             [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
@@ -363,10 +364,9 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    Ok(ok_response(encode_db_opened_response(&DbOpenedResponse {
-        db_id,
-        tx_id,
-    })))
+    let body = encode_db_opened_response(&DbOpenedResponse { db_id, tx_id })
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    Ok(ok_response(body))
 }
 
 async fn close_db<L: TxLog + 'static>(
@@ -374,9 +374,9 @@ async fn close_db<L: TxLog + 'static>(
     Path(db_id): Path<u32>,
 ) -> Result<Response, ApiError> {
     if state.handle_store.remove(db_id).await {
-        Ok(ok_response(encode_db_closed_response(&DbClosedResponse {
-            db_id,
-        })))
+        let body = encode_db_closed_response(&DbClosedResponse { db_id })
+            .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+        Ok(ok_response(body))
     } else {
         Err(ApiError::not_found(
             ErrorCode::InvalidDbHandle,
@@ -429,10 +429,12 @@ async fn query<L: TxLog + 'static>(
         })
         .collect();
 
-    Ok(ok_response(encode_query_response(&QueryResponse {
+    let body = encode_query_response(&QueryResponse {
         columns,
         rows: result,
-    })))
+    })
+    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    Ok(ok_response(body))
 }
 
 async fn submit_tx<L: TxLog + 'static>(
@@ -452,10 +454,12 @@ async fn submit_tx<L: TxLog + 'static>(
         .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    Ok(ok_response(encode_tx_key_response(&TxKeyResponse {
+    let body = encode_tx_key_response(&TxKeyResponse {
         tx_id: tx_key.tx_id,
         system_time: tx_key.system_time,
-    })))
+    })
+    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    Ok(ok_response(body))
 }
 
 async fn execute_tx<L: TxLog + 'static>(
@@ -475,24 +479,23 @@ async fn execute_tx<L: TxLog + 'static>(
         .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    Ok(match result {
-        TransactionResult::TxCommited(tx_key) => {
-            ok_response(encode_tx_result_response(&TxResultResponse {
-                status: 0,
-                tx_id: tx_key.tx_id,
-                system_time: tx_key.system_time,
-                error_message: None,
-            }))
-        }
-        TransactionResult::TxAborted(tx_key, err) => {
-            ok_response(encode_tx_result_response(&TxResultResponse {
-                status: 1,
-                tx_id: tx_key.tx_id,
-                system_time: tx_key.system_time,
-                error_message: Some(err.to_string()),
-            }))
-        }
-    })
+    let resp = match result {
+        TransactionResult::TxCommited(tx_key) => TxResultResponse {
+            status: 0,
+            tx_id: tx_key.tx_id,
+            system_time: tx_key.system_time,
+            error_message: None,
+        },
+        TransactionResult::TxAborted(tx_key, err) => TxResultResponse {
+            status: 1,
+            tx_id: tx_key.tx_id,
+            system_time: tx_key.system_time,
+            error_message: Some(err.to_string()),
+        },
+    };
+    let body = encode_tx_result_response(&resp)
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    Ok(ok_response(body))
 }
 
 // ---------------------------------------------------------------------------
