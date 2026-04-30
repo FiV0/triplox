@@ -40,6 +40,8 @@ use crate::protocol::*;
 // DB Cache
 // ---------------------------------------------------------------------------
 
+const MAX_OPEN_DBS: usize = 1024;
+
 /// A shared, reference-counted cache of DB snapshots.
 /// Keyed by tx_id (the point-in-time identifier for the snapshot).
 /// DBs are read-only and safe to share across connections.
@@ -50,14 +52,12 @@ struct DbCacheEntry {
 
 pub(crate) struct DbCache {
     entries: RwLock<HashMap<i64, DbCacheEntry>>,
-    max_open: usize,
 }
 
 impl DbCache {
-    pub(crate) fn new(max_open: usize) -> Self {
+    pub(crate) fn new() -> Self {
         DbCache {
             entries: RwLock::new(HashMap::new()),
-            max_open,
         }
     }
 
@@ -75,8 +75,8 @@ impl DbCache {
                 entry.refcount += 1;
                 return Ok(entry.db.clone());
             }
-            if entries.len() >= self.max_open {
-                bail!("Too many open DB snapshots (max {})", self.max_open);
+            if entries.len() >= MAX_OPEN_DBS {
+                bail!("Too many open DB snapshots (max {})", MAX_OPEN_DBS);
             }
         }
 
@@ -88,8 +88,8 @@ impl DbCache {
             entry.refcount += 1;
             return Ok(entry.db.clone());
         }
-        if entries.len() >= self.max_open {
-            bail!("Too many open DB snapshots (max {})", self.max_open);
+        if entries.len() >= MAX_OPEN_DBS {
+            bail!("Too many open DB snapshots (max {})", MAX_OPEN_DBS);
         }
         entries.insert(
             tx_id,
@@ -418,8 +418,8 @@ pub struct Server<L: TxLog> {
 }
 
 impl<L: TxLog + 'static> Server<L> {
-    pub fn new(node: Arc<Node<L>>, max_open_dbs: usize) -> Self {
-        let db_cache = Arc::new(DbCache::new(max_open_dbs));
+    pub fn new(node: Arc<Node<L>>) -> Self {
+        let db_cache = Arc::new(DbCache::new());
         let handle_store = Arc::new(HandleStore::new(db_cache));
         Server {
             node,
@@ -475,13 +475,11 @@ impl<L: TxLog + 'static> Server<L> {
 // Dev Server (per-connection in-memory nodes)
 // ---------------------------------------------------------------------------
 
-pub struct DevServer {
-    max_open_dbs: usize,
-}
+pub struct DevServer;
 
 impl DevServer {
-    pub fn new(max_open_dbs: usize) -> Self {
-        DevServer { max_open_dbs }
+    pub fn new() -> Self {
+        DevServer
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -490,7 +488,6 @@ impl DevServer {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
-        let max_open_dbs = self.max_open_dbs;
         accept_loop(
             listener,
             token,
@@ -498,7 +495,7 @@ impl DevServer {
             move |stream, _peer, conn_id, conn_token, join_set| {
                 join_set.spawn(async move {
                     let node = Arc::new(Node::memory_node().await);
-                    let db_cache = Arc::new(DbCache::new(max_open_dbs));
+                    let db_cache = Arc::new(DbCache::new());
                     let handle_store = Arc::new(HandleStore::new(db_cache));
 
                     let app_state = Arc::new(Server {

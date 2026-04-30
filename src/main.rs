@@ -21,7 +21,6 @@ fn load_config() -> Result<Config> {
 
 async fn run_server(config: Config) -> Result<()> {
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-    let max_open_dbs = config.server.max_open_dbs;
 
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
@@ -51,17 +50,17 @@ async fn run_server(config: Config) -> Result<()> {
 
     match config.storage {
         StorageConfig::Dev => {
-            let server = DevServer::new(max_open_dbs);
+            let server = DevServer::new();
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
             let node = Arc::new(Node::memory_node().await);
-            let server = Server::new(node, max_open_dbs);
+            let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Local { path } => {
             let node = Arc::new(Node::local_node(&path).await?);
-            let server = Server::new(node, max_open_dbs);
+            let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Remote {
@@ -76,7 +75,7 @@ async fn run_server(config: Config) -> Result<()> {
                 Node::remote_node(&log_path, &endpoint, &bucket, &access_key, &secret_key, &region)
                     .await?,
             );
-            let server = Server::new(node, max_open_dbs);
+            let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
     }
