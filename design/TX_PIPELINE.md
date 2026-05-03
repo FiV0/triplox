@@ -60,6 +60,8 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - self.metadata.advance_generation()
 ```
 
+Note: You might be wondering why lookup refs are fully typed in entity position, but not in value position (a string could a string or a tempid). We wanted to avoid moving Schema to the client, so that checking and resolving needs to happen server side.
+
 ## Type Pipeline
 
 Each stage narrows the types, eliminating one class of unresolved references:
@@ -78,19 +80,16 @@ Datom (i64 + DataType)                           fully concrete
 
 Triplox supports two unique modes:
 
-| Mode | Meaning | Lookup refs | Tempid upsert |
-|------|---------|-------------|---------------|
-| `:db.unique/value` | At most one entity may have a given `[attribute value]`. | No | No |
-| `:db.unique/identity` | Same uniqueness constraint, plus tempids can adopt existing entities by identity. | Yes | Yes |
-
-This differs from Mentat in one deliberate way: in Triplox, `:db.unique/value`
-is a uniqueness check only and cannot be used for lookup refs.
+| Mode                  | Meaning                                                                           | Lookup refs | Tempid upsert |
+|-----------------------|-----------------------------------------------------------------------------------|-------------|---------------|
+| `:db.unique/value`    | At most one entity may have a given `[attribute value]`.                          | No          | No            |
+| `:db.unique/identity` | Same uniqueness constraint, plus tempids can adopt existing entities by identity. | Yes         | Yes           |
 
 VAE has layout `[VAE][value][attribute][entity][tx_eid][op]` and is written
 only for attributes with `:db/unique`. It is used for unique checks, identity
 lookup refs, and identity upsert resolution.
 
-## Mentat-Style Upsert Resolution
+## Upsert Resolution
 
 `DatomWithTempids` is Triplox's equivalent of Mentat's `TermWithTempIds`:
 
@@ -131,14 +130,14 @@ merged back after tempid resolution.
 
 Each staged datom goes into exactly one bucket:
 
-| Shape | Attribute is `:db.unique/identity`? | Op | Bucket |
-|-------|-------------------------------------|----|--------|
-| `(TempId e, a, Data v)` | yes | Assert | `upserts_e` |
-| `(TempId e, a, Data v)` | no | any | `allocations` |
-| `(TempId e, a, TempRef v)` | yes | Assert | `upserts_ev` |
-| `(TempId e, a, TempRef v)` | no | any | `allocations` |
-| `(Id e, a, TempRef v)` | any | any | `allocations` |
-| `(Id e, a, Data v)` | any | any | inert |
+| Shape                      | Attribute is `:db.unique/identity`? | Op     | Bucket        |
+|----------------------------|-------------------------------------|--------|---------------|
+| `(TempId e, a, Data v)`    | yes                                 | Assert | `upserts_e`   |
+| `(TempId e, a, Data v)`    | no                                  | any    | `allocations` |
+| `(TempId e, a, TempRef v)` | yes                                 | Assert | `upserts_ev`  |
+| `(TempId e, a, TempRef v)` | no                                  | any    | `allocations` |
+| `(Id e, a, TempRef v)`     | any                                 | any    | `allocations` |
+| `(Id e, a, Data v)`        | any                                 | any    | inert         |
 
 Retractions are never upserts. A retraction that still mentions an unresolved
 tempid after evolution fails because the system cannot retract an entity that

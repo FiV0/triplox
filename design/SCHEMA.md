@@ -31,8 +31,11 @@ A **schema attribute** defines a named attribute that can appear on data entitie
 | Unique      | `db/unique`        | Ref        | no       | Entity reference to `:db.unique/value` or `:db.unique/identity`     |
 
 An entity becomes a schema attribute when all three properties (`db/ident`, `db/valueType`, `db/cardinality`) are present.
-Initially the 3 attributes need to be asserted in the same transaction. In later stages we might want to allow for more
-granular schema evolvement. This will require more work in the indexer so likely needs more thought.
+If a transaction asserts any of `db/valueType`, `db/cardinality`, or `db/unique` on an entity, it must also assert
+`db/valueType` and `db/cardinality` in the same transaction — partial schema-attribute definitions are rejected.
+Entities that only assert `db/ident` (e.g. enum entities like `:db.type/string` or user-defined idents) are accepted
+without further validation. In later stages we might want to allow for more granular schema evolvement. This will
+require more work in the indexer so likely needs more thought.
 
 ### 1.1 Supported Value Types
 
@@ -163,8 +166,11 @@ We still strive for a deprecation guided schema evolution.
 ## 5. Schema Definition
 
 ### 5.1 Version 1
-- A schema attribute needs to be fully defined within the same transaction. If `db/ident`, `db/valueType` or
-  `db/cardinality` is missing, the transaction is rejected.
+- A schema attribute needs to be fully defined within the same transaction. The trigger is asserting any of
+  `db/valueType`, `db/cardinality`, or `db/unique` on an entity: the transaction must then also assert
+  `db/valueType` and `db/cardinality` on that entity, otherwise it is rejected.
+- Entities asserting only `db/ident` (e.g. enum entities or user-defined idents) are accepted and are not
+  treated as schema attributes.
 - `db/unique` is optional. If present, it must be either `:db.unique/value` or `:db.unique/identity`.
 - These attributes can be defined with `Put` or `Add` statements (or combinations thereof) as long as the
   final set of required attributes is met.
