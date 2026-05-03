@@ -1,5 +1,19 @@
 <p align="center">
   <img src="img/logo_thin.png" alt="Triplox logo" width="600">
+  <br>
+  <br>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0">
+    <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg">
+  </a>
+  <a href="https://discord.gg/CYaAYFwC">
+    <img alt="Discord" src="https://img.shields.io/badge/discord-blue.svg?logo=discord&logoColor=white">
+  </a>
+  <a href="https://crates.io/crates/triplox-client">
+    <img alt="crates.io" src="https://img.shields.io/crates/v/triplox-client.svg">
+  </a>
+  <a href="https://clojars.org/xyz.triplox/triplox">
+    <img alt="Clojars" src="https://img.shields.io/clojars/v/xyz.triplox/triplox.svg">
+  </a>
 </p>
 
 > 🚧 **WARNING: Alpha Software** 🚧
