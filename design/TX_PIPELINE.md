@@ -13,7 +13,9 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 ```
 1. Clone PartitionMap           pending_pm = self.metadata.partition_map.clone()
    Allocate tx entity           tx_eid = pending_pm.allocate_entid(TX_PARTITION)
-   Begin SlateDB transaction    txn = slatedb.begin(Snapshot)
+                                (pipeline reads go directly against slatedb;
+                                 index writes are buffered in a WriteBatch
+                                 committed atomically in step 7)
                                 ↓
 2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomExpanded>
    - TxOp::Put -> N DatomExpanded (one per attr)
@@ -27,7 +29,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Ref-typed value DataType::String -> ValueExpanded::TempRef
    - Ref-typed value DataType::Keyword -> resolved ident -> ValueExpanded::Data(Long)
                                 ↓
-3. Resolve lookup refs          tx::resolve_lookup_refs(datoms, &schema, &txn)
+3. Resolve lookup refs          tx::resolve_lookup_refs(datoms, &schema, &slatedb)
    - Collects all unique (attr_entid, value) pairs from LookupRef variants
    - Batch-resolves via AVE prefix scans (no I/O if no lookup refs)
    - Converts DatomExpanded -> DatomWithTempids (eliminates LookupRef variants)
@@ -48,7 +50,9 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Unknown attribute errors
    - Detects schema changes
                                 ↓
-7. Write indices + commit       write_index_entries(), txn.commit()
+7. Write indices + commit       let mut batch = WriteBatch::new();
+                                write_index_entries(&mut batch, ...);
+                                slatedb.write_with_options(batch, ...)
                                 ↓
 8. Apply on success only:
    - self.metadata.partition_map = pending_pm    (counter reservation committed)
@@ -147,7 +151,7 @@ The driver loop is:
 ```rust
 while generation.can_evolve() {
     let tempid_avs = generation.temp_id_avs();
-    let temp_id_map = resolve_temp_id_avs(&tempid_avs, txn).await?;
+    let temp_id_map = resolve_temp_id_avs(&tempid_avs, db).await?;
     record_resolutions_and_detect_conflicts(temp_id_map)?;
     generation = generation.evolve_one_step(&temp_id_map, &resolved_tempids)?;
 }
