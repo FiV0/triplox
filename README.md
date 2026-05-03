@@ -2,6 +2,9 @@
   <img src="img/logo_thin.png" alt="Triplox logo" width="600">
   <br>
   <br>
+  <a href="https://triplox.xyz">
+    <img alt="Website" src="https://img.shields.io/badge/website-triplox.xyz-blue.svg">
+  </a>
   <a href="https://www.apache.org/licenses/LICENSE-2.0">
     <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg">
   </a>
