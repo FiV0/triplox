@@ -26,7 +26,10 @@ jobs:
         run: cargo test --all-features
 
       - name: Run edn tests
-        run: cargo test -p edn --all-features
+        run: cargo test -p triplox-edn --all-features
+
+      - name: Run triplox-client tests
+        run: cargo test -p triplox-client --all-features
 
   jvm-test:
     runs-on: ubuntu-latest
