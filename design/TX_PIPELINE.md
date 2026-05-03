@@ -180,10 +180,10 @@ The resolver tracks a global `resolved_tempids` map. If a tempid resolves to
 different entids in different generations, the transaction aborts with a
 conflicting-upsert error.
 
-Stage 4 lookup results are intentionally not reused by later validation in the
-initial implementation. A later optimization can cache unique lookup results for
-uniqueness validation, but cardinality old-value lookup will still require its
-own `(entity, attribute) -> old value` EAV scan.
+The VAE lookups performed during upsert resolution are intentionally not reused
+by later validation in the initial implementation. A later optimization can
+cache them for uniqueness validation, but cardinality old-value lookup will
+still require its own `(entity, attribute) -> old value` EAV scan.
 
 ### Allocation After Evolution
 
