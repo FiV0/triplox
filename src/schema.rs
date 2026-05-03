@@ -234,9 +234,28 @@ impl ValueType {
     pub fn matches(&self, data: &DataType) -> bool {
         match self {
             // Ref values are stored as DataType::Long (same byte-level encoding).
-            ValueType::Ref => data.value_type() == ValueType::Long,
-            _ => *self == data.value_type(),
+            ValueType::Ref => value_type_of(data) == ValueType::Long,
+            _ => *self == value_type_of(data),
         }
+    }
+}
+
+/// Map a `DataType` value to its `ValueType` variant. Lives in the server
+/// crate so `DataType` stays decoupled from the schema module.
+pub fn value_type_of(dt: &DataType) -> ValueType {
+    match dt {
+        DataType::BigInt(_) => ValueType::BigInt,
+        DataType::Boolean(_) => ValueType::Boolean,
+        DataType::Bytes(_) => ValueType::Bytes,
+        DataType::Double(_) => ValueType::Double,
+        DataType::Float(_) => ValueType::Float,
+        DataType::Instant(_) => ValueType::Instant,
+        DataType::Keyword(_) => ValueType::Keyword,
+        DataType::Long(_) => ValueType::Long,
+        DataType::String(_) => ValueType::String,
+        DataType::Uuid(_) => ValueType::Uuid,
+        DataType::Vector(_) => ValueType::Vector,
+        DataType::Map(_) => ValueType::Map,
     }
 }
 

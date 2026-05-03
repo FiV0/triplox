@@ -14,6 +14,7 @@ pub mod logging;
 mod memory_log;
 pub(crate) mod metadata;
 pub mod ops;
+mod ops_server;
 pub mod partition;
 mod query;
 #[cfg(any(test, feature = "test-helpers"))]
@@ -22,17 +23,14 @@ pub mod schema;
 mod schema;
 mod slate;
 mod tempids;
-mod transaction;
 pub mod tx;
 pub mod upsert_resolution;
 mod union_find;
 mod util;
 
-pub mod client;
 pub mod config;
-pub mod msgpack_codec;
 pub mod node;
-pub mod protocol;
 pub mod server;
 
+pub use triplox_client::{client, msgpack_codec, protocol, transaction};
 pub use node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};

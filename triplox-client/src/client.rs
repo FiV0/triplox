@@ -12,10 +12,11 @@ use crate::msgpack_codec::{
     encode_query_request, ExecuteRequest, OpenDbRequest, QueryRequest,
 };
 use crate::node::{
-    collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode, TransactionResult, TxKey,
+    collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
 };
 use crate::ops::QueryArg;
 use crate::query::QueryResult;
+use crate::transaction::{TransactionResult, TxKey};
 use edn::query::ParsedQuery;
 
 // ---------------------------------------------------------------------------

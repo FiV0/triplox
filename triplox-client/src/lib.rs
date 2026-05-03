@@ -1,0 +1,18 @@
+//! HTTP/2 client for [Triplox](https://github.com/FiV0/triplox), a Datalog database.
+//!
+//! [`ClientNode`] mirrors the server's `Node` API and [`ClientDb`] mirrors the
+//! `DB` API, both operating over HTTP/2 via the binary protocol encoding.
+
+pub mod client;
+pub mod msgpack_codec;
+pub mod node;
+pub mod ops;
+pub mod protocol;
+pub mod query;
+pub mod transaction;
+
+pub use client::{ClientDb, ClientNode};
+pub use node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
+pub use ops::{DataType, EntityRef, Entid, QueryArg, TxOp};
+pub use query::QueryResult;
+pub use transaction::{TransactionResult, TxKey};
