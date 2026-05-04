@@ -2199,6 +2199,144 @@ mod tests {
         );
     }
 
+    /// Cross-iteration EV→E resolution where the second-iteration store
+    /// lookup misses entirely. alice-temp and bob-temp both resolve in iter 1
+    /// via `:user/email`; the EV `(alice-temp :spouse bob-temp)` promotes to
+    /// `UpsertE("alice-temp", :spouse, Long(bob))` for conflict detection.
+    /// iter 2's `(:spouse, ref(bob))` lookup finds nothing — Mentat would
+    /// route alice-temp to allocations and panic on the
+    /// `tempids.contains_key` assert. Triplox's cumulative `resolved_tempids`
+    /// recognizes the prior-generation resolution and routes the datom to the
+    /// `resolved` population instead.
+    #[tokio::test]
+    async fn test_upsert_ev_cross_iteration_db_miss_resolves_via_prior_generation() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/spouse), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![(kw!(:user/email), "alice".into())]),
+            TxOp::put(vec![(kw!(:user/email), "bob".into())]),
+        ])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "bob".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/spouse),
+                    value: DataType::String("bob-temp".into()),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected commit, got {:?}",
+            result
+        );
+
+        let db = node.db().await.unwrap();
+        let rows = db
+            .query(
+                r#"[:find ?ae ?be
+                    :where [?ae :user/email "alice"]
+                           [?be :user/email "bob"]
+                           [?ae :user/spouse ?be]]"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected one (alice :spouse bob) row, got {:?}",
+            rows
+        );
+    }
+
+    /// Cross-iteration EV→E resolution where iter 2's store lookup binds the
+    /// same tempid to a *different* entity than iter 1 picked. Pre-seed
+    /// `(carol :spouse bob)` so the iter-2 `(:spouse, ref(bob))` lookup
+    /// returns carol's entid for alice-temp; `record_resolutions` should see
+    /// alice-temp → A in the cumulative map and alice-temp → C in the new
+    /// map and abort with "Conflicting upserts".
+    #[tokio::test]
+    async fn test_upsert_ev_cross_iteration_conflict_rejects_tx() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/spouse), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".into())),
+                (kw!(:user/email), "alice".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".into())),
+                (kw!(:user/email), "bob".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("carol".into())),
+                (kw!(:user/email), "carol".into()),
+                (kw!(:user/spouse), DataType::String("bob".into())),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "bob".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/spouse),
+                    value: DataType::String("bob-temp".into()),
+                },
+            ])
+            .await
+            .unwrap();
+
+        match result {
+            TransactionResult::TxAborted(_, err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Conflicting upserts"),
+                    "expected 'Conflicting upserts', got: {}",
+                    msg
+                );
+            }
+            TransactionResult::TxCommited(_) => panic!("expected TxAborted, got TxCommited"),
+        }
+    }
+
     /// In-tx ownership transfer of a unique-identity ref attribute.
     ///
     /// The user retracts carol's `(:user/primary-friend, bob)` ownership and
