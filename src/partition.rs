@@ -18,6 +18,20 @@ pub const DB_PARTITION: u32 = 0;
 pub const TX_PARTITION: u32 = 1;
 pub const USER_PARTITION: u32 = 2;
 
+/// Default partition for tempids that don't otherwise specify one.
+pub const DEFAULT_PARTITION: u32 = USER_PARTITION;
+
+/// Resolve a partition disagreement within a single label group: schema-bound
+/// tempids (`DB_PARTITION`) outrank the default. Used when union-find merges
+/// tempids whose individual partition inferences disagree.
+pub fn dominant_partition(a: u32, b: u32) -> u32 {
+    if a == DB_PARTITION || b == DB_PARTITION {
+        DB_PARTITION
+    } else {
+        a
+    }
+}
+
 /// Return the encoded byte prefix shared by all entity IDs in the given partition.
 ///
 /// The prefix is `TAG_LONG` followed by the high bytes of the order-preserving

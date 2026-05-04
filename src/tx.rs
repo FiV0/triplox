@@ -9,7 +9,7 @@ use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::vae_key_to_parts;
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
-use crate::partition::{DB_PARTITION, USER_PARTITION};
+use crate::partition::{dominant_partition, DB_PARTITION, DEFAULT_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, Unique, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::union_find::UnionFind;
@@ -831,19 +831,41 @@ fn record_resolutions(
     Ok(())
 }
 
+/// Per-tempid partition decision, computed once from the input datoms.
+///
+/// Encodes the only inference rule we use: a tempid asserting `:db/ident` is
+/// a schema entity and routes to `DB_PARTITION`; everything else routes to
+/// `USER_PARTITION`. Allocators downstream consult this map and never look at
+/// attribute content themselves.
+type TempIdPartitions = HashMap<String, u32>;
+
+fn infer_tempid_partitions(datoms: &[DatomWithTempids]) -> TempIdPartitions {
+    let mut out: TempIdPartitions = HashMap::new();
+    for d in datoms {
+        if let IdOrTempId::TempId(t) = &d.entity {
+            if d.op == DatomOp::Assert && d.attribute == kw!(:db/ident) {
+                // `:db/ident` always wins, regardless of ordering.
+                out.insert(t.clone(), DB_PARTITION);
+            } else {
+                out.entry(t.clone()).or_insert(USER_PARTITION);
+            }
+        }
+        if let ValueWithTempIds::TempRef(t) = &d.value {
+            out.entry(t.clone()).or_insert(USER_PARTITION);
+        }
+    }
+    out
+}
+
 fn allocation_partitions(
-    allocations: &[DatomWithTempids],
+    inferred: &TempIdPartitions,
     tempid_labels: &BTreeMap<String, usize>,
 ) -> Vec<u32> {
     let label_count = tempid_labels.values().copied().max().map_or(0, |n| n + 1);
-    let mut partitions = vec![USER_PARTITION; label_count];
-    for d in allocations {
-        if d.op == DatomOp::Assert && d.attribute == kw!(:db/ident) {
-            if let IdOrTempId::TempId(t) = &d.entity {
-                if let Some(label) = tempid_labels.get(t) {
-                    partitions[*label] = DB_PARTITION;
-                }
-            }
+    let mut partitions = vec![DEFAULT_PARTITION; label_count];
+    for (tempid, &label) in tempid_labels {
+        if let Some(&p) = inferred.get(tempid) {
+            partitions[label] = dominant_partition(partitions[label], p);
         }
     }
     partitions
@@ -856,6 +878,7 @@ pub async fn resolve_tempids_with_upserts(
     db: &slatedb::Db,
     partition_map: &mut PartitionMap,
 ) -> Result<Vec<Datom>> {
+    let inferred = infer_tempid_partitions(&datoms);
     let (mut generation, inert_terms) = Generation::from(datoms, schema)?;
     let mut resolved_tempids = BTreeMap::new();
 
@@ -868,7 +891,7 @@ pub async fn resolve_tempids_with_upserts(
 
     generation.allocate_unresolved_upserts(schema)?;
     let tempid_labels = generation.temp_ids_in_allocations(schema)?;
-    let partitions = allocation_partitions(&generation.allocations, &tempid_labels);
+    let partitions = allocation_partitions(&inferred, &tempid_labels);
 
     let mut allocated_tempids = HashMap::new();
     let mut label_entids = Vec::with_capacity(partitions.len());
@@ -896,34 +919,14 @@ pub fn resolve_tempids(
     datoms: &[DatomWithTempids],
     partition_map: &mut PartitionMap,
 ) -> Result<Vec<Datom>> {
-    // Pre-scan: determine partition for each tempid
-    let mut tempid_partitions: HashMap<&str, u32> = HashMap::new();
-    for d in datoms {
-        if let IdOrTempId::TempId(ref s) = d.entity {
-            if d.attribute == kw!(:db/ident) {
-                // insert() overrides so :db/ident always wins regardless of ordering
-                tempid_partitions.insert(s, DB_PARTITION);
-            } else {
-                // or_insert() preserves existing, so a prior :db/ident won't be overwritten
-                tempid_partitions.entry(s).or_insert(USER_PARTITION);
-            }
-        }
-    }
-    // Also check tempids that only appear in value position
-    for d in datoms {
-        if let ValueWithTempIds::TempRef(ref s) = d.value {
-            tempid_partitions.entry(s).or_insert(USER_PARTITION);
-        }
-    }
+    let inferred = infer_tempid_partitions(datoms);
 
-    // Allocate entids
     let mut tempid_map: HashMap<&str, i64> = HashMap::new();
-    for (tempid, partition) in &tempid_partitions {
+    for (tempid, partition) in &inferred {
         let eid = partition_map.allocate_entid(*partition);
-        tempid_map.insert(tempid, eid);
+        tempid_map.insert(tempid.as_str(), eid);
     }
 
-    // Resolve
     let mut resolved = Vec::with_capacity(datoms.len());
     for d in datoms {
         let entity = match &d.entity {
