@@ -11,6 +11,7 @@ use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::partition::{DB_PARTITION, USER_PARTITION};
 use crate::schema::{Schema, Unique, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::union_find::UnionFind;
 use crate::util::concat_bytes;
 
 // ---------------------------------------------------------------------------
@@ -436,34 +437,6 @@ struct FinalPopulations {
     upserted: Vec<Datom>,
     resolved: Vec<Datom>,
     allocated: Vec<Datom>,
-}
-
-#[derive(Debug)]
-struct UnionFind {
-    parent: Vec<usize>,
-}
-
-impl UnionFind {
-    fn new(len: usize) -> Self {
-        Self {
-            parent: (0..len).collect(),
-        }
-    }
-
-    fn find(&mut self, x: usize) -> usize {
-        if self.parent[x] != x {
-            self.parent[x] = self.find(self.parent[x]);
-        }
-        self.parent[x]
-    }
-
-    fn union(&mut self, a: usize, b: usize) {
-        let a_root = self.find(a);
-        let b_root = self.find(b);
-        if a_root != b_root {
-            self.parent[b_root] = a_root;
-        }
-    }
 }
 
 fn is_identity_attr(schema: &Schema, attr_eid: Entid) -> Result<bool> {
