@@ -890,6 +890,8 @@ pub async fn resolve_tempids_with_upserts(
     }
 
     generation.allocate_unresolved_upserts(schema)?;
+    // tempid -> label -> entid. Multiple tempid can map to the same entid. We first
+    // assign a label to each tempid group, then assign the partitions.
     let tempid_labels = generation.temp_ids_in_allocations(schema)?;
     let partitions = allocation_partitions(&inferred, &tempid_labels);
 
