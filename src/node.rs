@@ -2327,6 +2327,60 @@ mod tests {
         assert!(matches!(lookup_ref, TransactionResult::TxAborted(_, _)));
     }
 
+    /// Same-tx ownership transfer of a `:db.unique/value` attribute.
+    ///
+    /// Unlike `:db.unique/identity`, `:db.unique/value` does not participate
+    /// in upsert resolution, so the resolver guard never fires. The
+    /// transaction reaches `validate_unique_constraints`, which honors the
+    /// in-tx retraction of the previous owner and accepts the reassertion.
+    #[tokio::test]
+    async fn test_in_tx_transfer_of_unique_value() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        node.execute_tx(vec![unique_value_schema_attribute(kw!(:ssn), "string")])
+            .await
+            .unwrap();
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "p1".into(),
+            attribute: kw!(:ssn),
+            value: "123".into(),
+        }])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let p1_eid = match &db
+            .query(r#"[:find ?e :where [?e :ssn "123"]]"#)
+            .await
+            .unwrap()[0][0]
+        {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID for p1, got {:?}", other),
+        };
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Retract {
+                    entity: EntityRef::Id(p1_eid),
+                    attribute: kw!(:ssn),
+                    value: "123".into(),
+                },
+                TxOp::Add {
+                    entity: "p2".into(),
+                    attribute: kw!(:ssn),
+                    value: "123".into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected in-tx transfer to succeed, got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_partition_counters_include_user_partition() {
         let dir = tempfile::tempdir().unwrap();
