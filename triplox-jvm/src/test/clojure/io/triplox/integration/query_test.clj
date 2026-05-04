@@ -551,11 +551,10 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-lookup-ref-in-entity-position
-  (tc/transact *conn*
-               [{:db/ident :lookup-id
-                 :db/valueType :db.type/string
-                 :db/cardinality :db.cardinality/one
-                 :db/unique :db.unique/identity}])
+  (tc/transact *conn* [{:db/ident :lookup-id
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one
+                        :db/unique :db.unique/identity}])
   (tc/transact *conn* [{:lookup-id "alice" :name "Alice" :age 30}])
   (tc/transact *conn* [[:db/add [:lookup-id "alice"] :city "NYC"]])
 
@@ -565,15 +564,13 @@
                       [?e :city ?city]]}))))
 
 (deftest test-lookup-ref-in-value-position
-  (tc/transact *conn*
-               [{:db/ident :friend
-                 :db/valueType :db.type/ref
-                 :db/cardinality :db.cardinality/one}])
-  (tc/transact *conn*
-               [{:db/ident :lookup-id
-                 :db/valueType :db.type/string
-                 :db/cardinality :db.cardinality/one
-                 :db/unique :db.unique/identity}])
+  (tc/transact *conn* [{:db/ident :friend
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/one}])
+  (tc/transact *conn* [{:db/ident :lookup-id
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one
+                        :db/unique :db.unique/identity}])
   (tc/transact *conn* [{:lookup-id "alice" :name "Alice" :age 30}
                        {:lookup-id "bob" :name "Bob" :age 25}])
 
