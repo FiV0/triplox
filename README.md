@@ -30,8 +30,7 @@ The goals of Triplox are roughly the following (in no particular order):
 - Object storage first. In it's final version Triplox should simply need a single S3 bucket for deployment. This is currently not the case. See [Architecture](###Architecture) below.
 - The Datomic Data model and API as main inspiration. Datomic is awesome. Lets bring it directly to object storage.
 - A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM (where Datomic has had it's main success).
-- Incremental Datalog queries. You should be able to dynamically subscribe and detach from incremental Datalog queries. This is the most experimental part of Triplox and will need quite a bit of engineering effort to get right, make fast, and fully support of all features of Datalog (recursive rules being the most tricky part). We hook into SlateDB's [CDC](https://en.wikipedia.org/wiki/Change_data_capture) and produce new deltas for every WAL entry that comes through.
-
+- Incremental Datalog queries. You should be able to dynamically subscribe and detach from incremental Datalog queries. This is the most experimental part of Triplox and will need quite a bit of engineering effort to get right, make fast, and fully support of all features of Datalog (recursive rules being the most tricky part).
 
 ### Examples
 
@@ -105,12 +104,14 @@ The primary inspiration is Datomic and you will see it's impact throughout the p
 
 The goal is not to have a 1-to-1 correspondence of features with Datomic. Datomic is the main inspiration and we'll strive to stay
 close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences
-will currently show up in the transaction pipeline. I am currently not dealing with schema updates. On the query side there is
-a question of bag vs set semantics. Set semantics stays true to traditional Datalog and also avoids certain awkward
-query patterns where variables otherwise "leak" into aggregates (see some thoughts in [semantics document](design/SEMANTICS.md).
-On the other hand bags allow you to stream result sets in batches (no deduplication of the full result set) and in
-theory also need less DBSP distinct operators (an operator that is expensive to maintain). I want to take this decision
-carefully.
+will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There are also some edge
+cases with tempid + upsert resolution that I am currently not dealing correctly with.
+On the query side there is a question of bag vs set semantics. Set semantics stays true to traditional Datalog and
+also avoids certain awkward query patterns where variables otherwise "leak"
+into aggregates (see some thoughts in the [semantics document](design/SEMANTICS.md)).
+On the other hand, bags allow you to stream result sets in batches (no deduplication of the full result set) and in
+theory also need less DBSP distinct operators (an operator that is expensive to maintain). The decision on this
+needs some more thought.
 
 ### Licence
 
