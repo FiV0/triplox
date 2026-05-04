@@ -794,56 +794,6 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
     ops
 }
 
-// --- Test helpers ---
-
-/// Build a Put for a schema attribute without explicit db/id.
-#[cfg(any(test, feature = "test-helpers"))]
-fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
-    schema_attribute_with_cardinality_and_unique(ident, value_type, cardinality, None)
-}
-
-#[cfg(any(test, feature = "test-helpers"))]
-fn schema_attribute_with_cardinality_and_unique(
-    ident: Keyword,
-    value_type: &str,
-    cardinality: &str,
-    unique: Option<&str>,
-) -> TxOp {
-    let mut fields = vec![
-        (kw!(:db/ident), DataType::Keyword(ident)),
-        (
-            kw!(:db/valueType),
-            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-        ),
-        (
-            kw!(:db/cardinality),
-            DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
-        ),
-    ];
-    if let Some(unique) = unique {
-        fields.push((
-            kw!(:db/unique),
-            DataType::Keyword(Keyword::namespaced("db.unique", unique)),
-        ));
-    }
-    TxOp::put(fields)
-}
-
-#[cfg(any(test, feature = "test-helpers"))]
-fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
-    schema_attribute_with_cardinality(ident, value_type, "one")
-}
-
-#[cfg(any(test, feature = "test-helpers"))]
-pub fn unique_identity_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
-    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("identity"))
-}
-
-#[cfg(any(test, feature = "test-helpers"))]
-pub fn unique_value_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
-    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("value"))
-}
-
 /// Load the Schema from indices by querying with the Datalog engine.
 /// Runs three sequential queries inside a single blocking task:
 /// 1. All entities with db/ident → populates ident_map/entid_map
@@ -974,6 +924,56 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
     }
 
     schema
+}
+
+// --- Test helpers ---
+
+/// Build a Put for a schema attribute without explicit db/id.
+#[cfg(any(test, feature = "test-helpers"))]
+fn schema_attribute_with_cardinality(ident: Keyword, value_type: &str, cardinality: &str) -> TxOp {
+    schema_attribute_with_cardinality_and_unique(ident, value_type, cardinality, None)
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+fn schema_attribute_with_cardinality_and_unique(
+    ident: Keyword,
+    value_type: &str,
+    cardinality: &str,
+    unique: Option<&str>,
+) -> TxOp {
+    let mut fields = vec![
+        (kw!(:db/ident), DataType::Keyword(ident)),
+        (
+            kw!(:db/valueType),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        ),
+        (
+            kw!(:db/cardinality),
+            DataType::Keyword(Keyword::namespaced("db.cardinality", cardinality)),
+        ),
+    ];
+    if let Some(unique) = unique {
+        fields.push((
+            kw!(:db/unique),
+            DataType::Keyword(Keyword::namespaced("db.unique", unique)),
+        ));
+    }
+    TxOp::put(fields)
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+fn schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality(ident, value_type, "one")
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn unique_identity_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("identity"))
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn unique_value_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
+    schema_attribute_with_cardinality_and_unique(ident, value_type, "one", Some("value"))
 }
 
 /// Build a transaction that defines common test attributes.
