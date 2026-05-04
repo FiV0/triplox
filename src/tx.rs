@@ -286,35 +286,79 @@ fn validate_unique_identity_lookup(
     Ok(())
 }
 
-pub async fn lookup_unique_eid(
+/// Batch-resolve `[attribute, value]` pairs to entity IDs via the unique-only
+/// VAE index. One forward scan covers all lookups, seeking to each prefix in
+/// sorted order. Returns a map from `(attr_eid, value)` to the owning entity.
+/// Pairs with no entry, or whose latest entry is a retraction, are absent.
+pub async fn batch_lookup_unique_eids(
     db: &slatedb::Db,
-    attr_eid: Entid,
-    value: &DataType,
-) -> Result<Option<Entid>> {
-    let prefix = unique_vae_prefix(attr_eid, value);
-    let mut iter = db
-        .scan_with_options(prefix.clone()..vec![codec::VAE_END], &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    iter.seek(&prefix).await?;
+    lookups: &[(Entid, DataType)],
+) -> Result<HashMap<(Entid, DataType), Entid>> {
+    let mut prefixes: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
+    for (attr_eid, value) in lookups {
+        prefixes.insert(unique_vae_prefix(*attr_eid, value), (*attr_eid, value.clone()));
+    }
 
-    let Some(kv) = iter.next().await? else {
-        return Ok(None);
+    let mut resolved: HashMap<(Entid, DataType), Entid> = HashMap::new();
+
+    let Some(first_prefix) = prefixes.keys().next() else {
+        return Ok(resolved);
     };
-    if !kv.key.starts_with(&prefix) {
-        return Ok(None);
-    }
-    if kv.key[kv.key.len() - 1] == codec::RETRACT {
-        return Ok(None);
+
+    let mut iter = db
+        .scan_with_options(
+            first_prefix.clone()..vec![codec::VAE_END],
+            &DEFAULT_SCAN_OPTIONS,
+        )
+        .await?;
+
+    // Slatedb forbids seeking strictly backward past the iterator's last
+    // returned key. On a miss, `next()` returns the next DB key past our
+    // prefix, which may exceed a subsequent prefix; we skip those — anything
+    // the iterator already overshot has no entry in the DB.
+    let mut last_returned: Option<Vec<u8>> = None;
+
+    for (vae_prefix, (attr_eid, value)) in &prefixes {
+        if let Some(last) = &last_returned {
+            if vae_prefix < last {
+                continue;
+            }
+        }
+
+        iter.seek(vae_prefix).await?;
+        let Some(kv) = iter.next().await? else {
+            break;
+        };
+        last_returned = Some(kv.key.to_vec());
+
+        if !kv.key.starts_with(vae_prefix) {
+            continue;
+        }
+
+        assert!(
+            kv.key.len() >= codec::TX_EID_OP_SUFFIX,
+            "Key too short ({} bytes) to contain tx_eid + op suffix",
+            kv.key.len()
+        );
+        if kv.key[kv.key.len() - 1] == codec::RETRACT {
+            continue;
+        }
+
+        let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(kv.key)?;
+        match entity {
+            DataType::Long(eid) => {
+                resolved.insert((*attr_eid, value.clone()), eid);
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Expected Long entity ID in VAE key, got {:?}",
+                    other
+                ));
+            }
+        }
     }
 
-    let (_value, _attribute, entity_dt, _tx_eid, _op) = vae_key_to_parts(kv.key)?;
-    match entity_dt {
-        DataType::Long(eid) => Ok(Some(eid)),
-        other => Err(anyhow::anyhow!(
-            "Expected Long entity ID in VAE key, got {:?}",
-            other
-        )),
-    }
+    Ok(resolved)
 }
 
 /// Batch-resolve all lookup refs via the unique-only VAE index.
@@ -325,61 +369,20 @@ pub async fn resolve_lookup_refs(
     schema: &Schema,
     db: &slatedb::Db,
 ) -> Result<Vec<DatomWithTempids>> {
-    // Collect all unique lookup refs keyed by their encoded VAE lookup prefix.
-    let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
+    // Collect every (attr, value) pair referenced by a lookup ref.
+    let mut lookups: Vec<(Entid, DataType)> = Vec::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
             validate_unique_identity_lookup(schema, *a, v)?;
-            lookup_refs.insert(unique_vae_prefix(*a, v), (*a, v.clone()));
+            lookups.push((*a, v.clone()));
         }
         if let ValueExpanded::LookupRef(a, v) = &d.value {
             validate_unique_identity_lookup(schema, *a, v)?;
-            lookup_refs.insert(unique_vae_prefix(*a, v), (*a, v.clone()));
+            lookups.push((*a, v.clone()));
         }
     }
 
-    // Attribute entid + value → resolved entid lookup map.
-    let mut resolved_map: HashMap<(Entid, DataType), Entid> = HashMap::new();
-
-    if let Some(first_prefix) = lookup_refs.keys().next() {
-        let mut iter = db
-            .scan_with_options(
-                first_prefix.clone()..vec![codec::VAE_END],
-                &DEFAULT_SCAN_OPTIONS,
-            )
-            .await?;
-
-        for (vae_prefix, (attr_eid, value)) in &lookup_refs {
-            iter.seek(vae_prefix).await?;
-
-            let key = match iter.next().await? {
-                Some(kv) if kv.key.starts_with(vae_prefix) => kv.key,
-                _ => return Err(lookup_ref_not_found(schema, *attr_eid, value)),
-            };
-
-            assert!(
-                key.len() >= codec::TX_EID_OP_SUFFIX,
-                "Key too short ({} bytes) to contain tx_eid + op suffix",
-                key.len()
-            );
-            if key[key.len() - 1] == codec::RETRACT {
-                return Err(lookup_ref_not_found(schema, *attr_eid, value));
-            }
-
-            let (_value, _attribute, entity_dt, _tx_eid, _op) = vae_key_to_parts(key)?;
-            match entity_dt {
-                DataType::Long(eid) => {
-                    resolved_map.insert((*attr_eid, value.clone()), eid);
-                }
-                other => {
-                    return Err(anyhow::anyhow!(
-                        "Expected Long entity ID in AVE key, got {:?}",
-                        other
-                    ));
-                }
-            }
-        }
-    }
+    let resolved_map = batch_lookup_unique_eids(db, &lookups).await?;
 
     // Convert DatomExpanded → DatomWithTempids, replacing lookup refs with resolved IDs.
     let mut result = Vec::with_capacity(datoms.len());
@@ -387,18 +390,18 @@ pub async fn resolve_lookup_refs(
         let entity = match d.entity {
             EntityExpanded::Id(id) => IdOrTempId::Id(id),
             EntityExpanded::TempId(s) => IdOrTempId::TempId(s),
-            EntityExpanded::LookupRef(a, v) => {
-                let eid = resolved_map[&(a, v)];
-                IdOrTempId::Id(eid)
-            }
+            EntityExpanded::LookupRef(a, v) => match resolved_map.get(&(a, v.clone())) {
+                Some(&eid) => IdOrTempId::Id(eid),
+                None => return Err(lookup_ref_not_found(schema, a, &v)),
+            },
         };
         let value = match d.value {
             ValueExpanded::Data(dt) => ValueWithTempIds::Data(dt),
             ValueExpanded::TempRef(s) => ValueWithTempIds::TempRef(s),
-            ValueExpanded::LookupRef(a, v) => {
-                let eid = resolved_map[&(a, v)];
-                ValueWithTempIds::Data(DataType::Long(eid))
-            }
+            ValueExpanded::LookupRef(a, v) => match resolved_map.get(&(a, v.clone())) {
+                Some(&eid) => ValueWithTempIds::Data(DataType::Long(eid)),
+                None => return Err(lookup_ref_not_found(schema, a, &v)),
+            },
         };
         result.push(DatomWithTempids {
             entity,
@@ -757,9 +760,12 @@ async fn resolve_temp_id_avs(
             .push(tempid.clone());
     }
 
+    let lookups: Vec<UniqueLookup> = unique_lookups.keys().cloned().collect();
+    let resolved = batch_lookup_unique_eids(db, &lookups).await?;
+
     let mut temp_id_map = HashMap::new();
-    for ((attr, value), tempids) in unique_lookups {
-        if let Some(eid) = lookup_unique_eid(db, attr, &value).await? {
+    for (lookup, tempids) in unique_lookups {
+        if let Some(&eid) = resolved.get(&lookup) {
             for tempid in tempids {
                 temp_id_map.insert(tempid, eid);
             }

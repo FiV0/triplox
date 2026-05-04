@@ -481,6 +481,7 @@ impl Indexer {
         }
 
         let mut asserted_unique: HashMap<(Entid, DataType), Entid> = HashMap::new();
+        let mut to_check: Vec<(&Datom, Entid)> = Vec::new();
         for datom in datoms {
             if datom.op != DatomOp::Assert {
                 continue;
@@ -495,7 +496,7 @@ impl Indexer {
             }
 
             let key = (attr_eid, datom.value.clone());
-            if let Some(existing_entity) = asserted_unique.insert(key.clone(), datom.entity) {
+            if let Some(existing_entity) = asserted_unique.insert(key, datom.entity) {
                 if existing_entity != datom.entity {
                     return Err(anyhow::anyhow!(
                         "Unique constraint violation for attribute {} value {:?}: entities {} and {}",
@@ -506,8 +507,17 @@ impl Indexer {
                     ));
                 }
             }
+            to_check.push((datom, attr_eid));
+        }
 
-            if let Some(owner) = tx::lookup_unique_eid(db, attr_eid, &datom.value).await? {
+        let lookups: Vec<(Entid, DataType)> = to_check
+            .iter()
+            .map(|(d, a)| (*a, d.value.clone()))
+            .collect();
+        let resolved = tx::batch_lookup_unique_eids(db, &lookups).await?;
+
+        for (datom, attr_eid) in to_check {
+            if let Some(&owner) = resolved.get(&(attr_eid, datom.value.clone())) {
                 if owner != datom.entity
                     && !retractions.contains(&(owner, attr_eid, datom.value.clone()))
                 {
