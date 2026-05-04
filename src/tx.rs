@@ -303,15 +303,12 @@ pub async fn batch_lookup_unique_eids(
 
     let mut resolved: HashMap<(Entid, DataType), Entid> = HashMap::new();
 
-    let Some(first_prefix) = prefixes.keys().next() else {
+    if prefixes.is_empty() {
         return Ok(resolved);
-    };
+    }
 
     let mut iter = db
-        .scan_with_options(
-            first_prefix.clone()..vec![codec::VAE_END],
-            &DEFAULT_SCAN_OPTIONS,
-        )
+        .scan_prefix_with_options(&[codec::VAE], &DEFAULT_SCAN_OPTIONS)
         .await?;
 
     // Slatedb forbids seeking strictly backward past the iterator's last
