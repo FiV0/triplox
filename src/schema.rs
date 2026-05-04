@@ -845,14 +845,16 @@ pub fn unique_value_schema_attribute(ident: Keyword, value_type: &str) -> TxOp {
 }
 
 /// Load the Schema from indices by querying with the Datalog engine.
-/// Runs two queries:
+/// Runs three sequential queries inside a single blocking task:
 /// 1. All entities with db/ident → populates ident_map/entid_map
 /// 2. Entities with db/ident + db/valueType + db/cardinality → populates attribute_map
+/// 3. Entities with db/unique → enriches attribute_map with uniqueness
 ///
-/// TODO: These two queries could be merged into a single query that fetches all
-/// db/ident entities with optional db/valueType + db/cardinality. Query 2 re-fetches
-/// ?e and ?ident that were already retrieved in query 1. This is only run at startup
-/// so the inefficiency is minor, but a single-pass approach would be cleaner.
+/// TODO: The three queries could be merged into a single query that fetches all
+/// db/ident entities with optional db/valueType, db/cardinality, and db/unique.
+/// Queries 2 and 3 re-fetch values already retrieved in query 1. This is only run
+/// at startup so the inefficiency is minor, but a single-pass approach would be
+/// cleaner. Could likely be done with an `optional` clause.
 pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_ident_map: IdentMap = HashMap::new();
@@ -868,61 +870,37 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
     let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
 
-    // Query 1: all entities with db/ident (populates ident_map/entid_map)
     let ident_query: ParsedQuery = "[:find ?e ?ident :where [?e :db/ident ?ident]]"
         .parse()
         .expect("Ident query parse failed");
-
-    let snap_clone = snapshot.clone();
-    let handle_clone = handle.clone();
-    let ident_map_clone = bootstrap_ident_map.clone();
-    let range_stats_clone = range_stats.clone();
-    let ident_results = tokio::task::spawn_blocking(move || {
-        execute_query(
-            &ident_query,
-            &[],
-            snap_clone,
-            handle_clone,
-            &ident_map_clone,
-            i64::MAX,
-            range_stats_clone,
-        )
-    })
-    .await
-    .expect("Ident query task failed")
-    .expect("Ident query execution failed");
-
-    // Query 2: entities with db/ident + db/valueType + db/cardinality (populates attribute_map)
     let attr_query: ParsedQuery = "[:find ?e ?ident ?vt ?card :where [?e :db/ident ?ident] [?e :db/valueType ?vt] [?e :db/cardinality ?card]]"
         .parse()
         .expect("Attribute query parse failed");
-
-    // Query 3: optional db/unique for schema attributes.
     let unique_query: ParsedQuery = "[:find ?e ?unique :where [?e :db/unique ?unique]]"
         .parse()
         .expect("Unique query parse failed");
 
-    let snapshot_clone = snapshot.clone();
-    let handle_clone = handle.clone();
-    let bootstrap_ident_map_clone = bootstrap_ident_map.clone();
-    let range_stats_clone = range_stats.clone();
-    let attr_results = tokio::task::spawn_blocking(move || {
-        execute_query(
+    // Run all three queries in a single blocking task.
+    let (ident_results, attr_results, unique_results) = tokio::task::spawn_blocking(move || {
+        let idents = execute_query(
+            &ident_query,
+            &[],
+            snapshot.clone(),
+            handle.clone(),
+            &bootstrap_ident_map,
+            i64::MAX,
+            range_stats.clone(),
+        )?;
+        let attrs = execute_query(
             &attr_query,
             &[],
-            snapshot_clone,
-            handle_clone,
-            &bootstrap_ident_map_clone,
+            snapshot.clone(),
+            handle.clone(),
+            &bootstrap_ident_map,
             i64::MAX,
-            range_stats_clone,
-        )
-    })
-    .await
-    .expect("Attribute query task failed")
-    .expect("Attribute query execution failed");
-
-    let unique_results = tokio::task::spawn_blocking(move || {
-        execute_query(
+            range_stats.clone(),
+        )?;
+        let uniques = execute_query(
             &unique_query,
             &[],
             snapshot,
@@ -930,11 +908,12 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
             &bootstrap_ident_map,
             i64::MAX,
             range_stats,
-        )
+        )?;
+        Ok::<_, anyhow::Error>((idents, attrs, uniques))
     })
     .await
-    .expect("Unique query task failed")
-    .expect("Unique query execution failed");
+    .expect("Schema-load task failed")
+    .expect("Schema-load query failed");
 
     let mut schema = Schema::default();
 
