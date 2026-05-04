@@ -2199,6 +2199,94 @@ mod tests {
         );
     }
 
+    /// In-tx ownership transfer of a unique-identity ref attribute.
+    ///
+    /// The user retracts carol's `(:user/primary-friend, bob)` ownership and
+    /// reasserts it on a new entity (resolved via `:user/email`) in the same
+    /// transaction. validate_unique_constraints accounts for same-tx
+    /// retractions and accepts this; the upsert resolver guard does not — it
+    /// promotes the UpsertEV to UpsertE even when both tempids resolve, so
+    /// the next-round VAE lookup sees carol (basis-t state) and emits
+    /// "Conflicting upserts". The test asserts the user-intended success
+    /// behavior; ignored until the layer disagreement is resolved.
+    #[tokio::test]
+    #[ignore]
+    async fn test_in_tx_transfer_of_unique_identity_ref() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/handle), "string"),
+            unique_identity_schema_attribute(kw!(:user/primary-friend), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".into())),
+                (kw!(:user/email), DataType::String("alice".into())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".into())),
+                (kw!(:user/handle), DataType::String("bob".into())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("carol".into())),
+                (kw!(:user/primary-friend), DataType::String("bob".into())),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let row = db
+            .query(
+                r#"[:find ?bob ?carol
+                    :where [?bob :user/handle "bob"]
+                           [?carol :user/primary-friend ?bob]]"#,
+            )
+            .await
+            .unwrap();
+        let (bob_eid, carol_eid) = match row.as_slice() {
+            [r] => match r.as_slice() {
+                [DataType::Long(b), DataType::Long(c)] => (*b, *c),
+                other => panic!("Expected [Long, Long], got {:?}", other),
+            },
+            other => panic!("Expected exactly one row, got {:?}", other),
+        };
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "u".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "u".into(),
+                    attribute: kw!(:user/primary-friend),
+                    value: DataType::String("f".into()),
+                },
+                TxOp::Add {
+                    entity: "f".into(),
+                    attribute: kw!(:user/handle),
+                    value: "bob".into(),
+                },
+                TxOp::Retract {
+                    entity: EntityRef::Id(carol_eid),
+                    attribute: kw!(:user/primary-friend),
+                    value: DataType::Long(bob_eid),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected in-tx transfer to succeed, got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn test_unique_value_rejects_duplicate_and_lookup_ref() {
         let node = Node::memory_node().await;
