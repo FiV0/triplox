@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use anyhow::Result;
 use edn::kw;
 use edn::symbols::Keyword;
+use indexmap::IndexSet;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::vae_key_to_parts;
@@ -417,25 +418,54 @@ pub async fn resolve_lookup_refs(
 type TempIdMap = HashMap<String, Entid>;
 type UniqueLookup = (Entid, DataType);
 
+/// A "Simple upsert" that looks like `[:db/add TEMPID a v]`, where `a` is `:db.unique/identity`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct UpsertE(String, Entid, DataType);
 
+/// A "Complex upsert" that looks like `[:db/add TEMPID a OTHERTEMPID]`, where `a` is
+/// `:db.unique/identity`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct UpsertEV(String, Entid, String);
 
+/// A generation collects entities into populations at a single evolutionary step in the upsert
+/// resolution evolution process.
+///
+/// The upsert resolution process is only concerned with `[:db/add ...]` entities until the final
+/// entid allocations. That's why we separate into special simple and complex upsert types
+/// immediately, and then collect the more general datom types for final resolution.
 #[derive(Debug, Default)]
 struct Generation {
+    /// "Simple upserts" that look like `[:db/add TEMPID a v]`, where `a` is `:db.unique/identity`.
     upserts_e: Vec<UpsertE>,
+
+    /// "Complex upserts" that look like `[:db/add TEMPID a OTHERTEMPID]`, where `a` is
+    /// `:db.unique/identity`.
     upserts_ev: Vec<UpsertEV>,
+
+    /// Entities that look like:
+    /// - `[:db/add TEMPID b OTHERTEMPID]`. `b` may be `:db.unique/identity` if it has failed to upsert.
+    /// - `[:db/add TEMPID b v]`. `b` may be `:db.unique/identity` if it has failed to upsert.
+    /// - `[:db/add e b OTHERTEMPID]`.
     allocations: Vec<DatomWithTempids>,
+
+    /// Entities that upserted and no longer reference tempids. These assertions are guaranteed to
+    /// be in the store.
     upserted: Vec<Datom>,
+
+    /// Entities that resolved due to other upserts and no longer reference tempids. These
+    /// assertions may or may not be in the store.
     resolved: Vec<Datom>,
 }
 
 #[derive(Debug, Default)]
 struct FinalPopulations {
+    /// Upserts that upserted.
     upserted: Vec<Datom>,
+
+    /// Allocations that resolved due to other upserts.
     resolved: Vec<Datom>,
+
+    /// Allocations that required new entid allocations.
     allocated: Vec<Datom>,
 }
 
@@ -495,6 +525,8 @@ enum EitherDatom {
 }
 
 impl Generation {
+    /// Split datoms into a generation of populations that need to evolve to have their tempids
+    /// resolved or allocated, and a population of inert datoms that do not reference tempids.
     fn from(datoms: Vec<DatomWithTempids>, schema: &Schema) -> Result<(Self, Vec<Datom>)> {
         let mut generation = Generation::default();
         let mut inert = Vec::new();
@@ -531,10 +563,15 @@ impl Generation {
         Ok((generation, inert))
     }
 
+    /// Return true if it's possible to evolve this generation further.
+    ///
+    /// Note that there can be complex upserts but no simple upserts to help resolve them, and in
+    /// this case, we cannot evolve further.
     fn can_evolve(&self) -> bool {
         !self.upserts_e.is_empty()
     }
 
+    /// Collect tempid -> [a v] pairs that might upsert at this evolutionary step.
     fn temp_id_avs(&self) -> Vec<(String, UniqueLookup)> {
         self.upserts_e
             .iter()
@@ -542,6 +579,7 @@ impl Generation {
             .collect()
     }
 
+    /// Evolve potential upserts that haven't resolved into allocations.
     fn allocate_unresolved_upserts(&mut self, schema: &Schema) -> Result<()> {
         for UpsertEV(t1, attr_eid, t2) in self.upserts_ev.drain(..) {
             let attr = schema
@@ -559,6 +597,12 @@ impl Generation {
         Ok(())
     }
 
+    /// Evolve this generation one step further by rewriting the existing `:db/add` datoms using
+    /// the given temporary IDs.
+    ///
+    /// Tempids resolved in earlier generations (tracked in `resolved_tempids`) are also honored,
+    /// so that a tempid which surfaces a second time (e.g. via an `UpsertEV` promotion) does not
+    /// get re-allocated a fresh entid.
     fn evolve_one_step(
         self,
         temp_id_map: &TempIdMap,
@@ -607,6 +651,9 @@ impl Generation {
             let t1_eid = temp_id_map.get(&t1).or_else(|| resolved_tempids.get(&t1));
             let t2_eid = temp_id_map.get(&t2).or_else(|| resolved_tempids.get(&t2));
             match (t1_eid, t2_eid) {
+                // Even though we can resolve entirely when both tempids are known, it's possible
+                // that the remaining upsert could conflict. Moving straight to resolved doesn't
+                // give us a chance to search the store for the conflict.
                 (Some(_), Some(t2_eid)) | (None, Some(t2_eid)) => {
                     next.upserts_e.push(UpsertE(t1, a, DataType::Long(*t2_eid)));
                 }
@@ -635,6 +682,10 @@ impl Generation {
         Ok(next)
     }
 
+    /// After evolution is complete, yield the set of tempids that require entid allocation.
+    ///
+    /// Some of the tempids may be identified, so we also provide a map from tempid to a dense set
+    /// of contiguous integer labels.
     fn temp_ids_in_allocations(&self, schema: &Schema) -> Result<BTreeMap<String, usize>> {
         let mut tempids = BTreeSet::new();
         let mut identity_groups: HashMap<(Entid, ValueWithTempIds), Vec<String>> = HashMap::new();
@@ -672,6 +723,10 @@ impl Generation {
             }
         }
 
+        // Now we union-find all the known tempids. Two tempids are unioned if they both appear as
+        // the entity of an `[a v]` upsert, including when the value column `v` is itself a tempid.
+        // Our `UnionFind` operates on contiguous indices, so we maintain the map from tempids to
+        // indices ourselves (sorted via `BTreeSet` for deterministic results).
         let tempid_indices: BTreeMap<String, usize> = tempids
             .into_iter()
             .enumerate()
@@ -689,18 +744,23 @@ impl Generation {
             }
         }
 
-        let mut rep_labels: BTreeMap<usize, usize> = BTreeMap::new();
+        // Now that we have aggregated tempids, label them using the smallest number of contiguous
+        // labels possible. We allocate labels for tempids in sorted order (driven by the
+        // `BTreeMap` iteration above) so that "a" gets a smaller label than "b", which is pleasant
+        // for testing.
+        let mut dense_labels: IndexSet<usize> = IndexSet::new();
         let mut tempid_labels = BTreeMap::new();
         for (tempid, index) in tempid_indices {
             let rep = uf.find(index);
-            let next_label = rep_labels.len();
-            let label = *rep_labels.entry(rep).or_insert(next_label);
+            let (label, _) = dense_labels.insert_full(rep);
             tempid_labels.insert(tempid, label);
         }
 
         Ok(tempid_labels)
     }
 
+    /// After evolution is complete, use the provided allocated entids to segment `self` into
+    /// populations, each with no references to tempids.
     fn into_final_populations(self, temp_id_map: &TempIdMap) -> Result<FinalPopulations> {
         let mut populations = FinalPopulations {
             upserted: self.upserted,
