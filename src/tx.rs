@@ -556,6 +556,8 @@ impl Generation {
                         op: d.op,
                     });
                 }
+                // Retracts, non-identity tempid asserts, and `(Id, TempRef)` — all still
+                // reference a tempid that needs later allocation or substitution.
                 _ => generation.allocations.push(d),
             }
         }
