@@ -1,4 +1,3 @@
-#![allow(unused)]
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
