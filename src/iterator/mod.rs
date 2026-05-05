@@ -1,3 +1,4 @@
+pub(crate) mod forward_only_iterator;
 pub(crate) mod generic_and_prefix_extender;
 pub(crate) mod generic_fn_prefix_extender;
 pub(crate) mod generic_not_prefix_extender;

@@ -6,9 +6,9 @@ use edn::symbols::Keyword;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::vae_key_to_parts;
+use crate::iterator::forward_only_iterator::ForwardOnlyIterator;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType};
-use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::concat_bytes;
 
 // ---------------------------------------------------------------------------
@@ -306,43 +306,28 @@ pub async fn batch_lookup_unique_eids(
         return Ok(resolved);
     }
 
-    let mut iter = db
-        .scan_prefix_with_options(&[codec::VAE], &DEFAULT_SCAN_OPTIONS)
-        .await?;
-
-    // Slatedb forbids seeking strictly backward past the iterator's last
-    // returned key. On a miss, `next()` returns the next DB key past our
-    // prefix, which may exceed a subsequent prefix; we skip those — anything
-    // the iterator already overshot has no entry in the DB.
-    let mut last_returned: Option<Vec<u8>> = None;
+    let mut iter = ForwardOnlyIterator::scan_prefix(db, &[codec::VAE]).await?;
 
     for (vae_prefix, (attr_eid, value)) in &prefixes {
-        if let Some(last) = &last_returned {
-            if vae_prefix < last {
-                continue;
-            }
-        }
-
         iter.seek(vae_prefix).await?;
-        let Some(kv) = iter.next().await? else {
+        let Some(key) = iter.get_value() else {
             break;
         };
-        last_returned = Some(kv.key.to_vec());
 
-        if !kv.key.starts_with(vae_prefix) {
+        if !key.starts_with(vae_prefix) {
             continue;
         }
 
         assert!(
-            kv.key.len() >= codec::TX_EID_OP_SUFFIX,
+            key.len() >= codec::TX_EID_OP_SUFFIX,
             "Key too short ({} bytes) to contain tx_eid + op suffix",
-            kv.key.len()
+            key.len()
         );
-        if kv.key[kv.key.len() - 1] == codec::RETRACT {
+        if key[key.len() - 1] == codec::RETRACT {
             continue;
         }
 
-        let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(kv.key)?;
+        let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(key.clone())?;
         match entity {
             DataType::Long(eid) => {
                 resolved.insert((*attr_eid, value.clone()), eid);
@@ -415,6 +400,8 @@ pub async fn resolve_lookup_refs(
 mod tests {
     use super::*;
     use edn::kw;
+
+    use crate::slate::in_memory_slate;
 
     fn empty_schema() -> Schema {
         Schema::default()
@@ -684,5 +671,33 @@ mod tests {
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_expand_erase_panics() {
         expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_batch_lookup_unique_eids_resolves_lookup_after_overshoot() -> Result<()> {
+        let slate = in_memory_slate().await.db;
+        let attr_eid = 42;
+        let missing_value = DataType::String("a@example.com".into());
+        let present_value = DataType::String("b@example.com".into());
+        let present_eid = 100;
+
+        let mut key = unique_vae_prefix(attr_eid, &present_value);
+        key.extend_from_slice(&DataType::Long(present_eid).encode());
+        key.extend_from_slice(&codec::encode_i64_bytes(1));
+        key.push(codec::ADD);
+        slate.put(&key, b"").await?;
+
+        let resolved = batch_lookup_unique_eids(
+            slate.as_ref(),
+            &[
+                (attr_eid, missing_value.clone()),
+                (attr_eid, present_value.clone()),
+            ],
+        )
+        .await?;
+
+        assert!(!resolved.contains_key(&(attr_eid, missing_value)));
+        assert_eq!(resolved.get(&(attr_eid, present_value)), Some(&present_eid));
+        Ok(())
     }
 }
