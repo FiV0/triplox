@@ -5,11 +5,9 @@ use edn::kw;
 use edn::symbols::Keyword;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
-use crate::indexer::ave_key_to_parts;
-use crate::metadata::PartitionMap;
+use crate::indexer::vae_key_to_parts;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
-use crate::partition::{DB_PARTITION, USER_PARTITION};
-use crate::schema::{Schema, ValueType};
+use crate::schema::{Schema, Unique, ValueType};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::util::concat_bytes;
 
@@ -56,7 +54,7 @@ pub enum IdOrTempId {
 }
 
 /// Value after lookup ref resolution: either concrete data or a tempid reference.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ValueWithTempIds {
     Data(DataType),
     TempRef(String),
@@ -234,11 +232,11 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
     Ok(datoms)
 }
 
-fn lookup_ref_ave_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
-    let attr_bytes = encode_i64_bytes(attr_eid);
+fn unique_vae_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
     let mut value_bytes = Vec::new();
     encode_datatype(value, &mut value_bytes);
-    concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes])
+    let attr_bytes = encode_i64_bytes(attr_eid);
+    concat_bytes(&[&[codec::VAE], &value_bytes, &attr_bytes])
 }
 
 fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> anyhow::Error {
@@ -250,68 +248,139 @@ fn lookup_ref_not_found(schema: &Schema, attr_eid: i64, value: &DataType) -> any
     anyhow::anyhow!("No entity found for lookup ref [{} {:?}]", attr_kw, value)
 }
 
-/// Batch-resolve all lookup refs via the AVE index.
+fn validate_unique_identity_lookup(
+    schema: &Schema,
+    attr_eid: Entid,
+    value: &DataType,
+) -> Result<()> {
+    let attr = schema
+        .attribute_map
+        .get(&attr_eid)
+        .ok_or_else(|| anyhow::anyhow!("Unknown lookup ref attribute entid: {}", attr_eid))?;
+    if attr.unique != Some(Unique::Identity) {
+        let attr_kw = schema
+            .entid_map
+            .get(&attr_eid)
+            .map(|kw| kw.to_string())
+            .unwrap_or_else(|| attr_eid.to_string());
+        return Err(anyhow::anyhow!(
+            "Lookup ref attribute {} must be :db.unique/identity",
+            attr_kw
+        ));
+    }
+    if !attr.value_type.matches(value) {
+        let attr_kw = schema
+            .entid_map
+            .get(&attr_eid)
+            .map(|kw| kw.to_string())
+            .unwrap_or_else(|| attr_eid.to_string());
+        return Err(anyhow::anyhow!(
+            "Lookup ref value {:?} does not match attribute {} type {}",
+            value,
+            attr_kw,
+            attr.value_type
+        ));
+    }
+    Ok(())
+}
+
+/// Batch-resolve `[attribute, value]` pairs to entity IDs via the unique-only
+/// VAE index. One forward scan covers all lookups, seeking to each prefix in
+/// sorted order. Returns a map from `(attr_eid, value)` to the owning entity.
+/// Pairs with no entry, or whose latest entry is a retraction, are absent.
+pub async fn batch_lookup_unique_eids(
+    db: &slatedb::Db,
+    lookups: &[(Entid, DataType)],
+) -> Result<HashMap<(Entid, DataType), Entid>> {
+    let mut prefixes: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
+    for (attr_eid, value) in lookups {
+        prefixes.insert(
+            unique_vae_prefix(*attr_eid, value),
+            (*attr_eid, value.clone()),
+        );
+    }
+
+    let mut resolved: HashMap<(Entid, DataType), Entid> = HashMap::new();
+
+    if prefixes.is_empty() {
+        return Ok(resolved);
+    }
+
+    let mut iter = db
+        .scan_prefix_with_options(&[codec::VAE], &DEFAULT_SCAN_OPTIONS)
+        .await?;
+
+    // Slatedb forbids seeking strictly backward past the iterator's last
+    // returned key. On a miss, `next()` returns the next DB key past our
+    // prefix, which may exceed a subsequent prefix; we skip those — anything
+    // the iterator already overshot has no entry in the DB.
+    let mut last_returned: Option<Vec<u8>> = None;
+
+    for (vae_prefix, (attr_eid, value)) in &prefixes {
+        if let Some(last) = &last_returned {
+            if vae_prefix < last {
+                continue;
+            }
+        }
+
+        iter.seek(vae_prefix).await?;
+        let Some(kv) = iter.next().await? else {
+            break;
+        };
+        last_returned = Some(kv.key.to_vec());
+
+        if !kv.key.starts_with(vae_prefix) {
+            continue;
+        }
+
+        assert!(
+            kv.key.len() >= codec::TX_EID_OP_SUFFIX,
+            "Key too short ({} bytes) to contain tx_eid + op suffix",
+            kv.key.len()
+        );
+        if kv.key[kv.key.len() - 1] == codec::RETRACT {
+            continue;
+        }
+
+        let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(kv.key)?;
+        match entity {
+            DataType::Long(eid) => {
+                resolved.insert((*attr_eid, value.clone()), eid);
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Expected Long entity ID in VAE key, got {:?}",
+                    other
+                ));
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+/// Batch-resolve all lookup refs via the unique-only VAE index.
 /// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
-// TODO(#62): validate that lookup ref attributes have :db/unique set.
 pub async fn resolve_lookup_refs(
     datoms: Vec<DatomExpanded>,
     schema: &Schema,
     db: &slatedb::Db,
 ) -> Result<Vec<DatomWithTempids>> {
-    // Collect all unique lookup refs keyed by their encoded AVE lookup prefix.
-    let mut lookup_refs: BTreeMap<Vec<u8>, (Entid, DataType)> = BTreeMap::new();
+    // Collect every (attr, value) pair referenced by a lookup ref.
+    let mut lookups: Vec<(Entid, DataType)> = Vec::new();
     for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
-            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
+            validate_unique_identity_lookup(schema, *a, v)?;
+            lookups.push((*a, v.clone()));
         }
         if let ValueExpanded::LookupRef(a, v) = &d.value {
-            lookup_refs.insert(lookup_ref_ave_prefix(*a, v), (*a, v.clone()));
+            validate_unique_identity_lookup(schema, *a, v)?;
+            lookups.push((*a, v.clone()));
         }
     }
 
-    // Attribute entid + value → resolved entid lookup map.
-    let mut resolved_map: HashMap<(Entid, DataType), Entid> = HashMap::new();
-
-    if let Some(first_prefix) = lookup_refs.keys().next() {
-        let mut iter = db
-            .scan_with_options(
-                first_prefix.clone()..vec![codec::AVE_END],
-                &DEFAULT_SCAN_OPTIONS,
-            )
-            .await?;
-
-        for (ave_prefix, (attr_eid, value)) in &lookup_refs {
-            iter.seek(ave_prefix).await?;
-
-            let key = match iter.next().await? {
-                Some(kv) if kv.key.starts_with(ave_prefix) => kv.key,
-                _ => return Err(lookup_ref_not_found(schema, *attr_eid, value)),
-            };
-
-            assert!(
-                key.len() >= codec::TX_EID_OP_SUFFIX,
-                "Key too short ({} bytes) to contain tx_eid + op suffix",
-                key.len()
-            );
-            if key[key.len() - 1] == codec::RETRACT {
-                return Err(lookup_ref_not_found(schema, *attr_eid, value));
-            }
-
-            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(key)?;
-            match entity_dt {
-                DataType::Long(eid) => {
-                    resolved_map.insert((*attr_eid, value.clone()), eid);
-                }
-                other => {
-                    return Err(anyhow::anyhow!(
-                        "Expected Long entity ID in AVE key, got {:?}",
-                        other
-                    ));
-                }
-            }
-        }
-    }
+    let resolved_map = batch_lookup_unique_eids(db, &lookups).await?;
 
     // Convert DatomExpanded → DatomWithTempids, replacing lookup refs with resolved IDs.
     let mut result = Vec::with_capacity(datoms.len());
@@ -319,18 +388,18 @@ pub async fn resolve_lookup_refs(
         let entity = match d.entity {
             EntityExpanded::Id(id) => IdOrTempId::Id(id),
             EntityExpanded::TempId(s) => IdOrTempId::TempId(s),
-            EntityExpanded::LookupRef(a, v) => {
-                let eid = resolved_map[&(a, v)];
-                IdOrTempId::Id(eid)
-            }
+            EntityExpanded::LookupRef(a, v) => match resolved_map.get(&(a, v.clone())) {
+                Some(&eid) => IdOrTempId::Id(eid),
+                None => return Err(lookup_ref_not_found(schema, a, &v)),
+            },
         };
         let value = match d.value {
             ValueExpanded::Data(dt) => ValueWithTempIds::Data(dt),
             ValueExpanded::TempRef(s) => ValueWithTempIds::TempRef(s),
-            ValueExpanded::LookupRef(a, v) => {
-                let eid = resolved_map[&(a, v)];
-                ValueWithTempIds::Data(DataType::Long(eid))
-            }
+            ValueExpanded::LookupRef(a, v) => match resolved_map.get(&(a, v.clone())) {
+                Some(&eid) => ValueWithTempIds::Data(DataType::Long(eid)),
+                None => return Err(lookup_ref_not_found(schema, a, &v)),
+            },
         };
         result.push(DatomWithTempids {
             entity,
@@ -340,63 +409,6 @@ pub async fn resolve_lookup_refs(
         });
     }
     Ok(result)
-}
-
-/// Resolve tempids in DatomWithTempids to produce final Datoms.
-///
-/// Tempids with a `:db/ident` datom are allocated from DB_PARTITION;
-/// all others from USER_PARTITION.
-pub fn resolve_tempids(
-    datoms: &[DatomWithTempids],
-    partition_map: &mut PartitionMap,
-) -> Result<Vec<Datom>> {
-    // Pre-scan: determine partition for each tempid
-    let mut tempid_partitions: HashMap<&str, u32> = HashMap::new();
-    for d in datoms {
-        if let IdOrTempId::TempId(ref s) = d.entity {
-            if d.attribute == kw!(:db/ident) {
-                // insert() overrides so :db/ident always wins regardless of ordering
-                tempid_partitions.insert(s, DB_PARTITION);
-            } else {
-                // or_insert() preserves existing, so a prior :db/ident won't be overwritten
-                tempid_partitions.entry(s).or_insert(USER_PARTITION);
-            }
-        }
-    }
-    // Also check tempids that only appear in value position
-    for d in datoms {
-        if let ValueWithTempIds::TempRef(ref s) = d.value {
-            tempid_partitions.entry(s).or_insert(USER_PARTITION);
-        }
-    }
-
-    // Allocate entids
-    let mut tempid_map: HashMap<&str, i64> = HashMap::new();
-    for (tempid, partition) in &tempid_partitions {
-        let eid = partition_map.allocate_entid(*partition);
-        tempid_map.insert(tempid, eid);
-    }
-
-    // Resolve
-    let mut resolved = Vec::with_capacity(datoms.len());
-    for d in datoms {
-        let entity = match &d.entity {
-            IdOrTempId::Id(id) => *id,
-            IdOrTempId::TempId(s) => *tempid_map.get(s.as_str()).unwrap(),
-        };
-        let value = match &d.value {
-            // TODO: get rid of the clone()
-            ValueWithTempIds::Data(data) => data.clone(),
-            ValueWithTempIds::TempRef(s) => DataType::Long(*tempid_map.get(s.as_str()).unwrap()),
-        };
-        resolved.push(Datom {
-            entity,
-            attribute: d.attribute.clone(),
-            value,
-            op: d.op,
-        });
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -424,6 +436,7 @@ mod tests {
             Attribute {
                 value_type: ValueType::Ref,
                 multival: false,
+                unique: None,
             },
         );
         schema
@@ -671,137 +684,5 @@ mod tests {
     #[should_panic(expected = "Delete/Erase not yet implemented")]
     fn test_expand_erase_panics() {
         expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap();
-    }
-
-    // --- resolve_tempids tests ---
-
-    use crate::partition::{extract_counter, extract_partition};
-
-    #[test]
-    fn test_resolve_same_tempid_same_entid() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("t1".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
-                op: DatomOp::Assert,
-            },
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("t1".to_string()),
-                attribute: kw!(:age),
-                value: ValueWithTempIds::Data(DataType::Long(30)),
-                op: DatomOp::Assert,
-            },
-        ];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        assert_eq!(resolved[0].entity, resolved[1].entity);
-    }
-
-    #[test]
-    fn test_resolve_different_tempids_different_entids() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("t1".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
-                op: DatomOp::Assert,
-            },
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("t2".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("bob".to_string())),
-                op: DatomOp::Assert,
-            },
-        ];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        assert_ne!(resolved[0].entity, resolved[1].entity);
-    }
-
-    #[test]
-    fn test_resolve_tempref_in_value() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("alice".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
-                op: DatomOp::Assert,
-            },
-            DatomWithTempids {
-                entity: IdOrTempId::Id(999),
-                attribute: kw!(:follows),
-                value: ValueWithTempIds::TempRef("alice".to_string()),
-                op: DatomOp::Assert,
-            },
-        ];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        let alice_eid = resolved[0].entity;
-        assert_eq!(resolved[1].value, DataType::Long(alice_eid));
-    }
-
-    #[test]
-    fn test_resolve_db_ident_goes_to_db_partition() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![DatomWithTempids {
-            entity: IdOrTempId::TempId("schema-attr".to_string()),
-            attribute: kw!(:db/ident),
-            value: ValueWithTempIds::Data(DataType::Keyword(kw!(:my/attr))),
-            op: DatomOp::Assert,
-        }];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        assert_eq!(extract_partition(resolved[0].entity), DB_PARTITION);
-    }
-
-    #[test]
-    fn test_resolve_regular_tempid_goes_to_user_partition() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![DatomWithTempids {
-            entity: IdOrTempId::TempId("user-entity".to_string()),
-            attribute: kw!(:name),
-            value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
-            op: DatomOp::Assert,
-        }];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        assert_eq!(extract_partition(resolved[0].entity), USER_PARTITION);
-    }
-
-    #[test]
-    fn test_resolve_id_passthrough() {
-        let mut pm = PartitionMap::new();
-        let datoms = vec![DatomWithTempids {
-            entity: IdOrTempId::Id(42),
-            attribute: kw!(:name),
-            value: ValueWithTempIds::Data(DataType::String("alice".to_string())),
-            op: DatomOp::Assert,
-        }];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        assert_eq!(resolved[0].entity, 42);
-        assert!(pm.is_empty(), "no allocation for explicit IDs");
-    }
-
-    #[test]
-    fn test_resolve_counter_advances() {
-        let mut pm = PartitionMap::from([(USER_PARTITION, 5_i64)]);
-        let datoms = vec![
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("a".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("a".to_string())),
-                op: DatomOp::Assert,
-            },
-            DatomWithTempids {
-                entity: IdOrTempId::TempId("b".to_string()),
-                attribute: kw!(:name),
-                value: ValueWithTempIds::Data(DataType::String("b".to_string())),
-                op: DatomOp::Assert,
-            },
-        ];
-        let resolved = resolve_tempids(&datoms, &mut pm).unwrap();
-        let mut counters: Vec<i64> = resolved.iter().map(|d| extract_counter(d.entity)).collect();
-        counters.sort();
-        assert_eq!(counters, vec![5, 6]);
-        assert_eq!(pm[&USER_PARTITION], 7);
     }
 }

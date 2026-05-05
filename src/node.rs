@@ -183,7 +183,15 @@ impl Database for DB {
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, snapshot, handle, &ident_map, as_of, range_stats)
+            execute_query(
+                &query,
+                &args,
+                snapshot,
+                handle,
+                &ident_map,
+                as_of,
+                range_stats,
+            )
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -223,10 +231,7 @@ impl Node<MemoryLog> {
 impl Node<FileLog> {
     /// Shared setup: given a slate and a path to the log file, bootstrap the
     /// database, create the indexer & FileLog, subscribe, and catch up.
-    async fn from_slate_and_log(
-        slate: SlateComponents,
-        log_file: &Path,
-    ) -> Result<Self, Error> {
+    async fn from_slate_and_log(slate: SlateComponents, log_file: &Path) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
@@ -374,7 +379,14 @@ impl<L: TxLog> QueryNode for Node<L> {
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(snapshot, ident_map, handle, tx_key, tx_eid, range_stats))
+        Ok(DB::new(
+            snapshot,
+            ident_map,
+            handle,
+            tx_key,
+            tx_eid,
+            range_stats,
+        ))
     }
 }
 
@@ -384,7 +396,9 @@ mod tests {
 
     use super::*;
     use crate::ops::{DataType, EntityRef, TxOp};
-    use crate::schema::test_schema_tx;
+    use crate::schema::{
+        test_schema_tx, unique_identity_schema_attribute, unique_value_schema_attribute,
+    };
     use crate::transaction::TransactionResult;
     use edn::kw;
     use edn::Keyword;
@@ -771,26 +785,19 @@ mod tests {
         let db = node.db().await.unwrap();
 
         // Collection binding: match names in a set
-        let parsed = edn::parse::parse_query(
-            "[:find ?name :in [?name ...] :where [?e :name ?name]]",
-        )
-        .unwrap();
+        let parsed =
+            edn::parse::parse_query("[:find ?name :in [?name ...] :where [?e :name ?name]]")
+                .unwrap();
 
         let result = db
             .query_with_args(
                 &parsed,
-                &[QueryArg::Collection(vec![
-                    "Ivan".into(),
-                    "Petr".into(),
-                ])],
+                &[QueryArg::Collection(vec!["Ivan".into(), "Petr".into()])],
             )
             .await
             .unwrap();
         assert_eq!(result.len(), 2);
-        let names: HashSet<_> = result
-            .iter()
-            .map(|row| row[0].clone())
-            .collect();
+        let names: HashSet<_> = result.iter().map(|row| row[0].clone()).collect();
         assert!(names.contains(&DataType::String("Ivan".to_string())));
         assert!(names.contains(&DataType::String("Petr".to_string())));
 
@@ -798,17 +805,11 @@ mod tests {
         let result = db
             .query_with_args(
                 &parsed,
-                &[QueryArg::Collection(vec![
-                    "Ivan".into(),
-                    "Nobody".into(),
-                ])],
+                &[QueryArg::Collection(vec!["Ivan".into(), "Nobody".into()])],
             )
             .await
             .unwrap();
-        assert_eq!(
-            result,
-            vec![vec![DataType::String("Ivan".to_string())]]
-        );
+        assert_eq!(result, vec![vec![DataType::String("Ivan".to_string())]]);
 
         // Empty collection: no rows
         let result = db
@@ -2047,6 +2048,475 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxAborted(_, _)));
+    }
+
+    #[tokio::test]
+    async fn test_unique_identity_tempid_upserts_existing_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:email),
+                    value: "alice@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:age),
+                    value: 31_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("Alice".into()), DataType::Long(31)]]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_two_tempids_same_new_identity_allocate_one_entity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "t1".into(),
+                    attribute: kw!(:email),
+                    value: "shared@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "t1".into(),
+                    attribute: kw!(:name),
+                    value: "Shared".into(),
+                },
+                TxOp::Add {
+                    entity: "t2".into(),
+                    attribute: kw!(:email),
+                    value: "shared@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "t2".into(),
+                    attribute: kw!(:age),
+                    value: 42_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][1], DataType::String("Shared".into()));
+        assert_eq!(result[0][2], DataType::Long(42));
+    }
+
+    #[tokio::test]
+    async fn test_multistage_upsert_with_tempids_in_entity_and_value_position() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        assert!(matches!(
+            node.execute_tx(vec![unique_identity_schema_attribute(kw!(:ref-id), "ref")])
+                .await
+                .unwrap(),
+            TransactionResult::TxCommited(_)
+        ));
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Alice".into()),
+            (kw!(:email), "alice@example.com".into()),
+        ])])
+        .await
+        .unwrap();
+        let db = node.db().await.unwrap();
+        let alice = match &db
+            .query(r#"[:find ?e :where [?e :email "alice@example.com"]]"#)
+            .await
+            .unwrap()[0][0]
+        {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID, got {:?}", other),
+        };
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:name), "Bob".into()),
+            (kw!(:ref-id), DataType::Long(alice)),
+        ])])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:email),
+                    value: "alice@example.com".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:ref-id),
+                    value: DataType::String("alice-temp".into()),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:age),
+                    value: 7_i64.into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("Bob".into()), DataType::Long(7)]]
+        );
+    }
+
+    /// Cross-iteration EV→E resolution where the second-iteration store
+    /// lookup misses entirely. alice-temp and bob-temp both resolve in iter 1
+    /// via `:user/email`; the EV `(alice-temp :spouse bob-temp)` promotes to
+    /// `UpsertE("alice-temp", :spouse, Long(bob))` for conflict detection.
+    /// iter 2's `(:spouse, ref(bob))` lookup finds nothing — Mentat would
+    /// route alice-temp to allocations and panic on the
+    /// `tempids.contains_key` assert. Triplox's cumulative `resolved_tempids`
+    /// recognizes the prior-generation resolution and routes the datom to the
+    /// `resolved` population instead.
+    #[tokio::test]
+    async fn test_upsert_ev_cross_iteration_db_miss_resolves_via_prior_generation() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/spouse), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![(kw!(:user/email), "alice".into())]),
+            TxOp::put(vec![(kw!(:user/email), "bob".into())]),
+        ])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "bob".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/spouse),
+                    value: DataType::String("bob-temp".into()),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected commit, got {:?}",
+            result
+        );
+
+        let db = node.db().await.unwrap();
+        let rows = db
+            .query(
+                r#"[:find ?ae ?be
+                    :where [?ae :user/email "alice"]
+                           [?be :user/email "bob"]
+                           [?ae :user/spouse ?be]]"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "expected one (alice :spouse bob) row, got {:?}",
+            rows
+        );
+    }
+
+    /// Cross-iteration EV→E resolution where iter 2's store lookup binds the
+    /// same tempid to a *different* entity than iter 1 picked. Pre-seed
+    /// `(carol :spouse bob)` so the iter-2 `(:spouse, ref(bob))` lookup
+    /// returns carol's entid for alice-temp; `record_resolutions` should see
+    /// alice-temp → A in the cumulative map and alice-temp → C in the new
+    /// map and abort with "Conflicting upserts".
+    #[tokio::test]
+    async fn test_upsert_ev_cross_iteration_conflict_rejects_tx() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/spouse), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".into())),
+                (kw!(:user/email), "alice".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".into())),
+                (kw!(:user/email), "bob".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("carol".into())),
+                (kw!(:user/email), "carol".into()),
+                (kw!(:user/spouse), DataType::String("bob".into())),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "bob-temp".into(),
+                    attribute: kw!(:user/email),
+                    value: "bob".into(),
+                },
+                TxOp::Add {
+                    entity: "alice-temp".into(),
+                    attribute: kw!(:user/spouse),
+                    value: DataType::String("bob-temp".into()),
+                },
+            ])
+            .await
+            .unwrap();
+
+        match result {
+            TransactionResult::TxAborted(_, err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Conflicting upserts"),
+                    "expected 'Conflicting upserts', got: {}",
+                    msg
+                );
+            }
+            TransactionResult::TxCommited(_) => panic!("expected TxAborted, got TxCommited"),
+        }
+    }
+
+    /// In-tx ownership transfer of a unique-identity ref attribute.
+    ///
+    /// The user retracts carol's `(:user/primary-friend, bob)` ownership and
+    /// reasserts it on a new entity (resolved via `:user/email`) in the same
+    /// transaction. validate_unique_constraints accounts for same-tx
+    /// retractions and accepts this; the upsert resolver guard does not — it
+    /// promotes the UpsertEV to UpsertE even when both tempids resolve, so
+    /// the next-round VAE lookup sees carol (basis-t state) and emits
+    /// "Conflicting upserts". The test asserts the user-intended success
+    /// behavior; ignored until the layer disagreement is resolved.
+    #[tokio::test]
+    #[ignore]
+    async fn test_in_tx_transfer_of_unique_identity_ref() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/handle), "string"),
+            unique_identity_schema_attribute(kw!(:user/primary-friend), "ref"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".into())),
+                (kw!(:user/email), DataType::String("alice".into())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".into())),
+                (kw!(:user/handle), DataType::String("bob".into())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("carol".into())),
+                (kw!(:user/primary-friend), DataType::String("bob".into())),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let row = db
+            .query(
+                r#"[:find ?bob ?carol
+                    :where [?bob :user/handle "bob"]
+                           [?carol :user/primary-friend ?bob]]"#,
+            )
+            .await
+            .unwrap();
+        let (bob_eid, carol_eid) = match row.as_slice() {
+            [r] => match r.as_slice() {
+                [DataType::Long(b), DataType::Long(c)] => (*b, *c),
+                other => panic!("Expected [Long, Long], got {:?}", other),
+            },
+            other => panic!("Expected exactly one row, got {:?}", other),
+        };
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "u".into(),
+                    attribute: kw!(:user/email),
+                    value: "alice".into(),
+                },
+                TxOp::Add {
+                    entity: "u".into(),
+                    attribute: kw!(:user/primary-friend),
+                    value: DataType::String("f".into()),
+                },
+                TxOp::Add {
+                    entity: "f".into(),
+                    attribute: kw!(:user/handle),
+                    value: "bob".into(),
+                },
+                TxOp::Retract {
+                    entity: EntityRef::Id(carol_eid),
+                    attribute: kw!(:user/primary-friend),
+                    value: DataType::Long(bob_eid),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected in-tx transfer to succeed, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unique_value_rejects_duplicate_and_lookup_ref() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        assert!(matches!(
+            node.execute_tx(vec![unique_value_schema_attribute(kw!(:ssn), "string")])
+                .await
+                .unwrap(),
+            TransactionResult::TxCommited(_)
+        ));
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "p1".into(),
+            attribute: kw!(:ssn),
+            value: "123".into(),
+        }])
+        .await
+        .unwrap();
+
+        let duplicate = node
+            .execute_tx(vec![TxOp::Add {
+                entity: "p2".into(),
+                attribute: kw!(:ssn),
+                value: "123".into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(duplicate, TransactionResult::TxAborted(_, _)));
+
+        let lookup_ref = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::LookupRef(kw!(:ssn), DataType::String("123".into())),
+                attribute: kw!(:age),
+                value: 1_i64.into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(lookup_ref, TransactionResult::TxAborted(_, _)));
+    }
+
+    /// Same-tx ownership transfer of a `:db.unique/value` attribute.
+    ///
+    /// Unlike `:db.unique/identity`, `:db.unique/value` does not participate
+    /// in upsert resolution, so the resolver guard never fires. The
+    /// transaction reaches `validate_unique_constraints`, which honors the
+    /// in-tx retraction of the previous owner and accepts the reassertion.
+    #[tokio::test]
+    async fn test_in_tx_transfer_of_unique_value() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        node.execute_tx(vec![unique_value_schema_attribute(kw!(:ssn), "string")])
+            .await
+            .unwrap();
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "p1".into(),
+            attribute: kw!(:ssn),
+            value: "123".into(),
+        }])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let p1_eid = match &db
+            .query(r#"[:find ?e :where [?e :ssn "123"]]"#)
+            .await
+            .unwrap()[0][0]
+        {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long entity ID for p1, got {:?}", other),
+        };
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Retract {
+                    entity: EntityRef::Id(p1_eid),
+                    attribute: kw!(:ssn),
+                    value: "123".into(),
+                },
+                TxOp::Add {
+                    entity: "p2".into(),
+                    attribute: kw!(:ssn),
+                    value: "123".into(),
+                },
+            ])
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, TransactionResult::TxCommited(_)),
+            "expected in-tx transfer to succeed, got: {:?}",
+            result
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

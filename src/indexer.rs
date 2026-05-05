@@ -19,6 +19,7 @@ use crate::ops::{Datom, DatomOp, Entid, TxOp};
 use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::tempids;
 use crate::transaction::TxKey;
 use crate::tx;
 use crate::util::concat_bytes;
@@ -44,9 +45,8 @@ pub(crate) fn write_index_entries(
     let mut entity_buf: Vec<u8> = Vec::with_capacity(9);
 
     for datom in datoms {
-        let attribute_id = schema
+        let (attribute_id, attribute) = schema
             .get_attribute(&datom.attribute)
-            .map(|(eid, _)| eid)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
         let attr_bytes = encode_i64_bytes(attribute_id);
         // Entity IDs use value-position encoding (DataType::Long) so they can
@@ -93,6 +93,19 @@ pub(crate) fn write_index_entries(
         key_buf.extend_from_slice(&tx_eid_bytes);
         key_buf.push(op_byte);
         batch.put(&key_buf, b"");
+
+        // VAE is a unique-only index used for uniqueness checks, lookup refs,
+        // and :db.unique/identity upsert resolution.
+        if attribute.unique.is_some() {
+            key_buf.clear();
+            key_buf.push(codec::VAE);
+            key_buf.extend_from_slice(value);
+            key_buf.extend_from_slice(&attr_bytes);
+            key_buf.extend_from_slice(entity_bytes);
+            key_buf.extend_from_slice(&tx_eid_bytes);
+            key_buf.push(op_byte);
+            batch.put(&key_buf, b"");
+        }
 
         // AE and AV are atemporal, purely additive indices.
         // Retractions are not written to AE/AV.
@@ -299,14 +312,21 @@ impl Indexer {
         let with_tempids =
             tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
 
-        // 4. Resolve tempids + build tx entity datoms
-        let mut datoms = tx::resolve_tempids(&with_tempids, &mut pending_pm)?;
+        // 4. Resolve tempids, including identity upserts, then build tx entity datoms
+        let mut datoms = tempids::resolve_tempids(
+            with_tempids,
+            &self.metadata.schema,
+            &self.slatedb,
+            &mut pending_pm,
+        )
+        .await?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
-        // 6. General validation
+        // 6. Unique + general validation
+        self.validate_unique_constraints(&datoms).await?;
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Write indices + commit
@@ -440,6 +460,76 @@ impl Indexer {
         }
 
         Ok(resolved_datoms.into_iter().collect())
+    }
+
+    async fn validate_unique_constraints(&self, datoms: &[Datom]) -> Result<(), Error> {
+        let mut retractions: HashSet<(Entid, Entid, DataType)> = HashSet::new();
+        for datom in datoms {
+            if datom.op != DatomOp::Retract {
+                continue;
+            }
+            let Some((attr_eid, attr)) = self.metadata.schema.get_attribute(&datom.attribute)
+            else {
+                continue;
+            };
+            if attr.unique.is_some() {
+                retractions.insert((datom.entity, attr_eid, datom.value.clone()));
+            }
+        }
+
+        let mut asserted_unique: HashMap<(Entid, DataType), Entid> = HashMap::new();
+        let mut to_check: Vec<(&Datom, Entid)> = Vec::new();
+        for datom in datoms {
+            if datom.op != DatomOp::Assert {
+                continue;
+            }
+            let (attr_eid, attr) = self
+                .metadata
+                .schema
+                .get_attribute(&datom.attribute)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+            if attr.unique.is_none() {
+                continue;
+            }
+
+            let key = (attr_eid, datom.value.clone());
+            if let Some(existing_entity) = asserted_unique.insert(key, datom.entity) {
+                if existing_entity != datom.entity {
+                    return Err(anyhow::anyhow!(
+                        "Unique constraint violation for attribute {} value {:?}: entities {} and {}",
+                        datom.attribute,
+                        datom.value,
+                        existing_entity,
+                        datom.entity
+                    ));
+                }
+            }
+            // We could already pass to some hashed version here for deduplication.
+            to_check.push((datom, attr_eid));
+        }
+
+        let lookups: Vec<(Entid, DataType)> = to_check
+            .iter()
+            .map(|(d, a)| (*a, d.value.clone()))
+            .collect();
+        let resolved = tx::batch_lookup_unique_eids(&self.slatedb, &lookups).await?;
+
+        for (datom, attr_eid) in to_check {
+            if let Some(&owner) = resolved.get(&(attr_eid, datom.value.clone())) {
+                if owner != datom.entity
+                    && !retractions.contains(&(owner, attr_eid, datom.value.clone()))
+                {
+                    return Err(anyhow::anyhow!(
+                        "Unique constraint violation for attribute {} value {:?}: entity {} already owns it",
+                        datom.attribute,
+                        datom.value,
+                        owner
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Subscribe to transaction completion notifications.
@@ -612,6 +702,15 @@ pub fn aev_key_to_parts(key: Bytes) -> Result<(i64, DataType, DataType, i64, u8)
     let entity_id = decode_datatype(&mut cursor)?;
     let value = decode_datatype(&mut cursor)?;
     Ok((attribute, entity_id, value, tx_eid, op))
+}
+
+pub fn vae_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8), Error> {
+    let (data, tx_eid, op) = strip_temporal_key(key.as_ref(), codec::VAE, "VAE")?;
+    let mut cursor = data;
+    let value = decode_datatype(&mut cursor)?;
+    let attribute = decode_i64(&mut cursor)?;
+    let entity_id = decode_datatype(&mut cursor)?;
+    Ok((value, attribute, entity_id, tx_eid, op))
 }
 
 pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
@@ -1637,6 +1736,57 @@ mod tests {
             err.to_string().contains("No entity found for lookup ref"),
             "expected lookup-ref failure, got: {err}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_vae_written_only_for_unique_attributes() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+        let email_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:email))
+            .unwrap()
+            .0;
+
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 1,
+                    system_time: st_from_unix_epoch(2),
+                },
+                vec![TxOp::put(vec![
+                    (kw!(:name), "Alice".into()),
+                    (kw!(:email), "alice@example.com".into()),
+                ])],
+            )
+            .await?;
+
+        let mut saw_email = false;
+        let mut saw_name = false;
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::VAE], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (_value, attribute, _entity, _tx, op) = vae_key_to_parts(kv.key)?;
+            if op == codec::ADD && attribute == email_id {
+                saw_email = true;
+            }
+            if op == codec::ADD && attribute == name_id {
+                saw_name = true;
+            }
+        }
+
+        assert!(saw_email, "unique :email should have a VAE entry");
+        assert!(!saw_name, "non-unique :name should not have a VAE entry");
         Ok(())
     }
 }

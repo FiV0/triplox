@@ -35,6 +35,7 @@ pub const AVE: u8 = 1;
 pub const AEV: u8 = 2;
 pub const AE: u8 = 3;
 pub const AV: u8 = 4;
+pub const VAE: u8 = 5;
 
 pub const STATS_INDEX: u8 = 128;
 pub const META_INDEX: u8 = 129;
@@ -48,6 +49,7 @@ pub const TX_EID_OP_SUFFIX: usize = TX_EID_LENGTH + OP_LENGTH;
 /// Exclusive upper bounds for covering indexes scans
 pub const AVE_END: u8 = AEV;
 pub const EAV_END: u8 = AVE;
+pub const VAE_END: u8 = VAE + 1;
 
 // TODO move this to lazy_static
 pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
@@ -55,6 +57,7 @@ pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
         IndexType::EAV => Ok(EAV),
         IndexType::AVE => Ok(AVE),
         IndexType::AEV => Ok(AEV),
+        IndexType::VAE => Ok(VAE),
         IndexType::AE => Ok(AE),
         IndexType::AV => Ok(AV),
     }

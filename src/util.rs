@@ -79,7 +79,7 @@ pub fn strip_suffix<T: StripSuffix>(bytes: T, suffix_len: usize) -> T {
 
 fn check_position(position: usize, index: IndexType) {
     match index {
-        IndexType::EAV | IndexType::AVE | IndexType::AEV => {
+        IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
             assert!(position < 3, "Position must be less than 3");
         }
         IndexType::AE | IndexType::AV => {
@@ -140,6 +140,26 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                     total_length - codec::TX_EID_OP_SUFFIX,
                 ),
             },
+            IndexType::VAE => match position {
+                0 => (
+                    codec::CODEC_LENGTH,
+                    total_length
+                        - codec::ATTRIBUTE_LENGTH
+                        - codec::ENTITY_LENGTH
+                        - codec::TX_EID_OP_SUFFIX,
+                ),
+                1 => (
+                    total_length
+                        - codec::ATTRIBUTE_LENGTH
+                        - codec::ENTITY_LENGTH
+                        - codec::TX_EID_OP_SUFFIX,
+                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                ),
+                2.. => (
+                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                    total_length - codec::TX_EID_OP_SUFFIX,
+                ),
+            },
             // AE/AV are atemporal — no T+op suffix
             IndexType::AE => match position {
                 0 => (
@@ -187,6 +207,16 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
                 2.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
+            },
+            IndexType::VAE => match position {
+                0 => codec::CODEC_LENGTH,
+                1 => {
+                    total_length
+                        - codec::ATTRIBUTE_LENGTH
+                        - codec::ENTITY_LENGTH
+                        - codec::TX_EID_OP_SUFFIX
+                }
+                2.. => total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
             },
             IndexType::AE => match position {
                 0 => codec::CODEC_LENGTH,
