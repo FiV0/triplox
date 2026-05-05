@@ -9,7 +9,7 @@ use crate::indexer::vae_key_to_parts;
 use crate::iterator::slate_key_iterator::SlateKeyIterator;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType};
-use crate::util::concat_bytes;
+use crate::util::{concat_bytes, next_prefix};
 
 // ---------------------------------------------------------------------------
 // Stage 1 types: after ident resolution, before lookup ref resolution.
@@ -310,33 +310,41 @@ pub async fn batch_lookup_unique_eids(
 
     for (vae_prefix, (attr_eid, value)) in &prefixes {
         iter.seek(vae_prefix).await?;
-        let Some(key) = iter.get_value() else {
-            break;
-        };
+        loop {
+            let Some(key) = iter.get_value() else {
+                return Ok(resolved);
+            };
 
-        if !key.starts_with(vae_prefix) {
-            continue;
-        }
-
-        assert!(
-            key.len() >= codec::TX_EID_OP_SUFFIX,
-            "Key too short ({} bytes) to contain tx_eid + op suffix",
-            key.len()
-        );
-        if key[key.len() - 1] == codec::RETRACT {
-            continue;
-        }
-
-        let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(key.clone())?;
-        match entity {
-            DataType::Long(eid) => {
-                resolved.insert((*attr_eid, value.clone()), eid);
+            if !key.starts_with(vae_prefix) {
+                break;
             }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Expected Long entity ID in VAE key, got {:?}",
-                    other
-                ));
+
+            assert!(
+                key.len() >= codec::TX_EID_OP_SUFFIX,
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            );
+            if key[key.len() - 1] == codec::RETRACT {
+                let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
+                let Some(next_entity) = next_prefix(&key[..logical_key_end]) else {
+                    return Ok(resolved);
+                };
+                iter.seek(&next_entity).await?;
+                continue;
+            }
+
+            let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(key.clone())?;
+            match entity {
+                DataType::Long(eid) => {
+                    resolved.insert((*attr_eid, value.clone()), eid);
+                    break;
+                }
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Expected Long entity ID in VAE key, got {:?}",
+                        other
+                    ));
+                }
             }
         }
     }
@@ -427,6 +435,20 @@ mod tests {
             },
         );
         schema
+    }
+
+    fn unique_vae_key(
+        attr_eid: i64,
+        value: &DataType,
+        entity: i64,
+        tx_eid: i64,
+        op: u8,
+    ) -> Vec<u8> {
+        let mut key = unique_vae_prefix(attr_eid, value);
+        key.extend_from_slice(&DataType::Long(entity).encode());
+        key.extend_from_slice(&codec::encode_i64_bytes(tx_eid));
+        key.push(op);
+        key
     }
 
     // --- expand_tx_ops tests ---
@@ -681,11 +703,12 @@ mod tests {
         let present_value = DataType::String("b@example.com".into());
         let present_eid = 100;
 
-        let mut key = unique_vae_prefix(attr_eid, &present_value);
-        key.extend_from_slice(&DataType::Long(present_eid).encode());
-        key.extend_from_slice(&codec::encode_i64_bytes(1));
-        key.push(codec::ADD);
-        slate.put(&key, b"").await?;
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &present_value, present_eid, 1, codec::ADD),
+                b"",
+            )
+            .await?;
 
         let resolved = batch_lookup_unique_eids(
             slate.as_ref(),
@@ -698,6 +721,67 @@ mod tests {
 
         assert!(!resolved.contains_key(&(attr_eid, missing_value)));
         assert_eq!(resolved.get(&(attr_eid, present_value)), Some(&present_eid));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_lookup_unique_eids_skips_retracted_entity_for_live_entity() -> Result<()> {
+        let slate = in_memory_slate().await.db;
+        let attr_eid = 42;
+        let value = DataType::String("email@example.com".into());
+        let retracted_eid = 200;
+        let live_eid = 100;
+
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &value, retracted_eid, 1, codec::ADD),
+                b"",
+            )
+            .await?;
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &value, retracted_eid, 2, codec::RETRACT),
+                b"",
+            )
+            .await?;
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &value, live_eid, 3, codec::ADD),
+                b"",
+            )
+            .await?;
+
+        let resolved =
+            batch_lookup_unique_eids(slate.as_ref(), &[(attr_eid, value.clone())]).await?;
+
+        assert_eq!(resolved.get(&(attr_eid, value)), Some(&live_eid));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_lookup_unique_eids_ignores_only_retracted_entity() -> Result<()> {
+        let slate = in_memory_slate().await.db;
+        let attr_eid = 42;
+        let value = DataType::String("email@example.com".into());
+        let retracted_eid = 100;
+
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &value, retracted_eid, 1, codec::ADD),
+                b"",
+            )
+            .await?;
+        slate
+            .put(
+                &unique_vae_key(attr_eid, &value, retracted_eid, 2, codec::RETRACT),
+                b"",
+            )
+            .await?;
+
+        let resolved =
+            batch_lookup_unique_eids(slate.as_ref(), &[(attr_eid, value.clone())]).await?;
+
+        assert!(!resolved.contains_key(&(attr_eid, value)));
         Ok(())
     }
 }
