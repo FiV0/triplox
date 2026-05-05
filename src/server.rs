@@ -33,14 +33,14 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::log::TxLog;
-use crate::msgpack_codec::{
+use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
+use triplox_client::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request,
     encode_db_closed_response, encode_db_opened_response, encode_error_body, encode_query_response,
     encode_tx_key_response, encode_tx_result_response, DbClosedResponse, DbOpenedResponse,
     ErrorResponseBody, QueryResponse, TxKeyResponse, TxResultResponse,
 };
-use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
-use crate::protocol::{
+use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
 };
 
@@ -340,7 +340,7 @@ async fn open_db<L: TxLog + 'static>(
             (db_id, tx_id)
         }
         (Some(tid), Some(system_time)) => {
-            let tx_key = crate::transaction::TxKey {
+            let tx_key = triplox_client::transaction::TxKey {
                 tx_id: tid,
                 system_time,
             };

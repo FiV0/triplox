@@ -1,13 +1,16 @@
 [package]
-name = "edn"
-version = "0.1.0"
+name = "triplox-edn"
+version = "0.1.0-alpha.1"
 edition = "2021"
-authors = ["Joe Walker <jwalker@mozilla.com>"]
+authors = ["Joe Walker <jwalker@mozilla.com>", "Finn Völkel <finn.volkel@gmail.com>"]
 
 license = "Apache-2.0"
-repository = "https://github.com/mozilla/mentat"
-description = "EDN parser for Project Mentat"
+repository = "https://github.com/FiV0/triplox"
+description = "EDN parser used by Triplox; a fork of the parser from Project Mentat."
 readme = "./README.md"
+
+[lib]
+name = "edn"
 
 [dependencies]
 chrono = { workspace = true }

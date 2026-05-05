@@ -1,8 +1,7 @@
-#![allow(unused)]
-use crate::clock::Instant;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use time::OffsetDateTime;
+
+pub type Instant = chrono::DateTime<chrono::Utc>;
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TxKey {

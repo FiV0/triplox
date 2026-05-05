@@ -1,0 +1,26 @@
+[package]
+name = "triplox-client"
+version = "0.1.0-alpha.1"
+edition = "2021"
+authors = ["Finn Völkel <finn.volkel@gmail.com>"]
+license = "Apache-2.0"
+description = "HTTP/2 client for Triplox, a Datalog database."
+repository = "https://github.com/FiV0/triplox"
+readme = "README.md"
+keywords = ["datalog", "database", "client"]
+categories = ["database"]
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+edn = { package = "triplox-edn", path = "../edn", version = "0.1.0-alpha.1", features = ["serde_support"] }
+reqwest = { workspace = true }
+rmp = { workspace = true }
+rmpv = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+bincode = "1.3"
