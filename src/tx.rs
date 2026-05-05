@@ -311,7 +311,7 @@ pub async fn batch_lookup_unique_eids(
     for (vae_prefix, (attr_eid, value)) in &prefixes {
         iter.seek(vae_prefix).await?;
         loop {
-            let Some(key) = iter.get_value() else {
+            let Some(key) = iter.peek() else {
                 return Ok(resolved);
             };
 

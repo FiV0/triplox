@@ -34,7 +34,7 @@ impl SlateKeyIterator {
         Ok(self.current_key.clone())
     }
 
-    pub fn get_value(&self) -> Option<&Bytes> {
+    pub fn peek(&self) -> Option<&Bytes> {
         self.current_key.as_ref()
     }
 }
@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_slate_key_iterator_get_value_and_next() -> Result<()> {
+    async fn test_slate_key_iterator_peek_and_next() -> Result<()> {
         let slate = in_memory_slate().await.db;
         let first = key(PFX, b"aa");
         let second = key(PFX, b"bb");
@@ -66,10 +66,10 @@ mod tests {
 
         let mut iter = SlateKeyIterator::scan_prefix(slate.as_ref(), PFX).await?;
 
-        assert_eq!(iter.get_value(), Some(&Bytes::from(first)));
+        assert_eq!(iter.peek(), Some(&Bytes::from(first)));
         assert_eq!(iter.next().await?, Some(Bytes::from(second)));
         assert_eq!(iter.next().await?, None);
-        assert_eq!(iter.get_value(), None);
+        assert_eq!(iter.peek(), None);
         Ok(())
     }
 
@@ -85,7 +85,7 @@ mod tests {
         let mut iter = SlateKeyIterator::scan_prefix(slate.as_ref(), PFX).await?;
         iter.seek(&key(PFX, b"bb")).await?;
 
-        assert_eq!(iter.get_value(), Some(&Bytes::from(second)));
+        assert_eq!(iter.peek(), Some(&Bytes::from(second)));
         Ok(())
     }
 
@@ -100,7 +100,27 @@ mod tests {
         iter.seek(&key(PFX, b"aa")).await?;
         iter.seek(&key(PFX, b"bb")).await?;
 
-        assert_eq!(iter.get_value(), Some(&Bytes::from(overshot)));
+        assert_eq!(iter.peek(), Some(&Bytes::from(overshot)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_slate_key_iterator_next_after_seek_advances_past_landed_key() -> Result<()> {
+        let slate = in_memory_slate().await.db;
+        let first = key(PFX, b"aa");
+        let second = key(PFX, b"bb");
+        let third = key(PFX, b"cc");
+
+        slate.put(&first, b"").await?;
+        slate.put(&second, b"").await?;
+        slate.put(&third, b"").await?;
+
+        let mut iter = SlateKeyIterator::scan_prefix(slate.as_ref(), PFX).await?;
+        iter.seek(&key(PFX, b"bb")).await?;
+
+        assert_eq!(iter.peek(), Some(&Bytes::from(second)));
+        assert_eq!(iter.next().await?, Some(Bytes::from(third.clone())));
+        assert_eq!(iter.peek(), Some(&Bytes::from(third)));
         Ok(())
     }
 
@@ -113,7 +133,7 @@ mod tests {
         let mut iter = SlateKeyIterator::scan_prefix(slate.as_ref(), PFX).await?;
         iter.seek(&key(PFX, b"zz")).await?;
 
-        assert_eq!(iter.get_value(), None);
+        assert_eq!(iter.peek(), None);
         Ok(())
     }
 }
