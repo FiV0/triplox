@@ -504,6 +504,7 @@ impl Indexer {
                     ));
                 }
             }
+            // We could already pass to some hashed version here for deduplication.
             to_check.push((datom, attr_eid));
         }
 
