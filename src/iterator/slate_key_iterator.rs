@@ -3,12 +3,12 @@ use bytes::Bytes;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 
-pub(crate) struct ForwardOnlyIterator {
+pub(crate) struct SlateKeyIterator {
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
 }
 
-impl ForwardOnlyIterator {
+impl SlateKeyIterator {
     pub async fn scan_prefix(db: &slatedb::Db, prefix: &[u8]) -> Result<Self> {
         let mut inner = db
             .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS)

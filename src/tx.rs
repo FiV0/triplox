@@ -6,7 +6,7 @@ use edn::symbols::Keyword;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::vae_key_to_parts;
-use crate::iterator::forward_only_iterator::ForwardOnlyIterator;
+use crate::iterator::slate_key_iterator::SlateKeyIterator;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType};
 use crate::util::concat_bytes;
@@ -306,7 +306,7 @@ pub async fn batch_lookup_unique_eids(
         return Ok(resolved);
     }
 
-    let mut iter = ForwardOnlyIterator::scan_prefix(db, &[codec::VAE]).await?;
+    let mut iter = SlateKeyIterator::scan_prefix(db, &[codec::VAE]).await?;
 
     for (vae_prefix, (attr_eid, value)) in &prefixes {
         iter.seek(vae_prefix).await?;
