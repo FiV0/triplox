@@ -326,8 +326,7 @@ impl Indexer {
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 6. Unique + general validation
-        self.validate_unique_constraints(&self.slatedb, &datoms)
-            .await?;
+        self.validate_unique_constraints(&datoms).await?;
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Write indices + commit
@@ -463,11 +462,7 @@ impl Indexer {
         Ok(resolved_datoms.into_iter().collect())
     }
 
-    async fn validate_unique_constraints(
-        &self,
-        db: &slatedb::Db,
-        datoms: &[Datom],
-    ) -> Result<(), Error> {
+    async fn validate_unique_constraints(&self, datoms: &[Datom]) -> Result<(), Error> {
         let mut retractions: HashSet<(Entid, Entid, DataType)> = HashSet::new();
         for datom in datoms {
             if datom.op != DatomOp::Retract {
@@ -516,7 +511,7 @@ impl Indexer {
             .iter()
             .map(|(d, a)| (*a, d.value.clone()))
             .collect();
-        let resolved = tx::batch_lookup_unique_eids(db, &lookups).await?;
+        let resolved = tx::batch_lookup_unique_eids(&self.slatedb, &lookups).await?;
 
         for (datom, attr_eid) in to_check {
             if let Some(&owner) = resolved.get(&(attr_eid, datom.value.clone())) {
