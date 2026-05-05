@@ -35,7 +35,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Converts DatomExpanded -> DatomWithTempids (eliminates LookupRef variants)
    - Errors if any lookup ref has no matching entity
                                 ↓
-4. Resolve tempids/upserts      tx::resolve_tempids_with_upserts(...)
+4. Resolve tempids/upserts      tempids::resolve_tempids(...)
    - Splits DatomWithTempids into Mentat-style Generation populations
    - Resolves :db.unique/identity tempids against unique-only VAE
    - Evolves complex upserts until no simple upserts remain
@@ -72,7 +72,7 @@ TxOp (EntityRef + DataType)
 DatomExpanded (EntityExpanded + ValueExpanded)   may contain LookupRef + TempId
     ↓ resolve_lookup_refs (async, unique-only VAE index)
 DatomWithTempids (IdOrTempId + ValueWithTempIds) only TempId remains
-    ↓ resolve_tempids_with_upserts (async, VAE + partition map)
+    ↓ tempids::resolve_tempids (async, VAE + partition map)
 Datom (i64 + DataType)                           fully concrete
 ```
 

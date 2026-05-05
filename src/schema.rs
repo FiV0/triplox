@@ -993,6 +993,8 @@ pub fn test_schema_tx() -> Vec<TxOp> {
 mod tests {
     use super::*;
     use crate::metadata::PartitionMap;
+    use crate::slate::in_memory_slate;
+    use crate::tempids;
     use crate::tx;
 
     /// Skip lookup ref resolution for tests that have no DB and no lookup refs.
@@ -1020,11 +1022,22 @@ mod tests {
             .collect()
     }
 
-    fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
+    async fn to_datoms_async(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
+        let slate = in_memory_slate().await;
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
         let with_tempids = expanded_to_tempids(expanded);
-        tx::resolve_tempids(&with_tempids, &mut pm).unwrap()
+        tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm)
+            .await
+            .unwrap()
+    }
+
+    fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(to_datoms_async(ops, schema))
     }
 
     fn bootstrapped_schema() -> Schema {
@@ -1105,14 +1118,13 @@ mod tests {
     #[test]
     fn test_validate_datoms_unknown_attribute() {
         let schema = bootstrapped_schema_with_person_name();
-        let ops = [TxOp::Add {
-            entity: "person".into(),
+        let datoms = [Datom {
+            entity: 100,
             attribute: kw!(:person/age),
-            value: 30_i64.into(),
+            value: DataType::Long(30),
+            op: DatomOp::Assert,
         }];
-        let err = schema
-            .validate_datoms(&to_datoms(&ops, &schema))
-            .unwrap_err();
+        let err = schema.validate_datoms(&datoms).unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :person/age"));
     }
 
@@ -1213,8 +1225,8 @@ mod tests {
         assert!(Cardinality::from_entity_id(9999).is_err());
     }
 
-    #[test]
-    fn test_bootstrap_schema_consistency() {
+    #[tokio::test]
+    async fn test_bootstrap_schema_consistency() {
         // Verify that bootstrap_schema() matches what bootstrap_schema_tx()
         // produces through the normal expand→resolve→validate→apply pipeline
         let bootstrap = bootstrap_schema();
@@ -1222,7 +1234,10 @@ mod tests {
         let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
         let with_tempids = expanded_to_tempids(expanded);
         let mut pm = PartitionMap::new();
-        let datoms = tx::resolve_tempids(&with_tempids, &mut pm).unwrap();
+        let slate = in_memory_slate().await;
+        let datoms = tempids::resolve_tempids(with_tempids, &bootstrap, &slate.db, &mut pm)
+            .await
+            .unwrap();
         let validation = bootstrap.validate_datoms(&datoms).unwrap();
         assert!(validation.schema_changes_detected);
         let update = Schema::default().prepare_schema_update(&datoms).unwrap();

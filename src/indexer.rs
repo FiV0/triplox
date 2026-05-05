@@ -19,6 +19,7 @@ use crate::ops::{Datom, DatomOp, Entid, TxOp};
 use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::tempids;
 use crate::transaction::TxKey;
 use crate::tx;
 use crate::util::concat_bytes;
@@ -311,8 +312,8 @@ impl Indexer {
         let with_tempids =
             tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
 
-        // 4. Resolve tempids/upserts + build tx entity datoms
-        let mut datoms = tx::resolve_tempids_with_upserts(
+        // 4. Resolve tempids, including identity upserts, then build tx entity datoms
+        let mut datoms = tempids::resolve_tempids(
             with_tempids,
             &self.metadata.schema,
             &self.slatedb,
@@ -325,7 +326,8 @@ impl Indexer {
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 6. Unique + general validation
-        self.validate_unique_constraints(&self.slatedb, &datoms).await?;
+        self.validate_unique_constraints(&self.slatedb, &datoms)
+            .await?;
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Write indices + commit

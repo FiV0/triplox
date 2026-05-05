@@ -8,6 +8,7 @@ use crate::partition::{
 };
 use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
 use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
+use crate::tempids;
 use crate::tx;
 use crate::util::concat_bytes;
 use slatedb::{Db, WriteBatch};
@@ -83,13 +84,16 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             // Fresh DB — build schema from constants, then bootstrap
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
-            // Same 3-stage pipeline as the indexer
+            // Same normalization and tempid-resolution stages as the indexer.
             let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
             let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
                 .await
                 .unwrap();
             let mut boot_pm = PartitionMap::new();
-            let datoms = tx::resolve_tempids(&with_tempids, &mut boot_pm).unwrap();
+            let datoms =
+                tempids::resolve_tempids(with_tempids, &bootstrap_schema, &slate.db, &mut boot_pm)
+                    .await
+                    .unwrap();
 
             // Validate against pre-built schema, then derive the bootstrap schema delta.
             let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();

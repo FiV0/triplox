@@ -21,6 +21,7 @@ pub mod schema;
 #[cfg(not(any(test, feature = "test-helpers")))]
 mod schema;
 mod slate;
+mod tempids;
 mod transaction;
 pub mod tx;
 pub mod upsert_resolution;
