@@ -1,11 +1,10 @@
 [package]
 name = "triplox-edn"
-version = "0.1.0-alpha.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 authors = ["Joe Walker <jwalker@mozilla.com>", "Finn Völkel <finn.volkel@gmail.com>"]
-
-license = "Apache-2.0"
-repository = "https://github.com/FiV0/triplox"
 description = "EDN parser used by Triplox; a fork of the parser from Project Mentat."
 readme = "./README.md"
 
