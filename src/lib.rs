@@ -23,6 +23,7 @@ mod schema;
 mod slate;
 mod transaction;
 pub mod tx;
+pub mod upsert_resolution;
 mod union_find;
 mod util;
 
