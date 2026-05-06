@@ -146,10 +146,12 @@ pub async fn resolve_tempids(
 mod tests {
     use super::*;
     use edn::kw;
+    use slatedb::WriteBatch;
 
+    use crate::indexer::write_index_entries;
     use crate::partition::{extract_counter, extract_partition};
     use crate::schema::{Attribute, Unique, ValueType, DB_IDENT};
-    use crate::slate::in_memory_slate;
+    use crate::slate::{in_memory_slate, DEFAULT_WRITE_OPTIONS};
     use crate::tx::ValueWithTempIds;
 
     fn tempid_test_schema() -> Schema {
@@ -187,6 +189,30 @@ mod tests {
             .await
             .unwrap();
         (resolved, pm)
+    }
+
+    async fn seed_ident(
+        db: &slatedb::Db,
+        schema: &Schema,
+        entity: Entid,
+        ident: edn::symbols::Keyword,
+    ) {
+        let mut batch = WriteBatch::new();
+        write_index_entries(
+            &mut batch,
+            &[Datom {
+                entity,
+                attribute: kw!(:db/ident),
+                value: DataType::Keyword(ident),
+                op: DatomOp::Assert,
+            }],
+            schema,
+            1,
+        )
+        .unwrap();
+        db.write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -273,6 +299,144 @@ mod tests {
         assert!(
             result.is_err(),
             "tempids that appear only in value position must not be allocated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retract_tempid_entity_without_upsert_errors() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        let datoms = vec![DatomWithTempids {
+            entity: IdOrTempId::TempId("t".to_string()),
+            attribute: kw!(:name),
+            value: ValueWithTempIds::Data(DataType::String("old".to_string())),
+            op: DatomOp::Retract,
+        }];
+
+        let result = resolve_tempids(datoms, &schema, &slate.db, &mut pm).await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("[:db/retract ...] referenced tempid that did not upsert"));
+    }
+
+    #[tokio::test]
+    async fn test_retract_tempid_entity_with_allocation_assert_still_errors() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        let datoms = vec![
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:name),
+                value: ValueWithTempIds::Data(DataType::String("new".to_string())),
+                op: DatomOp::Assert,
+            },
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:age),
+                value: ValueWithTempIds::Data(DataType::Long(1)),
+                op: DatomOp::Retract,
+            },
+        ];
+
+        let result = resolve_tempids(datoms, &schema, &slate.db, &mut pm).await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("[:db/retract ...] referenced tempid that did not upsert"));
+    }
+
+    #[tokio::test]
+    async fn test_retract_tempid_entity_resolved_by_identity_upsert_succeeds() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        seed_ident(slate.db.as_ref(), &schema, 42, kw!(:person/alice)).await;
+        let datoms = vec![
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:db/ident),
+                value: ValueWithTempIds::Data(DataType::Keyword(kw!(:person/alice))),
+                op: DatomOp::Assert,
+            },
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:name),
+                value: ValueWithTempIds::Data(DataType::String("old".to_string())),
+                op: DatomOp::Retract,
+            },
+        ];
+
+        let resolved = resolve_tempids(datoms, &schema, &slate.db, &mut pm)
+            .await
+            .unwrap();
+
+        assert!(resolved.iter().any(|d| d.entity == 42
+            && d.attribute == kw!(:name)
+            && d.value == DataType::String("old".to_string())
+            && d.op == DatomOp::Retract));
+        assert!(
+            pm.is_empty(),
+            "upserted tempid should not allocate a new entid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retract_tempref_value_without_upsert_errors() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        let datoms = vec![DatomWithTempids {
+            entity: IdOrTempId::Id(999),
+            attribute: kw!(:follows),
+            value: ValueWithTempIds::TempRef("t".to_string()),
+            op: DatomOp::Retract,
+        }];
+
+        let result = resolve_tempids(datoms, &schema, &slate.db, &mut pm).await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("[:db/retract ...] referenced tempid that did not upsert"));
+    }
+
+    #[tokio::test]
+    async fn test_retract_tempref_value_resolved_by_identity_upsert_succeeds() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        seed_ident(slate.db.as_ref(), &schema, 42, kw!(:person/alice)).await;
+        let datoms = vec![
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:db/ident),
+                value: ValueWithTempIds::Data(DataType::Keyword(kw!(:person/alice))),
+                op: DatomOp::Assert,
+            },
+            DatomWithTempids {
+                entity: IdOrTempId::Id(999),
+                attribute: kw!(:follows),
+                value: ValueWithTempIds::TempRef("t".to_string()),
+                op: DatomOp::Retract,
+            },
+        ];
+
+        let resolved = resolve_tempids(datoms, &schema, &slate.db, &mut pm)
+            .await
+            .unwrap();
+
+        assert!(resolved.iter().any(|d| d.entity == 999
+            && d.attribute == kw!(:follows)
+            && d.value == DataType::Long(42)
+            && d.op == DatomOp::Retract));
+        assert!(
+            pm.is_empty(),
+            "upserted tempid should not allocate a new entid"
         );
     }
 
