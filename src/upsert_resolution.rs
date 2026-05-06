@@ -286,6 +286,7 @@ impl Generation {
         schema: &Schema,
     ) -> Result<BTreeMap<String, usize>> {
         let mut tempids = BTreeSet::new();
+        let mut value_temprefs = BTreeSet::new();
         let mut identity_groups: HashMap<(Entid, ValueWithTempIds), Vec<String>> = HashMap::new();
 
         for d in &self.allocations {
@@ -307,7 +308,7 @@ impl Generation {
                 tempids.insert(t.clone());
             }
             if let ValueWithTempIds::TempRef(t) = &d.value {
-                tempids.insert(t.clone());
+                value_temprefs.insert(t.clone());
             }
 
             let (attr_eid, identity) = datom_with_entid_attr(d, schema)?;
@@ -318,6 +319,15 @@ impl Generation {
                         .or_default()
                         .push(t.clone());
                 }
+            }
+        }
+
+        for t in value_temprefs {
+            if !tempids.contains(&t) {
+                return Err(anyhow::anyhow!(
+                    "Tempid {} referenced only in value position",
+                    t
+                ));
             }
         }
 
@@ -381,4 +391,3 @@ impl Generation {
         Ok(populations)
     }
 }
-

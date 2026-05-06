@@ -2118,6 +2118,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_tempid_only_in_ref_value_position_aborts() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "bob".into(),
+                    attribute: kw!(:name),
+                    value: "Bob".into(),
+                },
+                TxOp::Add {
+                    entity: "bob".into(),
+                    attribute: kw!(:follows),
+                    value: DataType::String("alice".into()),
+                },
+            ])
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(result, TransactionResult::TxAborted(_, _)),
+            "tempids that appear only in value position must abort, got {:?}",
+            result
+        );
+    }
+
     /// Cross-iteration EV→E resolution where the second-iteration store
     /// lookup misses entirely. alice-temp and bob-temp both resolve in iter 1
     /// via `:user/email`; the EV `(alice-temp :spouse bob-temp)` promotes to
