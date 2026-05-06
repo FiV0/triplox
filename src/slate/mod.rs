@@ -161,6 +161,7 @@ pub async fn remote_slate(
 
 pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
     await_durable: false,
+    seqnum: 0,
 };
 
 pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
@@ -170,4 +171,5 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     cache_blocks: true,
     max_fetch_tasks: 1,
     order: slatedb::IterationOrder::Ascending,
+    filter_context: None,
 };

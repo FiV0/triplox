@@ -42,9 +42,9 @@ log = "0.4"
 object_store = { version = "0.12.3", features = ["aws"] }
 rand = "0.9"
 serde = { workspace = true, features = ["derive"] }
-slatedb = { version = "0.12.0", features = ["wal_disable"] }
-# slatedb = { git = "https://github.com/FiV0/slatedb", rev = "5b2f822258e92f682949b1cf7c7aa1c255d4568b", features = ["wal_disable"] }
-slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "e3ff9dca2a9adc0bf5629c5ff9b2272c7052826c" }
+# slatedb = { version = "0.12.0", features = ["wal_disable"] }
+slatedb = { git = "https://github.com/slatedb/slatedb", rev = "e4a31506e78878e313a001e0ade760ddbda59dba", features = ["wal_disable"] }
+slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "baf6c933bc6c443d63a97bfc761a9e1240bcf16d" }
 # slatedb_estimates = { path = "../slatedb-estimates" }
 thiserror = { workspace = true }
 toml = "0.8"
