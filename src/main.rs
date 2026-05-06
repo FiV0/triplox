@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use triplox::config::{Config, StorageConfig};
-use triplox::server::{DevServer, Server};
 use triplox::node::Node;
+use triplox::server::{DevServer, Server};
 
 fn load_config() -> Result<Config> {
     let path = std::env::args()
@@ -72,8 +72,15 @@ async fn run_server(config: Config) -> Result<()> {
             log_path,
         } => {
             let node = Arc::new(
-                Node::remote_node(&log_path, &endpoint, &bucket, &access_key, &secret_key, &region)
-                    .await?,
+                Node::remote_node(
+                    &log_path,
+                    &endpoint,
+                    &bucket,
+                    &access_key,
+                    &secret_key,
+                    &region,
+                )
+                .await?,
             );
             let server = Server::new(node);
             server.listen(&bind_addr, token).await

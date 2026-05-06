@@ -98,7 +98,8 @@ impl TemporalFilterIterator {
                     );
 
                     // Descending encoding: ts >= as_of_encoded means real_T <= as_of
-                    let ts = &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+                    let ts =
+                        &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
                     if ts >= self.as_of_encoded.as_slice() {
                         let op = key[key.len() - 1];
                         if op == codec::RETRACT {
@@ -134,9 +135,10 @@ impl TemporalFilterIterator {
 
 impl Index for TemporalFilterIterator {
     fn count(&self) -> Result<u64, Error> {
-        Ok(self
-            .handle
-            .block_on(self.range_stats.estimate_key_count_with_prefix(&self.prefix))?)
+        Ok(self.handle.block_on(
+            self.range_stats
+                .estimate_key_count_with_prefix(&self.prefix),
+        )?)
     }
 
     fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
@@ -528,8 +530,7 @@ mod tests {
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1, rs).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1, rs).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         })
         .await
@@ -541,8 +542,7 @@ mod tests {
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2, rs).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2, rs).unwrap();
             assert!(!iter.has_next());
         })
         .await
@@ -554,8 +554,7 @@ mod tests {
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3, rs).unwrap();
+            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3, rs).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         })
         .await

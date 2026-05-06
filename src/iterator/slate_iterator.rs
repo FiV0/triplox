@@ -55,9 +55,10 @@ impl SlateIterator {
 
 impl Index for SlateIterator {
     fn count(&self) -> Result<u64, Error> {
-        Ok(self
-            .handle
-            .block_on(self.range_stats.estimate_key_count_with_prefix(&self.prefix))?)
+        Ok(self.handle.block_on(
+            self.range_stats
+                .estimate_key_count_with_prefix(&self.prefix),
+        )?)
     }
 
     fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
@@ -264,7 +265,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let mut iter =
+                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -293,7 +295,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let mut iter =
+                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));

@@ -8,10 +8,7 @@ use crate::transaction::{TransactionResult, TxKey};
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error>;
-    async fn execute_tx<O: IntoTxOp>(
-        &self,
-        ops: Vec<O>,
-    ) -> Result<TransactionResult, Error>;
+    async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error>;
 }
 
 /// Per-element conversion to `TxOp`. Lets `submit_tx`/`execute_tx` accept

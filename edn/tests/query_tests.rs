@@ -11,9 +11,9 @@
 use edn::{Keyword, PlainSymbol};
 
 use edn::query::{
-    Binding, Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, OrJoin,
-    OrWhereClause, Order, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, ToVariable,
-    UnifyVars, WhereClause,
+    Binding, Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, OrJoin, OrWhereClause,
+    Order, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, ToVariable, UnifyVars,
+    WhereClause,
 };
 
 use edn::parse::parse_query;

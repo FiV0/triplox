@@ -120,7 +120,10 @@ enum EitherDatom {
 impl Generation {
     /// Split datoms into a generation of populations that need to evolve to have their tempids
     /// resolved or allocated, and a population of inert datoms that do not reference tempids.
-    pub(crate) fn from(datoms: Vec<DatomWithTempids>, schema: &Schema) -> Result<(Self, Vec<Datom>)> {
+    pub(crate) fn from(
+        datoms: Vec<DatomWithTempids>,
+        schema: &Schema,
+    ) -> Result<(Self, Vec<Datom>)> {
         let mut generation = Generation::default();
         let mut inert = Vec::new();
 

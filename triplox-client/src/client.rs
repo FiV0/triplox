@@ -11,9 +11,7 @@ use crate::msgpack_codec::{
     decode_tx_result_response, encode_execute_request, encode_open_db_request,
     encode_query_request, ExecuteRequest, OpenDbRequest, QueryRequest,
 };
-use crate::node::{
-    collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
-};
+use crate::node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
 use crate::ops::QueryArg;
 use crate::query::QueryResult;
 use crate::transaction::{TransactionResult, TxKey};

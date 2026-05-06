@@ -31,6 +31,10 @@ Prefer one-line TODOs.
 Only commit and push when explicitly asked to by the user.
 End Codex-created commits with `Co-authored-by: Codex <noreply@openai.com>`.
 
+## Formatting
+
+Run `cargo fmt` before committing. CI checks formatting via `cargo fmt --check`.
+
 ## Testing
 
 Once the new tests pass, also run all tests with:
