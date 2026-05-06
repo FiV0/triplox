@@ -26,6 +26,7 @@ pub struct GenericPrefixExtender {
 }
 
 impl GenericPrefixExtender {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         slate: Arc<slatedb::DbSnapshot>,
         handle: Handle,

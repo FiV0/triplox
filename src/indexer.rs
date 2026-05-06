@@ -1491,7 +1491,7 @@ mod tests {
         let slate = components.db.clone();
         let mut indexer = bootstrapped_indexer(&components).await;
 
-        let mut attrs = vec![
+        let mut attrs = [
             (
                 kw!(:name),
                 DataType::String("old-name".to_string()),

@@ -293,14 +293,13 @@ impl Generation {
         let mut identity_groups: HashMap<(Entid, ValueWithTempIds), Vec<String>> = HashMap::new();
 
         for d in &self.allocations {
-            if d.op == DatomOp::Retract {
-                if matches!(d.entity, IdOrTempId::TempId(_))
-                    || matches!(d.value, ValueWithTempIds::TempRef(_))
-                {
-                    return Err(anyhow::anyhow!(
-                        "[:db/retract ...] referenced tempid that did not upsert"
-                    ));
-                }
+            if d.op == DatomOp::Retract
+                && (matches!(d.entity, IdOrTempId::TempId(_))
+                    || matches!(d.value, ValueWithTempIds::TempRef(_)))
+            {
+                return Err(anyhow::anyhow!(
+                    "[:db/retract ...] referenced tempid that did not upsert"
+                ));
             }
 
             if d.op != DatomOp::Assert {

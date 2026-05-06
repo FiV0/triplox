@@ -371,17 +371,14 @@ async fn test_dev_server_connections_are_isolated() {
 async fn define_schema_attr(client: &ClientNode, name: &str, vtype: &str) {
     client
         .execute_tx(vec![TxOp::put(vec![
-            (
-                kw!(:db/ident),
-                DataType::Keyword(Keyword::plain(name)).into(),
-            ),
+            (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
             (
                 kw!(:db/valueType),
-                DataType::Keyword(Keyword::namespaced("db.type", vtype)).into(),
+                DataType::Keyword(Keyword::namespaced("db.type", vtype)),
             ),
             (
                 kw!(:db/cardinality),
-                DataType::Keyword(Keyword::namespaced("db.cardinality", "one")).into(),
+                DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
             ),
         ])])
         .await
@@ -418,7 +415,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
         client
             .execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
-                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
             .await
             .unwrap();
@@ -466,7 +463,7 @@ async fn test_aggregates_and_or() {
             .execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
                 (kw!(:last-name), last.into()),
-                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
                 (kw!(:age), (age as i64).into()),
             ])])
             .await

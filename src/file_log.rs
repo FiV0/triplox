@@ -199,7 +199,7 @@ mod tests {
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if subscriber.read().await.records.len() >= 1 {
+                if !subscriber.read().await.records.is_empty() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;

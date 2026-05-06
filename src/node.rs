@@ -1325,14 +1325,14 @@ mod tests {
 
         // Define "sex" attribute with keyword value type
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
+            (kw!(:db/ident), DataType::Keyword(kw!(:sex))),
             (
                 kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/keyword)).into(),
+                DataType::Keyword(kw!(:db.type/keyword)),
             ),
             (
                 kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+                DataType::Keyword(kw!(:db.cardinality/one)),
             ),
         ])])
         .await
@@ -1347,7 +1347,7 @@ mod tests {
         for (name, sex) in people {
             node.execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
-                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
             .await
             .unwrap();
@@ -1375,14 +1375,14 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/ident), DataType::Keyword(kw!(:sex)).into()),
+            (kw!(:db/ident), DataType::Keyword(kw!(:sex))),
             (
                 kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/keyword)).into(),
+                DataType::Keyword(kw!(:db.type/keyword)),
             ),
             (
                 kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+                DataType::Keyword(kw!(:db.cardinality/one)),
             ),
         ])])
         .await
@@ -1397,7 +1397,7 @@ mod tests {
         for (name, sex) in people {
             node.execute_tx(vec![TxOp::put(vec![
                 (kw!(:name), name.into()),
-                (kw!(:sex), DataType::Keyword(Keyword::plain(sex)).into()),
+                (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
             .await
             .unwrap();
@@ -1425,14 +1425,14 @@ mod tests {
 
         // Define "last-name" attribute
         node.execute_tx(vec![TxOp::put(vec![
-            (kw!(:db/ident), DataType::Keyword(kw!(:last-name)).into()),
+            (kw!(:db/ident), DataType::Keyword(kw!(:last-name))),
             (
                 kw!(:db/valueType),
-                DataType::Keyword(kw!(:db.type/string)).into(),
+                DataType::Keyword(kw!(:db.type/string)),
             ),
             (
                 kw!(:db/cardinality),
-                DataType::Keyword(kw!(:db.cardinality/one)).into(),
+                DataType::Keyword(kw!(:db.cardinality/one)),
             ),
         ])])
         .await
