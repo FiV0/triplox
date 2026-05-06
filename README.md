@@ -3,20 +3,20 @@
   <br>
   <br>
   <a href="https://triplox.xyz">
-    <img alt="Website" src="https://img.shields.io/badge/website-triplox.xyz-blue.svg">
+    <img alt="Website" src="https://img.shields.io/badge/website-triplox.xyz-blue.svg?style=flat-square">
   </a>
   <a href="https://www.apache.org/licenses/LICENSE-2.0">
-    <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg">
+    <img alt="License" src="https://img.shields.io/github/license/FiV0/triplox?style=flat-square">
   </a>
   <a href="https://discord.gg/CYaAYFwC">
-    <img alt="Discord" src="https://img.shields.io/badge/discord-blue.svg?logo=discord&logoColor=white">
+    <img alt="Discord" src="https://img.shields.io/badge/discord-join-7289DA.svg?style=flat-square&logo=discord&logoColor=white">
   </a>
-  <a href="https://crates.io/crates/triplox-client">
-    <img alt="crates.io" src="https://img.shields.io/crates/v/triplox-client.svg">
-  </a>
-  <a href="https://clojars.org/xyz.triplox/triplox">
-    <img alt="Clojars" src="https://img.shields.io/clojars/v/xyz.triplox/triplox.svg">
-  </a>
+  <!-- <a href="https://crates.io/crates/triplox-client"> -->
+  <!--   <img alt="crates.io" src="https://img.shields.io/crates/v/triplox-client.svg?style=flat-square"> -->
+  <!-- </a> -->
+  <!-- <a href="https://clojars.org/xyz.triplox/triplox"> -->
+  <!--   <img alt="Clojars" src="https://img.shields.io/clojars/v/xyz.triplox/triplox.svg?style=flat-square"> -->
+  <!-- </a> -->
 </p>
 
 > 🚧 **WARNING: Alpha Software** 🚧
@@ -95,6 +95,14 @@ There are some design decisions that still are up for grabs. In particular the e
         │                                                                      │
         └──────────────────────────────────────────────────────────────────────┘
 ```
+
+### Getting involved
+
+This project is very much WIP and any help is appreciated. Discussions and feedback happen on [Discord](https://discord.gg/CYaAYFwC).
+
+There is lots of things to work on. Feel free to open tickets for features, bugs or general ideas.
+If you are building something more involved it's likely better to discuss it first
+(either on Discord or in a ticket) and see if it fits the projects scope.
 
 ### Acknowledgements
 
