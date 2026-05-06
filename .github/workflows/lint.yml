@@ -1,7 +1,10 @@
 name: Lint
 
 on:
-  workflow_dispatch: # disabled — run manually if needed
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

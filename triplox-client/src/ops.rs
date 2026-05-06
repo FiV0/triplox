@@ -259,10 +259,7 @@ pub fn value_to_entity_ref(value: Value) -> Result<EntityRef> {
             let mut iter = items.into_iter();
             let attr = match iter.next().unwrap() {
                 Value::Keyword(k) => k,
-                other => anyhow::bail!(
-                    "lookup ref attribute must be a keyword, got {:?}",
-                    other
-                ),
+                other => anyhow::bail!("lookup ref attribute must be a keyword, got {:?}", other),
             };
             let v = value_to_data_type(iter.next().unwrap())?;
             Ok(EntityRef::LookupRef(attr, v))
@@ -291,10 +288,9 @@ pub fn tx_op_from_value(value: Value) -> Result<TxOp> {
                 .ok_or_else(|| anyhow::anyhow!("empty vector is not a valid TxOp"))?;
             let op_kw = match head {
                 Value::Keyword(k) => k,
-                other => anyhow::bail!(
-                    "expected operation keyword (e.g. :db/add), got {:?}",
-                    other
-                ),
+                other => {
+                    anyhow::bail!("expected operation keyword (e.g. :db/add), got {:?}", other)
+                }
             };
             match (op_kw.namespace(), op_kw.name()) {
                 (Some("db"), name @ ("add" | "retract")) => {
@@ -304,11 +300,9 @@ pub fn tx_op_from_value(value: Value) -> Result<TxOp> {
                     };
                     let attribute = match iter.next() {
                         Some(Value::Keyword(k)) => k,
-                        Some(other) => anyhow::bail!(
-                            "{} attribute must be a keyword, got {:?}",
-                            op_kw,
-                            other
-                        ),
+                        Some(other) => {
+                            anyhow::bail!("{} attribute must be a keyword, got {:?}", op_kw, other)
+                        }
                         None => anyhow::bail!("{} missing attribute", op_kw),
                     };
                     let value = match iter.next() {

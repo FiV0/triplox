@@ -13,6 +13,6 @@ pub mod transaction;
 
 pub use client::{ClientDb, ClientNode};
 pub use node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
-pub use ops::{DataType, EntityRef, Entid, QueryArg, TxOp};
+pub use ops::{DataType, Entid, EntityRef, QueryArg, TxOp};
 pub use query::QueryResult;
 pub use transaction::{TransactionResult, TxKey};

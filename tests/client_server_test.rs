@@ -7,10 +7,10 @@ use chrono::TimeZone;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
-use triplox::server::{DevServer, Server};
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
+use triplox::server::{DevServer, Server};
 use triplox::TransactionResult;
 
 async fn define_base_schema(client: &ClientNode) {

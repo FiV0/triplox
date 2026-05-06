@@ -19,8 +19,7 @@ async fn test_remote_node_with_s3_storage() {
     let container = GenericImage::new("rustfs/rustfs", "1.0.0-alpha.93")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/health/ready")
-                .with_expected_status_code(200u16),
+            HttpWaitStrategy::new("/health/ready").with_expected_status_code(200u16),
         ))
         .with_env_var("RUSTFS_ROOT_USER", "minioadmin")
         .with_env_var("RUSTFS_ROOT_PASSWORD", "minioadmin")
@@ -101,10 +100,7 @@ async fn test_remote_node_with_s3_storage() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0],
-        vec![
-            DataType::String("alice".to_string()),
-            DataType::Long(30),
-        ]
+        vec![DataType::String("alice".to_string()), DataType::Long(30),]
     );
 
     node.close().await;

@@ -1514,9 +1514,10 @@ mod tests {
 
     #[test]
     fn decode_tagged_union_rejects_unknown_kind() {
-        let body = pack(Value::Map(vec![
-            (Value::String("kind".into()), Value::String("xyzzy".into())),
-        ]));
+        let body = pack(Value::Map(vec![(
+            Value::String("kind".into()),
+            Value::String("xyzzy".into()),
+        )]));
         assert!(entity_ref_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
         assert!(tx_op_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
         assert!(query_arg_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).is_err());
@@ -1542,8 +1543,7 @@ mod tests {
             (Value::String("id".into()), Value::Integer(42.into())),
             (Value::String("kind".into()), Value::String("id".into())),
         ]));
-        let er =
-            entity_ref_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).unwrap();
+        let er = entity_ref_from_value(rmpv::decode::read_value(&mut &body[..]).unwrap()).unwrap();
         assert_eq!(er, EntityRef::Id(42));
     }
 }

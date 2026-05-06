@@ -250,10 +250,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
         Ok(self.log.write().await.append_tx(serialized).await)
     }
 
-    async fn execute_tx<O: IntoTxOp>(
-        &self,
-        ops: Vec<O>,
-    ) -> Result<TransactionResult, Error> {
+    async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
 
@@ -318,9 +315,9 @@ mod tests {
     use crate::schema::{
         test_schema_tx, unique_identity_schema_attribute, unique_value_schema_attribute,
     };
-    use triplox_client::transaction::TransactionResult;
     use edn::kw;
     use edn::Keyword;
+    use triplox_client::transaction::TransactionResult;
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
     async fn define_test_schema(node: &impl SubmitNode) {

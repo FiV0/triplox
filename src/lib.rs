@@ -24,13 +24,13 @@ mod schema;
 mod slate;
 mod tempids;
 pub mod tx;
-pub mod upsert_resolution;
 mod union_find;
+pub mod upsert_resolution;
 mod util;
 
 pub mod config;
 pub mod node;
 pub mod server;
 
-pub use triplox_client::{client, msgpack_codec, protocol, transaction};
 pub use node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, TxKey, DB};
+pub use triplox_client::{client, msgpack_codec, protocol, transaction};
