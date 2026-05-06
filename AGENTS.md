@@ -37,10 +37,19 @@ Run `cargo fmt` before committing. CI checks formatting via `cargo fmt --check`.
 
 ## Testing
 
-Once the new tests pass, also run all tests with:
+Once the new tests pass, also run all tests across every workspace member —
+the root `triplox` crate (`src/`), `edn`, and `triplox-client`:
 
 ```bash
-cargo test
+cargo test -p triplox
+cargo test -p edn
+cargo test -p triplox-client
+```
+
+Or run them all at once:
+
+```bash
+cargo test --workspace
 ```
 
 Also run clippy across the workspace and resolve any warnings before declaring work done:
