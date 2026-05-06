@@ -13,7 +13,7 @@ use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid};
 use crate::partition::{dominant_partition, DB_PARTITION, DEFAULT_PARTITION, USER_PARTITION};
 use crate::schema::Schema;
-use crate::tx::{self, DatomWithTempids, IdOrTempId, ValueWithTempIds};
+use crate::tx::{self, DatomWithTempids, IdOrTempId};
 use crate::upsert_resolution::{Generation, TempIdMap, UniqueLookup};
 
 async fn resolve_temp_id_avs(
@@ -83,9 +83,6 @@ fn infer_tempid_partitions(datoms: &[DatomWithTempids]) -> TempIdPartitions {
                 out.entry(t.clone()).or_insert(USER_PARTITION);
             }
         }
-        if let ValueWithTempIds::TempRef(t) = &d.value {
-            out.entry(t.clone()).or_insert(USER_PARTITION);
-        }
     }
     out
 }
@@ -153,6 +150,7 @@ mod tests {
     use crate::partition::{extract_counter, extract_partition};
     use crate::schema::{Attribute, Unique, ValueType, DB_IDENT};
     use crate::slate::in_memory_slate;
+    use crate::tx::ValueWithTempIds;
 
     fn tempid_test_schema() -> Schema {
         let mut schema = Schema::default();
@@ -256,6 +254,26 @@ mod tests {
         assert!(resolved
             .iter()
             .any(|d| d.attribute == kw!(:follows) && d.value == DataType::Long(alice_eid)));
+    }
+
+    #[tokio::test]
+    async fn test_tempref_only_in_value_position_errors() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        let datoms = vec![DatomWithTempids {
+            entity: IdOrTempId::Id(999),
+            attribute: kw!(:follows),
+            value: ValueWithTempIds::TempRef("alice".to_string()),
+            op: DatomOp::Assert,
+        }];
+
+        let result = resolve_tempids(datoms, &schema, &slate.db, &mut pm).await;
+
+        assert!(
+            result.is_err(),
+            "tempids that appear only in value position must not be allocated"
+        );
     }
 
     #[tokio::test]

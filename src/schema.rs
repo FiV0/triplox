@@ -1041,14 +1041,24 @@ mod tests {
             .collect()
     }
 
-    async fn to_datoms_async(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
+    async fn to_datoms_result_async(ops: &[TxOp], schema: &Schema) -> Result<Vec<Datom>> {
         let slate = in_memory_slate().await;
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
         let with_tempids = expanded_to_tempids(expanded);
-        tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm)
-            .await
+        tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm).await
+    }
+
+    async fn to_datoms_async(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
+        to_datoms_result_async(ops, schema).await.unwrap()
+    }
+
+    fn to_datoms_result(ops: &[TxOp], schema: &Schema) -> Result<Vec<Datom>> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap()
+            .block_on(to_datoms_result_async(ops, schema))
     }
 
     fn to_datoms(ops: &[TxOp], schema: &Schema) -> Vec<Datom> {
@@ -1288,17 +1298,19 @@ mod tests {
         let validation = schema.validate_datoms(&to_datoms(&ops, &schema)).unwrap();
         assert!(!validation.schema_changes_detected);
 
-        // String in ref position is interpreted as tempid (resolved to Long)
+        // String in ref position must name a tempid introduced in entity position.
         let ops = [TxOp::Add {
             entity: "follower".into(),
             attribute: kw!(:follows),
             value: DataType::String("some-tempid".to_string()),
         }];
-        let datoms = to_datoms(&ops, &schema);
-        // After expand_tx_ops, the string becomes a TempRef which resolves to a Long,
-        // so validate_datoms should accept it.
-        let validation = schema.validate_datoms(&datoms).unwrap();
-        assert!(!validation.schema_changes_detected);
+        let err = to_datoms_result(&ops, &schema).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Tempid some-tempid referenced only in value position"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
