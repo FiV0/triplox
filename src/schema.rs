@@ -95,6 +95,7 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
 
 /// Schema properties for bootstrap attributes using symbolic keywords.
 /// (ident, value_type_ident, cardinality_ident, unique_ident)
+#[allow(clippy::type_complexity)]
 static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword, Option<Keyword>)>> =
     LazyLock::new(|| {
         vec![

@@ -732,6 +732,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_print_edn() {
         assert_eq!("1234N", Value::from_bigint("1234").unwrap().to_string());
 

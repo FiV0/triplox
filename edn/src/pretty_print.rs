@@ -117,7 +117,7 @@ mod test {
         let string = "$";
         let data = parse::value(string).unwrap().without_spans();
 
-        assert_eq!(data.write_pretty(40, &mut Vec::new()).is_ok(), true);
+        assert!(data.write_pretty(40, &mut Vec::new()).is_ok());
     }
 
     #[test]

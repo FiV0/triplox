@@ -18,11 +18,11 @@ use edn::query::{
 
 use edn::parse::parse_query;
 
-///! N.B., parsing a query can be done without reference to a DB.
-///! Processing the parsed query into something we can work with
-///! for planning involves interrogating the schema and idents in
-///! the store.
-///! See <https://github.com/mozilla/mentat/wiki/Querying> for more.
+// N.B., parsing a query can be done without reference to a DB.
+// Processing the parsed query into something we can work with
+// for planning involves interrogating the schema and idents in
+// the store.
+// See <https://github.com/mozilla/mentat/wiki/Querying> for more.
 #[test]
 fn can_parse_predicates() {
     let s = "[:find [?x ...] :where [?x _ ?y] [(< ?y 10)]]";

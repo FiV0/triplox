@@ -43,4 +43,10 @@ Once the new tests pass, also run all tests with:
 cargo test
 ```
 
+Also run clippy across the workspace and resolve any warnings before declaring work done:
+
+```bash
+cargo clippy --workspace --all-targets --all-features
+```
+
 For JVM client integration tests, see [triplox-jvm/README.md](triplox-jvm/README.md).

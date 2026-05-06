@@ -575,6 +575,12 @@ impl<L: TxLog + 'static> Server<L> {
 
 pub struct DevServer;
 
+impl Default for DevServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DevServer {
     pub fn new() -> Self {
         DevServer

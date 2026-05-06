@@ -673,6 +673,7 @@ fn compute_constant_prefix(pattern: &Pattern, index_type: IndexType) -> Result<V
 }
 
 /// Compile a Pattern into a PrefixExtender.
+#[allow(clippy::too_many_arguments)]
 pub fn compile_pattern(
     pattern: &Pattern,
     join_order: &[Variable],
@@ -1189,6 +1190,7 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
 }
 
 /// Compile an OrWhereClause into a PrefixExtender.
+#[allow(clippy::too_many_arguments)]
 fn compile_or_branch(
     branch: &OrWhereClause,
     join_order: &[Variable],
@@ -1232,6 +1234,7 @@ fn compile_or_branch(
 }
 
 /// Compile a single WhereClause into a PrefixExtender, recursively handling nested clauses.
+#[allow(clippy::too_many_arguments)]
 fn compile_where_clause(
     clause: &WhereClause,
     join_order: &[Variable],
