@@ -157,6 +157,9 @@ impl Node<FileLog> {
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(slate.db.snapshot().await?);
         let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
+        // Bootstrap currently has tx_id=0, and an empty FileLog also assigns
+        // tx_id=0 to its first real transaction. Until log tx_ids move past
+        // bootstrap, do not use tx_id=0 as a catch-up skip point.
         let latest_indexed_tx = if latest_indexed.tx_id > 0 {
             Some(latest_indexed)
         } else {
@@ -991,6 +994,37 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![DataType::String("alice".to_string())]));
         assert!(results.contains(&vec![DataType::String("bob".to_string())]));
+
+        node.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_bootstrap_only_restart_does_not_skip_first_log_tx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        let node = Node::local_node(&root_path).await.unwrap();
+        node.close().await;
+
+        let node = Node::local_node(&root_path).await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            node.execute_tx(test_schema_tx()),
+        )
+        .await
+        .expect("first log transaction after bootstrap-only restart should not be skipped")
+        .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         node.close().await;
     }
