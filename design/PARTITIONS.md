@@ -69,14 +69,14 @@ Each transaction is reified as an entity in this partition. The transaction enti
 
 | Attribute      | Value Type | Description                                                    |
 |----------------|------------|----------------------------------------------------------------|
-| `db.tx/instant` | instant    | Wall-clock time of the transaction                             |
-| `db.tx/result`  | keyword    | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)      |
-| `db.tx/id`      | long       | The sequential tx_id assigned by the log                       |
-| `db.tx/error`   | string     | Error message (present only when `db.tx/result` is `:db.tx/aborted`) |
+| `db/txInstant`  | instant    | Wall-clock time of the transaction                             |
+| `db/txResult`   | ref        | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)      |
+| `db/txId`       | long       | The sequential tx_id assigned by the log                       |
+| `db/txError`    | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
 
 A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
 
-Note: the relationship between `db.tx/id` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. In the future we may align these so that the log tx_id and the entity ID counter share the same value.
+Note: the relationship between `db/txId` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. In the future we may align these so that the log tx_id and the entity ID counter share the same value.
 
 ### 2.3 :db.part/user (partition 2)
 

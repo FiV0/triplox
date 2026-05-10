@@ -252,7 +252,7 @@ fn build_tx_entity_datoms(
     if let Some(err) = error {
         datoms.push(Datom {
             entity: tx_eid,
-            attribute: kw!(:db.tx/error),
+            attribute: kw!(:db/txError),
             value: DataType::String(err),
             op: DatomOp::Assert,
         });
