@@ -180,9 +180,9 @@ pub async fn latest_tx_key_from_snapshot(
             },
         )),
         (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
-        (Some(eid), tid, st) => bail!(
-            "Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})"
-        ),
+        (Some(eid), tid, st) => {
+            bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
+        }
     }
 }
 
