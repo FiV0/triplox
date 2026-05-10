@@ -8,9 +8,9 @@ use crate::partition::{
     extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION,
 };
 use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
+use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
 use crate::transaction::TxKey;
-use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tx;
 use crate::util::concat_bytes;
 use slatedb::{Db, WriteBatch};

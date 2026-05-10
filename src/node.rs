@@ -156,11 +156,11 @@ impl Node<FileLog> {
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(slate.db.snapshot().await?);
-        let (_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
-        // Bootstrap currently has tx_id=0, and an empty FileLog also assigns
-        // tx_id=0 to its first real transaction. Until log tx_ids move past
-        // bootstrap, do not use tx_id=0 as a catch-up skip point.
-        let latest_indexed_tx = if latest_indexed.tx_id > 0 {
+        let (latest_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
+        // Bootstrap and the first FileLog transaction both currently use tx_id=0.
+        // Only skip log catch-up when a tx entity after bootstrap has been indexed.
+        let bootstrap_tx_eid = crate::partition::make_entity_id(crate::partition::TX_PARTITION, 0);
+        let latest_indexed_tx = if latest_tx_eid > bootstrap_tx_eid {
             Some(latest_indexed)
         } else {
             None
@@ -1025,6 +1025,26 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        node.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_restart_skips_already_indexed_first_log_tx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        let node = Node::local_node(&root_path).await.unwrap();
+        define_test_schema(&node).await;
+        node.close().await;
+
+        let node = Node::local_node(&root_path).await.unwrap();
+        let db = node.db().await.unwrap();
+        let txs = db
+            .query("[:find ?tx :where [?tx :db/txId 0]]")
+            .await
+            .unwrap();
+        assert_eq!(txs.len(), 2);
 
         node.close().await;
     }
