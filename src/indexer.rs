@@ -128,7 +128,6 @@ pub(crate) fn write_index_entries(
 }
 
 /// Scan EAV entries for TX_PARTITION entities and return (tx_eid, TxKey) for the latest tx.
-/// If no transaction entities exist, returns a sentinel (0, TxKey{tx_id=0, system_time=epoch}).
 ///
 /// Uses the high bits of TX_PARTITION entity IDs to build a targeted EAV prefix,
 /// restricting the scan to TX_PARTITION entities. With descending entity encoding,
@@ -137,8 +136,9 @@ pub(crate) fn write_index_entries(
 /// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
 /// system_time from `db/txInstant` value.
 ///
-/// TODO(#97): Return Option instead of sentinel. Needs coordination with
-/// the bootstrap transaction (tx_id=0).
+/// Errors if no TX_PARTITION entity exists (an initialized DB always has the
+/// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
+/// `:db/txInstant`.
 pub async fn latest_tx_key_from_snapshot(
     snapshot: &Arc<slatedb::DbSnapshot>,
 ) -> Result<(i64, TxKey)> {
@@ -179,13 +179,10 @@ pub async fn latest_tx_key_from_snapshot(
                 system_time: st,
             },
         )),
-        _ => Ok((
-            0,
-            TxKey {
-                tx_id: 0,
-                system_time: crate::clock::st_from_unix_epoch(0),
-            },
-        )),
+        (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
+        (Some(eid), tid, st) => {
+            bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
+        }
     }
 }
 
@@ -217,7 +214,7 @@ pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxK
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
 /// The `tx_eid` is the pre-allocated entity ID for this transaction.
-fn build_tx_entity_datoms(
+pub(crate) fn build_tx_entity_datoms(
     tx_eid: i64,
     tx_key: TxKey,
     committed: bool,
@@ -904,16 +901,6 @@ mod tests {
         assert_eq!(latest.tx_id, 42);
         assert_eq!(latest.system_time, st_from_unix_epoch(1000));
         assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_latest_tx_key_empty_db() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let (tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
-        assert_eq!(latest.tx_id, 0, "Should return sentinel for empty DB");
-        assert_eq!(tx_eid, 0, "Should return sentinel tx_eid for empty DB");
         Ok(())
     }
 
