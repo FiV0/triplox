@@ -159,8 +159,7 @@ impl Node<FileLog> {
         let (latest_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
         // Bootstrap and the first FileLog transaction both currently use tx_id=0.
         // Only skip log catch-up when a tx entity after bootstrap has been indexed.
-        let bootstrap_tx_eid = crate::partition::make_entity_id(crate::partition::TX_PARTITION, 0);
-        let latest_indexed_tx = if latest_tx_eid > bootstrap_tx_eid {
+        let latest_indexed_tx = if latest_tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
             Some(latest_indexed)
         } else {
             None

@@ -1,11 +1,13 @@
 use anyhow::{bail, Context, Result};
+use std::sync::LazyLock;
 
 use crate::clock::st_from_unix_epoch;
 use crate::codec;
 use crate::indexer::{build_tx_entity_datoms, write_index_entries};
 use crate::metadata::{Metadata, PartitionMap};
 use crate::partition::{
-    extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION,
+    extract_counter, partition_entity_prefix, COUNTER_BITS, DB_PARTITION, TX_PARTITION,
+    USER_PARTITION,
 };
 use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
 use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
@@ -21,6 +23,18 @@ const META_KEY_VERSION: &[u8] = b"version";
 /// New user-defined schema attributes start at this counter value,
 /// leaving room below for future bootstrap entities.
 const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
+
+/// Entity ID for the bootstrap transaction (TX_PARTITION, counter 0).
+/// Matches `make_entity_id(TX_PARTITION, 0)`; expressed as a const so
+/// `node::from_slate_and_log` can compare without recomputing.
+pub(crate) const BOOTSTRAP_TX_EID: i64 = (TX_PARTITION as i64) << COUNTER_BITS;
+
+/// TxKey written for the bootstrap transaction. `tx_id=0` and `system_time=epoch`
+/// collide with the first FileLog tx today; see TODO(#97).
+pub(crate) static BOOTSTRAP_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
+    tx_id: 0,
+    system_time: st_from_unix_epoch(0),
+});
 
 /// Scan each partition's EAV prefix and return per-partition counters (max counter + 1).
 /// With descending encoding, the first entity per partition has the highest counter.
@@ -87,12 +101,9 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             // Fresh DB — build schema from constants, then bootstrap
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
-            let tx_key = TxKey {
-                tx_id: 0,
-                system_time: st_from_unix_epoch(0),
-            };
+            let tx_key = *BOOTSTRAP_TX_KEY;
+            let tx_eid = BOOTSTRAP_TX_EID;
             let mut boot_pm = PartitionMap::new();
-            let tx_eid = boot_pm.allocate_entid(TX_PARTITION);
 
             // Same normalization and tempid-resolution stages as the indexer.
             let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
