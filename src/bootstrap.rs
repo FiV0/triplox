@@ -153,7 +153,7 @@ mod tests {
         assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
         assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db.tx/error)).is_some());
+        assert!(metadata.schema.get_attribute(&kw!(:db/txError)).is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
         assert_eq!(
             metadata.partition_map[&DB_PARTITION],

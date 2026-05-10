@@ -85,10 +85,10 @@ A fresh database is initialized with a bootstrap transaction (tx_id=0) that inst
 | `db/valueType`     | ref        | one         |          |
 | `db/cardinality`   | ref        | one         |          |
 | `db/unique`        | ref        | one         |          |
-| `db.tx/instant`    | instant    | one         |          |
-| `db.tx/result`     | ref        | one         |          |
-| `db.tx/id`         | long       | one         |          |
-| `db.tx/error`      | string     | one         |          |
+| `db/txInstant`     | instant    | one         |          |
+| `db/txResult`      | ref        | one         |          |
+| `db/txId`          | long       | one         |          |
+| `db/txError`       | string     | one         |          |
 
 The first four attributes are self-referential: they describe themselves. `db/ident`, `db/valueType`, and `db/cardinality` are the minimal required set needed to define any further schema attributes; `db/unique` adds optional uniqueness semantics. Attributes 32–35 are used on transaction entities (see `PARTITIONS.md`).
 
@@ -96,7 +96,7 @@ The bootstrap transaction also installs enum entities for value types (`:db.type
 
 ### 2.1 Transaction Result Enums
 
-The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db.tx/result` attribute on transaction entities (see `PARTITIONS.md`):
+The bootstrap transaction installs two enum entities representing transaction outcomes. These are used as values for the `db/txResult` attribute on transaction entities (see `PARTITIONS.md`):
 
 | Ident               |
 |---------------------|
@@ -107,7 +107,7 @@ The bootstrap transaction installs two enum entities representing transaction ou
 
 `ValueType::Ref` is a supported schema type. Ref values are stored as `DataType::Long` with the same byte-level encoding (same tag). The schema is the sole authority on whether a Long value is an entity reference — this allows ref values and entity IDs to unify at the byte level in the generic join algorithm without special-casing.
 
-`db/valueType`, `db/cardinality`, `db/unique`, and `db.tx/result` are ref-typed attributes whose values are entity IDs pointing to the enum entities defined in the bootstrap transaction (e.g. the entity for `:db.type/string`, `:db.cardinality/one`, `:db.unique/identity`, or `:db.tx/committed`).
+`db/valueType`, `db/cardinality`, `db/unique`, and `db/txResult` are ref-typed attributes whose values are entity IDs pointing to the enum entities defined in the bootstrap transaction (e.g. the entity for `:db.type/string`, `:db.cardinality/one`, `:db.unique/identity`, or `:db.tx/committed`).
 
 ---
 

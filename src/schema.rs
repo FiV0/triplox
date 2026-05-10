@@ -86,7 +86,7 @@ static V1_IDENTS: LazyLock<Vec<(Keyword, i64)>> = LazyLock::new(|| {
         (kw!(:db/txInstant), DB_TX_INSTANT),
         (kw!(:db/txId), DB_TX_ID),
         (kw!(:db/txResult), DB_TX_RESULT),
-        (kw!(:db.tx/error), DB_TX_ERROR),
+        (kw!(:db/txError), DB_TX_ERROR),
         // Transaction result enum entities
         (kw!(:db.tx/committed), DB_TX_COMMITTED),
         (kw!(:db.tx/aborted), DB_TX_ABORTED),
@@ -142,7 +142,7 @@ static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword, Option<Keyword>)>
                 None,
             ),
             (
-                kw!(:db.tx/error),
+                kw!(:db/txError),
                 kw!(:db.type/string),
                 kw!(:db.cardinality/one),
                 None,

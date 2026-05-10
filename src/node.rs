@@ -1689,7 +1689,7 @@ mod tests {
         let db = node.db().await.unwrap();
         let query_str = format!(
             "[:find ?ident ?error \
-             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db.tx/error ?error]]",
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db/txError ?error]]",
             tx_key.tx_id
         );
         let result = db.query(query_str).await.unwrap();
