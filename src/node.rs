@@ -157,8 +157,11 @@ impl Node<FileLog> {
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(slate.db.snapshot().await?);
         let (latest_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
-        // Bootstrap and the first FileLog transaction both currently use tx_id=0.
-        // Only skip log catch-up when a tx entity after bootstrap has been indexed.
+        // Bootstrap and the first FileLog transaction both currently use tx_id=0,
+        // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
+        // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
+        // has been indexed; otherwise replay the log from the start so the first
+        // user tx isn't skipped.
         let latest_indexed_tx = if latest_tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
             Some(latest_indexed)
         } else {

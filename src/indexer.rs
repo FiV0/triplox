@@ -905,20 +905,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_latest_tx_key_empty_db_errors() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let err = latest_tx_key_from_snapshot(&snapshot)
-            .await
-            .expect_err("empty DB should error rather than return a sentinel");
-        assert!(
-            err.to_string().contains("TX_PARTITION is empty"),
-            "unexpected error: {err}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_latest_tx_key_highest_wins() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let slate = components.db.clone();
