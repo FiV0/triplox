@@ -311,7 +311,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::clock::st_from_unix_epoch;
     use crate::ops::{DataType, EntityRef, TxOp};
+    use crate::partition::{extract_partition, TX_PARTITION};
     use crate::schema::{
         test_schema_tx, unique_identity_schema_attribute, unique_value_schema_attribute,
     };
@@ -1142,12 +1144,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_db_on_fresh_node_returns_sentinel_tx_key() {
+    async fn test_db_on_fresh_node_returns_bootstrap_tx_key() {
         let node = Node::memory_node().await;
 
         let db = node.db().await.unwrap();
         let tx_key = db.tx_key();
         assert_eq!(tx_key.tx_id, 0);
+
+        node.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_fresh_db_has_queryable_bootstrap_transaction_entity() {
+        let node = Node::memory_node().await;
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(
+                "[:find ?tx ?tx_id ?instant ?ident \
+                 :where [?tx :db/txId ?tx_id] \
+                        [?tx :db/txInstant ?instant] \
+                        [?tx :db/txResult ?result] \
+                        [?result :db/ident ?ident]]",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let tx_eid = match &result[0][0] {
+            DataType::Long(id) => *id,
+            other => panic!("Expected Long tx entity ID, got {:?}", other),
+        };
+        assert_eq!(extract_partition(tx_eid), TX_PARTITION);
+        assert_eq!(result[0][1], DataType::Long(0));
+        assert_eq!(result[0][2], DataType::Instant(st_from_unix_epoch(0)));
+        assert_eq!(result[0][3], DataType::Keyword(kw!(:db.tx/committed)));
+
+        node.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_first_submitted_tx_temporarily_shares_bootstrap_tx_id() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?tx :where [?tx :db/txId 0]]")
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
 
         node.close().await;
     }
@@ -2471,8 +2518,7 @@ mod tests {
             );
             assert_eq!(pm[&crate::partition::USER_PARTITION], 0);
             assert!(pm[&crate::partition::DB_PARTITION] > 0);
-            // TX_PARTITION is 0 after bootstrap (tx entities created by indexer, not bootstrap)
-            assert_eq!(pm[&crate::partition::TX_PARTITION], 0);
+            assert_eq!(pm[&crate::partition::TX_PARTITION], 1);
         }
 
         // Insert a user entity, close, and reopen

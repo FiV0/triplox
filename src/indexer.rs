@@ -137,8 +137,8 @@ pub(crate) fn write_index_entries(
 /// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
 /// system_time from `db/txInstant` value.
 ///
-/// TODO(#97): Return Option instead of sentinel. Needs coordination with
-/// the bootstrap transaction (tx_id=0).
+/// TODO(#97): Return Option instead of sentinel. This still needs coordination
+/// with callers that distinguish a truly empty DB from bootstrap tx_id=0.
 pub async fn latest_tx_key_from_snapshot(
     snapshot: &Arc<slatedb::DbSnapshot>,
 ) -> Result<(i64, TxKey)> {
@@ -217,7 +217,7 @@ pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxK
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
 /// The `tx_eid` is the pre-allocated entity ID for this transaction.
-fn build_tx_entity_datoms(
+pub(crate) fn build_tx_entity_datoms(
     tx_eid: i64,
     tx_key: TxKey,
     committed: bool,
