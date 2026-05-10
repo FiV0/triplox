@@ -25,27 +25,33 @@ public final class WireCodec {
     // ---------------------------------------------------------------
 
     /**
-     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}}.
      */
-    public static byte[] encodeOpenDbBody(Long txId) throws IOException {
-        return encodeOpenDbBody(txId, null);
+    public static byte[] encodeOpenDbBody(TxBasis basis) throws IOException {
+        return encodeOpenDbBody(
+                basis == null ? null : basis.txId(),
+                basis == null ? null : basis.systemTime(),
+                basis == null ? null : basis.txEid());
     }
 
     /**
-     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}}.
      */
-    public static byte[] encodeOpenDbBody(Long txId, Instant systemTime) throws IOException {
-        if ((txId == null) != (systemTime == null)) {
-            throw new IOException("tx_id and system_time must both be set, or both be nil");
+    public static byte[] encodeOpenDbBody(Long txId, Instant systemTime, Long txEid) throws IOException {
+        if (!((txId == null) == (systemTime == null) && (txId == null) == (txEid == null))) {
+            throw new IOException("tx_id, system_time, and tx_eid must all be set, or all be nil");
         }
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(2);
+            packer.packMapHeader(3);
             packer.packString("tx_id");
             if (txId == null) packer.packNil();
             else packer.packLong(txId);
             packer.packString("system_time");
             if (systemTime == null) packer.packNil();
             else packer.packTimestamp(systemTime);
+            packer.packString("tx_eid");
+            if (txEid == null) packer.packNil();
+            else packer.packLong(txEid);
             return packer.toByteArray();
         }
     }
@@ -160,8 +166,9 @@ public final class WireCodec {
         byte status = toU8(expectLong(fields, "status"), "status");
         long txId = expectLong(fields, "tx_id");
         Instant systemTime = expectInstant(fields, "system_time");
+        long txEid = expectLong(fields, "tx_eid");
         String err = optionalString(fields, "error_message");
-        return new BackendMessage.TxResult(status, txId, systemTime, err);
+        return new BackendMessage.TxResult(status, txId, systemTime, txEid, err);
     }
 
     public static BackendMessage.ErrorResponse decodeErrorResponse(byte[] body) throws IOException {

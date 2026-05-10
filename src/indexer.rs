@@ -20,15 +20,15 @@ use crate::partition::{partition_entity_prefix, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
-use crate::transaction::TxKey;
+use crate::transaction::{TxBasis, TxKey};
 use crate::tx;
 use crate::util::concat_bytes;
 
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
-    latest_indexed_tx: Option<TxKey>,
-    tx_completion_sender: broadcast::Sender<(TxKey, Result<(), Arc<anyhow::Error>>)>,
+    latest_indexed_tx: Option<TxBasis>,
+    tx_completion_sender: broadcast::Sender<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -139,9 +139,7 @@ pub(crate) fn write_index_entries(
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
 /// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
 /// `:db/txInstant`.
-pub async fn latest_tx_key_from_snapshot(
-    snapshot: &Arc<slatedb::DbSnapshot>,
-) -> Result<(i64, TxKey)> {
+pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxBasis> {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = snapshot
         .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
@@ -172,43 +170,17 @@ pub async fn latest_tx_key_from_snapshot(
         }
     }
     match (first_eid, tx_id, system_time) {
-        (Some(eid), Some(tid), Some(st)) => Ok((
-            eid,
-            TxKey {
+        (Some(eid), Some(tid), Some(st)) => Ok(TxBasis {
+            tx_key: TxKey {
                 tx_id: tid,
                 system_time: st,
             },
-        )),
+            tx_eid: eid,
+        }),
         (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
         (Some(eid), tid, st) => {
             bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
         }
-    }
-}
-
-/// Look up the tx_eid for a given TxKey using the AVE index.
-/// AVE key layout: [AVE][attribute][value][entity_id][tx_eid][op]
-/// We build a prefix for (db/txId, tx_key.tx_id) and extract the entity from the first match.
-pub async fn tx_eid_for_tx_key(snapshot: &Arc<slatedb::DbSnapshot>, tx_key: &TxKey) -> Result<i64> {
-    let attr_bytes = encode_i64_bytes(crate::schema::DB_TX_ID);
-    let mut value_bytes = Vec::new();
-    codec::encode_datatype(&DataType::Long(tx_key.tx_id), &mut value_bytes);
-    let ave_prefix = concat_bytes(&[&[codec::AVE], &attr_bytes, &value_bytes]);
-    let mut iter = snapshot
-        .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    match iter.next().await? {
-        Some(kv) => {
-            let (_attribute, _value, entity_dt, _tx_eid, _op) = ave_key_to_parts(kv.key)?;
-            match entity_dt {
-                DataType::Long(eid) => Ok(eid),
-                other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
-            }
-        }
-        // TODO: the caller (db_as_of) should wait for the transaction to be
-        // indexed before calling this function, so this case shouldn't happen
-        // in normal operation.
-        None => bail!("No tx entity found for tx_id={}", tx_key.tx_id),
     }
 }
 
@@ -258,7 +230,7 @@ pub(crate) fn build_tx_entity_datoms(
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: Option<TxKey>) -> Self {
+    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: Option<TxBasis>) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
@@ -278,18 +250,30 @@ impl Indexer {
     /// Pipeline reads go directly against the DB (the indexer is the only
     /// writer, so they see the latest committed state). Pipeline writes are
     /// buffered in a `WriteBatch` and committed atomically at the end.
-    pub async fn transact_tx(&mut self, tx_key: TxKey, tx_ops: Vec<TxOp>) -> Result<TxKey, Error> {
+    pub async fn transact_tx(
+        &mut self,
+        tx_key: TxKey,
+        tx_ops: Vec<TxOp>,
+    ) -> Result<TxBasis, Error> {
         match self.transact_tx_inner(tx_key, tx_ops).await {
-            Ok(tx_key) => Ok(tx_key),
-            Err(e) => {
-                if let Err(abort_err) = self.write_aborted_tx(tx_key, e.to_string()).await {
+            Ok(basis) => Ok(basis),
+            Err(e) => match self.write_aborted_tx(tx_key, e.to_string()).await {
+                Ok(basis) => {
+                    let err = Arc::new(e);
+                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
+                    Err(anyhow::anyhow!("{:#}", err))
+                }
+                Err(abort_err) => {
                     error!(
                         "Failed to write aborted tx entity for {}: {}",
                         tx_key.tx_id, abort_err
                     );
+                    let basis = TxBasis { tx_key, tx_eid: 0 };
+                    let err = Arc::new(e);
+                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
+                    Err(anyhow::anyhow!("{:#}", err))
                 }
-                Err(e)
-            }
+            },
         }
     }
 
@@ -297,7 +281,7 @@ impl Indexer {
         &mut self,
         tx_key: TxKey,
         tx_ops: Vec<TxOp>,
-    ) -> Result<TxKey, Error> {
+    ) -> Result<TxBasis, Error> {
         // 1. Clone PartitionMap + allocate tx entity
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
@@ -344,9 +328,10 @@ impl Indexer {
         }
 
         // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = Some(tx_key);
+        let basis = TxBasis { tx_key, tx_eid };
+        self.latest_indexed_tx = Some(basis);
 
-        if let Err(e) = self.tx_completion_sender.send((tx_key, Ok(()))) {
+        if let Err(e) = self.tx_completion_sender.send((basis, Ok(()))) {
             trace!(
                 "No receivers for indexed transaction {}: {}",
                 tx_key.tx_id,
@@ -354,7 +339,7 @@ impl Indexer {
             );
         }
 
-        Ok(tx_key)
+        Ok(basis)
     }
 
     async fn finalize_datoms_for_commit(&self, datoms: Vec<Datom>) -> Result<Vec<Datom>, Error> {
@@ -550,7 +535,7 @@ impl Indexer {
     }
 
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
-    async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<(), Error> {
+    async fn write_aborted_tx(&mut self, tx_key: TxKey, error: String) -> Result<TxBasis, Error> {
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
         let datoms = build_tx_entity_datoms(tx_eid, tx_key, false, Some(error));
@@ -561,8 +546,9 @@ impl Indexer {
             .await?;
         // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
-        self.latest_indexed_tx = Some(tx_key);
-        Ok(())
+        let basis = TxBasis { tx_key, tx_eid };
+        self.latest_indexed_tx = Some(basis);
+        Ok(basis)
     }
 }
 
@@ -571,18 +557,32 @@ impl Indexer {
 /// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
-    latest_tx: Option<TxKey>,
-    rx: broadcast::Receiver<(TxKey, Result<(), Arc<anyhow::Error>>)>,
+    latest_tx: Option<TxBasis>,
+    rx: broadcast::Receiver<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
+}
+
+pub(crate) struct TxCompletion {
+    pub basis: Option<TxBasis>,
+    pub result: Result<(), Arc<anyhow::Error>>,
 }
 
 impl TxWaiter {
-    /// Wait until `tx_key` has been indexed. Returns `Ok(())` on commit,
+    /// Wait until `tx_key` has been indexed. Returns the indexed basis and status,
     /// `Err` on abort or if the indexer shuts down.
-    pub async fn await_tx(mut self, tx_key: TxKey) -> Result<(), Error> {
+    pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
         // Fast path: already indexed at subscription time
-        if let Some(latest_key) = self.latest_tx {
-            if tx_key <= latest_key {
-                return Ok(());
+        if let Some(latest_basis) = self.latest_tx {
+            if tx_key == latest_basis.tx_key {
+                return Ok(TxCompletion {
+                    basis: Some(latest_basis),
+                    result: Ok(()),
+                });
+            }
+            if tx_key < latest_basis.tx_key {
+                return Ok(TxCompletion {
+                    basis: None,
+                    result: Ok(()),
+                });
             }
         }
 
@@ -591,9 +591,12 @@ impl TxWaiter {
         // ingest directly into Slate.
         loop {
             match self.rx.recv().await {
-                Ok((completed_tx_key, result)) => {
-                    if completed_tx_key >= tx_key {
-                        return result.map_err(|e| anyhow::anyhow!("{:#}", e));
+                Ok((completed_basis, result)) => {
+                    if completed_basis.tx_key >= tx_key {
+                        return Ok(TxCompletion {
+                            basis: Some(completed_basis),
+                            result,
+                        });
                     }
                     // Keep waiting for higher tx_id
                 }
@@ -619,13 +622,15 @@ impl Subscriber for Indexer {
             Ok(ops) => ops,
             Err(e) => {
                 let err = anyhow::anyhow!("Failed to deserialize TxOps: {}", e);
+                let basis = TxBasis {
+                    tx_key: record.tx_key,
+                    tx_eid: 0,
+                };
                 warn!(
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
-                let _ = self
-                    .tx_completion_sender
-                    .send((record.tx_key, Err(Arc::new(err))));
+                let _ = self.tx_completion_sender.send((basis, Err(Arc::new(err))));
                 return;
             }
         };
@@ -633,9 +638,6 @@ impl Subscriber for Indexer {
         // the subscriber should propagate the error notification via tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
-            let _ = self
-                .tx_completion_sender
-                .send((record.tx_key, Err(Arc::new(e))));
         }
     }
 }
@@ -880,7 +882,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_latest_tx_key_after_transact() -> Result<(), Error> {
+    async fn test_latest_tx_basis_after_transact() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let slate = components.db.clone();
         let mut indexer = bootstrapped_indexer(&components).await;
@@ -897,15 +899,15 @@ mod tests {
         indexer.transact_tx(tx_key, tx_ops).await?;
 
         let snapshot = Arc::new(slate.snapshot().await?);
-        let (tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
-        assert_eq!(latest.tx_id, 42);
-        assert_eq!(latest.system_time, st_from_unix_epoch(1000));
-        assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
+        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        assert_eq!(latest.tx_key.tx_id, 42);
+        assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(1000));
+        assert!(latest.tx_eid > 0, "tx_eid should be a valid entity ID");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_latest_tx_key_highest_wins() -> Result<(), Error> {
+    async fn test_latest_tx_basis_highest_wins() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let slate = components.db.clone();
         let mut indexer = bootstrapped_indexer(&components).await;
@@ -925,51 +927,9 @@ mod tests {
         }
 
         let snapshot = Arc::new(slate.snapshot().await?);
-        let (_tx_eid, latest) = latest_tx_key_from_snapshot(&snapshot).await?;
-        assert_eq!(latest.tx_id, 3, "Should return highest tx_id");
-        assert_eq!(latest.system_time, st_from_unix_epoch(300));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_tx_eid_for_tx_key_found() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let tx_key = TxKey {
-            tx_id: 42,
-            system_time: st_from_unix_epoch(1000),
-        };
-
-        let tx_ops = vec![TxOp::Add {
-            entity: "alice".into(),
-            attribute: kw!(:name),
-            value: "alice".into(),
-        }];
-        indexer.transact_tx(tx_key, tx_ops).await?;
-
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let tx_eid = tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        assert!(tx_eid > 0, "tx_eid should be a valid entity ID");
-
-        // Should match what latest_tx_key_from_snapshot returns
-        let (latest_tx_eid, _) = latest_tx_key_from_snapshot(&snapshot).await?;
-        assert_eq!(tx_eid, latest_tx_eid);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_tx_eid_for_tx_key_not_found() -> Result<(), Error> {
-        let slate = in_memory_slate().await.db;
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let tx_key = TxKey {
-            tx_id: 999,
-            system_time: st_from_unix_epoch(1000),
-        };
-
-        let result = tx_eid_for_tx_key(&snapshot, &tx_key).await;
-        assert!(result.is_err(), "Should fail for non-existent tx_id");
-        assert!(result.unwrap_err().to_string().contains("tx_id=999"));
+        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        assert_eq!(latest.tx_key.tx_id, 3, "Should return highest tx_id");
+        assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(300));
         Ok(())
     }
 

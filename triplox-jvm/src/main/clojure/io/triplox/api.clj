@@ -2,7 +2,7 @@
   "Clojure client API for Triplox."
   (:require [io.triplox.types :as types]
             [io.triplox.tx :as tx])
-  (:import [io.triplox.client TriploxNode Db TxKeyResult TxResultValue QueryArg QueryArg$Scalar QueryArg$Collection]))
+  (:import [io.triplox.client TriploxNode Db TxBasis TxKey TxResult QueryArg QueryArg$Scalar QueryArg$Collection]))
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
@@ -13,9 +13,9 @@
   "Open a DB snapshot. Returns a Db (AutoCloseable)."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn {:keys [tx-key] :as _opts}]
-   (if tx-key
-     (.openDbAsOf ^TriploxNode conn (TxKeyResult. (long (:tx-id tx-key)) (:system-time tx-key)))
+  (^Db [conn {:keys [tx-basis] :as _opts}]
+   (if tx-basis
+     (.openDbAsOf ^TriploxNode conn (TxBasis. (long (:tx-id tx-basis)) (:system-time tx-basis) (long (:tx-eid tx-basis))))
      (.openDb ^TriploxNode conn))))
 
 (defn q
@@ -35,9 +35,10 @@
 (defn transact
   "Execute a transaction and wait for indexing. Returns result map."
   [conn tx-data]
-  (let [^TxResultValue result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
+  (let [^TxResult result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
     {:tx-id (.txId result)
      :system-time (.systemTime result)
+     :tx-eid (.txEid result)
      :committed? (.isCommitted result)
      :error-message (.errorMessage result)}))
 
@@ -45,6 +46,6 @@
   "Submit a fire-and-forget transaction. Returns result map."
   [conn tx-data]
   (let [ops (tx/tx-data->ops tx-data)
-        ^TxKeyResult result (.submitTx ^TriploxNode conn ops)]
+        ^TxKey result (.submitTx ^TriploxNode conn ops)]
     {:tx-id (.txId result)
      :system-time (.systemTime result)}))

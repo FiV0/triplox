@@ -5,7 +5,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Instant;
 import java.util.List;
 
 /**
@@ -41,25 +40,21 @@ public class TriploxNode implements AutoCloseable {
      * Open a DB snapshot at the latest indexed transaction.
      */
     public Db openDb() throws IOException {
-        return openDbInternal(null, null);
+        return openDbInternal(null);
     }
 
     /**
-     * Open a DB snapshot at a specific transaction key.
+     * Open a DB snapshot at a specific indexed transaction basis.
      */
-    public Db openDbAsOf(TxKeyResult txKey) throws IOException {
-        return openDbAsOf(txKey.txId(), txKey.systemTime());
+    public Db openDbAsOf(TxBasis basis) throws IOException {
+        return openDbInternal(basis);
     }
 
-    private Db openDbInternal(Long txId, Instant systemTime) throws IOException {
-        byte[] body = WireCodec.encodeOpenDbBody(txId, systemTime);
+    private Db openDbInternal(TxBasis basis) throws IOException {
+        byte[] body = WireCodec.encodeOpenDbBody(basis);
         byte[] responseBody = postBinary("/db/open", body);
         var opened = WireCodec.decodeDbOpened(responseBody);
         return new Db(this, opened.dbId(), opened.txId());
-    }
-
-    private Db openDbAsOf(long txId, Instant systemTime) throws IOException {
-        return openDbInternal(txId, systemTime);
     }
 
     /**
@@ -88,22 +83,22 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Submit a fire-and-forget transaction.
      */
-    public TxKeyResult submitTx(List<TxOp> ops) throws IOException {
+    public TxKey submitTx(List<TxOp> ops) throws IOException {
         byte[] body = WireCodec.encodeExecuteBody(ops);
         byte[] responseBody = postBinary("/tx/submit", body);
         var txKey = WireCodec.decodeTxKey(responseBody);
-        return new TxKeyResult(txKey.txId(), txKey.systemTime());
+        return new TxKey(txKey.txId(), txKey.systemTime());
     }
 
     /**
      * Execute a transaction and wait for indexing.
      */
-    public TxResultValue executeTx(List<TxOp> ops) throws IOException {
+    public TxResult executeTx(List<TxOp> ops) throws IOException {
         byte[] body = WireCodec.encodeExecuteBody(ops);
         byte[] responseBody = postBinary("/tx/execute", body);
         var txResult = WireCodec.decodeTxResult(responseBody);
-        return new TxResultValue(txResult.status(), txResult.txId(),
-                txResult.systemTime(), txResult.errorMessage());
+        return new TxResult(txResult.status(), txResult.txId(),
+                txResult.systemTime(), txResult.txEid(), txResult.errorMessage());
     }
 
     /**

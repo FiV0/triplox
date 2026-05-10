@@ -255,8 +255,12 @@ async fn test_execute_tx_returns_tx_key() {
         .unwrap();
 
     match result {
-        TransactionResult::TxCommited(tx_key) => {
-            assert!(tx_key.tx_id > 0, "tx_id should be positive after indexing");
+        TransactionResult::TxCommited(basis) => {
+            assert!(
+                basis.tx_key.tx_id > 0,
+                "tx_id should be positive after indexing"
+            );
+            assert!(basis.tx_eid > 0, "tx_eid should be positive after indexing");
         }
         _ => panic!("Expected TxCommited"),
     }
@@ -279,8 +283,8 @@ async fn test_db_as_of() {
         }])
         .await
         .unwrap();
-    let tx_key1 = match result1 {
-        TransactionResult::TxCommited(tk) => tk,
+    let basis1 = match result1 {
+        TransactionResult::TxCommited(basis) => basis,
         _ => panic!("Expected TxCommited"),
     };
 
@@ -294,8 +298,8 @@ async fn test_db_as_of() {
         .await
         .unwrap();
 
-    // Open DB pinned to tx_key after first tx — should only see alice
-    let db = client.db_as_of(tx_key1).await.unwrap();
+    // Open DB pinned to the first transaction basis — should only see alice
+    let db = client.db_as_of(basis1).await.unwrap();
     let result = db
         .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
