@@ -614,6 +614,7 @@ impl TxWaiter {
                     // Keep waiting for higher tx_id
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
+                    // TODO(#282): recover exact tx outcome or fail instead of risking a later tx's result.
                     // Channel overflowed. Just continue waiting - we'll eventually
                     // get the notification or the channel will close.
                     continue;
