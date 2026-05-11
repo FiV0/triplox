@@ -9,6 +9,23 @@ repositories {
     maven { url = uri("https://repo.clojars.org/") }
 }
 
+fun workspaceVersion(): String {
+    var inWorkspacePackage = false
+    for (line in rootProject.projectDir.parentFile.resolve("Cargo.toml").readLines()) {
+        val trimmed = line.trim()
+        when {
+            trimmed == "[workspace.package]" -> inWorkspacePackage = true
+            inWorkspacePackage && trimmed.startsWith("[") -> inWorkspacePackage = false
+            inWorkspacePackage && trimmed.startsWith("version = ") -> {
+                return trimmed.substringAfter('"').substringBefore('"')
+            }
+        }
+    }
+    error("Could not read workspace package version from Cargo.toml")
+}
+
+val triploxVersion = (findProperty("triploxVersion") as String?) ?: workspaceVersion()
+
 dependencies {
     // Clojure
     implementation("org.clojure", "clojure", "1.12.3")
@@ -59,7 +76,7 @@ publishing {
         create<MavenPublication>("maven") {
             groupId = "xyz.triplox"
             artifactId = "triplox"
-            version = (findProperty("triploxVersion") as String?) ?: "0.1.0-alpha"
+            version = triploxVersion
 
             from(components["java"])
 
