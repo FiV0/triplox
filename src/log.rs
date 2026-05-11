@@ -21,7 +21,13 @@ pub struct Record {
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait Subscriber: Send + Sync {
-    fn accept(&mut self, record: Record) -> impl Future<Output = ()> + Send;
+    fn accept(&mut self, record: Record) -> impl Future<Output = SubscriberAction> + Send;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubscriberAction {
+    Continue,
+    Stop,
 }
 
 pub type TxId = i64;
@@ -51,10 +57,21 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                 Ok(txs) => {
                     trace!("Processing {} txs catching up", txs.len());
                     let mut subscriber = subscriber.write().await;
+                    let mut should_stop = false;
                     for tx in &txs {
-                        subscriber.accept(tx.clone()).await;
+                        match subscriber.accept(tx.clone()).await {
+                            SubscriberAction::Continue => {
+                                last_tx_id = Some(tx.tx_key.tx_id);
+                            }
+                            SubscriberAction::Stop => {
+                                should_stop = true;
+                                break;
+                            }
+                        }
                     }
-                    last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
+                    if should_stop {
+                        break;
+                    }
                 }
                 Err(e) => {
                     error!("Error reading txs: {}", e);
@@ -73,8 +90,12 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                             let already_seen = last_tx_id.is_some_and(|id| record.tx_key.tx_id <= id);
                             if !already_seen {
                                 trace!("Processed live tx {}", record.tx_key.tx_id);
-                                last_tx_id = Some(record.tx_key.tx_id);
-                                subscriber.write().await.accept(record).await;
+                                match subscriber.write().await.accept(record.clone()).await {
+                                    SubscriberAction::Continue => {
+                                        last_tx_id = Some(record.tx_key.tx_id);
+                                    }
+                                    SubscriberAction::Stop => break,
+                                }
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
@@ -84,10 +105,21 @@ pub(crate) async fn subscribe<S: Subscriber + 'static>(
                                     if !txs.is_empty() {
                                         info!("Processing {} txs catching up after lag", txs.len());
                                         let mut subscriber = subscriber.write().await;
+                                        let mut should_stop = false;
                                         for tx in &txs {
-                                            subscriber.accept(tx.clone()).await;
+                                            match subscriber.accept(tx.clone()).await {
+                                                SubscriberAction::Continue => {
+                                                    last_tx_id = Some(tx.tx_key.tx_id);
+                                                }
+                                                SubscriberAction::Stop => {
+                                                    should_stop = true;
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
+                                        if should_stop {
+                                            break;
+                                        }
                                     }
                                 },
                                 Err(e) => {
@@ -137,7 +169,8 @@ impl MockSubscriber {
 }
 
 impl Subscriber for MockSubscriber {
-    async fn accept(&mut self, record: Record) {
+    async fn accept(&mut self, record: Record) -> SubscriberAction {
         self.records.push(record);
+        SubscriberAction::Continue
     }
 }

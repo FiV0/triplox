@@ -74,10 +74,27 @@ impl TxLog for MemoryLog {}
 mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, MockClock};
-    use crate::log::{subscribe, MockSubscriber};
+    use crate::log::{subscribe, MockSubscriber, Subscriber, SubscriberAction};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::RwLock;
+
+    struct StopAfterFirstSubscriber {
+        records: Vec<Record>,
+    }
+
+    impl StopAfterFirstSubscriber {
+        fn new() -> Self {
+            Self { records: vec![] }
+        }
+    }
+
+    impl Subscriber for StopAfterFirstSubscriber {
+        async fn accept(&mut self, record: Record) -> SubscriberAction {
+            self.records.push(record);
+            SubscriberAction::Stop
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     // TODO: refactor with file log test into a single test where only the log is changed
@@ -204,5 +221,28 @@ mod tests {
             "Should process transaction exactly once, not in an infinite loop"
         );
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_subscriber_stop_prevents_later_records_from_processing() {
+        init();
+        let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
+        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock))));
+
+        {
+            let mut writer = log.write().await;
+            writer.append_tx(vec![1]).await;
+            writer.append_tx(vec![2]).await;
+        }
+
+        let subscriber = Arc::new(RwLock::new(StopAfterFirstSubscriber::new()));
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+        assert_eq!(subscriber.records.len(), 1);
+        assert_eq!(subscriber.records[0].record, vec![1]);
     }
 }

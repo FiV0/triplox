@@ -6,7 +6,7 @@ use tokio::runtime::Handle;
 
 use crate::clock;
 use crate::file_log::FileLog;
-use crate::indexer::{latest_tx_basis_from_snapshot, Indexer};
+use crate::indexer::{latest_tx_basis_from_snapshot, Indexer, TxCompletion};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -198,7 +198,9 @@ impl Node<FileLog> {
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
             let completion = waiter.await_tx(tx_key).await?;
-            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+            if let TxCompletion::Failed { error, .. } = completion {
+                return Err(anyhow::anyhow!("{:#}", error));
+            }
         }
 
         Ok(Node {
@@ -265,16 +267,13 @@ impl<L: TxLog> SubmitNode for Node<L> {
         let tx_key = self.log.write().await.append_tx(serialized).await;
 
         let completion = waiter.await_tx(tx_key).await?;
-        let basis = completion.basis.ok_or_else(|| {
-            anyhow::anyhow!("Indexer did not return TxBasis for tx {}", tx_key.tx_id)
-        })?;
-        match completion.result {
-            Ok(()) => Ok(TransactionResult::TxCommited(basis)),
-            Err(e) if basis.tx_eid > 0 => Ok(TransactionResult::TxAborted(
+        match completion {
+            TxCompletion::Committed(basis) => Ok(TransactionResult::TxCommited(basis)),
+            TxCompletion::Aborted { basis, error } => Ok(TransactionResult::TxAborted(
                 basis,
-                anyhow::anyhow!("{:#}", e).into(),
+                anyhow::anyhow!("{:#}", error).into(),
             )),
-            Err(e) => Err(anyhow::anyhow!("{:#}", e)),
+            TxCompletion::Failed { error, .. } => Err(anyhow::anyhow!("{:#}", error)),
         }
     }
 }

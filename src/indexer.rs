@@ -12,7 +12,7 @@ use edn::kw;
 use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
-use crate::log::{Record, Subscriber};
+use crate::log::{Record, Subscriber, SubscriberAction};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
@@ -28,7 +28,56 @@ pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
     latest_indexed_tx: Option<TxBasis>,
-    tx_completion_sender: broadcast::Sender<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
+    tx_completion_sender: broadcast::Sender<TxCompletion>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TxCompletion {
+    Committed(TxBasis),
+    Aborted {
+        basis: TxBasis,
+        error: Arc<anyhow::Error>,
+    },
+    Failed {
+        tx_key: TxKey,
+        error: Arc<anyhow::Error>,
+    },
+}
+
+impl TxCompletion {
+    fn tx_key(&self) -> TxKey {
+        match self {
+            TxCompletion::Committed(basis) => basis.tx_key,
+            TxCompletion::Aborted { basis, .. } => basis.tx_key,
+            TxCompletion::Failed { tx_key, .. } => *tx_key,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TxPipelineError {
+    #[error("{0}")]
+    Abort(#[source] Error),
+    #[error("{0}")]
+    NodeFailure(#[source] Error),
+}
+
+impl TxPipelineError {
+    fn abort(error: Error) -> Self {
+        TxPipelineError::Abort(error)
+    }
+
+    fn node_failure(error: Error) -> Self {
+        TxPipelineError::NodeFailure(error)
+    }
+
+    fn mixed(error: Error) -> Self {
+        if error.chain().any(|cause| cause.is::<slatedb::Error>()) {
+            TxPipelineError::NodeFailure(error)
+        } else {
+            TxPipelineError::Abort(error)
+        }
+    }
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -250,30 +299,53 @@ impl Indexer {
     /// Pipeline reads go directly against the DB (the indexer is the only
     /// writer, so they see the latest committed state). Pipeline writes are
     /// buffered in a `WriteBatch` and committed atomically at the end.
-    pub async fn transact_tx(
+    pub(crate) async fn transact_tx(
         &mut self,
         tx_key: TxKey,
         tx_ops: Vec<TxOp>,
-    ) -> Result<TxBasis, Error> {
+    ) -> std::result::Result<TxBasis, TxPipelineError> {
         match self.transact_tx_inner(tx_key, tx_ops).await {
             Ok(basis) => Ok(basis),
-            Err(e) => match self.write_aborted_tx(tx_key, e.to_string()).await {
-                Ok(basis) => {
-                    let err = Arc::new(e);
-                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
-                    Err(anyhow::anyhow!("{:#}", err))
+            Err(TxPipelineError::Abort(e)) => {
+                let error_string = e.to_string();
+                match self.write_aborted_tx(tx_key, error_string).await {
+                    Ok(basis) => {
+                        let err = Arc::new(e);
+                        let _ = self.tx_completion_sender.send(TxCompletion::Aborted {
+                            basis,
+                            error: err.clone(),
+                        });
+                        Err(TxPipelineError::Abort(anyhow::anyhow!("{:#}", err)))
+                    }
+                    Err(abort_err) => {
+                        let failure = anyhow::anyhow!(
+                            "Failed to write aborted tx entity for {}: {}; original transaction error: {:#}",
+                            tx_key.tx_id,
+                            abort_err,
+                            e
+                        );
+                        error!("{}", failure);
+                        let err = Arc::new(failure);
+                        let _ = self.tx_completion_sender.send(TxCompletion::Failed {
+                            tx_key,
+                            error: err.clone(),
+                        });
+                        Err(TxPipelineError::NodeFailure(anyhow::anyhow!("{:#}", err)))
+                    }
                 }
-                Err(abort_err) => {
-                    error!(
-                        "Failed to write aborted tx entity for {}: {}",
-                        tx_key.tx_id, abort_err
-                    );
-                    let basis = TxBasis { tx_key, tx_eid: 0 };
-                    let err = Arc::new(e);
-                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
-                    Err(anyhow::anyhow!("{:#}", err))
-                }
-            },
+            }
+            Err(TxPipelineError::NodeFailure(e)) => {
+                error!(
+                    "Transaction {} failed due to node/indexer error: {}",
+                    tx_key.tx_id, e
+                );
+                let err = Arc::new(e);
+                let _ = self.tx_completion_sender.send(TxCompletion::Failed {
+                    tx_key,
+                    error: err.clone(),
+                });
+                Err(TxPipelineError::NodeFailure(anyhow::anyhow!("{:#}", err)))
+            }
         }
     }
 
@@ -281,17 +353,19 @@ impl Indexer {
         &mut self,
         tx_key: TxKey,
         tx_ops: Vec<TxOp>,
-    ) -> Result<TxBasis, Error> {
+    ) -> std::result::Result<TxBasis, TxPipelineError> {
         // 1. Clone PartitionMap + allocate tx entity
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
         // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
-        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
+        let expanded =
+            tx::expand_tx_ops(&tx_ops, &self.metadata.schema).map_err(TxPipelineError::abort)?;
 
         // 3. Resolve lookup refs via AVE index → DatomWithTempids
-        let with_tempids =
-            tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
+        let with_tempids = tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb)
+            .await
+            .map_err(TxPipelineError::mixed)?;
 
         // 4. Resolve tempids, including identity upserts, then build tx entity datoms
         let mut datoms = tempids::resolve_tempids(
@@ -300,27 +374,48 @@ impl Indexer {
             &self.slatedb,
             &mut pending_pm,
         )
-        .await?;
+        .await
+        .map_err(TxPipelineError::mixed)?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self.finalize_datoms_for_commit(datoms).await?;
+        let datoms = self
+            .finalize_datoms_for_commit(datoms)
+            .await
+            .map_err(TxPipelineError::mixed)?;
 
         // 6. Unique + general validation
-        self.validate_unique_constraints(&datoms).await?;
-        let validation = self.metadata.schema.validate_datoms(&datoms)?;
+        self.validate_unique_constraints(&datoms)
+            .await
+            .map_err(TxPipelineError::mixed)?;
+        let validation = self
+            .metadata
+            .schema
+            .validate_datoms(&datoms)
+            .map_err(TxPipelineError::abort)?;
+        let schema_update = if validation.schema_changes_detected {
+            Some(
+                self.metadata
+                    .schema
+                    .prepare_schema_update(&datoms)
+                    .map_err(TxPipelineError::abort)?,
+            )
+        } else {
+            None
+        };
 
         // 7. Write indices + commit
         let mut batch = WriteBatch::new();
-        write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
+        write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)
+            .map_err(TxPipelineError::node_failure)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
-            .await?;
+            .await
+            .map_err(|e| TxPipelineError::node_failure(anyhow::Error::from(e)))?;
 
         // 8. Apply on success only
         self.metadata.partition_map = pending_pm;
-        if validation.schema_changes_detected {
-            let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
+        if let Some(schema_update) = schema_update {
             if !schema_update.is_empty() {
                 self.metadata.schema.apply_schema_update(schema_update);
                 self.metadata.advance_generation();
@@ -331,7 +426,10 @@ impl Indexer {
         let basis = TxBasis { tx_key, tx_eid };
         self.latest_indexed_tx = Some(basis);
 
-        if let Err(e) = self.tx_completion_sender.send((basis, Ok(()))) {
+        if let Err(e) = self
+            .tx_completion_sender
+            .send(TxCompletion::Committed(basis))
+        {
             trace!(
                 "No receivers for indexed transaction {}: {}",
                 tx_key.tx_id,
@@ -558,12 +656,7 @@ impl Indexer {
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
     latest_tx: Option<TxBasis>,
-    rx: broadcast::Receiver<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
-}
-
-pub(crate) struct TxCompletion {
-    pub basis: Option<TxBasis>,
-    pub result: Result<(), Arc<anyhow::Error>>,
+    rx: broadcast::Receiver<TxCompletion>,
 }
 
 impl TxWaiter {
@@ -573,16 +666,10 @@ impl TxWaiter {
         // Fast path: already indexed at subscription time
         if let Some(latest_basis) = self.latest_tx {
             if tx_key == latest_basis.tx_key {
-                return Ok(TxCompletion {
-                    basis: Some(latest_basis),
-                    result: Ok(()),
-                });
+                return Ok(TxCompletion::Committed(latest_basis));
             }
             if tx_key < latest_basis.tx_key {
-                return Ok(TxCompletion {
-                    basis: None,
-                    result: Ok(()),
-                });
+                return Ok(TxCompletion::Committed(latest_basis));
             }
         }
 
@@ -591,12 +678,9 @@ impl TxWaiter {
         // ingest directly into Slate.
         loop {
             match self.rx.recv().await {
-                Ok((completed_basis, result)) => {
-                    if completed_basis.tx_key >= tx_key {
-                        return Ok(TxCompletion {
-                            basis: Some(completed_basis),
-                            result,
-                        });
+                Ok(completion) => {
+                    if completion.tx_key() >= tx_key {
+                        return Ok(completion);
                     }
                     // Keep waiting for higher tx_id
                 }
@@ -617,27 +701,32 @@ impl TxWaiter {
 }
 
 impl Subscriber for Indexer {
-    async fn accept(&mut self, record: Record) {
+    async fn accept(&mut self, record: Record) -> SubscriberAction {
         let tx_ops: Vec<TxOp> = match bincode::deserialize(&record.record) {
             Ok(ops) => ops,
             Err(e) => {
                 let err = anyhow::anyhow!("Failed to deserialize TxOps: {}", e);
-                let basis = TxBasis {
-                    tx_key: record.tx_key,
-                    tx_eid: 0,
-                };
                 warn!(
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
-                let _ = self.tx_completion_sender.send((basis, Err(Arc::new(err))));
-                return;
+                let _ = self.tx_completion_sender.send(TxCompletion::Failed {
+                    tx_key: record.tx_key,
+                    error: Arc::new(err),
+                });
+                return SubscriberAction::Stop;
             }
         };
-        // TODO: transact_tx now handles writing aborted tx entities internally;
-        // the subscriber should propagate the error notification via tx_completion_sender.
-        if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
-            warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+        match self.transact_tx(record.tx_key, tx_ops).await {
+            Ok(_) => SubscriberAction::Continue,
+            Err(TxPipelineError::Abort(e)) => {
+                warn!("Transaction {} aborted: {}", record.tx_key.tx_id, e);
+                SubscriberAction::Continue
+            }
+            Err(TxPipelineError::NodeFailure(e)) => {
+                warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+                SubscriberAction::Stop
+            }
         }
     }
 }
@@ -1010,6 +1099,73 @@ mod tests {
             result.is_err(),
             "Should timeout waiting for non-existent tx"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deserialization_failure_notifies_failed_without_basis() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let waiter = indexer.tx_waiter();
+
+        let action = indexer
+            .accept(Record {
+                tx_key,
+                record: vec![0xff],
+            })
+            .await;
+
+        assert_eq!(action, SubscriberAction::Stop);
+        match waiter.await_tx(tx_key).await? {
+            TxCompletion::Failed {
+                tx_key: failed_key,
+                error,
+            } => {
+                assert_eq!(failed_key, tx_key);
+                assert!(error.to_string().contains("Failed to deserialize TxOps"));
+            }
+            other => panic!("expected Failed completion, got {:?}", other),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_semantic_abort_notifies_aborted_with_real_basis() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let waiter = indexer.tx_waiter();
+
+        let err = indexer
+            .transact_tx(
+                tx_key,
+                vec![TxOp::Add {
+                    entity: "e".into(),
+                    attribute: kw!(:nonexistent),
+                    value: "x".into(),
+                }],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Unknown attribute"));
+        match waiter.await_tx(tx_key).await? {
+            TxCompletion::Aborted { basis, error } => {
+                assert_eq!(basis.tx_key, tx_key);
+                assert!(basis.tx_eid > 0);
+                assert!(error.to_string().contains("Unknown attribute"));
+            }
+            other => panic!("expected Aborted completion, got {:?}", other),
+        }
+
         Ok(())
     }
 
