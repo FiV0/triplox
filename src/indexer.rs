@@ -260,6 +260,7 @@ impl Indexer {
         match self.transact_tx_inner(tx_key, tx_ops).await {
             Ok(basis) => Ok(basis),
             Err(e) => match self.write_aborted_tx(tx_key, e.to_string()).await {
+                // semantic error
                 Ok(basis) => {
                     let err = Arc::new(e);
                     let _ = self
@@ -267,12 +268,19 @@ impl Indexer {
                         .send((tx_key, Some(basis), Err(err.clone())));
                     Ok(basis)
                 }
+                // technical error
                 Err(abort_err) => {
-                    error!(
-                        "Failed to write aborted tx entity for {}: {}",
-                        tx_key.tx_id, abort_err
-                    );
-                    Err(anyhow::anyhow!("{:#}", abort_err))
+                    let err = Arc::new(anyhow::anyhow!(
+                        "Failed to write aborted tx entity for {}: {:#}; original transaction error: {:#}",
+                        tx_key.tx_id,
+                        abort_err,
+                        e
+                    ));
+                    error!("{:#}", err);
+                    let _ = self
+                        .tx_completion_sender
+                        .send((tx_key, None, Err(err.clone())));
+                    Err(anyhow::anyhow!("{:#}", err))
                 }
             },
         }
@@ -639,10 +647,7 @@ impl Subscriber for Indexer {
         // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
-            let err = Arc::new(e);
-            let _ = self
-                .tx_completion_sender
-                .send((record.tx_key, None, Err(err.clone())));
+            // TODO: an error in tx_transact_inner is currently not being sent to the tx_completion_sender.
         }
     }
 }
@@ -1057,6 +1062,43 @@ mod tests {
         };
         let waiter = indexer.tx_waiter();
 
+        let basis = indexer
+            .transact_tx(
+                tx_key,
+                vec![TxOp::Add {
+                    entity: "e".into(),
+                    attribute: kw!(:nonexistent),
+                    value: "x".into(),
+                }],
+            )
+            .await?;
+
+        assert_eq!(basis.tx_key, tx_key);
+        let completion = waiter.await_tx(tx_key).await?;
+        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx_key));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transact_node_failure_notifies_without_basis() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = Indexer::new(
+            components.db.clone(),
+            Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
+            None,
+        );
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let waiter = indexer.tx_waiter();
+
         let err = indexer
             .transact_tx(
                 tx_key,
@@ -1069,14 +1111,16 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("Unknown attribute"));
+        assert!(err
+            .to_string()
+            .contains("Failed to write aborted tx entity"));
         let completion = waiter.await_tx(tx_key).await?;
-        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx_key));
+        assert_eq!(completion.basis, None);
         assert!(completion
             .result
             .unwrap_err()
             .to_string()
-            .contains("Unknown attribute"));
+            .contains("Failed to write aborted tx entity"));
 
         Ok(())
     }
@@ -1340,7 +1384,8 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(100),
         };
-        let err = indexer
+        let waiter = indexer.tx_waiter();
+        let basis = indexer
             .transact_tx(
                 tx,
                 vec![TxOp::put(vec![
@@ -1350,10 +1395,16 @@ mod tests {
                     (kw!(:db/cardinality), DataType::Long(DB_CARDINALITY_ONE)),
                 ])],
             )
-            .await
-            .unwrap_err();
+            .await?;
 
-        assert!(err.to_string().contains("Cannot modify schema entity"));
+        assert_eq!(basis.tx_key, tx);
+        let completion = waiter.await_tx(tx).await?;
+        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot modify schema entity"));
         let (_name_id, attr) = indexer
             .metadata()
             .schema
@@ -1732,6 +1783,7 @@ mod tests {
             tx_id: 1,
             system_time: st_from_unix_epoch(2),
         };
+        let waiter = indexer.tx_waiter();
         let tx_ops = vec![
             TxOp::put(vec![
                 (kw!(:name), "Alice".into()),
@@ -1746,11 +1798,15 @@ mod tests {
                 value: DataType::Long(30),
             },
         ];
-        let err = indexer.transact_tx(tx_key, tx_ops).await.unwrap_err();
-        assert!(
-            err.to_string().contains("No entity found for lookup ref"),
-            "expected lookup-ref failure, got: {err}"
-        );
+        let basis = indexer.transact_tx(tx_key, tx_ops).await?;
+        assert_eq!(basis.tx_key, tx_key);
+        let completion = waiter.await_tx(tx_key).await?;
+        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx_key));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("No entity found for lookup ref"));
         Ok(())
     }
 

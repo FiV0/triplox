@@ -270,11 +270,10 @@ impl<L: TxLog> SubmitNode for Node<L> {
         })?;
         match completion.result {
             Ok(()) => Ok(TransactionResult::TxCommited(basis)),
-            Err(e) if basis.tx_eid > 0 => Ok(TransactionResult::TxAborted(
+            Err(e) => Ok(TransactionResult::TxAborted(
                 basis,
                 anyhow::anyhow!("{:#}", e).into(),
             )),
-            Err(e) => Err(anyhow::anyhow!("{:#}", e)),
         }
     }
 }
