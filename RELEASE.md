@@ -1,8 +1,8 @@
 # Release Process
 
 Triplox releases use one version for the Rust workspace, Docker image, JVM
-client, and GitHub Release. Release tags use the `v0.1.0-alpha.N` format; the
-package version omits the `v` prefix.
+client, and GitHub Release. Release tags use `vX.Y.Z`, `vX.Y.Z-alpha.N`, or
+`vX.Y.Z-beta.N`; the package version omits the `v` prefix.
 
 ## Prepare a release
 

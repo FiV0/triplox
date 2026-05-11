@@ -25,8 +25,8 @@ jobs:
       - name: Validate tag and workspace version
         id: version
         run: |
-          if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v0\.1\.0-alpha\.[0-9]+$ ]]; then
-            echo "Releases are only published from v0.1.0-alpha.N tags."
+          if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)\.[0-9]+)?$ ]]; then
+            echo "Releases are only published from vX.Y.Z, vX.Y.Z-alpha.N, or vX.Y.Z-beta.N tags."
             exit 1
           fi
 

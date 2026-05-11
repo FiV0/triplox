@@ -2,7 +2,8 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <0.1.0-alpha.N|v0.1.0-alpha.N>"
+    echo "Usage: $0 <VERSION|vVERSION>"
+    echo "Examples: $0 0.1.0, $0 0.1.0-alpha.1, $0 0.1.0-beta.1"
 }
 
 if [[ $# -ne 1 ]]; then
@@ -14,8 +15,8 @@ input_version="$1"
 version="${input_version#v}"
 tag="v$version"
 
-if [[ ! "$version" =~ ^0\.1\.0-alpha\.[0-9]+$ ]]; then
-    echo "Expected version format 0.1.0-alpha.N, got: $input_version" >&2
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)\.[0-9]+)?$ ]]; then
+    echo "Expected version format X.Y.Z, X.Y.Z-alpha.N, or X.Y.Z-beta.N; got: $input_version" >&2
     exit 2
 fi
 
@@ -45,7 +46,7 @@ if [[ -z "$current_branch" ]]; then
     exit 1
 fi
 
-perl -0pi -e 's/(?m)^version = "0\.1\.0-alpha\.\d+"$/version = "'"$version"'"/' Cargo.toml
+perl -0pi -e 's/(?m)^version = "[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta)\.[0-9]+)?"$/version = "'"$version"'"/' Cargo.toml
 perl -0pi -e 's/(edn = \{ package = "triplox-edn", path = "edn", version = ")[^"]+(")/${1}'"$version"'${2}/' Cargo.toml
 perl -0pi -e 's/(triplox-client = \{ path = "triplox-client", version = ")[^"]+(")/${1}'"$version"'${2}/' Cargo.toml
 
