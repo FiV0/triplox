@@ -26,6 +26,9 @@ git push origin v0.1.0-alpha.2
 Pushing the tag triggers GitHub Actions to publish the Rust crates, JVM client,
 Docker image, and GitHub Release.
 
+To publish only the Docker image for an existing release tag, run the
+`Docker Publish` workflow manually and select the release tag as the ref.
+
 ## Required GitHub secrets
 
 - `CARGO_REGISTRY_TOKEN` for crates.io.
