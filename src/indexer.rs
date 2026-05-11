@@ -587,6 +587,7 @@ impl TxWaiter {
             if tx_key == latest_basis.tx_key {
                 return Ok(TxCompletion {
                     basis: Some(latest_basis),
+                    // TODO: We are not filling in the error here if there was a semantic error.
                     result: Ok(()),
                 });
             }
