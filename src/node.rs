@@ -1,10 +1,12 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::clock;
+use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::indexer::{latest_tx_basis_from_snapshot, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader};
@@ -21,6 +23,8 @@ pub use triplox_client::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
 };
 pub use triplox_client::transaction::{TransactionResult, TxBasis, TxKey};
+
+const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
@@ -247,6 +251,36 @@ impl<L: TxLog> Node<L> {
         self.subscription.cancel();
         self.slate.db.close().await.unwrap();
     }
+
+    async fn db_as_of_with_timeout(&self, basis: TxBasis, timeout: Duration) -> Result<DB, Error> {
+        let waiter = self.indexer.read().await.tx_waiter();
+        tokio::time::timeout(timeout, waiter.await_indexed(basis.tx_key))
+            .await
+            .map_err(|_| TriploxError::TxIndexingTimeout {
+                tx_id: basis.tx_key.tx_id,
+                timeout,
+            })??;
+
+        let snapshot = self.slate.db.snapshot().await?;
+        let ident_map = self
+            .indexer
+            .read()
+            .await
+            .metadata()
+            .schema
+            .ident_map
+            .clone();
+        let handle = Handle::current();
+        let range_stats = self.slate.range_stats.clone();
+        if !crate::indexer::tx_basis_exists(&snapshot, &basis).await? {
+            return Err(TriploxError::TxNotFound {
+                tx_id: basis.tx_key.tx_id,
+                system_time: basis.tx_key.system_time,
+            }
+            .into());
+        }
+        Ok(DB::new(snapshot, ident_map, handle, basis, range_stats))
+    }
 }
 
 impl<L: TxLog> SubmitNode for Node<L> {
@@ -294,29 +328,20 @@ impl<L: TxLog> QueryNode for Node<L> {
         let range_stats = self.slate.range_stats.clone();
         DB::from_latest_snapshot(snapshot, ident_map, handle, range_stats).await
     }
-    // TODO: we are currently not checking that snapshot contains TxBasis.
     async fn db_as_of(&self, basis: TxBasis) -> Result<DB, Error> {
-        let snapshot = self.slate.db.snapshot().await?;
-        let ident_map = self
-            .indexer
-            .read()
+        self.db_as_of_with_timeout(basis, DB_AS_OF_INDEXING_TIMEOUT)
             .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
-        let handle = Handle::current();
-        let range_stats = self.slate.range_stats.clone();
-        Ok(DB::new(snapshot, ident_map, handle, basis, range_stats))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::time::Duration;
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
+    use crate::error::TriploxError;
     use crate::ops::{DataType, EntityRef, TxOp};
     use crate::partition::{extract_partition, TX_PARTITION};
     use crate::schema::{
@@ -936,6 +961,108 @@ mod tests {
         assert_eq!(result2.len(), 2);
         assert!(result2.contains(&vec![DataType::String("alice".to_string())]));
         assert!(result2.contains(&vec![DataType::String("bob".to_string())]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_db_as_of_aborted_tx_opens_snapshot() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: "e".into(),
+                attribute: kw!(:nonexistent),
+                value: "x".into(),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxAborted(basis, _) => basis,
+            result => panic!("expected aborted tx, got {result:?}"),
+        };
+
+        let db = node.db_as_of(basis).await.unwrap();
+        assert_eq!(*db.tx_basis(), basis);
+
+        let query_str = format!(
+            "[:find ?ident ?error \
+             :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db/txError ?error]]",
+            basis.tx_key.tx_id
+        );
+        let result = db.query(query_str).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0], DataType::Keyword(kw!(:db.tx/aborted)));
+        assert!(
+            matches!(&result[0][1], DataType::String(s) if s.contains("nonexistent")),
+            "expected abort error for unknown attribute, got {:?}",
+            result[0][1]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_db_as_of_times_out_for_unindexed_tx() {
+        let node = Node::memory_node().await;
+        let basis = TxBasis {
+            tx_key: TxKey {
+                tx_id: 999,
+                system_time: st_from_unix_epoch(999),
+            },
+            tx_eid: 999,
+        };
+
+        let err = match node
+            .db_as_of_with_timeout(basis, Duration::from_millis(10))
+            .await
+        {
+            Ok(_) => panic!("expected db_as_of timeout"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                err.downcast_ref::<TriploxError>(),
+                Some(TriploxError::TxIndexingTimeout { tx_id: 999, .. })
+            ),
+            "expected TxIndexingTimeout, got {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_db_as_of_rejects_basis_with_wrong_system_time() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            _ => panic!("expected commit"),
+        };
+        let wrong_basis = TxBasis {
+            tx_key: TxKey {
+                tx_id: basis.tx_key.tx_id,
+                system_time: st_from_unix_epoch(9999),
+            },
+            tx_eid: basis.tx_eid,
+        };
+
+        let err = match node.db_as_of(wrong_basis).await {
+            Ok(_) => panic!("expected db_as_of to reject wrong system_time"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                err.downcast_ref::<TriploxError>(),
+                Some(TriploxError::TxNotFound { tx_id, .. }) if *tx_id == basis.tx_key.tx_id
+            ),
+            "expected TxNotFound, got {err:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

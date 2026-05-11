@@ -79,6 +79,7 @@ pub enum ErrorCode {
     // Transaction errors (3xxx)
     TxError = 3000,
     TxAborted = 3001,
+    TxNotIndexed = 3002,
     // Internal/protocol errors (4xxx)
     InternalError = 4000,
     MessageTooLarge = 4001,
@@ -101,6 +102,7 @@ impl ErrorCode {
             2003 => Ok(ErrorCode::EmptyQuery),
             3000 => Ok(ErrorCode::TxError),
             3001 => Ok(ErrorCode::TxAborted),
+            3002 => Ok(ErrorCode::TxNotIndexed),
             4000 => Ok(ErrorCode::InternalError),
             4001 => Ok(ErrorCode::MessageTooLarge),
             4002 => Ok(ErrorCode::InvalidMessageType),
@@ -149,5 +151,16 @@ pub fn data_type_tag(dt: &DataType) -> u8 {
         DataType::Uuid(_) => TAG_UUID,
         DataType::Vector(_) => TAG_VECTOR,
         DataType::Map(_) => TAG_MAP,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tx_not_indexed_error_code_round_trips() {
+        assert_eq!(ErrorCode::TxNotIndexed.as_u16(), 3002);
+        assert_eq!(ErrorCode::from_u16(3002).unwrap(), ErrorCode::TxNotIndexed);
     }
 }

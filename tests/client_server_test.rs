@@ -11,7 +11,7 @@ use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
-use triplox::TransactionResult;
+use triplox::{TransactionResult, TxBasis, TxKey};
 
 async fn define_base_schema(client: &ClientNode) {
     let result = client.execute_tx(test_schema_tx()).await.unwrap();
@@ -307,6 +307,47 @@ async fn test_db_as_of() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
+
+    db.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_db_as_of_rejects_wrong_system_time_after_cache_hit() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    let basis = match client
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap()
+    {
+        TransactionResult::TxCommited(basis) => basis,
+        _ => panic!("Expected TxCommited"),
+    };
+
+    let db = client.db_as_of(basis).await.unwrap();
+    let wrong_basis = TxBasis {
+        tx_key: TxKey {
+            tx_id: basis.tx_key.tx_id,
+            system_time: chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap(),
+        },
+        tx_eid: basis.tx_eid,
+    };
+
+    let err = match client.db_as_of(wrong_basis).await {
+        Ok(_) => panic!("expected db_as_of to reject wrong system_time"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("code 3002"),
+        "expected TxNotIndexed error, got {err}"
+    );
 
     db.close().await.unwrap();
     token.cancel();

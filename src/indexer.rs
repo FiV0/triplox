@@ -12,6 +12,7 @@ use edn::kw;
 use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
+use crate::error::TriploxError;
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
@@ -186,6 +187,46 @@ pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) 
     }
 }
 
+/// Verify that a snapshot contains the exact transaction basis.
+pub async fn tx_basis_exists(snapshot: &Arc<slatedb::DbSnapshot>, basis: &TxBasis) -> Result<bool> {
+    tx_entity_matches_tx_key(snapshot, basis.tx_eid, &basis.tx_key).await
+}
+
+async fn tx_entity_matches_tx_key(
+    snapshot: &Arc<slatedb::DbSnapshot>,
+    tx_eid: i64,
+    tx_key: &TxKey,
+) -> Result<bool> {
+    let mut entity_bytes = Vec::new();
+    encode_datatype(&DataType::Long(tx_eid), &mut entity_bytes);
+    let eav_prefix = concat_bytes(&[&[codec::EAV], entity_bytes.as_slice()]);
+    let mut iter = snapshot
+        .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
+        .await?;
+    let mut tx_id_matches = false;
+    let mut instant_matches = false;
+
+    while let Some(kv) = iter.next().await? {
+        let (_entity, attribute, value, _tx_eid, _op) = eav_key_to_parts(kv.key)?;
+        match (attribute, value) {
+            (crate::schema::DB_TX_ID, DataType::Long(id)) if id == tx_key.tx_id => {
+                tx_id_matches = true;
+            }
+            (crate::schema::DB_TX_INSTANT, DataType::Instant(system_time))
+                if system_time == tx_key.system_time =>
+            {
+                instant_matches = true;
+            }
+            _ => {}
+        }
+
+        if tx_id_matches && instant_matches {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
 /// The `tx_eid` is the pre-allocated entity ID for this transaction.
 pub(crate) fn build_tx_entity_datoms(
@@ -619,6 +660,33 @@ impl TxWaiter {
                     // get the notification or the channel will close.
                     continue;
                 }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "Indexer shutdown while waiting for tx {}",
+                        tx_key.tx_id
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Wait until indexing has reached `tx_key`, regardless of whether that
+    /// transaction committed or aborted.
+    pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
+        if let Some(latest_basis) = self.latest_tx {
+            if tx_key.tx_id <= latest_basis.tx_key.tx_id {
+                return Ok(());
+            }
+        }
+
+        loop {
+            match self.rx.recv().await {
+                Ok((completed_tx_key, _completed_basis, _result)) => {
+                    if completed_tx_key.tx_id >= tx_key.tx_id {
+                        return Ok(());
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_count)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
                     return Err(anyhow::anyhow!(
                         "Indexer shutdown while waiting for tx {}",
