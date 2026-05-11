@@ -64,7 +64,7 @@ class TriploxNodeTest {
             var tx2 = node.executeTx(List.of(new TxOp.Put(bob)));
             assertTrue(tx2.isCommitted());
 
-            try (var db = node.openDbAsOf(new TxKeyResult(tx1.txId(), tx1.systemTime()))) {
+            try (var db = node.openDbAsOf(tx1.basis())) {
                 var rows = db.query("{:find [?name] :where [[?e :historical-name ?name]]}");
                 assertEquals(List.of(List.of("alice")), rows);
             }

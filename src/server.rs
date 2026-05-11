@@ -43,6 +43,7 @@ use triplox_client::msgpack_codec::{
 use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
 };
+use triplox_client::transaction::{TxBasis, TxKey};
 
 // ---------------------------------------------------------------------------
 // DB Cache
@@ -324,8 +325,12 @@ async fn open_db<L: TxLog + 'static>(
         )
     })?;
 
-    let (db_id, tx_id) = match (open_request.tx_id, open_request.system_time) {
-        (None, None) => {
+    let (db_id, tx_id) = match (
+        open_request.tx_id,
+        open_request.system_time,
+        open_request.tx_eid,
+    ) {
+        (None, None, None) => {
             let db = state
                 .node
                 .db()
@@ -339,19 +344,18 @@ async fn open_db<L: TxLog + 'static>(
                 .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tx_id)
         }
-        (Some(tid), Some(system_time)) => {
-            let tx_key = triplox_client::transaction::TxKey {
-                tx_id: tid,
-                system_time,
+        (Some(tid), Some(system_time), Some(tx_eid)) => {
+            let basis = TxBasis {
+                tx_key: TxKey {
+                    tx_id: tid,
+                    system_time,
+                },
+                tx_eid,
             };
             let node = state.node.clone();
             let db_id = state
                 .handle_store
-                .open(
-                    conn_id.0,
-                    tid,
-                    || async move { node.db_as_of(tx_key).await },
-                )
+                .open(conn_id.0, tid, || async move { node.db_as_of(basis).await })
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
             (db_id, tid)
@@ -359,7 +363,7 @@ async fn open_db<L: TxLog + 'static>(
         _ => {
             return Err(ApiError::bad_request(
                 ErrorCode::InvalidStartup,
-                "OpenDb requires both tx_id and system_time, or neither",
+                "OpenDb requires tx_id, system_time, and tx_eid, or none of them",
             ))
         }
     };
@@ -480,16 +484,18 @@ async fn execute_tx<L: TxLog + 'static>(
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
     let resp = match result {
-        TransactionResult::TxCommited(tx_key) => TxResultResponse {
+        TransactionResult::TxCommited(basis) => TxResultResponse {
             status: 0,
-            tx_id: tx_key.tx_id,
-            system_time: tx_key.system_time,
+            tx_id: basis.tx_key.tx_id,
+            system_time: basis.tx_key.system_time,
+            tx_eid: basis.tx_eid,
             error_message: None,
         },
-        TransactionResult::TxAborted(tx_key, err) => TxResultResponse {
+        TransactionResult::TxAborted(basis, err) => TxResultResponse {
             status: 1,
-            tx_id: tx_key.tx_id,
-            system_time: tx_key.system_time,
+            tx_id: basis.tx_key.tx_id,
+            system_time: basis.tx_key.system_time,
+            tx_eid: basis.tx_eid,
             error_message: Some(err.to_string()),
         },
     };

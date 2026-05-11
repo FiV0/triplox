@@ -9,7 +9,7 @@ public sealed interface BackendMessage {
     record DbOpened(int dbId, long txId) implements BackendMessage {}
     record DbClosed(int dbId) implements BackendMessage {}
     record TxKey(long txId, Instant systemTime) implements BackendMessage {}
-    record TxResult(byte status, long txId, Instant systemTime, String errorMessage)
+    record TxResult(byte status, long txId, Instant systemTime, long txEid, String errorMessage)
             implements BackendMessage {}
     record ErrorResponse(byte severity, short code, String message, String detail, String hint)
             implements BackendMessage {}

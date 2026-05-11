@@ -635,6 +635,7 @@ fn read_body_value(data: &[u8]) -> Result<Value> {
 pub struct OpenDbRequest {
     pub tx_id: Option<i64>,
     pub system_time: Option<DateTime<Utc>>,
+    pub tx_eid: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -676,6 +677,7 @@ pub struct TxResultResponse {
     pub status: u8,
     pub tx_id: i64,
     pub system_time: DateTime<Utc>,
+    pub tx_eid: i64,
     pub error_message: Option<String>,
 }
 
@@ -688,14 +690,16 @@ pub struct ErrorResponseBody {
     pub hint: Option<String>,
 }
 
-/// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil}`.
+/// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}`.
 pub fn encode_open_db_request(req: &OpenDbRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_map_len(&mut buf, 3)?;
     rmp::encode::write_str(&mut buf, "tx_id")?;
     write_optional_i64(&mut buf, req.tx_id)?;
     rmp::encode::write_str(&mut buf, "system_time")?;
     write_optional_timestamp(&mut buf, req.system_time)?;
+    rmp::encode::write_str(&mut buf, "tx_eid")?;
+    write_optional_i64(&mut buf, req.tx_eid)?;
     Ok(buf)
 }
 
@@ -703,7 +707,12 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let tx_id = take_optional_i64(&mut map, "tx_id")?;
     let system_time = take_optional_timestamp(&mut map, "system_time")?;
-    Ok(OpenDbRequest { tx_id, system_time })
+    let tx_eid = take_optional_i64(&mut map, "tx_eid")?;
+    Ok(OpenDbRequest {
+        tx_id,
+        system_time,
+        tx_eid,
+    })
 }
 
 /// Encode a DbOpened response: `{"db_id": int, "tx_id": int}`.
@@ -926,13 +935,15 @@ pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
 /// Encode a TxResult response.
 pub fn encode_tx_result_response(resp: &TxResultResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 4)?;
+    rmp::encode::write_map_len(&mut buf, 5)?;
     rmp::encode::write_str(&mut buf, "status")?;
     rmp::encode::write_uint(&mut buf, resp.status as u64)?;
     rmp::encode::write_str(&mut buf, "tx_id")?;
     rmp::encode::write_sint(&mut buf, resp.tx_id)?;
     rmp::encode::write_str(&mut buf, "system_time")?;
     write_timestamp(&mut buf, &resp.system_time)?;
+    rmp::encode::write_str(&mut buf, "tx_eid")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_eid)?;
     rmp::encode::write_str(&mut buf, "error_message")?;
     write_optional_string(&mut buf, &resp.error_message)?;
     Ok(buf)
@@ -946,11 +957,13 @@ pub fn decode_tx_result_response(data: &[u8]) -> Result<TxResultResponse> {
     }
     let tx_id = take_i64(&mut map, "tx_id")?;
     let system_time = take_timestamp(&mut map, "system_time")?;
+    let tx_eid = take_i64(&mut map, "tx_eid")?;
     let error_message = take_optional_string(&mut map, "error_message")?;
     Ok(TxResultResponse {
         status: status_i64 as u8,
         tx_id,
         system_time,
+        tx_eid,
         error_message,
     })
 }
@@ -1251,15 +1264,20 @@ mod tests {
 
     #[test]
     fn round_trip_open_db_request_bodies() {
-        for (tx_id, system_time) in [
-            (None, None),
+        for (tx_id, system_time, tx_eid) in [
+            (None, None, None),
             (
                 Some(42i64),
                 Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
+                Some(100i64),
             ),
-            (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap())),
+            (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap()), Some(101)),
         ] {
-            let request = OpenDbRequest { tx_id, system_time };
+            let request = OpenDbRequest {
+                tx_id,
+                system_time,
+                tx_eid,
+            };
             let buf = encode_open_db_request(&request).unwrap();
             assert_eq!(decode_open_db_request(&buf).unwrap(), request);
         }
@@ -1357,6 +1375,7 @@ mod tests {
                 status,
                 tx_id: 7,
                 system_time: now,
+                tx_eid: 123,
                 error_message: err,
             };
             let buf = encode_tx_result_response(&response).unwrap();

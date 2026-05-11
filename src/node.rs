@@ -6,7 +6,7 @@ use tokio::runtime::Handle;
 
 use crate::clock;
 use crate::file_log::FileLog;
-use crate::indexer::{latest_tx_key_from_snapshot, Indexer};
+use crate::indexer::{latest_tx_basis_from_snapshot, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -20,14 +20,13 @@ use tokio_util::sync::CancellationToken;
 pub use triplox_client::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
 };
-pub use triplox_client::transaction::{TransactionResult, TxKey};
+pub use triplox_client::transaction::{TransactionResult, TxBasis, TxKey};
 
 pub struct DB {
     snapshot: Arc<slatedb::DbSnapshot>,
     ident_map: IdentMap,
     handle: Handle,
-    tx_key: TxKey,
-    tx_eid: i64,
+    tx_basis: TxBasis,
     range_stats: Arc<slatedb_estimates::RangeStats>,
 }
 
@@ -37,40 +36,41 @@ impl DB {
         snapshot: Arc<slatedb::DbSnapshot>,
         ident_map: IdentMap,
         handle: Handle,
-        tx_key: TxKey,
-        tx_eid: i64,
+        tx_basis: TxBasis,
         range_stats: Arc<slatedb_estimates::RangeStats>,
     ) -> Self {
         Self {
             snapshot,
             ident_map,
             handle,
-            tx_key,
-            tx_eid,
+            tx_basis,
             range_stats,
         }
     }
 
-    /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxKey.
+    /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
     pub async fn from_latest_snapshot(
         snapshot: Arc<slatedb::DbSnapshot>,
         ident_map: IdentMap,
         handle: Handle,
         range_stats: Arc<slatedb_estimates::RangeStats>,
     ) -> Result<Self, Error> {
-        let (tx_eid, tx_key) = crate::indexer::latest_tx_key_from_snapshot(&snapshot).await?;
+        let tx_basis = crate::indexer::latest_tx_basis_from_snapshot(&snapshot).await?;
         Ok(Self {
             snapshot,
             ident_map,
             handle,
-            tx_key,
-            tx_eid,
+            tx_basis,
             range_stats,
         })
     }
 
     pub fn tx_key(&self) -> &TxKey {
-        &self.tx_key
+        &self.tx_basis.tx_key
+    }
+
+    pub fn tx_basis(&self) -> &TxBasis {
+        &self.tx_basis
     }
 
     pub fn entity(&self, _eid: Entid) {
@@ -98,7 +98,7 @@ impl Database for DB {
         let ident_map = self.ident_map.clone();
         let query = query.clone();
         let args = args.to_vec();
-        let as_of = self.tx_eid;
+        let as_of = self.tx_basis.tx_eid;
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -156,13 +156,13 @@ impl Node<FileLog> {
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
         let snapshot = Arc::new(slate.db.snapshot().await?);
-        let (latest_tx_eid, latest_indexed) = latest_tx_key_from_snapshot(&snapshot).await?;
+        let latest_indexed = latest_tx_basis_from_snapshot(&snapshot).await?;
         // Bootstrap and the first FileLog transaction both currently use tx_id=0,
         // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
         // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
         // has been indexed; otherwise replay the log from the start so the first
         // user tx isn't skipped.
-        let latest_indexed_tx = if latest_tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
+        let latest_indexed_tx = if latest_indexed.tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
             Some(latest_indexed)
         } else {
             None
@@ -178,7 +178,7 @@ impl Node<FileLog> {
             Box::new(clock::SystemClock),
         )?));
 
-        let after_tx_id = latest_indexed_tx.map(|k| k.tx_id);
+        let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let last_tx_key = {
@@ -197,7 +197,8 @@ impl Node<FileLog> {
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            waiter.await_tx(tx_key).await?;
+            let completion = waiter.await_tx(tx_key).await?;
+            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
         }
 
         Ok(Node {
@@ -263,9 +264,16 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let tx_key = self.log.write().await.append_tx(serialized).await;
 
-        match waiter.await_tx(tx_key).await {
-            Ok(()) => Ok(TransactionResult::TxCommited(tx_key)),
-            Err(e) => Ok(TransactionResult::TxAborted(tx_key, e.into())),
+        let completion = waiter.await_tx(tx_key).await?;
+        let basis = completion.basis.ok_or_else(|| {
+            anyhow::anyhow!("Indexer did not return TxBasis for tx {}", tx_key.tx_id)
+        })?;
+        match completion.result {
+            Ok(()) => Ok(TransactionResult::TxCommited(basis)),
+            Err(e) => Ok(TransactionResult::TxAborted(
+                basis,
+                anyhow::anyhow!("{:#}", e).into(),
+            )),
         }
     }
 }
@@ -286,8 +294,8 @@ impl<L: TxLog> QueryNode for Node<L> {
         let range_stats = self.slate.range_stats.clone();
         DB::from_latest_snapshot(snapshot, ident_map, handle, range_stats).await
     }
-    // TODO we are currently not checking that snapshot contains TxKey
-    async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
+    // TODO: we are currently not checking that snapshot contains TxBasis.
+    async fn db_as_of(&self, basis: TxBasis) -> Result<DB, Error> {
         let snapshot = self.slate.db.snapshot().await?;
         let ident_map = self
             .indexer
@@ -299,15 +307,7 @@ impl<L: TxLog> QueryNode for Node<L> {
             .clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        let tx_eid = crate::indexer::tx_eid_for_tx_key(&snapshot, &tx_key).await?;
-        Ok(DB::new(
-            snapshot,
-            ident_map,
-            handle,
-            tx_key,
-            tx_eid,
-            range_stats,
-        ))
+        Ok(DB::new(snapshot, ident_map, handle, basis, range_stats))
     }
 }
 
@@ -892,7 +892,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        let tx_key1 = match node
+        let basis1 = match node
             .execute_tx(vec![TxOp::Add {
                 entity: "alice".into(),
                 attribute: kw!(:name),
@@ -901,11 +901,11 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(tx_key) => tx_key,
+            TransactionResult::TxCommited(basis) => basis,
             _ => panic!("Tx1 should commit"),
         };
 
-        let tx_key2 = match node
+        let basis2 = match node
             .execute_tx(vec![TxOp::Add {
                 entity: "bob".into(),
                 attribute: kw!(:name),
@@ -914,12 +914,12 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(tx_key) => tx_key,
+            TransactionResult::TxCommited(basis) => basis,
             _ => panic!("Tx2 should commit"),
         };
 
-        // db_as_of(tx_key1): should only see alice
-        let db1 = node.db_as_of(tx_key1).await.unwrap();
+        // db_as_of(basis1): should only see alice
+        let db1 = node.db_as_of(basis1).await.unwrap();
         let result1 = db1
             .query("[:find ?name :where [?e :name ?name]]")
             .await
@@ -927,8 +927,8 @@ mod tests {
         assert_eq!(result1.len(), 1);
         assert_eq!(result1[0], vec![DataType::String("alice".to_string())]);
 
-        // db_as_of(tx_key2): should see both
-        let db2 = node.db_as_of(tx_key2).await.unwrap();
+        // db_as_of(basis2): should see both
+        let db2 = node.db_as_of(basis2).await.unwrap();
         let result2 = db2
             .query("[:find ?name :where [?e :name ?name]]")
             .await
@@ -1072,7 +1072,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        let tx_key = match result {
+        let basis = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("expected commit"),
         };
@@ -1085,8 +1085,11 @@ mod tests {
         // A waiter obtained after restart should resolve immediately for the
         // already-indexed tx_key. Without the fix this hangs forever.
         let waiter = node.indexer.read().await.tx_waiter();
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), waiter.await_tx(tx_key)).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            waiter.await_tx(basis.tx_key),
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -1111,7 +1114,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        let tx_key1 = match result1 {
+        let basis1 = match result1 {
             TransactionResult::TxCommited(tk) => tk,
             _ => panic!("Expected TxCommited"),
         };
@@ -1126,7 +1129,7 @@ mod tests {
         .unwrap();
 
         // db_as_of pinned to first tx should only see alice
-        let db = node.db_as_of(tx_key1).await.unwrap();
+        let db = node.db_as_of(basis1).await.unwrap();
         let results = db
             .query("[:find ?name :where [?e :name ?name]]")
             .await
@@ -1751,7 +1754,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        let tx_key = match result {
+        let basis = match result {
             TransactionResult::TxCommited(k) => k,
             _ => panic!("Expected committed"),
         };
@@ -1761,7 +1764,7 @@ mod tests {
         let query_str = format!(
             "[:find ?ident \
              :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident]]",
-            tx_key.tx_id
+            basis.tx_key.tx_id
         );
         let result = db.query(query_str).await.unwrap();
 
@@ -1783,7 +1786,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        let tx_key = match &result {
+        let basis = match &result {
             TransactionResult::TxAborted(k, _) => *k,
             _ => panic!("Expected aborted, got {:?}", result),
         };
@@ -1793,7 +1796,7 @@ mod tests {
         let query_str = format!(
             "[:find ?ident ?error \
              :where [?tx :db/txId {}] [?tx :db/txResult ?r] [?r :db/ident ?ident] [?tx :db/txError ?error]]",
-            tx_key.tx_id
+            basis.tx_key.tx_id
         );
         let result = db.query(query_str).await.unwrap();
 

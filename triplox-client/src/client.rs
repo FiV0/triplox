@@ -14,7 +14,7 @@ use crate::msgpack_codec::{
 use crate::node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
 use crate::ops::QueryArg;
 use crate::query::QueryResult;
-use crate::transaction::{TransactionResult, TxKey};
+use crate::transaction::{TransactionResult, TxBasis, TxKey};
 use edn::query::ParsedQuery;
 
 // ---------------------------------------------------------------------------
@@ -63,13 +63,21 @@ impl ClientNode {
         })
     }
 
-    async fn open_db(&self, tx_key: Option<TxKey>) -> Result<ClientDb> {
-        let (tx_id, system_time) = match tx_key {
-            None => (None, None),
-            Some(tk) => (Some(tk.tx_id), Some(tk.system_time)),
+    async fn open_db(&self, basis: Option<TxBasis>) -> Result<ClientDb> {
+        let (tx_id, system_time, tx_eid) = match basis {
+            None => (None, None, None),
+            Some(basis) => (
+                Some(basis.tx_key.tx_id),
+                Some(basis.tx_key.system_time),
+                Some(basis.tx_eid),
+            ),
         };
 
-        let body = encode_open_db_request(&OpenDbRequest { tx_id, system_time })?;
+        let body = encode_open_db_request(&OpenDbRequest {
+            tx_id,
+            system_time,
+            tx_eid,
+        })?;
         let resp = self
             .client
             .post(format!("{}/db/open", self.base_url))
@@ -123,19 +131,22 @@ impl SubmitNode for ClientNode {
 
         let data = check_response(resp).await?;
         let tx_result = decode_tx_result_response(&data)?;
-        let tx_key = TxKey {
-            tx_id: tx_result.tx_id,
-            system_time: tx_result.system_time,
+        let basis = TxBasis {
+            tx_key: TxKey {
+                tx_id: tx_result.tx_id,
+                system_time: tx_result.system_time,
+            },
+            tx_eid: tx_result.tx_eid,
         };
 
         if tx_result.status == 0 {
-            Ok(TransactionResult::TxCommited(tx_key))
+            Ok(TransactionResult::TxCommited(basis))
         } else {
             let err_msg = tx_result
                 .error_message
                 .unwrap_or_else(|| "transaction aborted".to_string());
             Ok(TransactionResult::TxAborted(
-                tx_key,
+                basis,
                 anyhow::anyhow!("{}", err_msg).into(),
             ))
         }
@@ -149,8 +160,8 @@ impl QueryNode for ClientNode {
         self.open_db(None).await
     }
 
-    async fn db_as_of(&self, tx_key: TxKey) -> Result<ClientDb, Error> {
-        self.open_db(Some(tx_key)).await
+    async fn db_as_of(&self, basis: TxBasis) -> Result<ClientDb, Error> {
+        self.open_db(Some(basis)).await
     }
 }
 
