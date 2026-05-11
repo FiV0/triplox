@@ -649,7 +649,7 @@ impl Subscriber for Indexer {
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
             // TODO: an error in tx_transact_inner is currently always being treated as an aborted transaction.
-            // There should likely be some seperation via types of semantic vs non-recoverable errors to 
+            // There should likely be some seperation via types of semantic vs non-recoverable errors to
             // allow for proper escalation.
         }
     }
