@@ -12,13 +12,30 @@ jobs:
       packages: write
 
     steps:
-      - name: Delete old SHA-tagged images
+      - name: Delete old untagged images
         uses: snok/container-retention-policy@v3
         with:
           account: FiV0
           token: ${{ secrets.GITHUB_TOKEN }}
           image-names: triplox
           cut-off: 1 week ago UTC
-          tag-selection: "both"
-          filter-tags: "main,v*"
-          filter-include-untagged: true
+          tag-selection: untagged
+
+      - name: Delete old SHA-only images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cutoff="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          ids="$(
+            gh api --paginate '/users/FiV0/packages/container/triplox/versions?per_page=100' \
+              --jq '.[] | select(.created_at < "'"$cutoff"'") | select((.metadata.container.tags // []) | length > 0) | select(all(.metadata.container.tags[]; startswith("sha-"))) | .id'
+          )"
+
+          if [[ -z "$ids" ]]; then
+            echo "No old SHA-only images to delete."
+            exit 0
+          fi
+
+          while IFS= read -r id; do
+            gh api --method DELETE "/users/FiV0/packages/container/triplox/versions/$id"
+          done <<< "$ids"

@@ -4,11 +4,38 @@ Docker support for running Triplox with in-memory, local persisted, or remote S3
 
 ## Building
 
+For local development:
+
 ```bash
 ./docker/scripts/build-image.sh
 ```
 
 This builds and tags the image as `triplox:latest` and `triplox:<short-sha>`.
+
+## Published images
+
+Release images are published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.2
+```
+
+Images are published only from release tags matching `vX.Y.Z`,
+`vX.Y.Z-alpha.N`, or `vX.Y.Z-beta.N`. The tag version must match the Cargo
+workspace version in the tagged commit.
+
+Published tags:
+
+- `X.Y.Z-alpha.N` or `X.Y.Z-beta.N` for prereleases.
+- `X.Y.Z` and `X.Y` for stable releases.
+- `X.Y.Z-snapshot` and `snapshot` for manual SNAPSHOT builds.
+- `sha-<short-sha>` for traceability.
+
+Docker publishing runs as part of the release workflow. To publish only the
+Docker image for an existing release tag, run the `Docker Publish` workflow
+manually in GitHub Actions, select the release tag as the workflow ref, and set
+`mode` to `release`. To publish a SNAPSHOT image from a branch, select the
+branch ref and set `mode` to `snapshot`.
 
 ## Running
 
