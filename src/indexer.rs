@@ -265,18 +265,14 @@ impl Indexer {
                     let _ = self
                         .tx_completion_sender
                         .send((tx_key, Some(basis), Err(err.clone())));
-                    Err(anyhow::anyhow!("{:#}", err))
+                    Ok(basis)
                 }
                 Err(abort_err) => {
                     error!(
                         "Failed to write aborted tx entity for {}: {}",
                         tx_key.tx_id, abort_err
                     );
-                    let err = Arc::new(e);
-                    let _ = self
-                        .tx_completion_sender
-                        .send((tx_key, None, Err(err.clone())));
-                    Err(anyhow::anyhow!("{:#}", err))
+                    Err(anyhow::anyhow!("{:#}", abort_err))
                 }
             },
         }
@@ -641,10 +637,12 @@ impl Subscriber for Indexer {
             }
         };
         // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
-        // We don't send this error here because transact_tx also handles sending
-        // unrecoverable errors through tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
-            warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+            error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
+            let err = Arc::new(e);
+            let _ = self
+                .tx_completion_sender
+                .send((record.tx_key, None, Err(err.clone())));
         }
     }
 }
