@@ -3,8 +3,6 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
-
 use anyhow::Result;
 use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
@@ -27,11 +25,11 @@ pub(crate) trait Subscriber: Send + Sync {
 pub type TxId = i64;
 
 pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
-    log: Arc<RwLock<L>>,
+    log: Arc<L>,
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
 ) -> CancellationToken {
-    let (_next_tx_id, mut tx_receiver) = log.read().await.subscribe_txs();
+    let (_next_tx_id, mut tx_receiver) = log.subscribe_txs().await;
 
     let token = CancellationToken::new();
     let task_token = token.clone();
@@ -45,7 +43,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
             if task_token.is_cancelled() {
                 break;
             }
-            let txs = log.read().await.read_txs_after(last_tx_id, 100).await;
+            let txs = log.read_txs_after(last_tx_id, 100).await;
             match txs {
                 Ok(txs) if txs.is_empty() => break,
                 Ok(txs) => {
@@ -78,7 +76,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
-                            let txs = log.read().await.read_txs_after(last_tx_id, missed.try_into().unwrap()).await;
+                            let txs = log.read_txs_after(last_tx_id, missed.try_into().unwrap()).await;
                             match txs {
                                 Ok(txs) => {
                                     if !txs.is_empty() {
@@ -110,17 +108,20 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     token
 }
 
-#[allow(async_fn_in_trait)]
 pub trait TxLogReader: Send + Sync + 'static {
     /// Read up to `limit` records written after `after_tx_id`.
     /// `None` means from the beginning. `Some(id)` means records strictly after `id`.
-    fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> impl Future<Output = Result<Vec<Record>>> + Send;
+    fn read_txs_after(
+        &self,
+        after_tx_id: Option<TxId>,
+        limit: u16,
+    ) -> impl Future<Output = Result<Vec<Record>>> + Send;
     /// Returns (next_tx_id, receiver). next_tx_id is where the next write will go (0 for empty log).
-    fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>);
+    fn subscribe_txs(&self) -> impl Future<Output = (TxId, broadcast::Receiver<Record>)> + Send;
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {
-    fn append_tx(&mut self, record: Vec<u8>) -> impl std::future::Future<Output = TxKey> + Send;
+    fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = TxKey> + Send;
 }
 
 pub trait TxLog: TxLogReader + TxLogWriter {}
@@ -140,5 +141,90 @@ impl MockSubscriber {
 impl Subscriber for MockSubscriber {
     async fn accept(&mut self, record: Record) {
         self.records.push(record);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::st_from_unix_epoch;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Barrier, Mutex, Notify, RwLock};
+
+    struct SlowReadLog {
+        records: Mutex<Vec<Record>>,
+        tx_sender: broadcast::Sender<Record>,
+        read_started: Arc<Barrier>,
+        release_read: Notify,
+    }
+
+    impl SlowReadLog {
+        fn new() -> Self {
+            Self {
+                records: Mutex::new(vec![]),
+                tx_sender: broadcast::channel(1024).0,
+                read_started: Arc::new(Barrier::new(2)),
+                release_read: Notify::new(),
+            }
+        }
+    }
+
+    impl TxLogReader for SlowReadLog {
+        async fn read_txs_after(
+            &self,
+            after_tx_id: Option<TxId>,
+            limit: u16,
+        ) -> Result<Vec<Record>> {
+            self.read_started.wait().await;
+            self.release_read.notified().await;
+
+            let records = self.records.lock().await;
+            let start = after_tx_id.map(|id| id as usize + 1).unwrap_or(0);
+            let end = std::cmp::min(start + limit as usize, records.len());
+            if start >= records.len() {
+                return Ok(vec![]);
+            }
+            Ok(records[start..end].to_vec())
+        }
+
+        async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
+            let records = self.records.lock().await;
+            (records.len() as TxId, self.tx_sender.subscribe())
+        }
+    }
+
+    impl TxLogWriter for SlowReadLog {
+        async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+            let mut records = self.records.lock().await;
+            let tx_key = TxKey {
+                tx_id: records.len() as TxId,
+                system_time: st_from_unix_epoch(records.len() as u64),
+            };
+            let record = Record { tx_key, record };
+            records.push(record.clone());
+            drop(records);
+            let _ = self.tx_sender.send(record);
+            tx_key
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_does_not_wait_for_pending_subscription_read() {
+        let log = Arc::new(SlowReadLog::new());
+        let read_started = log.read_started.clone();
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), None, subscriber).await;
+
+        tokio::time::timeout(Duration::from_secs(1), read_started.wait())
+            .await
+            .expect("subscription should start catch-up read");
+
+        tokio::time::timeout(Duration::from_millis(100), log.append_tx(vec![1, 2, 3]))
+            .await
+            .expect("append should not wait for subscription read");
+
+        log.release_read.notify_waiters();
+        token.cancel();
     }
 }

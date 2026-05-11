@@ -535,8 +535,7 @@ impl Indexer {
     /// # Example
     /// ```ignore
     /// let waiter = indexer.read().await.tx_waiter();
-    /// // drop the lock, append to log, then wait:
-    /// let tx_key = log.write().await.append_tx(data).await;
+    /// let tx_key = log.append_tx(data).await;
     /// waiter.await_tx(tx_key).await?;
     /// ```
     pub(crate) fn tx_waiter(&self) -> TxWaiter {

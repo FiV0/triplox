@@ -7,14 +7,13 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::file_log::FileLog;
 use crate::indexer::{latest_tx_basis_from_snapshot, Indexer};
-use crate::log::{subscribe, TxLog, TxLogReader};
+use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, validate_query, QueryResult};
 use crate::schema::IdentMap;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub use triplox_client::node::{
@@ -119,7 +118,7 @@ impl Database for DB {
 
 #[allow(unused)]
 pub struct Node<L: TxLog> {
-    log: Arc<RwLock<L>>,
+    log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
     slate: SlateComponents,
     subscription: CancellationToken,
@@ -134,7 +133,7 @@ impl Node<MemoryLog> {
             metadata,
             None,
         )));
-        let log = Arc::new(RwLock::new(MemoryLog::new(Box::new(clock::SystemClock))));
+        let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
 
@@ -173,19 +172,13 @@ impl Node<FileLog> {
             metadata,
             latest_indexed_tx,
         )));
-        let log = Arc::new(RwLock::new(FileLog::new(
-            log_file,
-            Box::new(clock::SystemClock),
-        )?));
+        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
 
         let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
-        let last_tx_key = {
-            let log_reader = log.read().await;
-            let records = log_reader.read_txs_after(after_tx_id, u16::MAX).await?;
-            records.last().map(|r| r.tx_key)
-        };
+        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
+        let last_tx_key = records.last().map(|r| r.tx_key);
 
         // Create a waiter for catch-up completion
         let waiter = match last_tx_key {
@@ -253,7 +246,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
-        Ok(self.log.write().await.append_tx(serialized).await)
+        Ok(self.log.append_tx(serialized).await)
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
@@ -262,7 +255,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let waiter = self.indexer.read().await.tx_waiter();
 
-        let tx_key = self.log.write().await.append_tx(serialized).await;
+        let tx_key = self.log.append_tx(serialized).await;
 
         let completion = waiter.await_tx(tx_key).await?;
         let basis = completion.basis.ok_or_else(|| {
