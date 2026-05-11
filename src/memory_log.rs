@@ -45,9 +45,8 @@ impl TxLogReader for MemoryLog {
         Ok(state.txs[start..end].to_vec())
     }
 
-    async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        let state = self.state.read().await;
-        (state.txs.len() as TxId, self.tx_sender.subscribe())
+    async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+        self.tx_sender.subscribe()
     }
 }
 

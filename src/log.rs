@@ -29,7 +29,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
 ) -> CancellationToken {
-    let (_next_tx_id, mut tx_receiver) = log.subscribe_txs().await;
+    let mut tx_receiver = log.subscribe_txs().await;
 
     let token = CancellationToken::new();
     let task_token = token.clone();
@@ -116,8 +116,8 @@ pub trait TxLogReader: Send + Sync + 'static {
         after_tx_id: Option<TxId>,
         limit: u16,
     ) -> impl Future<Output = Result<Vec<Record>>> + Send;
-    /// Returns (next_tx_id, receiver). next_tx_id is where the next write will go (0 for empty log).
-    fn subscribe_txs(&self) -> impl Future<Output = (TxId, broadcast::Receiver<Record>)> + Send;
+    /// Subscribe to transactions appended after the receiver is created.
+    fn subscribe_txs(&self) -> impl Future<Output = broadcast::Receiver<Record>> + Send;
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {
@@ -188,9 +188,8 @@ mod tests {
             Ok(records[start..end].to_vec())
         }
 
-        async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-            let records = self.records.lock().await;
-            (records.len() as TxId, self.tx_sender.subscribe())
+        async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+            self.tx_sender.subscribe()
         }
     }
 

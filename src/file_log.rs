@@ -20,7 +20,6 @@ struct FileLogState {
 }
 
 impl FileLog {
-    #[allow(unused)]
     pub fn new(path: &Path, clock: Box<dyn SystemTimeSource>) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -70,12 +69,8 @@ impl TxLogReader for FileLog {
         Ok(records)
     }
 
-    async fn subscribe_txs(&self) -> (TxId, broadcast::Receiver<Record>) {
-        let end_of_file = std::fs::metadata(&self.path)
-            .map(|metadata| metadata.len() as TxId)
-            .unwrap_or(0);
-
-        (end_of_file, self.tx_sender.subscribe())
+    async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+        self.tx_sender.subscribe()
     }
 }
 
