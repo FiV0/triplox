@@ -648,7 +648,9 @@ impl Subscriber for Indexer {
         // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
-            // TODO: an error in tx_transact_inner is currently not being sent to the tx_completion_sender.
+            // TODO: an error in tx_transact_inner is currently always being treated as an aborted transaction.
+            // There should likely be some seperation via types of semantic vs non-recoverable errors to 
+            // allow for proper escalation.
         }
     }
 }
