@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Validate release tag
         id: version
         run: |
@@ -28,6 +31,12 @@ jobs:
           fi
 
           version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "triplox") | .version')"
+          if [[ "$cargo_version" != "$version" ]]; then
+            echo "Tag version $version does not match Cargo workspace version $cargo_version."
+            exit 1
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
             echo "minor=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
