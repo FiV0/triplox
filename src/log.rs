@@ -76,6 +76,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
+                            // TODO this into might blow up
                             let txs = log.read_txs_after(last_tx_id, missed.try_into().unwrap()).await;
                             match txs {
                                 Ok(txs) => {
