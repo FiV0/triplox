@@ -28,11 +28,14 @@ Published tags:
 
 - `X.Y.Z-alpha.N` or `X.Y.Z-beta.N` for prereleases.
 - `X.Y.Z` and `X.Y` for stable releases.
+- `X.Y.Z-snapshot` and `snapshot` for manual SNAPSHOT builds.
 - `sha-<short-sha>` for traceability.
 
 Docker publishing runs as part of the release workflow. To publish only the
 Docker image for an existing release tag, run the `Docker Publish` workflow
-manually in GitHub Actions and select the release tag as the workflow ref.
+manually in GitHub Actions, select the release tag as the workflow ref, and set
+`mode` to `release`. To publish a SNAPSHOT image from a branch, select the
+branch ref and set `mode` to `snapshot`.
 
 ## Running
 

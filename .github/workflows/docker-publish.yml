@@ -2,7 +2,21 @@ name: Docker Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Publish mode
+        required: true
+        type: choice
+        default: snapshot
+        options:
+          - snapshot
+          - release
   workflow_call:
+    inputs:
+      mode:
+        required: false
+        type: string
+        default: release
 
 env:
   REGISTRY: ghcr.io
@@ -24,19 +38,35 @@ jobs:
       - name: Validate release tag
         id: version
         run: |
+          mode="${{ inputs.mode }}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "triplox") | .version')"
+
+          if [[ "$mode" == "snapshot" ]]; then
+            echo "version=$cargo_version-snapshot" >> "$GITHUB_OUTPUT"
+            echo "minor=" >> "$GITHUB_OUTPUT"
+            echo "snapshot=true" >> "$GITHUB_OUTPUT"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$mode" != "release" ]]; then
+            echo "Unsupported Docker publish mode: $mode"
+            exit 1
+          fi
+
           if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)\.[0-9]+)?$ ]]; then
-            echo "Docker images are only published from vX.Y.Z, vX.Y.Z-alpha.N, or vX.Y.Z-beta.N tags."
+            echo "Release Docker images are only published from vX.Y.Z, vX.Y.Z-alpha.N, or vX.Y.Z-beta.N tags."
             exit 1
           fi
 
           version="${GITHUB_REF_NAME#v}"
-          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "triplox") | .version')"
           if [[ "$cargo_version" != "$version" ]]; then
             echo "Tag version $version does not match Cargo workspace version $cargo_version."
             exit 1
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "snapshot=false" >> "$GITHUB_OUTPUT"
           if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
             echo "minor=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
             echo "stable=true" >> "$GITHUB_OUTPUT"
@@ -62,6 +92,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=snapshot,enable=${{ steps.version.outputs.snapshot == 'true' }}
             type=raw,value=${{ steps.version.outputs.minor }},enable=${{ steps.version.outputs.stable == 'true' }}
             type=sha,prefix=sha-
 
