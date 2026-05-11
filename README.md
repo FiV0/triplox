@@ -111,15 +111,10 @@ The primary inspiration is Datomic and you will see it's impact throughout the p
 ### Compatibility
 
 The goal is not to have a 1-to-1 correspondence of features with Datomic. Datomic is the main inspiration and we'll strive to stay
-close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences
-will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There are also some edge
+close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There are also some edge
 cases with tempid + upsert resolution that I am currently not dealing correctly with.
-On the query side there is a question of bag vs set semantics. Set semantics stays true to traditional Datalog and
-also avoids certain awkward query patterns where variables otherwise "leak"
-into aggregates (see some thoughts in the [semantics document](design/SEMANTICS.md)).
-On the other hand, bags allow you to stream result sets in batches (no deduplication of the full result set) and in
-theory also need less DBSP distinct operators (an operator that is expensive to maintain). The decision on this
-needs some more thought.
+
+There are some more open questions that I tried to write down on the [website](https://triplox.xyz/roadmap/open-questions/)
 
 ### Licence
 
