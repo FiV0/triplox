@@ -24,11 +24,13 @@ use crate::transaction::{TxBasis, TxKey};
 use crate::tx;
 use crate::util::concat_bytes;
 
+type TxCompletionMessage = (TxKey, Option<TxBasis>, Result<(), Arc<Error>>);
+
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
     latest_indexed_tx: Option<TxBasis>,
-    tx_completion_sender: broadcast::Sender<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
+    tx_completion_sender: broadcast::Sender<TxCompletionMessage>,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -260,7 +262,9 @@ impl Indexer {
             Err(e) => match self.write_aborted_tx(tx_key, e.to_string()).await {
                 Ok(basis) => {
                     let err = Arc::new(e);
-                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
+                    let _ = self
+                        .tx_completion_sender
+                        .send((tx_key, Some(basis), Err(err.clone())));
                     Err(anyhow::anyhow!("{:#}", err))
                 }
                 Err(abort_err) => {
@@ -268,9 +272,10 @@ impl Indexer {
                         "Failed to write aborted tx entity for {}: {}",
                         tx_key.tx_id, abort_err
                     );
-                    let basis = TxBasis { tx_key, tx_eid: 0 };
                     let err = Arc::new(e);
-                    let _ = self.tx_completion_sender.send((basis, Err(err.clone())));
+                    let _ = self
+                        .tx_completion_sender
+                        .send((tx_key, None, Err(err.clone())));
                     Err(anyhow::anyhow!("{:#}", err))
                 }
             },
@@ -331,7 +336,10 @@ impl Indexer {
         let basis = TxBasis { tx_key, tx_eid };
         self.latest_indexed_tx = Some(basis);
 
-        if let Err(e) = self.tx_completion_sender.send((basis, Ok(()))) {
+        if let Err(e) = self
+            .tx_completion_sender
+            .send((tx_key, Some(basis), Ok(())))
+        {
             trace!(
                 "No receivers for indexed transaction {}: {}",
                 tx_key.tx_id,
@@ -558,7 +566,7 @@ impl Indexer {
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
     latest_tx: Option<TxBasis>,
-    rx: broadcast::Receiver<(TxBasis, Result<(), Arc<anyhow::Error>>)>,
+    rx: broadcast::Receiver<TxCompletionMessage>,
 }
 
 pub(crate) struct TxCompletion {
@@ -591,10 +599,10 @@ impl TxWaiter {
         // ingest directly into Slate.
         loop {
             match self.rx.recv().await {
-                Ok((completed_basis, result)) => {
-                    if completed_basis.tx_key >= tx_key {
+                Ok((completed_tx_key, completed_basis, result)) => {
+                    if completed_tx_key >= tx_key {
                         return Ok(TxCompletion {
-                            basis: Some(completed_basis),
+                            basis: completed_basis,
                             result,
                         });
                     }
@@ -622,20 +630,16 @@ impl Subscriber for Indexer {
             Ok(ops) => ops,
             Err(e) => {
                 let err = anyhow::anyhow!("Failed to deserialize TxOps: {}", e);
-                let basis = TxBasis {
-                    tx_key: record.tx_key,
-                    tx_eid: 0,
-                };
                 warn!(
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
-                let _ = self.tx_completion_sender.send((basis, Err(Arc::new(err))));
+                let _ = self
+                    .tx_completion_sender
+                    .send((record.tx_key, None, Err(Arc::new(err))));
                 return;
             }
         };
-        // TODO: transact_tx now handles writing aborted tx entities internally;
-        // the subscriber should propagate the error notification via tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
         }
@@ -1010,6 +1014,69 @@ mod tests {
             result.is_err(),
             "Should timeout waiting for non-existent tx"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deserialization_failure_notifies_without_basis() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let waiter = indexer.tx_waiter();
+
+        indexer
+            .accept(Record {
+                tx_key,
+                record: vec![0xff],
+            })
+            .await;
+
+        let completion = waiter.await_tx(tx_key).await?;
+        assert_eq!(completion.basis, None);
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to deserialize TxOps"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transact_failure_writes_aborted_tx_and_notifies_with_basis() -> Result<(), Error>
+    {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let waiter = indexer.tx_waiter();
+
+        let err = indexer
+            .transact_tx(
+                tx_key,
+                vec![TxOp::Add {
+                    entity: "e".into(),
+                    attribute: kw!(:nonexistent),
+                    value: "x".into(),
+                }],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Unknown attribute"));
+        let completion = waiter.await_tx(tx_key).await?;
+        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx_key));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
         Ok(())
     }
 
