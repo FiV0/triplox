@@ -640,6 +640,9 @@ impl Subscriber for Indexer {
                 return;
             }
         };
+        // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
+        // We don't send this error here because transact_tx also handles sending
+        // unrecoverable errors through tx_completion_sender.
         if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
             warn!("Transaction {} failed: {}", record.tx_key.tx_id, e);
         }
