@@ -56,8 +56,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 git add Cargo.toml Cargo.lock
-git commit -m "Release $tag" \
-    -m "Co-authored-by: Codex <noreply@openai.com>"
+git commit -m "Release $tag"
 git tag -a "$tag" -m "Release $tag"
 
 cat <<EOF
