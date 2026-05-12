@@ -24,6 +24,40 @@ pub(crate) trait Subscriber: Send + Sync {
 
 pub type TxId = i64;
 
+async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
+    log: &L,
+    last_tx_id: &mut Option<TxId>,
+    subscriber: &Arc<tokio::sync::RwLock<S>>,
+    limit: u16,
+    task_token: &CancellationToken,
+) {
+    loop {
+        if task_token.is_cancelled() {
+            break;
+        }
+
+        let txs = log.read_txs_after(*last_tx_id, limit).await;
+        match txs {
+            Ok(txs) if txs.is_empty() => break,
+            Ok(txs) => {
+                trace!("Processing {} txs catching up", txs.len());
+                let mut subscriber = subscriber.write().await;
+                for tx in &txs {
+                    subscriber.accept(tx.clone()).await;
+                }
+                *last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
+                if txs.len() < limit as usize {
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Error reading txs: {}", e);
+                break;
+            }
+        }
+    }
+}
+
 pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     log: Arc<L>,
     after_tx_id: Option<TxId>,
@@ -39,27 +73,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
         info!("Starting subscriber, after tx id: {:?}", last_tx_id);
 
         // Catch-up phase: read historical transactions after last_tx_id
-        loop {
-            if task_token.is_cancelled() {
-                break;
-            }
-            let txs = log.read_txs_after(last_tx_id, 100).await;
-            match txs {
-                Ok(txs) if txs.is_empty() => break,
-                Ok(txs) => {
-                    trace!("Processing {} txs catching up", txs.len());
-                    let mut subscriber = subscriber.write().await;
-                    for tx in &txs {
-                        subscriber.accept(tx.clone()).await;
-                    }
-                    last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
-                }
-                Err(e) => {
-                    error!("Error reading txs: {}", e);
-                    break;
-                }
-            }
-        }
+        catch_up_transactions(log.as_ref(), &mut last_tx_id, &subscriber, 100, &task_token).await;
 
         // Live updates phase
         loop {
@@ -76,23 +90,15 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(missed)) => {
-                            // TODO this into might blow up
-                            let txs = log.read_txs_after(last_tx_id, missed.try_into().unwrap()).await;
-                            match txs {
-                                Ok(txs) => {
-                                    if !txs.is_empty() {
-                                        info!("Processing {} txs catching up after lag", txs.len());
-                                        let mut subscriber = subscriber.write().await;
-                                        for tx in &txs {
-                                            subscriber.accept(tx.clone()).await;
-                                        }
-                                        last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
-                                    }
-                                },
-                                Err(e) => {
-                                    error!("Error reading txs: {}", e);
-                                }
-                            }
+                            info!("Subscriber lagged by {} records; catching up from log", missed);
+                            catch_up_transactions(
+                                log.as_ref(),
+                                &mut last_tx_id,
+                                &subscriber,
+                                u16::MAX,
+                                &task_token,
+                            )
+                            .await;
                         },
                         Err(broadcast::error::RecvError::Closed) => {
                             warn!("Log closed, subscriber was running");
@@ -209,6 +215,49 @@ mod tests {
         }
     }
 
+    struct SnapshotLog {
+        records: Vec<Record>,
+        tx_sender: broadcast::Sender<Record>,
+    }
+
+    impl SnapshotLog {
+        fn new(record_count: usize) -> Self {
+            let records = (0..record_count)
+                .map(|id| Record {
+                    tx_key: TxKey {
+                        tx_id: id as TxId,
+                        system_time: st_from_unix_epoch(id as u64),
+                    },
+                    record: vec![(id % 256) as u8],
+                })
+                .collect();
+
+            Self {
+                records,
+                tx_sender: broadcast::channel(1).0,
+            }
+        }
+    }
+
+    impl TxLogReader for SnapshotLog {
+        async fn read_txs_after(
+            &self,
+            after_tx_id: Option<TxId>,
+            limit: u16,
+        ) -> Result<Vec<Record>> {
+            let start = after_tx_id.map(|id| id as usize + 1).unwrap_or(0);
+            let end = std::cmp::min(start + limit as usize, self.records.len());
+            if start >= self.records.len() {
+                return Ok(vec![]);
+            }
+            Ok(self.records[start..end].to_vec())
+        }
+
+        async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+            self.tx_sender.subscribe()
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn append_does_not_wait_for_pending_subscription_read() {
         let log = Arc::new(SlowReadLog::new());
@@ -226,5 +275,19 @@ mod tests {
 
         log.release_read.notify_waiters();
         token.cancel();
+    }
+
+    #[tokio::test]
+    async fn catch_up_handles_more_than_u16_max_records() {
+        let log = SnapshotLog::new(u16::MAX as usize + 3);
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = CancellationToken::new();
+        let mut last_tx_id = None;
+
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, u16::MAX, &token).await;
+
+        let subscriber = subscriber.read().await;
+        assert_eq!(subscriber.records.len(), u16::MAX as usize + 3);
+        assert_eq!(last_tx_id, Some(u16::MAX as TxId + 2));
     }
 }
