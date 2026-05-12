@@ -172,7 +172,7 @@ impl Node<FileLog> {
             metadata,
             latest_indexed_tx,
         )));
-        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
+        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock)).await?);
 
         let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
 

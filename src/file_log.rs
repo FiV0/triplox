@@ -3,38 +3,42 @@ use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
 use crate::transaction::TxKey;
 use anyhow::Result;
 use log::warn;
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{broadcast, Mutex};
+
+const READ_CHUNK_SIZE: usize = 8 * 1024;
 
 pub struct FileLog {
     path: PathBuf,
     state: Mutex<FileLogState>,
+    committed_len: AtomicU64,
     tx_sender: broadcast::Sender<Record>,
 }
 
 struct FileLogState {
-    file: BufWriter<File>,
+    file: File,
     clock: Box<dyn SystemTimeSource>,
 }
 
 impl FileLog {
-    pub fn new(path: &Path, clock: Box<dyn SystemTimeSource>) -> io::Result<Self> {
+    pub async fn new(path: &Path, clock: Box<dyn SystemTimeSource>) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)?;
-        file.seek(SeekFrom::End(0))?;
+            .open(path)
+            .await?;
+        let committed_len = file.seek(SeekFrom::End(0)).await?;
 
         Ok(FileLog {
             path: path.to_path_buf(),
-            state: Mutex::new(FileLogState {
-                file: BufWriter::new(file),
-                clock,
-            }),
+            state: Mutex::new(FileLogState { file, clock }),
+            committed_len: AtomicU64::new(committed_len),
             tx_sender: broadcast::channel(1024).0,
         })
     }
@@ -42,27 +46,54 @@ impl FileLog {
 
 impl TxLogReader for FileLog {
     async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
-        let mut file = OpenOptions::new().read(true).open(&self.path)?;
+        let committed_len = self.committed_len.load(Ordering::Acquire);
+        let mut file = OpenOptions::new().read(true).open(&self.path).await?;
         let mut records = Vec::new();
 
-        match after_tx_id {
-            None => {
-                file.seek(SeekFrom::Start(0))?;
-            }
-            Some(id) => {
-                file.seek(SeekFrom::Start(id as u64))?;
-                // Skip the record at `id` — we've already processed it
-                let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
-                if _skipped.is_err() {
-                    return Ok(records); // nothing after this record
-                }
-            }
+        let start = after_tx_id.map(|id| id as u64).unwrap_or(0);
+        if start >= committed_len {
+            return Ok(records);
         }
 
-        for _ in 0..limit {
-            match bincode::deserialize_from(&mut file) {
-                Ok(record) => records.push(record),
-                Err(_) => break, // EOF or corrupted data
+        file.seek(SeekFrom::Start(start)).await?;
+        let mut bytes = Vec::new();
+        let mut file_pos = start;
+        let mut consumed = 0;
+        let mut skip_next_record = after_tx_id.is_some();
+
+        while records.len() < limit as usize {
+            let record = loop {
+                let before = consumed;
+                let mut cursor = Cursor::new(&bytes);
+                cursor.set_position(before);
+
+                match bincode::deserialize_from(&mut cursor) {
+                    Ok(record) => {
+                        consumed = cursor.position();
+                        break Some(record);
+                    }
+                    Err(_) if file_pos < committed_len => {
+                        let remaining = (committed_len - file_pos) as usize;
+                        let read_len = remaining.min(READ_CHUNK_SIZE);
+                        let previous_len = bytes.len();
+
+                        bytes.resize(previous_len + read_len, 0);
+                        file.read_exact(&mut bytes[previous_len..]).await?;
+                        file_pos += read_len as u64;
+                        consumed = before;
+                    }
+                    Err(_) => break None,
+                }
+            };
+
+            let Some(record) = record else {
+                break;
+            };
+
+            if skip_next_record {
+                skip_next_record = false;
+            } else {
+                records.push(record);
             }
         }
 
@@ -77,7 +108,7 @@ impl TxLogReader for FileLog {
 impl TxLogWriter for FileLog {
     async fn append_tx(&self, record: Vec<u8>) -> TxKey {
         let mut state = self.state.lock().await;
-        let tx_id = state.file.stream_position().unwrap() as TxId;
+        let tx_id = self.committed_len.load(Ordering::Acquire) as TxId;
 
         let record = Record {
             tx_key: TxKey {
@@ -87,10 +118,24 @@ impl TxLogWriter for FileLog {
             record,
         };
 
-        // Serialize and write the record
-        bincode::serialize_into(&mut state.file, &record).unwrap();
-        state.file.flush().unwrap();
-        state.file.get_ref().sync_data().unwrap();
+        let bytes = bincode::serialize(&record).expect("failed to serialize file log record");
+        state
+            .file
+            .write_all(&bytes)
+            .await
+            .expect("failed to write file log record");
+        state
+            .file
+            .flush()
+            .await
+            .expect("failed to flush file log record");
+        state
+            .file
+            .sync_data()
+            .await
+            .expect("failed to sync file log record");
+        self.committed_len
+            .store(tx_id as u64 + bytes.len() as u64, Ordering::Release);
         drop(state);
 
         // Notify subscribers
@@ -109,8 +154,10 @@ mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, MockClock};
     use crate::log::{subscribe, MockSubscriber};
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use tempfile::tempdir;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::RwLock;
 
     use crate::logging::init;
@@ -131,7 +178,7 @@ mod tests {
             st_from_unix_epoch(400),
         ]);
 
-        let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).unwrap());
+        let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).await.unwrap());
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         log.append_tx(vec![1, 2, 3]).await;
@@ -179,7 +226,7 @@ mod tests {
 
         let clock = MockClock::new(vec![st_from_unix_epoch(0), st_from_unix_epoch(100)]);
 
-        let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).unwrap());
+        let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).await.unwrap());
 
         // Write one transaction
         log.append_tx(vec![1, 2, 3]).await;
@@ -224,7 +271,9 @@ mod tests {
             &file_path,
             Box::new(MockClock::new(vec![st_from_unix_epoch(0)])),
         )
+        .await
         .unwrap();
+        let _receiver = log.subscribe_txs().await;
         log.append_tx(vec![1, 2, 3]).await;
         drop(log);
 
@@ -232,6 +281,7 @@ mod tests {
             &file_path,
             Box::new(MockClock::new(vec![st_from_unix_epoch(100)])),
         )
+        .await
         .unwrap();
         log.append_tx(vec![4, 5, 6]).await;
 
@@ -239,5 +289,67 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].record, vec![1, 2, 3]);
         assert_eq!(records[1].record, vec![4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn test_file_log_ignores_bytes_past_committed_len() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_committed_len.log");
+
+        let log = FileLog::new(
+            &file_path,
+            Box::new(MockClock::new(vec![st_from_unix_epoch(0)])),
+        )
+        .await
+        .unwrap();
+        log.append_tx(vec![1, 2, 3]).await;
+
+        let mut external = OpenOptions::new()
+            .append(true)
+            .open(&file_path)
+            .await
+            .unwrap();
+        external.write_all(b"not a committed record").await.unwrap();
+        external.flush().await.unwrap();
+
+        let records = log.read_txs_after(None, u16::MAX).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_file_log_concurrent_appends_are_sequential() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_concurrent_append.log");
+        let append_count = 32usize;
+        let clock = MockClock::new(
+            (0..append_count)
+                .map(|id| st_from_unix_epoch(id as u64))
+                .collect(),
+        );
+        let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).await.unwrap());
+        let _receiver = log.subscribe_txs().await;
+
+        let mut handles = Vec::new();
+        for id in 0..append_count {
+            let log = log.clone();
+            handles.push(tokio::spawn(
+                async move { log.append_tx(vec![id as u8]).await },
+            ));
+        }
+
+        let mut appended_tx_ids = BTreeSet::new();
+        for handle in handles {
+            appended_tx_ids.insert(handle.await.unwrap().tx_id);
+        }
+
+        let records = log.read_txs_after(None, u16::MAX).await.unwrap();
+        let record_tx_ids: BTreeSet<_> = records.iter().map(|record| record.tx_key.tx_id).collect();
+
+        assert_eq!(records.len(), append_count);
+        assert_eq!(appended_tx_ids, record_tx_ids);
+        assert!(records
+            .windows(2)
+            .all(|window| window[0].tx_key.tx_id < window[1].tx_key.tx_id));
     }
 }
