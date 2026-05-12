@@ -232,6 +232,48 @@ impl TxLogReader for KafkaLog {
     }
 }
 
+fn read_record_at_offset(
+    consumer_config: &ClientConfig,
+    topic: &str,
+    offset: i64,
+    timeout: Duration,
+) -> Result<Record> {
+    let consumer_id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
+    let consumer: BaseConsumer = consumer_config
+        .clone()
+        .set(
+            "group.id",
+            format!(
+                "triplox-append-confirm-{}-{}",
+                std::process::id(),
+                consumer_id
+            ),
+        )
+        .create()
+        .context("Failed to create Kafka consumer for append confirmation")?;
+
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(topic, PARTITION, Offset::Offset(offset))
+        .context("Failed to set append confirmation offset")?;
+    consumer
+        .assign(&tpl)
+        .context("Failed to assign append confirmation partition")?;
+
+    match consumer.poll(Timeout::After(timeout)) {
+        Some(Ok(msg)) if msg.offset() == offset => message_to_record(&msg),
+        Some(Ok(msg)) => bail!(
+            "Kafka append confirmation read unexpected offset: expected {}, got {}",
+            offset,
+            msg.offset()
+        ),
+        Some(Err(e)) => Err(e).context("Kafka append confirmation consume failed"),
+        None => bail!(
+            "Timed out reading Kafka append confirmation at offset {}",
+            offset
+        ),
+    }
+}
+
 impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let _append_guard = self.append_lock.lock().await;
@@ -268,11 +310,14 @@ impl TxLogWriter for KafkaLog {
             );
         }
 
-        let tx_key = TxKey {
-            tx_id: offset,
-            system_time,
-        };
-
+        let tx_key = read_record_at_offset(
+            &self.consumer_config,
+            &self.topic,
+            offset,
+            Duration::from_secs(5),
+        )
+        .context("Failed to read Kafka append timestamp")?
+        .tx_key;
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
 
         Ok(tx_key)
@@ -347,9 +392,9 @@ mod tests {
         );
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        log.append_tx(vec![1, 2, 3]).await.unwrap();
-        log.append_tx(vec![4, 5, 6]).await.unwrap();
-        log.append_tx(vec![7, 8, 9]).await.unwrap();
+        let tx_key_0 = log.append_tx(vec![1, 2, 3]).await.unwrap();
+        let tx_key_1 = log.append_tx(vec![4, 5, 6]).await.unwrap();
+        let tx_key_2 = log.append_tx(vec![7, 8, 9]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -361,6 +406,9 @@ mod tests {
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
         assert_eq!(subscriber.records[1].record, vec![4, 5, 6]);
         assert_eq!(subscriber.records[2].record, vec![7, 8, 9]);
+        assert_eq!(subscriber.records[0].tx_key, tx_key_0);
+        assert_eq!(subscriber.records[1].tx_key, tx_key_1);
+        assert_eq!(subscriber.records[2].tx_key, tx_key_2);
 
         let tx_id_1 = subscriber.records[1].tx_key.tx_id;
         drop(subscriber);
