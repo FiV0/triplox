@@ -28,15 +28,24 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     log: &L,
     last_tx_id: &mut Option<TxId>,
     subscriber: &Arc<tokio::sync::RwLock<S>>,
-    limit: u16,
+    batch_limit: u16,
+    max_records: Option<u64>,
     task_token: &CancellationToken,
 ) {
+    let mut remaining = max_records;
+
     loop {
         if task_token.is_cancelled() {
             break;
         }
 
-        let txs = log.read_txs_after(*last_tx_id, limit).await;
+        let read_limit = match remaining {
+            Some(0) => break,
+            Some(count) => count.min(batch_limit as u64) as u16,
+            None => batch_limit,
+        };
+
+        let txs = log.read_txs_after(*last_tx_id, read_limit).await;
         match txs {
             Ok(txs) if txs.is_empty() => break,
             Ok(txs) => {
@@ -46,7 +55,10 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
                     subscriber.accept(tx.clone()).await;
                 }
                 *last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
-                if txs.len() < limit as usize {
+                if let Some(count) = remaining.as_mut() {
+                    *count = count.saturating_sub(txs.len() as u64);
+                }
+                if txs.len() < read_limit as usize {
                     break;
                 }
             }
@@ -73,7 +85,15 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
         info!("Starting subscriber, after tx id: {:?}", last_tx_id);
 
         // Catch-up phase: read historical transactions after last_tx_id
-        catch_up_transactions(log.as_ref(), &mut last_tx_id, &subscriber, 100, &task_token).await;
+        catch_up_transactions(
+            log.as_ref(),
+            &mut last_tx_id,
+            &subscriber,
+            100,
+            None,
+            &task_token,
+        )
+        .await;
 
         // Live updates phase
         loop {
@@ -96,6 +116,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                                 &mut last_tx_id,
                                 &subscriber,
                                 u16::MAX,
+                                Some(missed),
                                 &task_token,
                             )
                             .await;
@@ -284,10 +305,32 @@ mod tests {
         let token = CancellationToken::new();
         let mut last_tx_id = None;
 
-        catch_up_transactions(&log, &mut last_tx_id, &subscriber, u16::MAX, &token).await;
+        catch_up_transactions(
+            &log,
+            &mut last_tx_id,
+            &subscriber,
+            u16::MAX,
+            Some(u16::MAX as u64 + 3),
+            &token,
+        )
+        .await;
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), u16::MAX as usize + 3);
         assert_eq!(last_tx_id, Some(u16::MAX as TxId + 2));
+    }
+
+    #[tokio::test]
+    async fn catch_up_stops_after_max_records() {
+        let log = SnapshotLog::new(10);
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = CancellationToken::new();
+        let mut last_tx_id = None;
+
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, Some(3), &token).await;
+
+        let subscriber = subscriber.read().await;
+        assert_eq!(subscriber.records.len(), 3);
+        assert_eq!(last_tx_id, Some(2));
     }
 }
