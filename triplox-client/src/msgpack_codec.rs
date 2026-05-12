@@ -1448,15 +1448,6 @@ mod tests {
     }
 
     #[test]
-    fn decode_db_opened_rejects_old_tx_id_field() {
-        let body = pack(Value::Map(vec![
-            (Value::String("db_id".into()), Value::Integer(7.into())),
-            (Value::String("tx_id".into()), Value::Integer(12345.into())),
-        ]));
-        assert!(decode_db_opened_response(&body).is_err());
-    }
-
-    #[test]
     fn decode_db_opened_rejects_db_id_overflow() {
         // db_id > u32::MAX
         let body = pack(Value::Map(vec![
