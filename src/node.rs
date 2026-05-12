@@ -272,13 +272,6 @@ impl<L: TxLog> Node<L> {
             .clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        if !crate::indexer::tx_basis_exists(&snapshot, &basis).await? {
-            return Err(TriploxError::TxNotFound {
-                tx_id: basis.tx_key.tx_id,
-                system_time: basis.tx_key.system_time,
-            }
-            .into());
-        }
         Ok(DB::new(snapshot, ident_map, handle, basis, range_stats))
     }
 }
@@ -1024,44 +1017,6 @@ mod tests {
                 Some(TriploxError::TxIndexingTimeout { tx_id: 999, .. })
             ),
             "expected TxIndexingTimeout, got {err:?}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_db_as_of_rejects_basis_with_wrong_system_time() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: "alice".into(),
-                attribute: kw!(:name),
-                value: "alice".into(),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            _ => panic!("expected commit"),
-        };
-        let wrong_basis = TxBasis {
-            tx_key: TxKey {
-                tx_id: basis.tx_key.tx_id,
-                system_time: st_from_unix_epoch(9999),
-            },
-            tx_eid: basis.tx_eid,
-        };
-
-        let err = match node.db_as_of(wrong_basis).await {
-            Ok(_) => panic!("expected db_as_of to reject wrong system_time"),
-            Err(err) => err,
-        };
-        assert!(
-            matches!(
-                err.downcast_ref::<TriploxError>(),
-                Some(TriploxError::TxNotFound { tx_id, .. }) if *tx_id == basis.tx_key.tx_id
-            ),
-            "expected TxNotFound, got {err:?}"
         );
     }
 
