@@ -239,11 +239,7 @@ async fn open_db<L: TxLog + 'static>(
                 },
                 tx_eid,
             };
-            state
-                .node
-                .db_as_of(basis)
-                .await
-                .map_err(open_db_error)?;
+            state.node.db_as_of(basis).await.map_err(open_db_error)?;
             let db_id = state
                 .handle_store
                 .open(conn_id.0, basis)

@@ -43,7 +43,7 @@ outcome.
 | **200** | Success             | Request processed successfully. For `/tx/execute`, check the `status` field of the TxResult body: `0` = committed, `1` = aborted. |
 | **400** | Bad Request         | Malformed request body (decode failure), Datalog parse error, or invalid field combinations. |
 | **404** | Not Found           | Invalid or expired `db_id` handle. |
-| **500** | Internal Server Error | Unexpected engine error: query execution failure, transaction infrastructure error, or open DB handle exhaustion. |
+| **500** | Internal Server Error | Unexpected engine error: query execution failure or transaction infrastructure error. |
 
 All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body) body.
 
@@ -61,10 +61,6 @@ against it. Two cleanup mechanisms ensure handles are released:
    handles belonging to that connection are released immediately.
 2. **TTL reaper** (safety net): A background task periodically evicts handles
    that have not been used for 24 hours.
-
-Servers should enforce a configurable maximum number of open DB handles
-(default 1024). Exceeding the limit returns
-`ErrorResponse(code=5001 TooManyOpenDbs)`.
 
 Using an invalid or closed `db_id` returns
 `ErrorResponse(code=5000 InvalidDbHandle)` with HTTP status 404.
@@ -308,7 +304,7 @@ a numeric error code (see §5).
 | 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted, 3002 TxNotIndexed                    |
 | 4xxx  | Internal/protocol     | 4000 InternalError, 4001 MessageTooLarge, 4002 InvalidMessageType, 4003 QueryCancelled, 4004 ServerShuttingDown |
-| 5xxx  | DB handle errors      | 5000 InvalidDbHandle, 5001 TooManyOpenDbs                          |
+| 5xxx  | DB handle errors      | 5000 InvalidDbHandle                                                |
 
 ---
 

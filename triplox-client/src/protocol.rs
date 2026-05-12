@@ -88,7 +88,6 @@ pub enum ErrorCode {
     ServerShuttingDown = 4004,
     // DB handle errors (5xxx)
     InvalidDbHandle = 5000,
-    TooManyOpenDbs = 5001,
 }
 
 impl ErrorCode {
@@ -109,7 +108,6 @@ impl ErrorCode {
             4003 => Ok(ErrorCode::QueryCancelled),
             4004 => Ok(ErrorCode::ServerShuttingDown),
             5000 => Ok(ErrorCode::InvalidDbHandle),
-            5001 => Ok(ErrorCode::TooManyOpenDbs),
             _ => bail!("Unknown error code: {}", code),
         }
     }
