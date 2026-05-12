@@ -72,6 +72,7 @@ services:
     depends_on:
       automq:
         condition: service_healthy
+    # Keep WAL records until Triplox has checkpoint-aware Kafka truncation.
     entrypoint: /bin/sh
     command: >
       -c "
@@ -81,6 +82,8 @@ services:
       --topic triplox-tx-log
       --partitions 1
       --replication-factor 1
+      --config retention.ms=-1
+      --config retention.bytes=-1
       "
 
   triplox:

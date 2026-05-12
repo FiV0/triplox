@@ -429,7 +429,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
-        Ok(self.log.append_tx(serialized).await)
+        self.log.append_tx(serialized).await
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
@@ -438,7 +438,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let waiter = self.indexer.read().await.tx_waiter();
 
-        let tx_key = self.log.append_tx(serialized).await;
+        let tx_key = self.log.append_tx(serialized).await?;
 
         let completion = waiter.await_tx(tx_key).await?;
         let basis = completion.basis.ok_or_else(|| {

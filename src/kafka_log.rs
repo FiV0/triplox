@@ -1,10 +1,11 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Timelike, Utc};
-use log::warn;
+use log::{error, warn};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -19,6 +20,7 @@ use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
 use crate::transaction::TxKey;
 
 const PARTITION: i32 = 0;
+static NEXT_CONSUMER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KafkaLog {
     producer: FutureProducer,
@@ -27,7 +29,8 @@ pub struct KafkaLog {
     tx_sender: broadcast::Sender<Record>,
     clock: Mutex<Box<dyn SystemTimeSource>>,
     append_lock: Mutex<()>,
-    next_offset: AtomicI64,
+    next_offset: Arc<AtomicI64>,
+    _live_consumer: LiveConsumer,
 }
 
 impl KafkaLog {
@@ -59,6 +62,15 @@ impl KafkaLog {
             .context("Failed to fetch watermarks")?;
 
         let (tx_sender, _) = broadcast::channel(1024);
+        let next_offset = Arc::new(AtomicI64::new(high));
+
+        let live_consumer = spawn_live_consumer(
+            consumer_config.clone(),
+            topic.clone(),
+            tx_sender.clone(),
+            next_offset.clone(),
+            high,
+        )?;
 
         Ok(KafkaLog {
             producer,
@@ -67,9 +79,101 @@ impl KafkaLog {
             tx_sender,
             clock: Mutex::new(clock),
             append_lock: Mutex::new(()),
-            next_offset: AtomicI64::new(high),
+            next_offset,
+            _live_consumer: live_consumer,
         })
     }
+}
+
+struct LiveConsumer {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for LiveConsumer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            if handle.join().is_err() {
+                error!("Kafka live consumer thread panicked while stopping");
+            }
+        }
+    }
+}
+
+fn message_to_record<M: Message>(msg: &M) -> Result<Record> {
+    let offset = msg.offset();
+    let timestamp_ms = match msg.timestamp() {
+        rdkafka::Timestamp::CreateTime(ms) => ms,
+        rdkafka::Timestamp::LogAppendTime(ms) => ms,
+        rdkafka::Timestamp::NotAvailable => {
+            bail!("Kafka message at offset {} has no timestamp", offset);
+        }
+    };
+    let system_time = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_else(Utc::now);
+    let payload = msg.payload().unwrap_or_default().to_vec();
+
+    Ok(Record {
+        tx_key: TxKey {
+            tx_id: offset,
+            system_time,
+        },
+        record: payload,
+    })
+}
+
+fn spawn_live_consumer(
+    consumer_config: ClientConfig,
+    topic: String,
+    tx_sender: broadcast::Sender<Record>,
+    next_offset: Arc<AtomicI64>,
+    start_offset: i64,
+) -> Result<LiveConsumer> {
+    let consumer_id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
+    let thread_name = format!("triplox-kafka-live-{}", consumer_id);
+    let consumer: BaseConsumer = consumer_config
+        .clone()
+        .set(
+            "group.id",
+            format!("triplox-live-{}-{}", std::process::id(), consumer_id),
+        )
+        .create()
+        .context("Failed to create Kafka consumer for live updates")?;
+
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(&topic, PARTITION, Offset::Offset(start_offset))
+        .context("Failed to set Kafka live consumer offset")?;
+    consumer
+        .assign(&tpl)
+        .context("Failed to assign Kafka live consumer partition")?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let handle = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                match consumer.poll(Timeout::After(Duration::from_millis(100))) {
+                    Some(Ok(msg)) => match message_to_record(&msg) {
+                        Ok(record) => {
+                            next_offset.fetch_max(record.tx_key.tx_id + 1, Ordering::Release);
+                            if let Err(e) = tx_sender.send(record) {
+                                warn!("Failed to send record from kafka log to subscribers: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Kafka live consumer record error: {}", e),
+                    },
+                    Some(Err(e)) => error!("Kafka live consumer error: {}", e),
+                    None => {}
+                }
+            }
+        })
+        .context("Failed to spawn Kafka live consumer thread")?;
+
+    Ok(LiveConsumer {
+        stop,
+        handle: Some(handle),
+    })
 }
 
 impl TxLogReader for KafkaLog {
@@ -79,11 +183,6 @@ impl TxLogReader for KafkaLog {
             Some(id) => id + 1,
         };
 
-        let high = self.next_offset.load(Ordering::Acquire);
-        if start_offset >= high {
-            return Ok(vec![]);
-        }
-
         // Create a temporary consumer for this read
         let consumer: BaseConsumer = self
             .consumer_config
@@ -91,6 +190,14 @@ impl TxLogReader for KafkaLog {
             .set("group.id", format!("triplox-read-{}", start_offset))
             .create()
             .context("Failed to create Kafka consumer for read")?;
+
+        let (_low, high) = consumer
+            .fetch_watermarks(&self.topic, PARTITION, Duration::from_secs(5))
+            .context("Failed to fetch watermarks")?;
+        self.next_offset.fetch_max(high, Ordering::Release);
+        if start_offset >= high {
+            return Ok(vec![]);
+        }
 
         let mut tpl = TopicPartitionList::new();
         tpl.add_partition_offset(&self.topic, PARTITION, Offset::Offset(start_offset))
@@ -105,26 +212,7 @@ impl TxLogReader for KafkaLog {
         while (records.len() as i64) < (end_offset - start_offset) {
             match consumer.poll(Timeout::After(Duration::from_secs(2))) {
                 Some(Ok(msg)) => {
-                    let offset = msg.offset();
-                    let timestamp_ms = match msg.timestamp() {
-                        rdkafka::Timestamp::CreateTime(ms) => ms,
-                        rdkafka::Timestamp::LogAppendTime(ms) => ms,
-                        rdkafka::Timestamp::NotAvailable => {
-                            bail!("Kafka message at offset {} has no timestamp", offset);
-                        }
-                    };
-                    let system_time =
-                        DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_else(Utc::now);
-
-                    let payload = msg.payload().unwrap_or_default().to_vec();
-
-                    records.push(Record {
-                        tx_key: TxKey {
-                            tx_id: offset,
-                            system_time,
-                        },
-                        record: payload,
-                    });
+                    records.push(message_to_record(&msg)?);
                 }
                 Some(Err(e)) => {
                     bail!("Kafka consume error: {}", e);
@@ -145,7 +233,7 @@ impl TxLogReader for KafkaLog {
 }
 
 impl TxLogWriter for KafkaLog {
-    async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+    async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let _append_guard = self.append_lock.lock().await;
 
         // Truncate to millisecond precision to match Kafka timestamp resolution
@@ -169,23 +257,25 @@ impl TxLogWriter for KafkaLog {
             )
             .await;
 
-        let (partition, offset) = delivery_result.expect("Kafka produce failed");
-        assert_eq!(partition, PARTITION, "Unexpected partition assignment");
+        let (partition, offset) = delivery_result
+            .map_err(|(e, _message)| e)
+            .context("Kafka produce failed")?;
+        if partition != PARTITION {
+            bail!(
+                "Kafka produced to unexpected partition: expected {}, got {}",
+                PARTITION,
+                partition
+            );
+        }
 
         let tx_key = TxKey {
             tx_id: offset,
             system_time,
         };
 
-        let log_record = Record { tx_key, record };
+        self.next_offset.fetch_max(offset + 1, Ordering::Release);
 
-        self.next_offset.store(offset + 1, Ordering::Release);
-
-        if let Err(e) = self.tx_sender.send(log_record) {
-            warn!("Failed to send record from kafka log to subscribers: {}", e);
-        }
-
-        tx_key
+        Ok(tx_key)
     }
 }
 
@@ -195,7 +285,7 @@ impl TxLog for KafkaLog {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::{st_from_unix_epoch, MockClock};
+    use crate::clock::{st_from_unix_epoch, MockClock, SystemClock};
     use crate::log::{subscribe, MockSubscriber};
     use std::sync::Arc;
     use std::time::Duration;
@@ -211,6 +301,25 @@ mod tests {
         format!("triplox-test-{}", uuid::Uuid::new_v4())
     }
 
+    async fn create_topic(bootstrap: &str, topic: &str) {
+        let admin_client: rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> =
+            ClientConfig::new()
+                .set("bootstrap.servers", bootstrap)
+                .create()
+                .expect("Failed to create admin client");
+
+        use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
+        admin_client
+            .create_topics(
+                &[NewTopic::new(topic, 1, TopicReplication::Fixed(1))],
+                &AdminOptions::new(),
+            )
+            .await
+            .expect("Failed to create topic");
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_kafka_log() {
         init();
@@ -220,24 +329,7 @@ mod tests {
         };
         let topic = unique_topic();
 
-        // Create the topic with a single partition
-        let admin_client: rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> =
-            ClientConfig::new()
-                .set("bootstrap.servers", &bootstrap)
-                .create()
-                .expect("Failed to create admin client");
-
-        use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
-        admin_client
-            .create_topics(
-                &[NewTopic::new(&topic, 1, TopicReplication::Fixed(1))],
-                &AdminOptions::new(),
-            )
-            .await
-            .expect("Failed to create topic");
-
-        // Wait for topic to be ready
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        create_topic(&bootstrap, &topic).await;
 
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let clock = MockClock::new(vec![
@@ -255,9 +347,9 @@ mod tests {
         );
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        log.append_tx(vec![1, 2, 3]).await;
-        log.append_tx(vec![4, 5, 6]).await;
-        log.append_tx(vec![7, 8, 9]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
+        log.append_tx(vec![7, 8, 9]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -277,8 +369,8 @@ mod tests {
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
         let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await;
 
-        log.append_tx(vec![10, 11, 12]).await;
-        log.append_tx(vec![13, 14, 15]).await;
+        log.append_tx(vec![10, 11, 12]).await.unwrap();
+        log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -301,22 +393,7 @@ mod tests {
         };
         let topic = unique_topic();
 
-        let admin_client: rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> =
-            ClientConfig::new()
-                .set("bootstrap.servers", &bootstrap)
-                .create()
-                .expect("Failed to create admin client");
-
-        use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
-        admin_client
-            .create_topics(
-                &[NewTopic::new(&topic, 1, TopicReplication::Fixed(1))],
-                &AdminOptions::new(),
-            )
-            .await
-            .expect("Failed to create topic");
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        create_topic(&bootstrap, &topic).await;
 
         let clock = MockClock::new(vec![
             st_from_unix_epoch(1_000_000),
@@ -330,7 +407,7 @@ mod tests {
         );
 
         // Write one transaction
-        log.append_tx(vec![1, 2, 3]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
 
         // Subscribe from the beginning
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
@@ -347,5 +424,58 @@ mod tests {
             "Should process transaction exactly once"
         );
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_kafka_log_observes_broker_appended_records() {
+        init();
+        let Some(bootstrap) = test_bootstrap_servers() else {
+            eprintln!("Skipping: KAFKA_BOOTSTRAP_SERVERS not set");
+            return;
+        };
+        let topic = unique_topic();
+        create_topic(&bootstrap, &topic).await;
+
+        let log = Arc::new(
+            KafkaLog::new(&bootstrap, topic.clone(), Box::new(SystemClock))
+                .await
+                .unwrap(),
+        );
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", &bootstrap)
+            .set("message.timeout.ms", "5000")
+            .create()
+            .expect("Failed to create Kafka producer");
+        let payload = vec![42, 43, 44];
+        producer
+            .send(
+                FutureRecord::<str, _>::to(&topic)
+                    .partition(PARTITION)
+                    .payload(&payload)
+                    .timestamp(1_000),
+                Timeout::After(Duration::from_secs(5)),
+            )
+            .await
+            .expect("Kafka produce failed");
+
+        let replayed = log.read_txs_after(None, 10).await.unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].record, payload);
+
+        for _ in 0..20 {
+            if subscriber.read().await.records.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        token.cancel();
+
+        let subscriber = subscriber.read().await;
+        assert_eq!(subscriber.records.len(), 1);
+        assert_eq!(subscriber.records[0].record, vec![42, 43, 44]);
     }
 }

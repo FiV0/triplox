@@ -69,7 +69,7 @@ impl TxLogReader for MemoryLog {
 }
 
 impl TxLogWriter for MemoryLog {
-    async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+    async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let mut state = self.state.write().await;
         let record = Record {
             tx_key: TxKey {
@@ -88,7 +88,7 @@ impl TxLogWriter for MemoryLog {
                 e
             );
         }
-        tx_key
+        Ok(tx_key)
     }
 }
 
@@ -116,9 +116,9 @@ mod tests {
         let log = Arc::new(MemoryLog::new(Box::new(clock)));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        log.append_tx(vec![1, 2, 3]).await;
-        log.append_tx(vec![4, 5, 6]).await;
-        log.append_tx(vec![7, 8, 9]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
+        log.append_tx(vec![7, 8, 9]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -164,8 +164,8 @@ mod tests {
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
         let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
-        log.append_tx(vec![10, 11, 12]).await;
-        log.append_tx(vec![13, 14, 15]).await;
+        log.append_tx(vec![10, 11, 12]).await.unwrap();
+        log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -186,7 +186,7 @@ mod tests {
         let log = Arc::new(MemoryLog::new(Box::new(clock)));
 
         // Write one transaction
-        log.append_tx(vec![1, 2, 3]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));

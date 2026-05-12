@@ -154,7 +154,7 @@ pub trait TxLogReader: Send + Sync + 'static {
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {
-    fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = TxKey> + Send;
+    fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = Result<TxKey>> + Send;
 }
 
 pub trait TxLog: TxLogReader + TxLogWriter {
@@ -229,7 +229,7 @@ mod tests {
     }
 
     impl TxLogWriter for SlowReadLog {
-        async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+        async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
             let mut records = self.records.lock().await;
             let tx_key = TxKey {
                 tx_id: records.len() as TxId,
@@ -239,7 +239,7 @@ mod tests {
             records.push(record.clone());
             drop(records);
             let _ = self.tx_sender.send(record);
-            tx_key
+            Ok(tx_key)
         }
     }
 
@@ -299,7 +299,8 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(100), log.append_tx(vec![1, 2, 3]))
             .await
-            .expect("append should not wait for subscription read");
+            .expect("append should not wait for subscription read")
+            .unwrap();
 
         log.release_read.notify_waiters();
         token.cancel();
