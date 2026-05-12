@@ -310,12 +310,13 @@ impl TxLogWriter for KafkaLog {
             );
         }
 
-        let tx_key = read_record_at_offset(
-            &self.consumer_config,
-            &self.topic,
-            offset,
-            Duration::from_secs(5),
-        )
+        let consumer_config = self.consumer_config.clone();
+        let topic = self.topic.clone();
+        let tx_key = tokio::task::spawn_blocking(move || {
+            read_record_at_offset(&consumer_config, &topic, offset, Duration::from_secs(5))
+        })
+        .await
+        .context("Kafka append confirmation task failed")?
         .context("Failed to read Kafka append timestamp")?
         .tx_key;
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
