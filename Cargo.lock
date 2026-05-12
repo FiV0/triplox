@@ -3325,7 +3325,7 @@ dependencies = [
 [[package]]
 name = "slatedb_estimates"
 version = "0.1.0"
-source = "git+https://github.com/FiV0/slatedb-estimates?rev=baf6c933bc6c443d63a97bfc761a9e1240bcf16d#baf6c933bc6c443d63a97bfc761a9e1240bcf16d"
+source = "git+https://github.com/FiV0/slatedb-estimates?rev=055bc31d4817b6354329c4929dfe6b5eab24d618#055bc31d4817b6354329c4929dfe6b5eab24d618"
 dependencies = [
  "slatedb",
 ]
