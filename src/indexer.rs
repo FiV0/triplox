@@ -142,12 +142,12 @@ pub(crate) fn write_index_entries(
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
 /// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
 /// `:db/txInstant`.
-pub async fn latest_tx_basis_from_read_ops<D>(read_ops: &D) -> Result<TxBasis>
+pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
 where
     D: DbReadOps + Sync,
 {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
-    let mut iter = read_ops
+    let mut iter = sdb
         .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut first_eid: Option<i64> = None;
@@ -188,10 +188,6 @@ where
             bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
         }
     }
-}
-
-pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxBasis> {
-    latest_tx_basis_from_read_ops(snapshot.as_ref()).await
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
@@ -946,8 +942,8 @@ mod tests {
         }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let snapshot = slate.snapshot().await?;
+        let latest = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 42);
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(1000));
         assert!(latest.tx_eid > 0, "tx_eid should be a valid entity ID");
@@ -974,8 +970,8 @@ mod tests {
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let snapshot = slate.snapshot().await?;
+        let latest = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 3, "Should return highest tx_id");
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(300));
         Ok(())

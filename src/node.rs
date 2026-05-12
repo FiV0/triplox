@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
-use crate::indexer::{latest_tx_basis_from_read_ops, latest_tx_basis_from_snapshot, Indexer};
+use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -30,7 +30,7 @@ where
     D: slatedb::DbReadOps + Send + Sync + 'static,
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
-    read_ops: Arc<D>,
+    sdb: Arc<D>,
     ident_map: IdentMap,
     handle: Handle,
     tx_basis: TxBasis,
@@ -44,14 +44,14 @@ where
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
     pub fn new(
-        read_ops: Arc<D>,
+        sdb: Arc<D>,
         ident_map: IdentMap,
         handle: Handle,
         tx_basis: TxBasis,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Self {
         Self {
-            read_ops,
+            sdb,
             ident_map,
             handle,
             tx_basis,
@@ -59,16 +59,16 @@ where
         }
     }
 
-    /// Construct a DB from read ops by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
-    pub async fn from_latest_read_ops(
-        read_ops: Arc<D>,
+    /// Construct a DB from sdb by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
+    pub async fn from_latest_sdb(
+        sdb: Arc<D>,
         ident_map: IdentMap,
         handle: Handle,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
-        let tx_basis = latest_tx_basis_from_read_ops(read_ops.as_ref()).await?;
+        let tx_basis = latest_tx_basis_from_sdb(sdb.as_ref()).await?;
         Ok(Self {
-            read_ops,
+            sdb,
             ident_map,
             handle,
             tx_basis,
@@ -99,7 +99,7 @@ where
         handle: Handle,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
-        Self::from_latest_read_ops(snapshot, ident_map, handle, range_stats).await
+        Self::from_latest_sdb(snapshot, ident_map, handle, range_stats).await
     }
 }
 
@@ -122,7 +122,7 @@ where
     ) -> Result<QueryResult, Error> {
         validate_query(query, args)?;
 
-        let read_ops = self.read_ops.clone();
+        let sdb = self.sdb.clone();
         let handle = self.handle.clone();
         let ident_map = self.ident_map.clone();
         let query = query.clone();
@@ -131,15 +131,7 @@ where
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(
-                &query,
-                &args,
-                read_ops,
-                handle,
-                &ident_map,
-                as_of,
-                range_stats,
-            )
+            execute_query(&query, &args, sdb, handle, &ident_map, as_of, range_stats)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -184,8 +176,8 @@ impl Node<FileLog> {
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
-        let snapshot = Arc::new(slate.db.snapshot().await?);
-        let latest_indexed = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let snapshot = slate.db.snapshot().await?;
+        let latest_indexed = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
         // Bootstrap and the first FileLog transaction both currently use tx_id=0,
         // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
         // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
@@ -428,7 +420,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_db_can_query_from_db_read_ops() {
+    async fn test_db_can_query_from_sdb() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -448,7 +440,7 @@ mod tests {
             .schema
             .ident_map
             .clone();
-        let db = DB::from_latest_read_ops(
+        let db = DB::from_latest_sdb(
             node.slate.db.clone(),
             ident_map,
             Handle::current(),
