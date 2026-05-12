@@ -613,10 +613,38 @@ impl TxWaiter {
                     // Keep waiting for higher tx_id
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
+                    // TODO(#282): recover exact tx outcome or fail instead of risking a later tx's result.
                     // Channel overflowed. Just continue waiting - we'll eventually
                     // get the notification or the channel will close.
                     continue;
                 }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "Indexer shutdown while waiting for tx {}",
+                        tx_key.tx_id
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Wait until indexing has reached `tx_key`, regardless of whether that
+    /// transaction committed or aborted.
+    pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
+        if let Some(latest_basis) = self.latest_tx {
+            if tx_key.tx_id <= latest_basis.tx_key.tx_id {
+                return Ok(());
+            }
+        }
+
+        loop {
+            match self.rx.recv().await {
+                Ok((completed_tx_key, _completed_basis, _result)) => {
+                    if completed_tx_key.tx_id >= tx_key.tx_id {
+                        return Ok(());
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_count)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
                     return Err(anyhow::anyhow!(
                         "Indexer shutdown while waiting for tx {}",

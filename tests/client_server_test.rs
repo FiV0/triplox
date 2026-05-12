@@ -11,7 +11,7 @@ use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
-use triplox::TransactionResult;
+use triplox::{TransactionResult, TxBasis, TxKey};
 
 async fn define_base_schema(client: &ClientNode) {
     let result = client.execute_tx(test_schema_tx()).await.unwrap();

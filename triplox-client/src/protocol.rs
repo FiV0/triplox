@@ -79,6 +79,7 @@ pub enum ErrorCode {
     // Transaction errors (3xxx)
     TxError = 3000,
     TxAborted = 3001,
+    TxNotIndexed = 3002,
     // Internal/protocol errors (4xxx)
     InternalError = 4000,
     MessageTooLarge = 4001,
@@ -101,6 +102,7 @@ impl ErrorCode {
             2003 => Ok(ErrorCode::EmptyQuery),
             3000 => Ok(ErrorCode::TxError),
             3001 => Ok(ErrorCode::TxAborted),
+            3002 => Ok(ErrorCode::TxNotIndexed),
             4000 => Ok(ErrorCode::InternalError),
             4001 => Ok(ErrorCode::MessageTooLarge),
             4002 => Ok(ErrorCode::InvalidMessageType),
