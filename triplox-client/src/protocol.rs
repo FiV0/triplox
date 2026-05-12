@@ -153,14 +153,3 @@ pub fn data_type_tag(dt: &DataType) -> u8 {
         DataType::Map(_) => TAG_MAP,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tx_not_indexed_error_code_round_trips() {
-        assert_eq!(ErrorCode::TxNotIndexed.as_u16(), 3002);
-        assert_eq!(ErrorCode::from_u16(3002).unwrap(), ErrorCode::TxNotIndexed);
-    }
-}

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Error, Result};
+use anyhow::{Error, Result};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -51,6 +51,12 @@ use triplox_client::transaction::{TxBasis, TxKey};
 // ---------------------------------------------------------------------------
 
 const MAX_OPEN_DBS: usize = 1024;
+
+#[derive(Debug, thiserror::Error)]
+enum OpenDbError {
+    #[error("Too many open DB snapshots (max {max})")]
+    TooManyOpenDbs { max: usize },
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct DbCacheKey {
@@ -103,7 +109,7 @@ impl DbCache {
                 return Ok(entry.db.clone());
             }
             if entries.len() >= MAX_OPEN_DBS {
-                bail!("Too many open DB snapshots (max {})", MAX_OPEN_DBS);
+                return Err(OpenDbError::TooManyOpenDbs { max: MAX_OPEN_DBS }.into());
             }
         }
 
@@ -116,7 +122,7 @@ impl DbCache {
             return Ok(entry.db.clone());
         }
         if entries.len() >= MAX_OPEN_DBS {
-            bail!("Too many open DB snapshots (max {})", MAX_OPEN_DBS);
+            return Err(OpenDbError::TooManyOpenDbs { max: MAX_OPEN_DBS }.into());
         }
         entries.insert(
             key,
@@ -314,7 +320,10 @@ fn open_db_error(e: Error) -> ApiError {
         Some(TriploxError::TxIndexingTimeout { .. }) => {
             ApiError::new(StatusCode::CONFLICT, ErrorCode::TxNotIndexed, message)
         }
-        _ => ApiError::internal(ErrorCode::TooManyOpenDbs, message),
+        _ if e.downcast_ref::<OpenDbError>().is_some() => {
+            ApiError::internal(ErrorCode::TooManyOpenDbs, message)
+        }
+        _ => ApiError::internal(ErrorCode::InternalError, message),
     }
 }
 
@@ -370,7 +379,7 @@ async fn open_db<L: TxLog + 'static>(
                 .handle_store
                 .open(conn_id.0, cache_key, || async move { Ok(db) })
                 .await
-                .map_err(|e| ApiError::internal(ErrorCode::TooManyOpenDbs, e.to_string()))?;
+                .map_err(open_db_error)?;
             (db_id, tx_id)
         }
         (Some(tid), Some(system_time), Some(tx_eid)) => {
@@ -747,5 +756,19 @@ async fn serve_connection(
             conn.as_mut().graceful_shutdown();
             let _ = conn.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_db_error_maps_only_capacity_to_too_many_open_dbs() {
+        let capacity = open_db_error(OpenDbError::TooManyOpenDbs { max: 1 }.into());
+        assert_eq!(capacity.code, ErrorCode::TooManyOpenDbs);
+
+        let internal = open_db_error(anyhow::anyhow!("storage unavailable"));
+        assert_eq!(internal.code, ErrorCode::InternalError);
     }
 }
