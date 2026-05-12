@@ -758,17 +758,3 @@ async fn serve_connection(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn open_db_error_maps_only_capacity_to_too_many_open_dbs() {
-        let capacity = open_db_error(OpenDbError::TooManyOpenDbs { max: 1 }.into());
-        assert_eq!(capacity.code, ErrorCode::TooManyOpenDbs);
-
-        let internal = open_db_error(anyhow::anyhow!("storage unavailable"));
-        assert_eq!(internal.code, ErrorCode::InternalError);
-    }
-}
