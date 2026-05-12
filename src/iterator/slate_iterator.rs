@@ -19,9 +19,8 @@ pub(crate) trait Index {
 /// Type alias for extractor functions that extract a component from a full key.
 pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
 
-pub(crate) struct SlateIterator<D, M>
+pub(crate) struct SlateIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
     inner: slatedb::DbIterator,
@@ -30,21 +29,22 @@ where
     handle: Handle,
     extractor: Extractor,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    _read_ops: std::marker::PhantomData<D>,
 }
 
-impl<D, M> SlateIterator<D, M>
+impl<M> SlateIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
-    pub fn new(
+    pub fn new<D>(
         prefix: &[u8],
         slate: &Arc<D>,
         handle: Handle,
         extractor: Extractor,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        D: DbReadOps + Send + Sync,
+    {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let mut iterator = handle.block_on(
             slate
@@ -62,14 +62,12 @@ where
             handle,
             extractor,
             range_stats,
-            _read_ops: std::marker::PhantomData,
         })
     }
 }
 
-impl<D, M> Index for SlateIterator<D, M>
+impl<M> Index for SlateIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
     fn count(&self) -> Result<u64, Error> {

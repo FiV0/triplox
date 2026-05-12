@@ -22,9 +22,8 @@ use super::slate_iterator::{Extractor, Index};
 ///
 /// TODO(#102): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
-pub(crate) struct TemporalFilterIterator<D, M>
+pub(crate) struct TemporalFilterIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
     inner: slatedb::DbIterator,
@@ -34,7 +33,6 @@ where
     extractor: Extractor,
     as_of_encoded: [u8; 8],
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    _read_ops: std::marker::PhantomData<D>,
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
@@ -43,19 +41,21 @@ fn logical_key(key: &[u8]) -> &[u8] {
     &key[..key.len() - codec::TX_EID_OP_SUFFIX]
 }
 
-impl<D, M> TemporalFilterIterator<D, M>
+impl<M> TemporalFilterIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
-    pub fn new(
+    pub fn new<D>(
         prefix: &[u8],
         slate: &Arc<D>,
         handle: Handle,
         extractor: Extractor,
         as_of: i64,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        D: DbReadOps + Send + Sync,
+    {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let as_of_encoded = codec::encode_i64_bytes(as_of);
         let iterator = handle.block_on(
@@ -72,7 +72,6 @@ where
             extractor,
             as_of_encoded,
             range_stats,
-            _read_ops: std::marker::PhantomData,
         };
 
         // Advance to the first valid entry
@@ -147,9 +146,8 @@ where
     }
 }
 
-impl<D, M> Index for TemporalFilterIterator<D, M>
+impl<M> Index for TemporalFilterIterator<M>
 where
-    D: DbReadOps + Send + Sync,
     M: DbMetadataOps + Send + Sync,
 {
     fn count(&self) -> Result<u64, Error> {
