@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use anyhow::Error;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::codec;
@@ -21,14 +22,19 @@ use super::slate_iterator::{Extractor, Index};
 ///
 /// TODO(#102): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
-pub(crate) struct TemporalFilterIterator {
+pub(crate) struct TemporalFilterIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
     prefix: Bytes,
     handle: Handle,
     extractor: Extractor,
     as_of_encoded: [u8; 8],
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    _read_ops: std::marker::PhantomData<D>,
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
@@ -37,19 +43,26 @@ fn logical_key(key: &[u8]) -> &[u8] {
     &key[..key.len() - codec::TX_EID_OP_SUFFIX]
 }
 
-impl TemporalFilterIterator {
+impl<D, M> TemporalFilterIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     pub fn new(
         prefix: &[u8],
-        slate: &slatedb::DbSnapshot,
+        slate: &Arc<D>,
         handle: Handle,
         extractor: Extractor,
         as_of: i64,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let as_of_encoded = codec::encode_i64_bytes(as_of);
-        let iterator =
-            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
+        let iterator = handle.block_on(
+            slate
+                .as_ref()
+                .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS),
+        )?;
 
         let mut iter = Self {
             inner: iterator,
@@ -59,6 +72,7 @@ impl TemporalFilterIterator {
             extractor,
             as_of_encoded,
             range_stats,
+            _read_ops: std::marker::PhantomData,
         };
 
         // Advance to the first valid entry
@@ -133,7 +147,11 @@ impl TemporalFilterIterator {
     }
 }
 
-impl Index for TemporalFilterIterator {
+impl<D, M> Index for TemporalFilterIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     fn count(&self) -> Result<u64, Error> {
         Ok(self.handle.block_on(
             self.range_stats

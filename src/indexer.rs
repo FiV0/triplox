@@ -2,6 +2,7 @@ use anyhow::{bail, Error, Result};
 use bytes::Bytes;
 use log::{error, trace, warn};
 use slatedb::Db;
+use slatedb::DbReadOps;
 use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -141,9 +142,12 @@ pub(crate) fn write_index_entries(
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
 /// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
 /// `:db/txInstant`.
-pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxBasis> {
+pub async fn latest_tx_basis_from_read_ops<D>(read_ops: &D) -> Result<TxBasis>
+where
+    D: DbReadOps + Sync,
+{
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
-    let mut iter = snapshot
+    let mut iter = read_ops
         .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut first_eid: Option<i64> = None;
@@ -184,6 +188,10 @@ pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) 
             bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
         }
     }
+}
+
+pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxBasis> {
+    latest_tx_basis_from_read_ops(snapshot.as_ref()).await
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.

@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
-use crate::indexer::{latest_tx_basis_from_snapshot, Indexer};
+use crate::indexer::{latest_tx_basis_from_read_ops, latest_tx_basis_from_snapshot, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -25,25 +25,33 @@ pub use triplox_client::transaction::{TransactionResult, TxBasis, TxKey};
 
 const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub struct DB {
-    snapshot: Arc<slatedb::DbSnapshot>,
+pub struct DB<D = slatedb::DbSnapshot, M = slatedb::Db>
+where
+    D: slatedb::DbReadOps + Send + Sync + 'static,
+    M: slatedb::DbMetadataOps + Send + Sync + 'static,
+{
+    read_ops: Arc<D>,
     ident_map: IdentMap,
     handle: Handle,
     tx_basis: TxBasis,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 }
 
 #[allow(unused)]
-impl DB {
+impl<D, M> DB<D, M>
+where
+    D: slatedb::DbReadOps + Send + Sync + 'static,
+    M: slatedb::DbMetadataOps + Send + Sync + 'static,
+{
     pub fn new(
-        snapshot: Arc<slatedb::DbSnapshot>,
+        read_ops: Arc<D>,
         ident_map: IdentMap,
         handle: Handle,
         tx_basis: TxBasis,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Self {
         Self {
-            snapshot,
+            read_ops,
             ident_map,
             handle,
             tx_basis,
@@ -51,16 +59,16 @@ impl DB {
         }
     }
 
-    /// Construct a DB from a snapshot by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
-    pub async fn from_latest_snapshot(
-        snapshot: Arc<slatedb::DbSnapshot>,
+    /// Construct a DB from read ops by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
+    pub async fn from_latest_read_ops(
+        read_ops: Arc<D>,
         ident_map: IdentMap,
         handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
-        let tx_basis = crate::indexer::latest_tx_basis_from_snapshot(&snapshot).await?;
+        let tx_basis = latest_tx_basis_from_read_ops(read_ops.as_ref()).await?;
         Ok(Self {
-            snapshot,
+            read_ops,
             ident_map,
             handle,
             tx_basis,
@@ -81,7 +89,25 @@ impl DB {
     }
 }
 
-impl Database for DB {
+impl<M> DB<slatedb::DbSnapshot, M>
+where
+    M: slatedb::DbMetadataOps + Send + Sync + 'static,
+{
+    pub async fn from_latest_snapshot(
+        snapshot: Arc<slatedb::DbSnapshot>,
+        ident_map: IdentMap,
+        handle: Handle,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    ) -> Result<Self, Error> {
+        Self::from_latest_read_ops(snapshot, ident_map, handle, range_stats).await
+    }
+}
+
+impl<D, M> Database for DB<D, M>
+where
+    D: slatedb::DbReadOps + Send + Sync + 'static,
+    M: slatedb::DbMetadataOps + Send + Sync + 'static,
+{
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
         let parsed = query.into_query()?;
         self.query_with_args(&parsed, &[]).await
@@ -96,7 +122,7 @@ impl Database for DB {
     ) -> Result<QueryResult, Error> {
         validate_query(query, args)?;
 
-        let snapshot = self.snapshot.clone();
+        let read_ops = self.read_ops.clone();
         let handle = self.handle.clone();
         let ident_map = self.ident_map.clone();
         let query = query.clone();
@@ -108,7 +134,7 @@ impl Database for DB {
             execute_query(
                 &query,
                 &args,
-                snapshot,
+                read_ops,
                 handle,
                 &ident_map,
                 as_of,
@@ -399,6 +425,43 @@ mod tests {
             result[0],
             vec![DataType::String("test@example.com".to_string())]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_db_can_query_from_db_read_ops() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+
+        let ident_map = node
+            .indexer
+            .read()
+            .await
+            .metadata()
+            .schema
+            .ident_map
+            .clone();
+        let db = DB::from_latest_read_ops(
+            node.slate.db.clone(),
+            ident_map,
+            Handle::current(),
+            node.slate.range_stats.clone(),
+        )
+        .await
+        .unwrap();
+        let result = db
+            .query(r#"[:find ?name :where [?e :name ?name]]"#)
+            .await
+            .unwrap();
+
+        assert_eq!(result, vec![vec![DataType::String("alice".to_string())]]);
     }
 
     // End-to-end query tests

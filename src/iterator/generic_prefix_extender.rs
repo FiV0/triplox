@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use bytes::Bytes;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
@@ -15,22 +16,30 @@ use super::temporal_filter_iterator::TemporalFilterIterator;
 /// GenericPrefixExtender implements PrefixExtender using SlateDB with byte prefixes.
 ///
 /// The caller is responsible for determining index types, attribute IDs, and level participation.
-pub struct GenericPrefixExtender {
-    slate: Arc<slatedb::DbSnapshot>,
+pub struct GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
+    slate: Arc<D>,
     handle: Handle,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
     as_of: i64,                       // temporal filter: only see facts at or before this time
 }
 
-impl GenericPrefixExtender {
+impl<D, M> GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        slate: Arc<slatedb::DbSnapshot>,
+        slate: Arc<D>,
         handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
         index_types: Vec<IndexType>,
         attribute_id: i64,
         constant_prefix: Vec<u8>,
@@ -103,7 +112,7 @@ impl GenericPrefixExtender {
             IndexType::AE | IndexType::AV => Box::new(
                 SlateIterator::new(
                     slate_prefix,
-                    self.slate.as_ref(),
+                    &self.slate,
                     self.handle.clone(),
                     extractor,
                     self.range_stats.clone(),
@@ -113,7 +122,7 @@ impl GenericPrefixExtender {
             IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => Box::new(
                 TemporalFilterIterator::new(
                     slate_prefix,
-                    self.slate.as_ref(),
+                    &self.slate,
                     self.handle.clone(),
                     extractor,
                     self.as_of,
@@ -145,7 +154,11 @@ impl GenericPrefixExtender {
     }
 }
 
-impl PrefixExtender for GenericPrefixExtender {
+impl<D, M> PrefixExtender for GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     fn count(&self, join_prefix: &Prefix) -> usize {
         // TODO: proper error handling
         let (slate_prefix, index_type) = self

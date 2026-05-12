@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Error;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::schema::IdentMap;
@@ -674,16 +675,20 @@ fn compute_constant_prefix(pattern: &Pattern, index_type: IndexType) -> Result<V
 
 /// Compile a Pattern into a PrefixExtender.
 #[allow(clippy::too_many_arguments)]
-pub fn compile_pattern(
+pub fn compile_pattern<D, M>(
     pattern: &Pattern,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
     attribute_id: i64,
-    slate: Arc<slatedb::DbSnapshot>,
+    slate: Arc<D>,
     handle: Handle,
     as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
-) -> Result<GenericPrefixExtender, Error> {
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+) -> Result<GenericPrefixExtender<D, M>, Error>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     let pat_vars = pattern_variables(pattern);
 
     // Determine participating levels (sorted ascending — build_slate_prefix relies on
@@ -1191,16 +1196,20 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
 
 /// Compile an OrWhereClause into a PrefixExtender.
 #[allow(clippy::too_many_arguments)]
-fn compile_or_branch(
+fn compile_or_branch<D, M>(
     branch: &OrWhereClause,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
-    slate: &Arc<slatedb::DbSnapshot>,
+    slate: &Arc<D>,
     handle: &Handle,
     ident_map: &IdentMap,
     as_of: i64,
-    range_stats: &Arc<slatedb_estimates::RangeStats>,
-) -> Result<Box<dyn PrefixExtender>, Error> {
+    range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
+) -> Result<Box<dyn PrefixExtender>, Error>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     match branch {
         OrWhereClause::Clause(clause) => compile_where_clause(
             clause,
@@ -1235,16 +1244,20 @@ fn compile_or_branch(
 
 /// Compile a single WhereClause into a PrefixExtender, recursively handling nested clauses.
 #[allow(clippy::too_many_arguments)]
-fn compile_where_clause(
+fn compile_where_clause<D, M>(
     clause: &WhereClause,
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
-    slate: &Arc<slatedb::DbSnapshot>,
+    slate: &Arc<D>,
     handle: &Handle,
     ident_map: &IdentMap,
     as_of: i64,
-    range_stats: &Arc<slatedb_estimates::RangeStats>,
-) -> Result<Box<dyn PrefixExtender>, Error> {
+    range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
+) -> Result<Box<dyn PrefixExtender>, Error>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     match clause {
         WhereClause::Pattern(pattern) => {
             let attr_id = resolve_attribute_from_pattern(&pattern.attribute, ident_map)?;
@@ -1336,15 +1349,19 @@ fn resolve_limit(limit: &Limit, in_bindings: &[Binding], args: &[QueryArg]) -> L
 }
 
 /// Execute a query against the database.
-pub fn execute_query(
+pub fn execute_query<D, M>(
     query: &ParsedQuery,
     args: &[QueryArg],
-    slate: Arc<slatedb::DbSnapshot>,
+    slate: Arc<D>,
     handle: Handle,
     ident_map: &IdentMap,
     as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
-) -> Result<QueryResult, Error> {
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+) -> Result<QueryResult, Error>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     // 1. Extract variable order (in_bindings prepended)
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     let num_levels = join_order.len();

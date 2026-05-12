@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use anyhow::Error;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -18,26 +19,38 @@ pub(crate) trait Index {
 /// Type alias for extractor functions that extract a component from a full key.
 pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
 
-pub(crate) struct SlateIterator {
+pub(crate) struct SlateIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
     prefix: Bytes,
     handle: Handle,
     extractor: Extractor,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    _read_ops: std::marker::PhantomData<D>,
 }
 
-impl SlateIterator {
+impl<D, M> SlateIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     pub fn new(
         prefix: &[u8],
-        slate: &slatedb::DbSnapshot,
+        slate: &Arc<D>,
         handle: Handle,
         extractor: Extractor,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
         let prefix_bytes = Bytes::from(prefix.to_vec());
-        let mut iterator =
-            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
+        let mut iterator = handle.block_on(
+            slate
+                .as_ref()
+                .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS),
+        )?;
         let mut current_key = None;
         if let Some(next_key) = handle.block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());
@@ -49,11 +62,16 @@ impl SlateIterator {
             handle,
             extractor,
             range_stats,
+            _read_ops: std::marker::PhantomData,
         })
     }
 }
 
-impl Index for SlateIterator {
+impl<D, M> Index for SlateIterator<D, M>
+where
+    D: DbReadOps + Send + Sync,
+    M: DbMetadataOps + Send + Sync,
+{
     fn count(&self) -> Result<u64, Error> {
         Ok(self.handle.block_on(
             self.range_stats
