@@ -180,7 +180,7 @@ async fn test_open_close_multiple_dbs() {
     define_base_schema(&client).await;
 
     // Insert data
-    client
+    let result = client
         .execute_tx(vec![TxOp::Add {
             entity: "alice".into(),
             attribute: kw!(:name),
@@ -188,10 +188,16 @@ async fn test_open_close_multiple_dbs() {
         }])
         .await
         .unwrap();
+    let basis = match result {
+        TransactionResult::TxCommited(basis) => basis,
+        _ => panic!("Expected TxCommited"),
+    };
 
-    // Open two DB handles
-    let db1 = client.db().await.unwrap();
-    let db2 = client.db().await.unwrap();
+    // Open two DB handles for the same basis.
+    let db1 = client.db_as_of(basis).await.unwrap();
+    let db2 = client.db_as_of(basis).await.unwrap();
+    assert_eq!(db1.tx_eid(), basis.tx_eid);
+    assert_eq!(db2.tx_eid(), basis.tx_eid);
 
     // Both should return same data
     let r1 = db1
@@ -206,6 +212,12 @@ async fn test_open_close_multiple_dbs() {
     assert_eq!(r2.len(), 1);
 
     db1.close().await.unwrap();
+    let r2_after_close = db2
+        .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
+        .await
+        .unwrap();
+    assert_eq!(r2_after_close.len(), 1);
+
     db2.close().await.unwrap();
     token.cancel();
 }
@@ -300,6 +312,50 @@ async fn test_db_as_of() {
 
     // Open DB pinned to the first transaction basis — should only see alice
     let db = client.db_as_of(basis1).await.unwrap();
+    assert_eq!(db.tx_eid(), basis1.tx_eid);
+    let result = db
+        .query("{:find [?name] :where [[?e :name ?name]]}")
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
+
+    db.close().await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_open_latest_db_handle_stays_pinned_after_later_tx() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    define_base_schema(&client).await;
+
+    let result1 = client
+        .execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+    let basis1 = match result1 {
+        TransactionResult::TxCommited(basis) => basis,
+        _ => panic!("Expected TxCommited"),
+    };
+
+    let db = client.db().await.unwrap();
+    assert_eq!(db.tx_eid(), basis1.tx_eid);
+
+    client
+        .execute_tx(vec![TxOp::Add {
+            entity: "bob".into(),
+            attribute: kw!(:name),
+            value: "bob".into(),
+        }])
+        .await
+        .unwrap();
+
     let result = db
         .query("{:find [?name] :where [[?e :name ?name]]}")
         .await

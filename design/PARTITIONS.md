@@ -74,9 +74,9 @@ Each transaction is reified as an entity in this partition. The transaction enti
 | `db/txId`       | long       | The sequential tx_id assigned by the log                       |
 | `db/txError`    | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
 
-A transaction with counter value `t` has entity ID `(1 << 42) | t`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
+A transaction with counter value `t` has entity ID `(1 << 42) | t`. This transaction entity ID is the temporal read basis (`tx_eid`) used to bound historical reads: a DB opened at a given basis sees datoms whose transaction entity is at or before that `tx_eid`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
 
-Note: the relationship between `db/txId` (the sequential log position) and the transaction entity's entity ID (partition 1, counter T) is not yet unified. In the future we may align these so that the log tx_id and the entity ID counter share the same value.
+Note: `db/txId` remains the sequential log position, while `tx_eid` is the transaction entity ID used by covering indices and temporal reads. They are related but intentionally distinct identifiers.
 
 ### 2.3 :db.part/user (partition 2)
 

@@ -37,14 +37,14 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Open a DB snapshot at the latest indexed transaction.
+     * Open a DB read handle at the latest indexed transaction.
      */
     public Db openDb() throws IOException {
         return openDbInternal(null);
     }
 
     /**
-     * Open a DB snapshot at a specific indexed transaction basis.
+     * Open a DB read handle at a specific indexed transaction basis.
      */
     public Db openDbAsOf(TxBasis basis) throws IOException {
         return openDbInternal(basis);
@@ -54,18 +54,18 @@ public class TriploxNode implements AutoCloseable {
         byte[] body = WireCodec.encodeOpenDbBody(basis);
         byte[] responseBody = postBinary("/db/open", body);
         var opened = WireCodec.decodeDbOpened(responseBody);
-        return new Db(this, opened.dbId(), opened.txId());
+        return new Db(this, opened.dbId(), opened.txEid());
     }
 
     /**
-     * Release a previously opened DB snapshot.
+     * Release a previously opened DB read handle.
      */
     void closeDbInternal(Db db) throws IOException {
         deleteBinary("/db/" + db.dbId());
     }
 
     /**
-     * Execute a Datalog query against an open DB snapshot.
+     * Execute a Datalog query against an open DB read handle.
      */
     QueryResult queryInternal(Db db, String edn) throws IOException {
         return queryInternal(db, edn, List.of());

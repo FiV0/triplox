@@ -91,7 +91,7 @@ impl ClientNode {
 
         Ok(ClientDb {
             db_id: opened.db_id,
-            tx_id: opened.tx_id,
+            tx_eid: opened.tx_eid,
             client: self.client.clone(),
             base_url: self.base_url.clone(),
         })
@@ -169,22 +169,22 @@ impl QueryNode for ClientNode {
 // ClientDb
 // ---------------------------------------------------------------------------
 
-/// A remote DB snapshot handle. Mirrors the `DB` API.
+/// A remote DB read handle. Mirrors the `DB` API.
 ///
 /// Callers should call [`.close()`](ClientDb::close) when done to release
 /// the server-side handle. If not closed explicitly, the server will clean
 /// up via TTL expiration or connection-drop detection.
 pub struct ClientDb {
     db_id: u32,
-    tx_id: i64,
+    tx_eid: i64,
     client: Client,
     base_url: String,
 }
 
 impl ClientDb {
-    /// The tx_id this snapshot is pinned to.
-    pub fn tx_id(&self) -> i64 {
-        self.tx_id
+    /// The transaction entity id this handle is pinned to.
+    pub fn tx_eid(&self) -> i64 {
+        self.tx_eid
     }
 
     /// Release this DB handle on the server.

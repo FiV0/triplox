@@ -15,7 +15,7 @@ import org.msgpack.core.MessageUnpacker;
  * MessagePack codec for the HTTP/2 request and response bodies.
  *
  * <p>Each body is a single msgpack map with string keys. See
- * {@code design/WIRE_PROTOCOL.md} for the schemas.</p>
+ * {@code design/PROTOCOL.md} for the schemas.</p>
  */
 public final class WireCodec {
     private WireCodec() {}
@@ -86,8 +86,8 @@ public final class WireCodec {
     public static BackendMessage.DbOpened decodeDbOpened(byte[] body) throws IOException {
         var fields = readFields(body);
         long dbId = expectLong(fields, "db_id");
-        long txId = expectLong(fields, "tx_id");
-        return new BackendMessage.DbOpened(toInt(dbId), txId);
+        long txEid = expectLong(fields, "tx_eid");
+        return new BackendMessage.DbOpened(toInt(dbId), txEid);
     }
 
     public static BackendMessage.DbClosed decodeDbClosed(byte[] body) throws IOException {

@@ -90,10 +90,16 @@ class WireCodecTest {
 
     @Test
     void testDecodeDbOpened() throws IOException {
-        byte[] body = packMap2("db_id", 5L, "tx_id", 42L);
+        byte[] body = packMap2("db_id", 5L, "tx_eid", 42L);
         var opened = WireCodec.decodeDbOpened(body);
         assertEquals(5, opened.dbId());
-        assertEquals(42L, opened.txId());
+        assertEquals(42L, opened.txEid());
+    }
+
+    @Test
+    void testDecodeDbOpenedRejectsOldTxIdField() throws IOException {
+        byte[] body = packMap2("db_id", 5L, "tx_id", 42L);
+        assertThrows(IOException.class, () -> WireCodec.decodeDbOpened(body));
     }
 
     @Test
