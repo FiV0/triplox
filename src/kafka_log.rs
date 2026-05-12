@@ -86,7 +86,7 @@ impl TxLogReader for KafkaLog {
         let consumer: BaseConsumer = self
             .consumer_config
             .clone()
-            .set("group.id", &format!("triplox-read-{}", start_offset))
+            .set("group.id", format!("triplox-read-{}", start_offset))
             .create()
             .context("Failed to create Kafka consumer for read")?;
 

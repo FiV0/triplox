@@ -147,6 +147,18 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
     }
 }
 
+#[cfg(feature = "kafka")]
+pub struct KafkaNodeConfig<'a> {
+    pub bootstrap_servers: &'a str,
+    pub topic: &'a str,
+    pub endpoint: &'a str,
+    pub bucket: &'a str,
+    pub access_key: &'a str,
+    pub secret_key: &'a str,
+    pub region: &'a str,
+    pub cache_path: &'a Path,
+}
+
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
@@ -283,18 +295,16 @@ impl Node<FileLog> {
 
 #[cfg(feature = "kafka")]
 impl Node<crate::kafka_log::KafkaLog> {
-    pub async fn kafka_node(
-        bootstrap_servers: &str,
-        topic: &str,
-        endpoint: &str,
-        bucket: &str,
-        access_key: &str,
-        secret_key: &str,
-        region: &str,
-        cache_path: &Path,
-    ) -> Result<Self, Error> {
-        let slate =
-            remote_slate(endpoint, bucket, access_key, secret_key, region, cache_path).await?;
+    pub async fn kafka_node(config: KafkaNodeConfig<'_>) -> Result<Self, Error> {
+        let slate = remote_slate(
+            config.endpoint,
+            config.bucket,
+            config.access_key,
+            config.secret_key,
+            config.region,
+            config.cache_path,
+        )
+        .await?;
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
         let snapshot = Arc::new(slate.db.snapshot().await?);
@@ -313,8 +323,8 @@ impl Node<crate::kafka_log::KafkaLog> {
 
         let log = Arc::new(
             crate::kafka_log::KafkaLog::new(
-                bootstrap_servers,
-                topic.to_string(),
+                config.bootstrap_servers,
+                config.topic.to_string(),
                 Box::new(clock::SystemClock),
             )
             .await?,

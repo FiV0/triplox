@@ -5,6 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use triplox::config::{Config, StorageConfig};
+#[cfg(feature = "kafka")]
+use triplox::node::KafkaNodeConfig;
 use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
@@ -101,16 +103,16 @@ async fn run_server(config: Config) -> Result<()> {
             cache_path,
         } => {
             let node = Arc::new(
-                Node::kafka_node(
-                    &bootstrap_servers,
-                    &topic,
-                    &endpoint,
-                    &bucket,
-                    &access_key,
-                    &secret_key,
-                    &region,
-                    &cache_path,
-                )
+                Node::kafka_node(KafkaNodeConfig {
+                    bootstrap_servers: &bootstrap_servers,
+                    topic: &topic,
+                    endpoint: &endpoint,
+                    bucket: &bucket,
+                    access_key: &access_key,
+                    secret_key: &secret_key,
+                    region: &region,
+                    cache_path: &cache_path,
+                })
                 .await?,
             );
             let server = Server::new(node);
