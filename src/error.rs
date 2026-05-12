@@ -8,9 +8,4 @@ pub enum TriploxError {
     Bincode(#[from] bincode::Error),
     #[error("transaction {tx_id} was not indexed within {timeout:?}")]
     TxIndexingTimeout { tx_id: i64, timeout: Duration },
-    #[error("No tx entity found for tx_id={tx_id} system_time={system_time}")]
-    TxNotFound {
-        tx_id: i64,
-        system_time: crate::clock::Instant,
-    },
 }

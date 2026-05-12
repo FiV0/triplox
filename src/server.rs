@@ -314,9 +314,6 @@ fn open_db_error(e: Error) -> ApiError {
         Some(TriploxError::TxIndexingTimeout { .. }) => {
             ApiError::new(StatusCode::CONFLICT, ErrorCode::TxNotIndexed, message)
         }
-        Some(TriploxError::TxNotFound { .. }) => {
-            ApiError::not_found(ErrorCode::TxNotIndexed, message)
-        }
         _ => ApiError::internal(ErrorCode::TooManyOpenDbs, message),
     }
 }
