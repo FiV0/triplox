@@ -641,7 +641,7 @@ pub struct OpenDbRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DbOpenedResponse {
     pub db_id: u32,
-    pub tx_id: i64,
+    pub tx_eid: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -715,27 +715,27 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     })
 }
 
-/// Encode a DbOpened response: `{"db_id": int, "tx_id": int}`.
+/// Encode a DbOpened response: `{"db_id": int, "tx_eid": int}`.
 pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 2)?;
     rmp::encode::write_str(&mut buf, "db_id")?;
     rmp::encode::write_uint(&mut buf, resp.db_id as u64)?;
-    rmp::encode::write_str(&mut buf, "tx_id")?;
-    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
+    rmp::encode::write_str(&mut buf, "tx_eid")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_eid)?;
     Ok(buf)
 }
 
 pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let db_id = take_i64(&mut map, "db_id")?;
-    let tx_id = take_i64(&mut map, "tx_id")?;
+    let tx_eid = take_i64(&mut map, "tx_eid")?;
     if db_id < 0 || db_id > u32::MAX as i64 {
         bail!("db_id out of u32 range: {db_id}");
     }
     Ok(DbOpenedResponse {
         db_id: db_id as u32,
-        tx_id,
+        tx_eid,
     })
 }
 
@@ -1287,7 +1287,7 @@ mod tests {
     fn round_trip_db_opened_response_body() {
         let response = DbOpenedResponse {
             db_id: 7,
-            tx_id: 12345,
+            tx_eid: 12345,
         };
         let buf = encode_db_opened_response(&response).unwrap();
         assert_eq!(decode_db_opened_response(&buf).unwrap(), response);
@@ -1439,10 +1439,10 @@ mod tests {
 
     #[test]
     fn decode_db_opened_rejects_wrong_type() {
-        // {"db_id": "not an int", "tx_id": 7}
+        // {"db_id": "not an int", "tx_eid": 7}
         let body = pack(Value::Map(vec![
             (Value::String("db_id".into()), Value::String("nope".into())),
-            (Value::String("tx_id".into()), Value::Integer(7.into())),
+            (Value::String("tx_eid".into()), Value::Integer(7.into())),
         ]));
         assert!(decode_db_opened_response(&body).is_err());
     }
@@ -1455,7 +1455,7 @@ mod tests {
                 Value::String("db_id".into()),
                 Value::Integer((u64::from(u32::MAX) + 1).into()),
             ),
-            (Value::String("tx_id".into()), Value::Integer(0.into())),
+            (Value::String("tx_eid".into()), Value::Integer(0.into())),
         ]));
         assert!(decode_db_opened_response(&body).is_err());
     }

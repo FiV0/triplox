@@ -3,8 +3,8 @@
 //! Replaces the custom TCP wire protocol with HTTP/2 transport while keeping
 //! the same binary payload encoding. Each operation maps to an HTTP endpoint:
 //!
-//! - `POST /db/open`           — Open a DB snapshot
-//! - `DELETE /db/{db_id}`      — Release a DB snapshot
+//! - `POST /db/open`           — Open a DB read handle
+//! - `DELETE /db/{db_id}`      — Release a DB read handle
 //! - `POST /db/{db_id}/query`  — Execute a Datalog query
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
@@ -28,13 +28,13 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::error::TriploxError;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
+use crate::error::TriploxError;
 use crate::log::TxLog;
-use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, DB};
+use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request,
     encode_db_closed_response, encode_db_opened_response, encode_error_body, encode_query_response,
@@ -47,147 +47,37 @@ use triplox_client::protocol::{
 use triplox_client::transaction::{TxBasis, TxKey};
 
 // ---------------------------------------------------------------------------
-// DB Cache
-// ---------------------------------------------------------------------------
-
-const MAX_OPEN_DBS: usize = 1024;
-
-#[derive(Debug, thiserror::Error)]
-enum OpenDbError {
-    #[error("Too many open DB snapshots (max {max})")]
-    TooManyOpenDbs { max: usize },
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct DbCacheKey {
-    tx_id: i64,
-    system_time: crate::clock::Instant,
-    tx_eid: i64,
-}
-
-impl From<TxBasis> for DbCacheKey {
-    fn from(basis: TxBasis) -> Self {
-        DbCacheKey {
-            tx_id: basis.tx_key.tx_id,
-            system_time: basis.tx_key.system_time,
-            tx_eid: basis.tx_eid,
-        }
-    }
-}
-
-/// A shared, reference-counted cache of DB snapshots.
-/// Keyed by the full TxBasis so stale basis values cannot alias a valid snapshot.
-/// DBs are read-only and safe to share across connections.
-struct DbCacheEntry {
-    db: Arc<DB>,
-    refcount: usize,
-}
-
-pub(crate) struct DbCache {
-    entries: RwLock<HashMap<DbCacheKey, DbCacheEntry>>,
-}
-
-impl DbCache {
-    pub(crate) fn new() -> Self {
-        DbCache {
-            entries: RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Get or create a DB snapshot for the given TxKey.
-    /// The `create` future is only evaluated on cache miss.
-    async fn acquire<F, Fut>(&self, key: DbCacheKey, create: F) -> Result<Arc<DB>>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<DB>>,
-    {
-        // Fast path: cache hit (uses write lock because we mutate refcount)
-        {
-            let mut entries = self.entries.write().await;
-            if let Some(entry) = entries.get_mut(&key) {
-                entry.refcount += 1;
-                return Ok(entry.db.clone());
-            }
-            if entries.len() >= MAX_OPEN_DBS {
-                return Err(OpenDbError::TooManyOpenDbs { max: MAX_OPEN_DBS }.into());
-            }
-        }
-
-        let db = create().await?;
-        let arc_db = Arc::new(db);
-
-        let mut entries = self.entries.write().await;
-        if let Some(entry) = entries.get_mut(&key) {
-            entry.refcount += 1;
-            return Ok(entry.db.clone());
-        }
-        if entries.len() >= MAX_OPEN_DBS {
-            return Err(OpenDbError::TooManyOpenDbs { max: MAX_OPEN_DBS }.into());
-        }
-        entries.insert(
-            key,
-            DbCacheEntry {
-                db: arc_db.clone(),
-                refcount: 1,
-            },
-        );
-        Ok(arc_db)
-    }
-
-    /// Release a reference to a DB snapshot.
-    /// Evicts the entry when refcount reaches 0.
-    async fn release(&self, key: DbCacheKey) {
-        let mut entries = self.entries.write().await;
-        if let Some(entry) = entries.get_mut(&key) {
-            entry.refcount -= 1;
-            if entry.refcount == 0 {
-                entries.remove(&key);
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Handle Store
 // ---------------------------------------------------------------------------
 
 struct HandleEntry {
     conn_id: u64,
-    cache_key: DbCacheKey,
-    db: Arc<DB>,
+    basis: TxBasis,
     last_used: Instant,
 }
 
 struct HandleStore {
     handles: RwLock<HashMap<u32, HandleEntry>>,
     next_id: AtomicU32,
-    db_cache: Arc<DbCache>,
 }
 
 impl HandleStore {
-    fn new(db_cache: Arc<DbCache>) -> Self {
+    fn new() -> Self {
         HandleStore {
             handles: RwLock::new(HashMap::new()),
             next_id: AtomicU32::new(1),
-            db_cache,
         }
     }
 
-    /// Acquire a DB snapshot via the cache and allocate a handle for it.
-    async fn open<F, Fut>(&self, conn_id: u64, cache_key: DbCacheKey, create: F) -> Result<u32>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<DB>>,
-    {
-        let db = self.db_cache.acquire(cache_key, create).await?;
+    /// Allocate a DB read handle for a transaction basis.
+    async fn open(&self, conn_id: u64, basis: TxBasis) -> Result<u32> {
         let db_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut handles = self.handles.write().await;
         handles.insert(
             db_id,
             HandleEntry {
                 conn_id,
-                cache_key,
-                db,
+                basis,
                 last_used: Instant::now(),
             },
         );
@@ -195,69 +85,32 @@ impl HandleStore {
     }
 
     // TODO(P1): Validate conn_id in get_db/remove so global db_ids cannot cross connection boundaries.
-    async fn get_db(&self, db_id: u32) -> Option<Arc<DB>> {
+    async fn get_basis(&self, db_id: u32) -> Option<TxBasis> {
         let mut handles = self.handles.write().await;
         if let Some(entry) = handles.get_mut(&db_id) {
             entry.last_used = Instant::now();
-            Some(entry.db.clone())
+            Some(entry.basis)
         } else {
             None
         }
     }
 
-    /// Remove a handle and release its DbCache refcount. Returns true if the
-    /// handle existed.
+    /// Remove a handle. Returns true if the handle existed.
     async fn remove(&self, db_id: u32) -> bool {
-        let cache_key = {
-            let mut handles = self.handles.write().await;
-            match handles.remove(&db_id) {
-                Some(entry) => entry.cache_key,
-                None => return false,
-            }
-        };
-        self.db_cache.release(cache_key).await;
-        true
+        self.handles.write().await.remove(&db_id).is_some()
     }
 
-    /// Remove all handles belonging to a connection, releasing their DbCache
-    /// refcounts.
+    /// Remove all handles belonging to a connection.
     async fn remove_by_conn(&self, conn_id: u64) {
-        let cache_keys: Vec<DbCacheKey> = {
-            let mut handles = self.handles.write().await;
-            let to_remove: Vec<u32> = handles
-                .iter()
-                .filter(|(_, e)| e.conn_id == conn_id)
-                .map(|(id, _)| *id)
-                .collect();
-            to_remove
-                .into_iter()
-                .filter_map(|id| handles.remove(&id).map(|e| e.cache_key))
-                .collect()
-        };
-        for cache_key in cache_keys {
-            self.db_cache.release(cache_key).await;
-        }
+        let mut handles = self.handles.write().await;
+        handles.retain(|_, entry| entry.conn_id != conn_id);
     }
 
-    /// Remove handles idle for longer than `ttl`, releasing their DbCache
-    /// refcounts.
+    /// Remove handles idle for longer than `ttl`.
     async fn reap_expired(&self, ttl: Duration) {
-        let cache_keys: Vec<DbCacheKey> = {
-            let mut handles = self.handles.write().await;
-            let now = Instant::now();
-            let to_remove: Vec<u32> = handles
-                .iter()
-                .filter(|(_, e)| now.duration_since(e.last_used) > ttl)
-                .map(|(id, _)| *id)
-                .collect();
-            to_remove
-                .into_iter()
-                .filter_map(|id| handles.remove(&id).map(|e| e.cache_key))
-                .collect()
-        };
-        for cache_key in cache_keys {
-            self.db_cache.release(cache_key).await;
-        }
+        let mut handles = self.handles.write().await;
+        let now = Instant::now();
+        handles.retain(|_, entry| now.duration_since(entry.last_used) <= ttl);
     }
 }
 
@@ -320,9 +173,6 @@ fn open_db_error(e: Error) -> ApiError {
         Some(TriploxError::TxIndexingTimeout { .. }) => {
             ApiError::new(StatusCode::CONFLICT, ErrorCode::TxNotIndexed, message)
         }
-        _ if e.downcast_ref::<OpenDbError>().is_some() => {
-            ApiError::internal(ErrorCode::TooManyOpenDbs, message)
-        }
         _ => ApiError::internal(ErrorCode::InternalError, message),
     }
 }
@@ -362,7 +212,7 @@ async fn open_db<L: TxLog + 'static>(
         )
     })?;
 
-    let (db_id, tx_id) = match (
+    let (db_id, tx_eid) = match (
         open_request.tx_id,
         open_request.system_time,
         open_request.tx_eid,
@@ -373,14 +223,13 @@ async fn open_db<L: TxLog + 'static>(
                 .db()
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            let tx_id = db.tx_key().tx_id;
-            let cache_key = (*db.tx_basis()).into();
+            let basis = *db.tx_basis();
             let db_id = state
                 .handle_store
-                .open(conn_id.0, cache_key, || async move { Ok(db) })
+                .open(conn_id.0, basis)
                 .await
-                .map_err(open_db_error)?;
-            (db_id, tx_id)
+                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+            (db_id, basis.tx_eid)
         }
         (Some(tid), Some(system_time), Some(tx_eid)) => {
             let basis = TxBasis {
@@ -390,15 +239,13 @@ async fn open_db<L: TxLog + 'static>(
                 },
                 tx_eid,
             };
-            let node = state.node.clone();
+            state.node.db_as_of(basis).await.map_err(open_db_error)?;
             let db_id = state
                 .handle_store
-                .open(conn_id.0, basis.into(), || async move {
-                    node.db_as_of(basis).await
-                })
+                .open(conn_id.0, basis)
                 .await
-                .map_err(open_db_error)?;
-            (db_id, tid)
+                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+            (db_id, tx_eid)
         }
         _ => {
             return Err(ApiError::bad_request(
@@ -408,7 +255,7 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    let body = encode_db_opened_response(&DbOpenedResponse { db_id, tx_id })
+    let body = encode_db_opened_response(&DbOpenedResponse { db_id, tx_eid })
         .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
 }
@@ -434,12 +281,17 @@ async fn query<L: TxLog + 'static>(
     Path(db_id): Path<u32>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let db = state.handle_store.get_db(db_id).await.ok_or_else(|| {
+    let basis = state.handle_store.get_basis(db_id).await.ok_or_else(|| {
         ApiError::not_found(
             ErrorCode::InvalidDbHandle,
             format!("Invalid DB handle: {}", db_id),
         )
     })?;
+    let db = state
+        .node
+        .db_as_of(basis)
+        .await
+        .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
     let query_request = decode_query_request(&body).map_err(|e| {
         ApiError::bad_request(
@@ -566,8 +418,7 @@ pub struct Server<L: TxLog> {
 
 impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>) -> Self {
-        let db_cache = Arc::new(DbCache::new());
-        let handle_store = Arc::new(HandleStore::new(db_cache));
+        let handle_store = Arc::new(HandleStore::new());
         Server { node, handle_store }
     }
 
@@ -645,8 +496,7 @@ impl DevServer {
             move |stream, _peer, conn_id, conn_token, join_set| {
                 join_set.spawn(async move {
                     let node = Arc::new(Node::memory_node().await);
-                    let db_cache = Arc::new(DbCache::new());
-                    let handle_store = Arc::new(HandleStore::new(db_cache));
+                    let handle_store = Arc::new(HandleStore::new());
 
                     let app_state = Arc::new(Server {
                         node: node.clone(),

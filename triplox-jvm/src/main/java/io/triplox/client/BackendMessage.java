@@ -6,7 +6,7 @@ import java.time.Instant;
  * Decoded HTTP response bodies. Used internally by {@link WireCodec}.
  */
 public sealed interface BackendMessage {
-    record DbOpened(int dbId, long txId) implements BackendMessage {}
+    record DbOpened(int dbId, long txEid) implements BackendMessage {}
     record DbClosed(int dbId) implements BackendMessage {}
     record TxKey(long txId, Instant systemTime) implements BackendMessage {}
     record TxResult(byte status, long txId, Instant systemTime, long txEid, String errorMessage)

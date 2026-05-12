@@ -13,7 +13,7 @@ import org.msgpack.core.MessageUnpacker;
  * MessagePack codec for {@link TxOp} and {@link EntityRef} values.
  *
  * <p>Tagged unions use {@code {"kind": "<variant>", ...fields}} maps.
- * See {@code design/WIRE_PROTOCOL.md}.</p>
+ * See {@code design/PROTOCOL.md}.</p>
  */
 public final class TxOpCodec {
     private TxOpCodec() {}

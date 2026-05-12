@@ -43,24 +43,24 @@ outcome.
 | **200** | Success             | Request processed successfully. For `/tx/execute`, check the `status` field of the TxResult body: `0` = committed, `1` = aborted. |
 | **400** | Bad Request         | Malformed request body (decode failure), Datalog parse error, or invalid field combinations. |
 | **404** | Not Found           | Invalid or expired `db_id` handle. |
-| **500** | Internal Server Error | Unexpected engine error: query execution failure, transaction infrastructure error, DB cache exhaustion. |
+| **500** | Internal Server Error | Unexpected engine error: query execution failure or transaction infrastructure error. |
 
 All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body) body.
 
 ### 1.2 DB Handle Lifecycle
 
-DB handles are scoped to an HTTP/2 connection. Each connection is assigned a
-unique `conn_id` on accept, and all handles opened on that connection are
-tracked against it. Two cleanup mechanisms ensure handles are released:
+DB handles are scoped to an HTTP/2 connection. Each `db_id` maps to a
+transaction basis: the transaction log key (`tx_id` + `system_time`) plus the
+transaction entity ID (`tx_eid`) that bounds temporal reads. The server does
+not cache DB snapshots for handles; it creates transient read views from the
+stored basis when queries execute. Each connection is assigned a unique
+`conn_id` on accept, and all handles opened on that connection are tracked
+against it. Two cleanup mechanisms ensure handles are released:
 
 1. **Connection-drop** (fast path): When an HTTP/2 connection closes, all
    handles belonging to that connection are released immediately.
 2. **TTL reaper** (safety net): A background task periodically evicts handles
    that have not been used for 24 hours.
-
-Servers should enforce a configurable maximum number of open DB handles per
-connection (default 16). Exceeding the limit returns
-`ErrorResponse(code=5001 TooManyOpenDbs)`.
 
 Using an invalid or closed `db_id` returns
 `ErrorResponse(code=5000 InvalidDbHandle)` with HTTP status 404.
@@ -201,20 +201,20 @@ than a single-member union.
 ### 4.2 OpenDb Request — `POST /db/open`
 
 ```
-{"tx_id": <int>|nil, "system_time": <Timestamp>|nil}
+{"tx_id": <int>|nil, "system_time": <Timestamp>|nil, "tx_eid": <int>|nil}
 ```
 
-Either both fields are present (pinned snapshot) or both are `nil` (latest
-indexed). Mixing `nil` with a value is rejected with HTTP 400.
+Either all three fields are present (pinned transaction basis) or all three are
+`nil` (latest indexed). Mixing `nil` with a value is rejected with HTTP 400.
 
 ### 4.3 DbOpened Response
 
 ```
-{"db_id": <int>, "tx_id": <int>}
+{"db_id": <int>, "tx_eid": <int>}
 ```
 
-`db_id` is a server-assigned u32 handle. `tx_id` is the actual tx the snapshot
-is pinned to (may differ from the requested `tx_id`).
+`db_id` is a server-assigned u32 handle. `tx_eid` is the transaction entity ID
+that bounds reads through that handle.
 
 ### 4.4 DbClosed Response — `DELETE /db/{db_id}`
 
@@ -304,7 +304,7 @@ a numeric error code (see §5).
 | 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted, 3002 TxNotIndexed                    |
 | 4xxx  | Internal/protocol     | 4000 InternalError, 4001 MessageTooLarge, 4002 InvalidMessageType, 4003 QueryCancelled, 4004 ServerShuttingDown |
-| 5xxx  | DB handle errors      | 5000 InvalidDbHandle, 5001 TooManyOpenDbs                          |
+| 5xxx  | DB handle errors      | 5000 InvalidDbHandle                                                |
 
 ---
 

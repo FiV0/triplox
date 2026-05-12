@@ -74,7 +74,7 @@ Structural fields with fixed schemas (e.g., entity IDs, attribute IDs) are **not
 
 ### 2.6 Type Tag Values
 
-Reuse the wire protocol tags from `design/WIRE_PROTOCOL.md`:
+Reuse the wire protocol tags from `design/PROTOCOL.md`:
 
 | Tag | Name                                                             | Rust Type                      |
 |-----|------------------------------------------------------------------|--------------------------------|

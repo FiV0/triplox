@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.util.List;
 
 /**
- * Handle to an open DB snapshot on the server.
+ * Handle to an open DB read basis on the server.
  *
  * <p>Obtained via {@link TriploxNode#openDb()}. Provides query execution
  * and must be closed when no longer needed to release server resources.</p>
@@ -12,19 +12,19 @@ import java.util.List;
 public class Db implements AutoCloseable {
     private final TriploxNode node;
     private final int dbId;
-    private final long txId;
+    private final long txEid;
 
-    Db(TriploxNode node, int dbId, long txId) {
+    Db(TriploxNode node, int dbId, long txEid) {
         this.node = node;
         this.dbId = dbId;
-        this.txId = txId;
+        this.txEid = txEid;
     }
 
     int dbId() { return dbId; }
-    public long txId() { return txId; }
+    public long txEid() { return txEid; }
 
     /**
-     * Execute a Datalog query against this DB snapshot.
+     * Execute a Datalog query against this DB read basis.
      */
     public List<List<Object>> query(String edn) throws IOException {
         return node.queryInternal(this, edn).rows();
@@ -38,7 +38,7 @@ public class Db implements AutoCloseable {
     }
 
     /**
-     * Release this DB snapshot on the server.
+     * Release this DB handle on the server.
      */
     @Override
     public void close() throws IOException {
