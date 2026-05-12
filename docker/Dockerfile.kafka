@@ -14,9 +14,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # --- Stage 3: Builder ---
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-# Copy the full edn crate — it's a local path dependency with a build script
-# (PEG parser generator), so it needs to be present for cargo chef to work.
+# Copy local path dependencies needed by the cargo-chef recipe.
 COPY edn/ edn/
+COPY triplox-client/ triplox-client/
 RUN cargo chef cook --release --features kafka --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --features kafka

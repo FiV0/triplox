@@ -26,6 +26,7 @@ pub struct KafkaLog {
     topic: String,
     tx_sender: broadcast::Sender<Record>,
     clock: Mutex<Box<dyn SystemTimeSource>>,
+    append_lock: Mutex<()>,
     next_offset: AtomicI64,
 }
 
@@ -65,6 +66,7 @@ impl KafkaLog {
             topic,
             tx_sender,
             clock: Mutex::new(clock),
+            append_lock: Mutex::new(()),
             next_offset: AtomicI64::new(high),
         })
     }
@@ -144,6 +146,8 @@ impl TxLogReader for KafkaLog {
 
 impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+        let _append_guard = self.append_lock.lock().await;
+
         // Truncate to millisecond precision to match Kafka timestamp resolution
         let mut clock = self.clock.lock().await;
         let mut system_time = clock.now();
@@ -158,6 +162,7 @@ impl TxLogWriter for KafkaLog {
             .producer
             .send(
                 FutureRecord::<str, _>::to(&self.topic)
+                    .partition(PARTITION)
                     .payload(&record)
                     .timestamp(timestamp_ms),
                 Timeout::After(Duration::from_secs(5)),
