@@ -117,9 +117,9 @@ docker compose -f docker/docker-compose-kafka.yml up --build
 ```
 
 This starts:
-- **RustFS** on port 9000 (S3 API) and 9001 (console)
-- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by RustFS
-- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on RustFS
+- **MinIO** on port 9000 (S3 API) and 9001 (console)
+- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by MinIO
+- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on MinIO
 
 The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total ordering (WAL semantics).
 
