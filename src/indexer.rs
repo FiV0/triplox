@@ -12,7 +12,6 @@ use edn::kw;
 use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
-use crate::error::TriploxError;
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
