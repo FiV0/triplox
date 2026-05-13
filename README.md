@@ -39,7 +39,7 @@ The easiest way to test Triplox is to just pull the docker image and start an in
 docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.2
 docker run -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.2
 ```
-This will start an Triplox server with an in-memory Db to which you can connect at 5490. If you want an persistent local node, you start the image with
+This will start a Triplox server with an in-memory DB to which you can connect at 5490. If you want an persistent local node, you start the image with
 ```bash
 docker run -p 5490:5490 -e TRIPLOX_STORAGE=local -v triplox-data:/var/lib/triplox  ghcr.io/fiv0/triplox:0.1.0-alpha.2
 ```
@@ -50,9 +50,9 @@ There is also the option to run Triplox in `dev` mode which is particular useful
 ```bash
 docker run -p 5490:5490 -e TRIPLOX_STORAGE=dev ghcr.io/fiv0/triplox:0.1.0-alpha.2
 ```
-The above instance will create a new in-memory Db on every connection.
+In this case a new in-memory DB is created on every connection.
 
-Afterwards you connect with your favorite client
+Afterwards you connect with your favorite client.
 ```clj
 (require '[io.triplox.api :as tc])
 
@@ -64,6 +64,7 @@ Afterwards you connect with your favorite client
                     :db/cardinality :db.cardinality/one}
                    {:db/ident :age
                     :db/valueType :db.type/long
+                    :db/cardinality :db.cardinality/one}])
 
 ;; data
 (tc/transact conn [{:name "alice" :age 30}
