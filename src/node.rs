@@ -25,7 +25,7 @@ pub use triplox_client::transaction::{TransactionResult, TxBasis, TxKey};
 
 const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub struct DB<D = slatedb::DbSnapshot, M = slatedb::Db>
+pub struct DB<D = slatedb::Db, M = slatedb::Db>
 where
     D: slatedb::DbReadOps + Send + Sync + 'static,
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
@@ -89,20 +89,6 @@ where
     }
 }
 
-impl<M> DB<slatedb::DbSnapshot, M>
-where
-    M: slatedb::DbMetadataOps + Send + Sync + 'static,
-{
-    pub async fn from_latest_snapshot(
-        snapshot: Arc<slatedb::DbSnapshot>,
-        ident_map: IdentMap,
-        handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error> {
-        Self::from_latest_sdb(snapshot, ident_map, handle, range_stats).await
-    }
-}
-
 impl<D, M> Database for DB<D, M>
 where
     D: slatedb::DbReadOps + Send + Sync + 'static,
@@ -113,7 +99,7 @@ where
         self.query_with_args(&parsed, &[]).await
     }
 
-    /// Execute a query against this database snapshot.
+    /// Execute a query against this database basis.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
     async fn query_with_args(
         &self,
@@ -176,8 +162,7 @@ impl Node<FileLog> {
 
         // Determine the latest already-indexed tx_id so we skip replaying it
         // and restore the indexer's in-memory state for TxWaiter fast-path.
-        let snapshot = slate.db.snapshot().await?;
-        let latest_indexed = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
+        let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
         // Bootstrap and the first FileLog transaction both currently use tx_id=0,
         // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
         // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
@@ -272,7 +257,6 @@ impl<L: TxLog> Node<L> {
                 timeout,
             })??;
 
-        let snapshot = self.slate.db.snapshot().await?;
         let ident_map = self
             .indexer
             .read()
@@ -283,7 +267,13 @@ impl<L: TxLog> Node<L> {
             .clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        Ok(DB::new(snapshot, ident_map, handle, basis, range_stats))
+        Ok(DB::new(
+            self.slate.db.clone(),
+            ident_map,
+            handle,
+            basis,
+            range_stats,
+        ))
     }
 }
 
@@ -318,8 +308,8 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
 impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
+
     async fn db(&self) -> Result<DB, Error> {
-        let snapshot = self.slate.db.snapshot().await?;
         let ident_map = self
             .indexer
             .read()
@@ -330,8 +320,9 @@ impl<L: TxLog> QueryNode for Node<L> {
             .clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        DB::from_latest_snapshot(snapshot, ident_map, handle, range_stats).await
+        DB::from_latest_sdb(self.slate.db.clone(), ident_map, handle, range_stats).await
     }
+
     async fn db_as_of(&self, basis: TxBasis) -> Result<DB, Error> {
         self.db_as_of_with_timeout(basis, DB_AS_OF_INDEXING_TIMEOUT)
             .await
@@ -1005,7 +996,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_db_as_of_aborted_tx_opens_snapshot() {
+    async fn test_db_as_of_aborted_tx_opens_basis() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -1231,7 +1222,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_db_as_of_pins_snapshot() {
+    async fn test_db_as_of_filters_by_basis() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -1258,7 +1249,7 @@ mod tests {
         .await
         .unwrap();
 
-        // db_as_of pinned to first tx should only see alice
+        // db_as_of at the first tx basis should only see alice
         let db = node.db_as_of(basis1).await.unwrap();
         let results = db
             .query("[:find ?name :where [?e :name ?name]]")
