@@ -32,7 +32,50 @@ The goals of Triplox are roughly the following (in no particular order):
 - A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM (where Datomic has had it's main success).
 - Incremental Datalog queries. You should be able to dynamically subscribe and detach from incremental Datalog queries. This is the most experimental part of Triplox and will need quite a bit of engineering effort to get right, make fast, and fully support of all features of Datalog.
 
-### Examples
+### Getting started
+
+The easiest way to test Triplox is to just pull the docker image and start an in-memory or local node.
+```bash
+docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.2
+docker run -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.2
+```
+This will start an Triplox server with an in-memory Db to which you can connect at 5490. If you want an persistent local node, you start the image with
+```bash
+docker run -p 5490:5490 -e TRIPLOX_STORAGE=local -v triplox-data:/var/lib/triplox  ghcr.io/fiv0/triplox:0.1.0-alpha.2
+```
+In case you are already convinced and want to deploy Triplox in a distributed setting I suggest you have a look at the
+[Operations](https://triplox.xyz/operations/overview/) section on the website.
+
+There is also the option to run Triplox in `dev` mode which is particular useful for testing.
+```bash
+docker run -p 5490:5490 -e TRIPLOX_STORAGE=dev ghcr.io/fiv0/triplox:0.1.0-alpha.2
+```
+The above instance will create a new in-memory Db on every connection.
+
+Afterwards you connect with your favorite client
+```clj
+(require '[io.triplox.api :as tc])
+
+(def conn (tc/connect "localhost" 5490))
+
+;; schema
+(tc/transact conn [{:db/ident :name
+                    :db/valueType :db.type/string
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :age
+                    :db/valueType :db.type/long
+
+;; data
+(tc/transact conn [{:name "alice" :age 30}
+                   {:name "bob" :age 25}])
+
+;; query
+(with-open [db (tc/db conn)]
+  (tc/q db '{:find [?e ?name ?age]
+             :where [[?e :name ?name]
+                     [?e :age ?age]]}))
+;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]
+```
 
 ### Clients
 
