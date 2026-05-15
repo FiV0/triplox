@@ -40,6 +40,39 @@ The general Docker setup lives under `docker/`; use
 `docker/docker-compose.yml` only when you need the remote S3-compatible storage
 stack.
 
+## Clean the local setup
+
+Stop the Triplox node first. If it is running via `cargo run`, use Ctrl-C. If
+it is running in Docker, stop and remove the container.
+
+If you ran the native local setup from the repository root:
+
+```bash
+rm -rf data
+```
+
+If you ran the Docker local-storage setup:
+
+```bash
+docker ps -a --filter ancestor=triplox:latest
+docker rm -f <container-id>
+docker volume rm triplox-data
+```
+
+If you used the published image, use the same container and volume cleanup:
+
+```bash
+docker ps -a --filter ancestor=ghcr.io/fiv0/triplox:0.1.0-alpha.2
+docker rm -f <container-id>
+docker volume rm triplox-data
+```
+
+To remove Clojure cache files created by the benchmark runner:
+
+```bash
+rm -rf bench/graph/.cpcache
+```
+
 ## Run the benchmark
 
 If you are benchmarking a locally checked-out server, publish the matching JVM

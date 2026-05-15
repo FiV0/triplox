@@ -15,7 +15,7 @@
   '{:find [?a ?b ?c]
     :where [[?a :g/to ?b]
             [?b :g/to ?c]
-            [?c :g/to ?a]]})
+            [?a :g/to ?c]]})
 
 (defn graph->ops
   "Convert an edge seq to Triplox tx ops using lookup refs on :g/id."

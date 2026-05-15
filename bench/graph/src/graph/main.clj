@@ -43,8 +43,6 @@
 
       :else options)))
 
-(defn edge-count [vertices]
-  (quot (* vertices (dec vertices)) 2))
 
 (defn vertex-docs [vertices]
   (map (fn [id] {:g/id (long id)}) (range vertices)))
@@ -66,14 +64,14 @@
     (log/info "Ingesting" (count edges) "edges")
     (transact-batches! conn edges batch-size)))
 
-(defn print-report [{:keys [vertices batch-size elapsed-secs]}]
-  (let [edges (edge-count vertices)]
-    (log/info "=== Graph Ingestion Results ===")
-    (log/info (format "Vertices: %d" vertices))
-    (log/info (format "Edges: %d" edges))
-    (log/info (format "Batch size: %d" batch-size))
-    (log/info (format "Elapsed: %.3f seconds" elapsed-secs))
-    (log/info (format "Edges/sec: %.1f" (/ edges elapsed-secs)))))
+(defn print-report [{:keys [vertices probability batch-size ingest-secs triangle-count triangle-count-secs]}]
+  (log/info "=== Graph Ingestion Results ===")
+  (log/info (format "Vertices: %d" vertices))
+  (log/info (format "Edge probability: %d" probability))
+  (log/info (format "Batch size: %d" batch-size))
+  (log/info (format "Ingest: %.3f seconds" ingest-secs))
+  (log/info (format "Number of triangles: %d"  triangle-count))
+  (log/info (format "Triangle counting: %.3f seconds" triangle-count-secs)))
 
 (defn -main [& args]
   (let [{:keys [host port] :as config} (parse-config args)]
@@ -84,7 +82,14 @@
           start (System/nanoTime)]
       (try
         (ingest-graph! conn config)
-        (print-report (assoc config :elapsed-secs (/ (- (System/nanoTime) start) 1e9)))
+        (let [end-ingest (System/nanoTime)
+              config (assoc config :ingest-secs (/ (- (System/nanoTime) start) 1e9))
+              triangle-count (with-open [db (tc/db conn)]
+                               (count (tc/q db gg/triangle-query)))]
+          (print-report (assoc config
+                               :ingest-secs (/ (- end-ingest start) 1e9)
+                               :triangle-count triangle-count
+                               :triangle-count-sec (/ (- (System/nanoTime) end-ingest) 1e9))))
         (finally
           (.close ^AutoCloseable conn))))
     (System/exit 0)))
@@ -92,15 +97,10 @@
 (comment
   (def conn (tc/connect "localhost" 5490))
 
-  (ingest-graph! conn {:vertices 100 :probability 0.1 :batch-size 1000})
+  (ingest-graph! conn {:vertices 10000 :probability 0.025 :batch-size 1000})
 
-  (tc/transact conn gg/graph-schema)
-
-  (tc/transact conn (vertex-docs 10))
-
-  (tc/transact conn (gg/graph->ops (gg/complete-graph 10)))
 
   (with-open [db (tc/db conn)]
-    (tc/q db gg/triangle-query))
+    (count (tc/q db gg/triangle-query)))
 
   )
