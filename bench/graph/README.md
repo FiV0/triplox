@@ -57,6 +57,21 @@ cd bench/graph
 clojure -M:run --vertices 100 --batch-size 1000
 ```
 
+### Run with `clj`
+
+The same main entry point can be invoked with `clj`:
+
+```bash
+cd bench/graph
+clj -M -m graph.main --vertices 100 --batch-size 1000
+```
+
+The `:run` alias is equivalent:
+
+```bash
+clj -M:run --vertices 100 --batch-size 1000
+```
+
 Configuration can also come from environment variables:
 
 ```bash
