@@ -2,22 +2,25 @@
   "Small graph generators for Triplox ingestion benchmarks."
   (:require [clojure.math.combinatorics :as combo]))
 
-(def edge-attribute
-  {:db/id :db/edge-attribute
-   :db/ident :g/to
-   :db/valueType :db.type/long
-   :db/cardinality :db.cardinality/many})
+(def graph-schema
+  [{:db/ident :g/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :g/to
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/many}])
 
 (def triangle-query
-  '{:find [a b c]
-    :where [[a :g/to b]
-            [b :g/to c]
-            [c :g/to a]]})
+  '{:find [?a ?b ?c]
+    :where [[?a :g/to ?b]
+            [?b :g/to ?c]
+            [?c :g/to ?a]]})
 
 (defn graph->ops
   "Convert an edge seq to Triplox tx ops using lookup refs on :g/id."
   [edges]
-  (map (fn [[from to]] [:db/add from :g/to to]) edges))
+  (map (fn [[from to]] [:db/add [:g/id from] :g/to [:g/id to]]) edges))
 
 (defn complete-graph [n]
   (for [i (range n) j (range (inc i) n)]

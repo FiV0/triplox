@@ -59,8 +59,9 @@
                         {:batch idx :result result}))))))
 
 (defn ingest-graph! [conn {:keys [vertices batch-size probability]}]
-  (tc/transact conn [gg/edge-attribute])
+  (tc/transact conn gg/graph-schema)
   (log/info "Ingesting" vertices "vertices")
+  (transact-batches! conn (vertex-docs vertices) batch-size)
   (let [edges (gg/graph->ops (gg/random-graph vertices probability))]
     (log/info "Ingesting" (count edges) "edges")
     (transact-batches! conn edges batch-size)))
@@ -92,6 +93,12 @@
   (def conn (tc/connect "localhost" 5490))
 
   (ingest-graph! conn {:vertices 100 :probability 0.1 :batch-size 1000})
+
+  (tc/transact conn gg/graph-schema)
+
+  (tc/transact conn (vertex-docs 10))
+
+  (tc/transact conn (gg/graph->ops (gg/complete-graph 10)))
 
   (with-open [db (tc/db conn)]
     (tc/q db gg/triangle-query))
