@@ -54,17 +54,14 @@ rm -rf data
 If you ran the Docker local-storage setup:
 
 ```bash
-docker ps -a --filter ancestor=triplox:latest
-docker rm -f <container-id>
-docker volume rm triplox-data
+bench/graph/scripts/clean-local-docker.sh
 ```
 
-If you used the published image, use the same container and volume cleanup:
+The script removes any stopped or running containers attached to the
+`triplox-data` volume before removing the volume. To clean a different volume:
 
 ```bash
-docker ps -a --filter ancestor=ghcr.io/fiv0/triplox:0.1.0-alpha.2
-docker rm -f <container-id>
-docker volume rm triplox-data
+TRIPLOX_DOCKER_VOLUME=other-volume bench/graph/scripts/clean-local-docker.sh
 ```
 
 To remove Clojure cache files created by the benchmark runner:

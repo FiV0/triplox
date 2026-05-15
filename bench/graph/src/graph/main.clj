@@ -97,10 +97,10 @@
 (comment
   (def conn (tc/connect "localhost" 5490))
 
-  (ingest-graph! conn {:vertices 10000 :probability 0.025 :batch-size 1000})
+  (ingest-graph! conn {:vertices 10000 :probability 0.00182 :batch-size 1000})
 
-
-  (with-open [db (tc/db conn)]
-    (count (tc/q db gg/triangle-query)))
+  (time
+   (with-open [db (tc/db conn)]
+     (count (tc/q db gg/triangle-query))))
 
   )
