@@ -77,26 +77,3 @@ Configuration can also come from environment variables:
 ```bash
 TRIPLOX_HOST=localhost TRIPLOX_PORT=5490 VERTICES=100 BATCH_SIZE=1000 clojure -M:run
 ```
-
-The default generator is a complete graph. For `N` vertices it ingests
-`N * (N - 1) / 2` directed `:g/to` edges.
-
-## Optional benchmark container
-
-From the repository root:
-
-```bash
-docker build -f bench/graph/Dockerfile -t triplox-graph-bench .
-docker run --network host triplox-graph-bench
-```
-
-Pass benchmark settings with environment variables:
-
-```bash
-docker run --network host \
-  -e TRIPLOX_HOST=localhost \
-  -e TRIPLOX_PORT=5490 \
-  -e VERTICES=100 \
-  -e BATCH_SIZE=1000 \
-  triplox-graph-bench
-```

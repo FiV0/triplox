@@ -2,8 +2,7 @@
   "Graph ingestion benchmark entry point."
   (:require [clojure.tools.cli :as cli]
             [clojure.tools.logging :as log]
-            [graph.graph-gen :as graph-gen]
-            [graph.schema :as schema]
+            [graph.graph-gen :as gg]
             [io.triplox.api :as tc])
   (:import [java.lang AutoCloseable]))
 
@@ -24,6 +23,10 @@
     :default (Long/parseLong (or (System/getenv "BATCH_SIZE") "1000"))
     :parse-fn #(Long/parseLong %)
     :validate [pos-int? "Must be a positive integer"]]
+   ["-prob" "--probability p" "Probability of an edge in a random graph on N vertices"
+    :default (Double/parseDouble (or (System/getenv "EDGE_PROBABILITY") "0.1"))
+    :parse-fn #(Double/parseDouble %)
+    :validate [double? "Must be a positive integer"]]
    ["-h" "--help" "Show this help message"]])
 
 (defn parse-config [args]
@@ -47,23 +50,20 @@
   (map (fn [id] {:g/id (long id)}) (range vertices)))
 
 (defn transact-batches!
-  [conn label tx-data batch-size]
+  [conn tx-data batch-size]
   (doseq [[idx batch] (map-indexed vector (partition-all batch-size tx-data))]
+    ;; TODO pass to async transactions
     (let [result (tc/transact conn (vec batch))]
       (when-not (:committed? result)
-        (throw (ex-info (str "Failed to transact " label " batch")
-                        {:label label
-                         :batch idx
-                         :result result}))))))
+        (throw (ex-info "Failed to transact batch"
+                        {:batch idx :result result}))))))
 
-(defn ingest-graph! [conn {:keys [vertices batch-size]}]
-  (log/info "Installing graph schema")
-  (transact-batches! conn "schema" schema/schema-tx batch-size)
+(defn ingest-graph! [conn {:keys [vertices batch-size probability]}]
+  (tc/transact conn [gg/edge-attribute])
   (log/info "Ingesting" vertices "vertices")
-  (transact-batches! conn "vertices" (vertex-docs vertices) batch-size)
-  (let [edges (graph-gen/complete-graph vertices)]
-    (log/info "Ingesting" (edge-count vertices) "edges")
-    (transact-batches! conn "edges" (graph-gen/graph->ops edges) batch-size)))
+  (let [edges (gg/graph->ops (gg/random-graph vertices probability))]
+    (log/info "Ingesting" (count edges) "edges")
+    (transact-batches! conn edges batch-size)))
 
 (defn print-report [{:keys [vertices batch-size elapsed-secs]}]
   (let [edges (edge-count vertices)]
@@ -76,8 +76,7 @@
 
 (defn -main [& args]
   (let [{:keys [host port] :as config} (parse-config args)]
-    (log/info "=== Graph Ingestion Benchmark for Triplox ===")
-    (log/info (format "Host: %s:%d" host port))
+    (log/info "=== Graph Query Benchmark for Triplox ===")
     (log/info (format "Vertices: %d" (:vertices config)))
     (log/info (format "Batch size: %d" (:batch-size config)))
     (let [conn (tc/connect host port)
@@ -88,3 +87,13 @@
         (finally
           (.close ^AutoCloseable conn))))
     (System/exit 0)))
+
+(comment
+  (def conn (tc/connect "localhost" 5490))
+
+  (ingest-graph! conn {:vertices 100 :probability 0.1 :batch-size 1000})
+
+  (with-open [db (tc/db conn)]
+    (tc/q db gg/triangle-query))
+
+  )
