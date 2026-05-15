@@ -65,9 +65,9 @@
     (transact-batches! conn edges batch-size)))
 
 (defn print-report [{:keys [vertices probability batch-size ingest-secs triangle-count triangle-count-secs]}]
-  (log/info "=== Graph Ingestion Results ===")
+  (log/info "=== Graph Query Results ===")
   (log/info (format "Vertices: %d" vertices))
-  (log/info (format "Edge probability: %d" probability))
+  (log/info (format "Edge probability: %.3f" probability))
   (log/info (format "Batch size: %d" batch-size))
   (log/info (format "Ingest: %.3f seconds" ingest-secs))
   (log/info (format "Number of triangles: %d"  triangle-count))
@@ -89,7 +89,7 @@
           (print-report (assoc config
                                :ingest-secs (/ (- end-ingest start) 1e9)
                                :triangle-count triangle-count
-                               :triangle-count-sec (/ (- (System/nanoTime) end-ingest) 1e9))))
+                               :triangle-count-secs (/ (- (System/nanoTime) end-ingest) 1e9))))
         (finally
           (.close ^AutoCloseable conn))))
     (System/exit 0)))

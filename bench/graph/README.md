@@ -1,8 +1,8 @@
 # Graph Ingestion Benchmark
 
-Tiny Clojure benchmark for loading a generated graph into Triplox. It installs
-a minimal graph schema, ingests vertices and edges, and prints ingestion timing.
-It intentionally does not run benchmark queries.
+Tiny Clojure benchmark for loading a generated graph into Triplox and counting
+triangles. It installs a minimal graph schema, ingests vertices and random
+edges, runs a triangle query, and prints ingestion/query timing.
 
 ## Run a local Triplox node
 
@@ -33,7 +33,7 @@ To use a published image:
 docker run -p 5490:5490 \
   -e TRIPLOX_STORAGE=local \
   -v triplox-data:/var/lib/triplox \
-  ghcr.io/fiv0/triplox:0.1.0-alpha.2
+  ghcr.io/fiv0/triplox:0.1.0-alpha.3
 ```
 
 The general Docker setup lives under `docker/`; use
@@ -84,7 +84,7 @@ Then run the benchmark:
 
 ```bash
 cd bench/graph
-clojure -M:run --vertices 100 --batch-size 1000
+clojure -M:run --vertices 10000 --batch-size 1000 --probability 0.00182
 ```
 
 ### Run with `clj`
@@ -93,17 +93,22 @@ The same main entry point can be invoked with `clj`:
 
 ```bash
 cd bench/graph
-clj -M -m graph.main --vertices 100 --batch-size 1000
+clj -M -m graph.main --vertices 10000 --batch-size 1000 --probability 0.00182
 ```
 
 The `:run` alias is equivalent:
 
 ```bash
-clj -M:run --vertices 100 --batch-size 1000
+clj -M:run --vertices 10000 --batch-size 1000 --probability 0.00182
 ```
 
 Configuration can also come from environment variables:
 
 ```bash
-TRIPLOX_HOST=localhost TRIPLOX_PORT=5490 VERTICES=100 BATCH_SIZE=1000 clojure -M:run
+TRIPLOX_HOST=localhost TRIPLOX_PORT=5490 VERTICES=100 EDGE_PROBABILITY=0.1 BATCH_SIZE=1000 clojure -M:run
 ```
+
+`--vertices` controls the vertex count. `--probability` is the probability that
+each possible complete-graph edge is included in the generated random graph.
+The benchmark logs the sampled edge count during ingestion and reports the
+triangle count plus triangle-query runtime.
