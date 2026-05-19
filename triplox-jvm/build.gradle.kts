@@ -82,7 +82,7 @@ mavenPublishing {
 
     pom {
         name.set("triplox")
-        description.set("A triple store built on top of XTDB")
+        description.set("A Datomic-like triplestore in Rust on top of SlateDB")
         url.set("https://github.com/FiV0/triplox")
 
         licenses {
