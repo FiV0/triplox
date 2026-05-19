@@ -52,7 +52,7 @@ All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body)
 DB handles are scoped to an HTTP/2 connection. Each `db_id` maps to a
 transaction basis: the transaction log key (`tx_id` + `system_time`) plus the
 transaction entity ID (`tx_eid`) that bounds temporal reads. The server does
-not cache DB snapshots for handles; it creates transient read views from the
+not cache pinned SlateDB read state for handles; it creates transient read views from the
 stored basis when queries execute. Each connection is assigned a unique
 `conn_id` on accept, and all handles opened on that connection are tracked
 against it. Two cleanup mechanisms ensure handles are released:

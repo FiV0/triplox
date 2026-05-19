@@ -942,8 +942,7 @@ mod tests {
         }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        let snapshot = slate.snapshot().await?;
-        let latest = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
+        let latest = latest_tx_basis_from_sdb(slate.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 42);
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(1000));
         assert!(latest.tx_eid > 0, "tx_eid should be a valid entity ID");
@@ -970,8 +969,7 @@ mod tests {
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        let snapshot = slate.snapshot().await?;
-        let latest = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
+        let latest = latest_tx_basis_from_sdb(slate.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 3, "Should return highest tx_id");
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(300));
         Ok(())
@@ -1502,20 +1500,12 @@ mod tests {
             .await?;
 
         let query: ParsedQuery = r#"[:find ?e ?name :where [?e :name ?name]]"#.parse()?;
-        let snapshot = slate.snapshot().await?;
+        let sdb = slate.clone();
         let handle = tokio::runtime::Handle::current();
         let ident_map = indexer.metadata().schema.ident_map.clone();
         let range_stats = components.range_stats.clone();
         let rows = tokio::task::spawn_blocking(move || {
-            execute_query(
-                &query,
-                &[],
-                snapshot,
-                handle,
-                &ident_map,
-                i64::MAX,
-                range_stats,
-            )
+            execute_query(&query, &[], sdb, handle, &ident_map, i64::MAX, range_stats)
         })
         .await??;
 

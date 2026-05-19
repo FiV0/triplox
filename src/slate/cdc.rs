@@ -387,10 +387,10 @@ mod tests {
         db.close().await.unwrap();
     }
 
-    // --- Snapshot + CdcStream integration tests ---
+    // --- Cursor + CdcStream integration tests ---
 
     #[tokio::test]
-    async fn test_cdc_after_snapshot_all_caught_up() {
+    async fn test_cdc_from_current_seq_all_caught_up() {
         let (db, object_store) = setup_db("/test_snap_caught_up").await;
 
         db.put(b"k1", b"v1").await.unwrap();
@@ -400,10 +400,9 @@ mod tests {
         db.put(b"k3", b"v3").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        let snapshot = db.snapshot().await.unwrap();
-        let snap_seq = snapshot.seq();
+        let current_seq = db.status().durable_seq;
 
-        // CdcStream starting from snapshot seq — nothing new after snapshot.
+        // CdcStream starting from the current durable seq has nothing new.
         let wal_reader = WalReader::new("/test_snap_caught_up", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -411,7 +410,7 @@ mod tests {
             wal_reader,
             CdcCursor {
                 wal_id: 0,
-                last_seq: snap_seq,
+                last_seq: current_seq,
             },
             Duration::from_millis(10),
             cancel,
@@ -420,24 +419,23 @@ mod tests {
         .unwrap();
 
         let result = stream.next_transaction().await.unwrap();
-        assert!(result.is_none(), "expected no transactions after snapshot");
+        assert!(result.is_none(), "expected no transactions after cursor");
         db.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_cdc_after_snapshot_some_new() {
+    async fn test_cdc_from_current_seq_some_new() {
         let (db, object_store) = setup_db("/test_snap_some_new").await;
 
-        // Before snapshot.
+        // Before cursor.
         db.put(b"k1", b"v1").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
         db.put(b"k2", b"v2").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        let snapshot = db.snapshot().await.unwrap();
-        let snap_seq = snapshot.seq();
+        let current_seq = db.status().durable_seq;
 
-        // After snapshot.
+        // After cursor.
         db.put(b"k3", b"v3").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
         db.put(b"k4", b"v4").await.unwrap();
@@ -450,7 +448,7 @@ mod tests {
             wal_reader,
             CdcCursor {
                 wal_id: 0,
-                last_seq: snap_seq,
+                last_seq: current_seq,
             },
             Duration::from_millis(10),
             cancel,
@@ -461,30 +459,29 @@ mod tests {
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
             assert!(
-                tx.seq > snap_seq,
-                "tx.seq {} should be > snapshot seq {}",
+                tx.seq > current_seq,
+                "tx.seq {} should be > cursor seq {}",
                 tx.seq,
-                snap_seq
+                current_seq
             );
             txs.push(tx);
         }
         assert!(
             txs.len() >= 2,
-            "expected at least 2 post-snapshot transactions, got {}",
+            "expected at least 2 post-cursor transactions, got {}",
             txs.len()
         );
         db.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_cdc_after_snapshot_all_after() {
+    async fn test_cdc_from_current_seq_all_after() {
         let (db, object_store) = setup_db("/test_snap_all_after").await;
 
-        // Snapshot on empty-ish DB.
-        let snapshot = db.snapshot().await.unwrap();
-        let snap_seq = snapshot.seq();
+        // Cursor on empty-ish DB.
+        let current_seq = db.status().durable_seq;
 
-        // All transactions after snapshot.
+        // All transactions after cursor.
         db.put(b"k1", b"v1").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
         db.put(b"k2", b"v2").await.unwrap();
@@ -497,7 +494,7 @@ mod tests {
             wal_reader,
             CdcCursor {
                 wal_id: 0,
-                last_seq: snap_seq,
+                last_seq: current_seq,
             },
             Duration::from_millis(10),
             cancel,
@@ -508,10 +505,10 @@ mod tests {
         let mut txs = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
             assert!(
-                tx.seq > snap_seq,
-                "tx.seq {} should be > snapshot seq {}",
+                tx.seq > current_seq,
+                "tx.seq {} should be > cursor seq {}",
                 tx.seq,
-                snap_seq
+                current_seq
             );
             txs.push(tx);
         }
@@ -524,15 +521,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_after_snapshot_live_streaming() {
+    async fn test_cdc_from_current_seq_live_streaming() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (db, object_store) = setup_db("/test_snap_live").await;
 
             db.put(b"k1", b"v1").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
 
-            let snapshot = db.snapshot().await.unwrap();
-            let snap_seq = snapshot.seq();
+            let current_seq = db.status().durable_seq;
 
             // Create stream BEFORE new transactions exist.
             let wal_reader = WalReader::new("/test_snap_live", object_store);
@@ -542,7 +538,7 @@ mod tests {
                 wal_reader,
                 CdcCursor {
                     wal_id: 0,
-                    last_seq: snap_seq,
+                    last_seq: current_seq,
                 },
                 Duration::from_millis(10),
                 cancel,
@@ -565,10 +561,10 @@ mod tests {
             let mut txs = Vec::new();
             while let Some(tx) = stream.next_transaction().await.unwrap() {
                 assert!(
-                    tx.seq > snap_seq,
-                    "tx.seq {} should be > snapshot seq {}",
+                    tx.seq > current_seq,
+                    "tx.seq {} should be > cursor seq {}",
                     tx.seq,
-                    snap_seq
+                    current_seq
                 );
                 txs.push(tx);
             }
@@ -579,22 +575,21 @@ mod tests {
             );
         })
         .await
-        .expect("test_cdc_after_snapshot_live_streaming timed out");
+        .expect("test_cdc_from_current_seq_live_streaming timed out");
     }
 
     #[tokio::test]
-    async fn test_cdc_after_snapshot_mixed_timing() {
+    async fn test_cdc_from_current_seq_mixed_timing() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (db, object_store) = setup_db("/test_snap_mixed").await;
 
-            // Before snapshot.
+            // Before cursor.
             db.put(b"k1", b"v1").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
 
-            let snapshot = db.snapshot().await.unwrap();
-            let snap_seq = snapshot.seq();
+            let current_seq = db.status().durable_seq;
 
-            // After snapshot but before stream creation.
+            // After cursor but before stream creation.
             db.put(b"k2", b"v2").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
 
@@ -606,7 +601,7 @@ mod tests {
                 wal_reader,
                 CdcCursor {
                     wal_id: 0,
-                    last_seq: snap_seq,
+                    last_seq: current_seq,
                 },
                 Duration::from_millis(10),
                 cancel,
@@ -626,10 +621,10 @@ mod tests {
             let mut txs = Vec::new();
             while let Some(tx) = stream.next_transaction().await.unwrap() {
                 assert!(
-                    tx.seq > snap_seq,
-                    "tx.seq {} should be > snapshot seq {}",
+                    tx.seq > current_seq,
+                    "tx.seq {} should be > cursor seq {}",
                     tx.seq,
-                    snap_seq
+                    current_seq
                 );
                 txs.push(tx);
             }
@@ -641,6 +636,6 @@ mod tests {
             );
         })
         .await
-        .expect("test_cdc_after_snapshot_mixed_timing timed out");
+        .expect("test_cdc_from_current_seq_mixed_timing timed out");
     }
 }

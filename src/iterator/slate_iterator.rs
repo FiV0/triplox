@@ -277,12 +277,11 @@ mod tests {
         slate.put(&make_key(PFX, b"cc"), b"").await;
         slate.put(&make_key(OTHER_PFX, b"xx"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let mut iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -307,12 +306,11 @@ mod tests {
         slate.put(&make_key(PFX, b"cc"), b"").await;
         slate.put(&make_key(PFX, b"ee"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let mut iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -332,11 +330,11 @@ mod tests {
 
         slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         })
@@ -363,11 +361,11 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
             assert_eq!(count, 3);
         })

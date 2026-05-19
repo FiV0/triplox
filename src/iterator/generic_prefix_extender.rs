@@ -265,10 +265,8 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let slate = components.db.clone();
         let range_stats = components.range_stats.clone();
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
@@ -302,10 +300,8 @@ mod tests {
             }))
             .unwrap();
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -332,10 +328,8 @@ mod tests {
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -366,10 +360,8 @@ mod tests {
         runtime.block_on(insert_ave(&slate, attr_name, encode_string("Alice"), 1))?;
         runtime.block_on(insert_ave(&slate, attr_name, encode_string("Bob"), 2))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
@@ -400,10 +392,8 @@ mod tests {
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -444,14 +434,12 @@ mod tests {
         let value_bytes = Bytes::from(DataType::String("alice".to_string()).encode());
         runtime.block_on(insert_ave(&slate, attr_name, value_bytes.clone(), 1))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         // This mirrors how compile_pattern sets up a single-variable AVE pattern:
         // - index_types: [AVE]
         // - constant_prefix: serialized value bytes
         // - participating_levels: [0] (only one variable)
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AVE],
@@ -477,10 +465,8 @@ mod tests {
         let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],

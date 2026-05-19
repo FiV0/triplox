@@ -832,11 +832,7 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
-    let snapshot = slate
-        .db
-        .snapshot()
-        .await
-        .expect("Failed to create snapshot");
+    let sdb = slate.db.clone();
     let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
 
@@ -855,7 +851,7 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         let idents = execute_query(
             &ident_query,
             &[],
-            snapshot.clone(),
+            sdb.clone(),
             handle.clone(),
             &bootstrap_ident_map,
             i64::MAX,
@@ -864,7 +860,7 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         let attrs = execute_query(
             &attr_query,
             &[],
-            snapshot.clone(),
+            sdb.clone(),
             handle.clone(),
             &bootstrap_ident_map,
             i64::MAX,
@@ -873,7 +869,7 @@ pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> 
         let uniques = execute_query(
             &unique_query,
             &[],
-            snapshot,
+            sdb,
             handle,
             &bootstrap_ident_map,
             i64::MAX,

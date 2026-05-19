@@ -29,7 +29,7 @@
 
 
 
-;; 3. Open a DB snapshot and query
+;; 3. Open a DB handle and query
 (with-open [db (tc/db conn)]
   (tc/q db '{:find [?e ?name ?age]
              :where [[?e :name ?name]
