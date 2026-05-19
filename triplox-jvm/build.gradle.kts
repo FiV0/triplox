@@ -2,6 +2,7 @@ plugins {
     `java-library`
     `maven-publish`
     id("dev.clojurephant.clojure") version "0.8.0-beta.7"
+    id("com.vanniktech.maven.publish") version "0.34.0"
 }
 
 repositories {
@@ -25,6 +26,9 @@ fun workspaceVersion(): String {
 }
 
 val triploxVersion = (findProperty("triploxVersion") as String?) ?: workspaceVersion()
+
+fun propertyOrEnv(propertyName: String, envName: String): String? =
+    (findProperty(propertyName) as String?) ?: System.getenv(envName)
 
 dependencies {
     // Clojure
@@ -71,50 +75,46 @@ tasks.checkClojure {
 
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
 
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            groupId = "xyz.triplox"
-            artifactId = "triplox"
-            version = triploxVersion
+mavenPublishing {
+    publishToMavenCentral()
 
-            from(components["java"])
+    coordinates("xyz.triplox", "triplox", triploxVersion)
 
-            pom {
-                name.set("triplox")
-                description.set("A triple store built on top of XTDB")
-                url.set("https://github.com/FiV0/triplox")
+    pom {
+        name.set("triplox")
+        description.set("A Datomic-like triplestore in Rust on top of SlateDB")
+        url.set("https://github.com/FiV0/triplox")
 
-                licenses {
-                    license {
-                        name.set("Apache License, Version 2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
-                    }
-                }
-
-                developers {
-                    developer {
-                        id.set("FiV0")
-                        name.set("Finn Völkel")
-                    }
-                }
-
-                scm {
-                    url.set("https://github.com/FiV0/triplox")
-                    connection.set("scm:git:git://github.com/FiV0/triplox.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/FiV0/triplox.git")
-                }
+        licenses {
+            license {
+                name.set("Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
             }
         }
-    }
 
+        developers {
+            developer {
+                id.set("FiV0")
+                name.set("Finn Völkel")
+            }
+        }
+
+        scm {
+            url.set("https://github.com/FiV0/triplox")
+            connection.set("scm:git:git://github.com/FiV0/triplox.git")
+            developerConnection.set("scm:git:ssh://git@github.com/FiV0/triplox.git")
+        }
+    }
+}
+
+publishing {
     repositories {
         maven {
             name = "clojars"
             url = uri("https://clojars.org/repo")
             credentials {
-                username = findProperty("clojarsUsername") as String?
-                password = findProperty("clojarsPassword") as String?
+                username = propertyOrEnv("clojarsUsername", "CLOJARS_USERNAME")
+                password = propertyOrEnv("clojarsPassword", "CLOJARS_PASSWORD")
             }
         }
     }
