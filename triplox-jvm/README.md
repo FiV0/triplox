@@ -52,24 +52,32 @@ To override the published Clojars version:
 To upload the current workspace version to Maven Central:
 
 ```bash
-CENTRAL_USERNAME=... \
-CENTRAL_PASSWORD=... \
-SIGNING_KEY="$(gpg --armor --export-secret-keys <key-id>)" \
-SIGNING_PASSWORD=... \
-./gradlew publishMavenPublicationToCentralPortal
+ORG_GRADLE_PROJECT_mavenCentralUsername=... \
+ORG_GRADLE_PROJECT_mavenCentralPassword=... \
+ORG_GRADLE_PROJECT_signAllPublications=true \
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --armor --export-secret-keys <key-id>)" \
+ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=... \
+./gradlew publishToMavenCentral
 ```
 
 To override the Maven Central version:
 
 ```bash
-CENTRAL_USERNAME=... \
-CENTRAL_PASSWORD=... \
-SIGNING_KEY="$(gpg --armor --export-secret-keys <key-id>)" \
-SIGNING_PASSWORD=... \
-./gradlew publishMavenPublicationToCentralPortal \
+ORG_GRADLE_PROJECT_mavenCentralUsername=... \
+ORG_GRADLE_PROJECT_mavenCentralPassword=... \
+ORG_GRADLE_PROJECT_signAllPublications=true \
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --armor --export-secret-keys <key-id>)" \
+ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=... \
+./gradlew publishToMavenCentral \
     -PtriploxVersion=0.1.0-alpha.2
 ```
 
-The Maven Central task uploads the deployment in `user_managed` mode by default.
+The Maven Central task uploads the deployment for manual publishing by default.
 After it succeeds, inspect the deployment at <https://central.sonatype.com/publishing>
-and click Publish.
+and click Publish. Use `./gradlew publishAndReleaseToMavenCentral` only when you
+want the plugin to publish automatically after Central Portal validation.
+
+If `signAllPublications=true` is set in `~/.gradle/gradle.properties`, local
+non-release checks such as `publishMavenPublicationToMavenLocal` also expect a
+signing key. Pass `-PsignAllPublications=false` for those checks when you are
+not testing signing.
