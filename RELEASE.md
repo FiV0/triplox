@@ -45,18 +45,3 @@ same workflow on the branch ref with `mode` set to `snapshot`.
 `CENTRAL_USERNAME` and `CENTRAL_PASSWORD` are the Sonatype Central Portal user
 token values, not the account login password. Generate them from the Central
 Portal account settings.
-
-`SIGNING_KEY` is the private key exported with:
-
-```bash
-gpg --armor --export-secret-keys <key-id>
-```
-
-Use a dedicated release signing key rather than a personal long-term GPG key.
-Publish the matching public key before the first release:
-
-```bash
-gpg --keyserver keyserver.ubuntu.com --send-keys <key-id>
-```
-
-`SIGNING_PASSWORD` is the passphrase for that private key.
