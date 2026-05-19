@@ -785,6 +785,61 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_loop_edge_is_rejected_at_validation_time() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put(vec![
+            (kw!(:db/ident), DataType::Keyword(kw!(:g/to))),
+            (
+                kw!(:db/valueType),
+                DataType::Keyword(Keyword::namespaced("db.type", "ref")),
+            ),
+            (
+                kw!(:db/cardinality),
+                DataType::Keyword(Keyword::namespaced("db.cardinality", "one")),
+            ),
+        ])])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".to_string())),
+                (kw!(:name), "alice".into()),
+                (kw!(:g/to), DataType::String("alice".to_string())),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".to_string())),
+                (kw!(:name), "bob".into()),
+                (kw!(:g/to), DataType::String("alice".to_string())),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let alice = db
+            .query(r#"{:find [?x] :where [[?x :name "alice"]]}"#)
+            .await
+            .unwrap();
+        assert_eq!(alice.len(), 1);
+
+        let result = db
+            .query("{:find [?x] :where [[?x :g/to ?x]]}")
+            .await
+            .unwrap_err();
+
+        assert!(
+            result
+                .to_string()
+                .contains("Repeated variable ?x in a single pattern is not supported"),
+            "unexpected error: {}",
+            result
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_or_clause_basic() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;

@@ -428,6 +428,47 @@ fn validate_not_clauses(
     Ok(())
 }
 
+fn validate_pattern_variables(where_clauses: &[WhereClause]) -> Result<(), Error> {
+    for clause in where_clauses {
+        validate_pattern_variables_in_clause(clause)?;
+    }
+    Ok(())
+}
+
+fn validate_pattern_variables_in_or_branch(branch: &OrWhereClause) -> Result<(), Error> {
+    match branch {
+        OrWhereClause::Clause(clause) => validate_pattern_variables_in_clause(clause),
+        OrWhereClause::And(children) => validate_pattern_variables(children),
+    }
+}
+
+fn validate_pattern_variables_in_clause(clause: &WhereClause) -> Result<(), Error> {
+    match clause {
+        WhereClause::Pattern(pattern) => validate_single_pattern_variables(pattern),
+        WhereClause::OrJoin(oj) => {
+            for branch in &oj.clauses {
+                validate_pattern_variables_in_or_branch(branch)?;
+            }
+            Ok(())
+        }
+        WhereClause::NotJoin(nj) => validate_pattern_variables(&nj.clauses),
+        _ => Ok(()),
+    }
+}
+
+fn validate_single_pattern_variables(pattern: &Pattern) -> Result<(), Error> {
+    let mut seen = HashSet::new();
+    for var in pattern_variables(pattern) {
+        if !seen.insert(var.clone()) {
+            return Err(anyhow::anyhow!(
+                "Repeated variable {} in a single pattern is not supported",
+                var
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate that all variables in Predicate clauses are bound by positive clauses,
 /// and that each predicate has at least one variable.
 fn validate_predicate_clauses(
@@ -1148,6 +1189,7 @@ pub fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Erro
             validate_or_branches(&oj.clauses)?;
         }
     }
+    validate_pattern_variables(&query.where_clauses)?;
     validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
@@ -1458,6 +1500,18 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("at least one variable"));
+    }
+
+    #[test]
+    fn test_validate_rejects_repeated_variable_in_single_pattern() {
+        let parsed = parse_query("{:find [?x] :where [[?x :g/to ?x]]}");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Repeated variable ?x in a single pattern is not supported"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
