@@ -114,7 +114,7 @@ jobs:
           TRIPLOX_VERSION: ${{ needs.verify.outputs.version }}
         run: |
           cd triplox-jvm
-          ./gradlew publishToMavenCentral \
+          ./gradlew publishAndReleaseToMavenCentral \
             -PtriploxVersion="$TRIPLOX_VERSION"
 
   docker-image:
