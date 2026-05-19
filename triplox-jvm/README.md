@@ -33,15 +33,43 @@ By default the tests connect to `localhost:5490`. Override with environment vari
 TRIPLOX_HOST=192.168.1.10 TRIPLOX_PORT=5491 ./gradlew integrationTest
 ```
 
-### Deploying
+## Deploying
+
 To deploy the current workspace version to Clojars:
+
 ```bash
 ./gradlew publishMavenPublicationToClojarsRepository
 ```
 
-To override the published version:
+To override the published Clojars version:
+
 ```bash
 ./gradlew publishMavenPublicationToClojarsRepository \
     -Dorg.gradle.internal.publish.checksums.insecure=true \
     -PtriploxVersion=0.1.0-alpha.2
 ```
+
+To upload the current workspace version to Maven Central:
+
+```bash
+CENTRAL_USERNAME=... \
+CENTRAL_PASSWORD=... \
+SIGNING_KEY="$(gpg --armor --export-secret-keys <key-id>)" \
+SIGNING_PASSWORD=... \
+./gradlew publishMavenPublicationToCentralPortal
+```
+
+To override the Maven Central version:
+
+```bash
+CENTRAL_USERNAME=... \
+CENTRAL_PASSWORD=... \
+SIGNING_KEY="$(gpg --armor --export-secret-keys <key-id>)" \
+SIGNING_PASSWORD=... \
+./gradlew publishMavenPublicationToCentralPortal \
+    -PtriploxVersion=0.1.0-alpha.2
+```
+
+The Maven Central task uploads the deployment in `user_managed` mode by default.
+After it succeeds, inspect the deployment at <https://central.sonatype.com/publishing>
+and click Publish.

@@ -104,6 +104,21 @@ jobs:
             -PclojarsUsername="$CLOJARS_USERNAME" \
             -PclojarsPassword="$CLOJARS_PASSWORD"
 
+      - name: Publish JVM client to Maven Central
+        env:
+          CENTRAL_USERNAME: ${{ vars.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          TRIPLOX_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cd triplox-jvm
+          ./gradlew publishMavenPublicationToCentralPortal \
+            -PtriploxVersion="$TRIPLOX_VERSION" \
+            -PcentralUsername="$CENTRAL_USERNAME" \
+            -PcentralPassword="$CENTRAL_PASSWORD" \
+            -PcentralPublishingType=user_managed
+
   docker-image:
     needs: verify
     permissions:

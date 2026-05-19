@@ -1,6 +1,13 @@
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.util.Base64
+
 plugins {
     `java-library`
     `maven-publish`
+    signing
     id("dev.clojurephant.clojure") version "0.8.0-beta.7"
 }
 
@@ -25,6 +32,9 @@ fun workspaceVersion(): String {
 }
 
 val triploxVersion = (findProperty("triploxVersion") as String?) ?: workspaceVersion()
+
+fun propertyOrEnv(propertyName: String, envName: String): String? =
+    (findProperty(propertyName) as String?) ?: System.getenv(envName)
 
 dependencies {
     // Clojure
@@ -69,7 +79,11 @@ tasks.checkClojure {
     enabled = false
 }
 
-java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+java {
+    toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+    withSourcesJar()
+    withJavadocJar()
+}
 
 publishing {
     publications {
@@ -113,9 +127,72 @@ publishing {
             name = "clojars"
             url = uri("https://clojars.org/repo")
             credentials {
-                username = findProperty("clojarsUsername") as String?
-                password = findProperty("clojarsPassword") as String?
+                username = propertyOrEnv("clojarsUsername", "CLOJARS_USERNAME")
+                password = propertyOrEnv("clojarsPassword", "CLOJARS_PASSWORD")
+            }
+        }
+
+        maven {
+            name = "central"
+            url = uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
+            credentials {
+                username = propertyOrEnv("centralUsername", "CENTRAL_USERNAME")
+                password = propertyOrEnv("centralPassword", "CENTRAL_PASSWORD")
             }
         }
     }
+}
+
+signing {
+    setRequired {
+        gradle.taskGraph.hasTask(":publishMavenPublicationToCentralRepository") ||
+            gradle.taskGraph.hasTask(":publishMavenPublicationToCentralPortal")
+    }
+
+    val signingKey = propertyOrEnv("signingInMemoryKey", "SIGNING_KEY")
+    val signingPassword = propertyOrEnv("signingInMemoryKeyPassword", "SIGNING_PASSWORD")
+    if (signingKey != null) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+    }
+    sign(publishing.publications["maven"])
+}
+
+tasks.register("uploadCentralDeployment") {
+    group = "publishing"
+    description = "Uploads the Central OSSRH compatibility staging repository to the Central Portal."
+    dependsOn("publishMavenPublicationToCentralRepository")
+
+    doLast {
+        val username = propertyOrEnv("centralUsername", "CENTRAL_USERNAME")
+            ?: throw GradleException("Missing centralUsername property or CENTRAL_USERNAME environment variable")
+        val password = propertyOrEnv("centralPassword", "CENTRAL_PASSWORD")
+            ?: throw GradleException("Missing centralPassword property or CENTRAL_PASSWORD environment variable")
+        val namespace = propertyOrEnv("centralNamespace", "CENTRAL_NAMESPACE") ?: "xyz.triplox"
+        val publishingType = propertyOrEnv("centralPublishingType", "CENTRAL_PUBLISHING_TYPE") ?: "user_managed"
+        val auth = Base64.getEncoder().encodeToString("$username:$password".toByteArray(Charsets.UTF_8))
+
+        val request = HttpRequest.newBuilder(
+            URI.create(
+                "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/" +
+                    "$namespace?publishing_type=$publishingType",
+            ),
+        )
+            .header("Authorization", "Bearer $auth")
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build()
+
+        val response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString())
+        if (response.statusCode() !in 200..299) {
+            throw GradleException(
+                "Central Portal upload failed with HTTP ${response.statusCode()}: ${response.body()}",
+            )
+        }
+        logger.lifecycle("Uploaded Maven Central deployment for namespace $namespace using publishing_type=$publishingType")
+    }
+}
+
+tasks.register("publishMavenPublicationToCentralPortal") {
+    group = "publishing"
+    description = "Publishes the JVM client to the Central Portal using the Central OSSRH compatibility API."
+    dependsOn("uploadCentralDeployment")
 }

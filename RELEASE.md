@@ -24,7 +24,12 @@ git push origin v0.1.0-alpha.2
 ```
 
 Pushing the tag triggers GitHub Actions to publish the Rust crates, JVM client,
-Docker image, and GitHub Release.
+Docker image, and GitHub Release. The JVM client is published to Clojars and
+uploaded to Maven Central.
+
+After the workflow uploads the JVM client to Maven Central, open
+https://central.sonatype.com/publishing, inspect the deployment, and click
+Publish.
 
 To publish only the Docker image for an existing release tag, run the
 `Docker Publish` workflow manually, select the release tag as the ref, and set
@@ -36,3 +41,7 @@ same workflow on the branch ref with `mode` set to `snapshot`.
 - `CARGO_REGISTRY_TOKEN` for crates.io.
 - `CLOJARS_PASSWORD` for Clojars.
 - `CLOJARS_USERNAME` as a repository variable.
+- `CENTRAL_PASSWORD` for Maven Central.
+- `CENTRAL_USERNAME` as a repository variable.
+- `SIGNING_KEY` as an ASCII-armored GPG private key for Maven Central.
+- `SIGNING_PASSWORD` for the GPG private key.
