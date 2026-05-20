@@ -17,7 +17,12 @@
 (defn- map->put
   "Convert a Clojure map to a TxOp.Put."
   [m]
-  (TxOp$Put. (into {} (map (fn [[k v]] [(if (keyword? k) (str k) k) v]) m))))
+  (TxOp$Put. (into {} (map (fn [[k v]]
+                              (when-not (keyword? k)
+                                (throw (ex-info "TxOp.Put map keys must be keywords"
+                                                {:key k :map m})))
+                              [(str k) v])
+                            m))))
 
 (defn- vec->tx-op
   "Convert a Datomic-style tx-data vector to a TxOp."
