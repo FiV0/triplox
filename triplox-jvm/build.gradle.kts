@@ -32,7 +32,8 @@ fun propertyOrEnv(propertyName: String, envName: String): String? =
 
 dependencies {
     // Clojure
-    implementation("org.clojure", "clojure", "1.12.3")
+    // TODO Keyword currently leaks into the public API
+    api("org.clojure", "clojure", "1.12.3")
 
     // MessagePack wire codec
     implementation("org.msgpack:msgpack-core:0.9.8")
