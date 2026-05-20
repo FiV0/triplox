@@ -42,6 +42,13 @@ cargo run --bin simple-example
 See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
 with the server.
 
+### Java
+
+From the `examples/java/` directory:
+
+```bash
+../../triplox-jvm/gradlew run
+```
 
 ### simple-example
 
