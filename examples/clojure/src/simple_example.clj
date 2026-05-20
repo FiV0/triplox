@@ -3,8 +3,6 @@
 (def host "localhost")
 (def port 5490)
 
-(println (str "Connecting to " host ":" port "..."))
-
 (def conn (tc/connect host port))
 
 ;; 1. Transact a schema
