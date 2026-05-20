@@ -90,7 +90,7 @@ async fn run_server(config: Config) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    triplox::logging::init();
+    triplox::logging::init_with_default_info();
 
     let config = load_config()?;
     info!("Starting triplox with {:?} storage", config.storage);
