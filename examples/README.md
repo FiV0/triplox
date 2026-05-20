@@ -37,6 +37,11 @@ From the `examples/rust/` directory:
 cargo run --bin simple-example
 ```
 
+### Clojure
+
+See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
+with the server.
+
 ### Java
 
 From the `examples/java/` directory:
@@ -44,12 +49,6 @@ From the `examples/java/` directory:
 ```bash
 ../../triplox-jvm/gradlew run
 ```
-
-### Clojure
-
-See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
-with the server.
-
 
 ### simple-example
 
