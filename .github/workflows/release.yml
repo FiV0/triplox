@@ -91,19 +91,6 @@ jobs:
           java-version: 21
           cache: gradle
 
-      - name: Publish JVM client to Clojars
-        env:
-          CLOJARS_USERNAME: ${{ vars.CLOJARS_USERNAME }}
-          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
-          TRIPLOX_VERSION: ${{ needs.verify.outputs.version }}
-        run: |
-          cd triplox-jvm
-          ./gradlew publishMavenPublicationToClojarsRepository \
-            -Dorg.gradle.internal.publish.checksums.insecure=true \
-            -PtriploxVersion="$TRIPLOX_VERSION" \
-            -PclojarsUsername="$CLOJARS_USERNAME" \
-            -PclojarsPassword="$CLOJARS_PASSWORD"
-
       - name: Publish JVM client to Maven Central
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ vars.CENTRAL_USERNAME }}

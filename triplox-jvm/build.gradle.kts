@@ -27,9 +27,6 @@ fun workspaceVersion(): String {
 
 val triploxVersion = (findProperty("triploxVersion") as String?) ?: workspaceVersion()
 
-fun propertyOrEnv(propertyName: String, envName: String): String? =
-    (findProperty(propertyName) as String?) ?: System.getenv(envName)
-
 dependencies {
     // Clojure
     // TODO Keyword currently leaks into the public API
@@ -104,19 +101,6 @@ mavenPublishing {
             url.set("https://github.com/FiV0/triplox")
             connection.set("scm:git:git://github.com/FiV0/triplox.git")
             developerConnection.set("scm:git:ssh://git@github.com/FiV0/triplox.git")
-        }
-    }
-}
-
-publishing {
-    repositories {
-        maven {
-            name = "clojars"
-            url = uri("https://clojars.org/repo")
-            credentials {
-                username = propertyOrEnv("clojarsUsername", "CLOJARS_USERNAME")
-                password = propertyOrEnv("clojarsPassword", "CLOJARS_PASSWORD")
-            }
         }
     }
 }

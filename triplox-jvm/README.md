@@ -35,20 +35,6 @@ TRIPLOX_HOST=192.168.1.10 TRIPLOX_PORT=5491 ./gradlew integrationTest
 
 ## Deploying
 
-To deploy the current workspace version to Clojars:
-
-```bash
-./gradlew publishMavenPublicationToClojarsRepository
-```
-
-To override the published Clojars version:
-
-```bash
-./gradlew publishMavenPublicationToClojarsRepository \
-    -Dorg.gradle.internal.publish.checksums.insecure=true \
-    -PtriploxVersion=0.1.0-alpha.2
-```
-
 To upload the current workspace version to Maven Central:
 
 ```bash
@@ -75,6 +61,8 @@ ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=<gpg-key-passphrase> \
 The Maven Central username and password are Central Portal user token values.
 The signing key is the ASCII-armored private GPG key, and the matching public
 key must be available on a public keyserver before release validation succeeds.
+
+Maven Central uses the `xyz.triplox:triplox` coordinate.
 
 The Maven Central task uploads the deployment for manual publishing by default.
 After it succeeds, inspect the deployment at <https://central.sonatype.com/publishing>
