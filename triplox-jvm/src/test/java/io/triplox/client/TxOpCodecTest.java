@@ -1,6 +1,5 @@
 package io.triplox.client;
 
-import clojure.lang.Keyword;
 import org.junit.jupiter.api.Test;
 import org.msgpack.core.MessagePack;
 
@@ -24,26 +23,26 @@ class TxOpCodecTest {
 
     @Test
     void testPut() throws IOException {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "id"), 1L);
-        doc.put(Keyword.intern("name"), "alice");
+        var doc = new TreeMap<String, Object>();
+        doc.put(":db/id", 1L);
+        doc.put(":name", "alice");
         var result = roundtrip(List.of(new TxOp.Put(doc)));
         assertEquals(1, result.size());
         var put = (TxOp.Put) result.get(0);
-        assertEquals(1L, put.document().get(Keyword.intern("db", "id")));
-        assertEquals("alice", put.document().get(Keyword.intern("name")));
+        assertEquals(1L, put.document().get(":db/id"));
+        assertEquals("alice", put.document().get(":name"));
     }
 
     @Test
     void testAdd() throws IOException {
         var result = roundtrip(List.of(new TxOp.Add(
                 new EntityRef.Id(42),
-                Keyword.intern("email"),
+                ":email",
                 "test@example.com")));
         assertEquals(1, result.size());
         var add = (TxOp.Add) result.get(0);
         assertEquals(42, ((EntityRef.Id) add.entity()).id());
-        assertEquals(Keyword.intern("email"), add.attribute());
+        assertEquals(":email", add.attribute());
         assertEquals("test@example.com", add.value());
     }
 
@@ -51,12 +50,12 @@ class TxOpCodecTest {
     void testRetract() throws IOException {
         var result = roundtrip(List.of(new TxOp.Retract(
                 new EntityRef.Id(42),
-                Keyword.intern("email"),
+                ":email",
                 "old@example.com")));
         assertEquals(1, result.size());
         var ret = (TxOp.Retract) result.get(0);
         assertEquals(42, ((EntityRef.Id) ret.entity()).id());
-        assertEquals(Keyword.intern("email"), ret.attribute());
+        assertEquals(":email", ret.attribute());
         assertEquals("old@example.com", ret.value());
     }
 
@@ -76,14 +75,14 @@ class TxOpCodecTest {
 
     @Test
     void testMultipleOps() throws IOException {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "id"), 1L);
-        doc.put(Keyword.intern("name"), "bob");
+        var doc = new TreeMap<String, Object>();
+        doc.put(":db/id", 1L);
+        doc.put(":name", "bob");
 
         var ops = List.<TxOp>of(
                 new TxOp.Put(doc),
-                new TxOp.Add(new EntityRef.Id(1), Keyword.intern("age"), 30L),
-                new TxOp.Retract(new EntityRef.Id(1), Keyword.intern("name"), "old-bob"),
+                new TxOp.Add(new EntityRef.Id(1), ":age", 30L),
+                new TxOp.Retract(new EntityRef.Id(1), ":name", "old-bob"),
                 new TxOp.Delete(new EntityRef.Id(99)),
                 new TxOp.Erase(new EntityRef.Id(100))
         );
@@ -101,22 +100,22 @@ class TxOpCodecTest {
         var ops = List.<TxOp>of(
                 new TxOp.Delete(new EntityRef.Id(42)),
                 new TxOp.Delete(new EntityRef.TempId("temp-1")),
-                new TxOp.Delete(new EntityRef.Ident(Keyword.intern("db", "ident"))),
-                new TxOp.Delete(new EntityRef.LookupRef(Keyword.intern("email"), "test@example.com"))
+                new TxOp.Delete(new EntityRef.Ident(":db/ident")),
+                new TxOp.Delete(new EntityRef.LookupRef(":email", "test@example.com"))
         );
         var result = roundtrip(ops);
         assertEquals(4, result.size());
         assertEquals(new EntityRef.Id(42), ((TxOp.Delete) result.get(0)).entity());
         assertEquals(new EntityRef.TempId("temp-1"), ((TxOp.Delete) result.get(1)).entity());
-        assertEquals(new EntityRef.Ident(Keyword.intern("db", "ident")), ((TxOp.Delete) result.get(2)).entity());
-        assertEquals(new EntityRef.LookupRef(Keyword.intern("email"), "test@example.com"), ((TxOp.Delete) result.get(3)).entity());
+        assertEquals(new EntityRef.Ident(":db/ident"), ((TxOp.Delete) result.get(2)).entity());
+        assertEquals(new EntityRef.LookupRef(":email", "test@example.com"), ((TxOp.Delete) result.get(3)).entity());
     }
 
     @Test
     void testRefValueAsLong() throws IOException {
         var result = roundtrip(List.of(new TxOp.Add(
                 new EntityRef.Id(1),
-                Keyword.intern("friend"),
+                ":friend",
                 2L)));
         assertEquals(1, result.size());
         var add = (TxOp.Add) result.get(0);
@@ -141,9 +140,21 @@ class TxOpCodecTest {
                 assertEquals(1, result.size());
                 var add = (TxOp.Add) result.get(0);
                 assertEquals(new EntityRef.Id(42), add.entity());
-                assertEquals(Keyword.intern("name"), add.attribute());
+                assertEquals(":name", add.attribute());
                 assertEquals("alice", add.value());
             }
         }
+    }
+
+    @Test
+    void testPackRejectsInvalidKeywordStrings() {
+        assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Add(
+                new EntityRef.Id(1),
+                "name",
+                "alice"))));
+        assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Put(
+                java.util.Map.of(":", "alice")))));
+        assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Delete(
+                new EntityRef.Ident("db/ident")))));
     }
 }

@@ -9,22 +9,22 @@
   (cond
     (integer? v)  (EntityRef$Id. (long v))
     (string? v)   (EntityRef$TempId. v)
-    (keyword? v)  (EntityRef$Ident. v)
+    (keyword? v)  (EntityRef$Ident. (str v))
     (and (vector? v) (= 2 (count v)) (keyword? (first v)))
-    (EntityRef$LookupRef. (first v) (second v))
+    (EntityRef$LookupRef. (str (first v)) (second v))
     :else (throw (ex-info "Cannot convert to EntityRef" {:value v}))))
 
 (defn- map->put
   "Convert a Clojure map to a TxOp.Put."
   [m]
-  (TxOp$Put. (into {} m)))
+  (TxOp$Put. (into {} (map (fn [[k v]] [(if (keyword? k) (str k) k) v]) m))))
 
 (defn- vec->tx-op
   "Convert a Datomic-style tx-data vector to a TxOp."
   [[op :as v]]
   (case op
-    :db/add     (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) a val))
-    :db/retract (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) a val))
+    :db/add     (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) (str a) val))
+    :db/retract (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) (str a) val))
     :db/delete  (let [[_ eid] v] (TxOp$Delete. (->entity-ref eid)))
     :db/erase   (let [[_ eid] v] (TxOp$Erase. (->entity-ref eid)))
     (throw (ex-info (str "Unknown tx-data op: " op) {:op op :form v}))))

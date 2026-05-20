@@ -5,7 +5,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import clojure.lang.Keyword;
 import org.msgpack.core.MessagePacker;
 import org.msgpack.core.MessageUnpacker;
 
@@ -57,12 +56,12 @@ public final class TxOpCodec {
             case EntityRef.Ident ident -> {
                 packer.packMapHeader(2);
                 packer.packString("kind"); packer.packString("ident");
-                packer.packString("ident"); packer.packString(DataTypeCodec.keywordToWire(ident.ident()));
+                packer.packString("ident"); packer.packString(DataTypeCodec.keywordStringToWire(ident.ident()));
             }
             case EntityRef.LookupRef lr -> {
                 packer.packMapHeader(3);
                 packer.packString("kind"); packer.packString("lookup");
-                packer.packString("attr"); packer.packString(DataTypeCodec.keywordToWire(lr.attr()));
+                packer.packString("attr"); packer.packString(DataTypeCodec.keywordStringToWire(lr.attr()));
                 packer.packString("value"); DataTypeCodec.pack(packer, lr.value());
             }
         }
@@ -78,9 +77,9 @@ public final class TxOpCodec {
         return switch (kind) {
             case "id" -> new EntityRef.Id((Long) requireField(map, "id"));
             case "temp" -> new EntityRef.TempId(takeString(map, "temp"));
-            case "ident" -> new EntityRef.Ident(DataTypeCodec.keywordFromWire(takeString(map, "ident")));
+            case "ident" -> new EntityRef.Ident(DataTypeCodec.keywordWireToString(takeString(map, "ident")));
             case "lookup" -> {
-                Keyword attr = DataTypeCodec.keywordFromWire(takeString(map, "attr"));
+                String attr = DataTypeCodec.keywordWireToString(takeString(map, "attr"));
                 Object value = requireField(map, "value");
                 yield new EntityRef.LookupRef(attr, value);
             }
@@ -98,10 +97,10 @@ public final class TxOpCodec {
                 packer.packMapHeader(2);
                 packer.packString("kind"); packer.packString("put");
                 packer.packString("doc");
-                Map<Keyword, Object> doc = put.document();
+                Map<String, Object> doc = put.document();
                 packer.packMapHeader(doc.size());
                 for (var entry : doc.entrySet()) {
-                    packer.packString(DataTypeCodec.keywordToWire(entry.getKey()));
+                    packer.packString(DataTypeCodec.keywordStringToWire(entry.getKey()));
                     DataTypeCodec.pack(packer, entry.getValue());
                 }
             }
@@ -109,14 +108,14 @@ public final class TxOpCodec {
                 packer.packMapHeader(4);
                 packer.packString("kind"); packer.packString("add");
                 packer.packString("entity"); packEntityRef(packer, add.entity());
-                packer.packString("attr"); packer.packString(DataTypeCodec.keywordToWire(add.attribute()));
+                packer.packString("attr"); packer.packString(DataTypeCodec.keywordStringToWire(add.attribute()));
                 packer.packString("value"); DataTypeCodec.pack(packer, add.value());
             }
             case TxOp.Retract ret -> {
                 packer.packMapHeader(4);
                 packer.packString("kind"); packer.packString("retract");
                 packer.packString("entity"); packEntityRef(packer, ret.entity());
-                packer.packString("attr"); packer.packString(DataTypeCodec.keywordToWire(ret.attribute()));
+                packer.packString("attr"); packer.packString(DataTypeCodec.keywordStringToWire(ret.attribute()));
                 packer.packString("value"); DataTypeCodec.pack(packer, ret.value());
             }
             case TxOp.Delete del -> {
@@ -147,9 +146,9 @@ public final class TxOpCodec {
 
     private static TxOp.Put readPut(Map<String, Object> map) throws IOException {
         Map<String, Object> rawDoc = expectStringMap(requireField(map, "doc"), "Put.doc");
-        Map<Keyword, Object> doc = new LinkedHashMap<>();
+        Map<String, Object> doc = new LinkedHashMap<>();
         for (var entry : rawDoc.entrySet()) {
-            doc.put(DataTypeCodec.keywordFromWire(entry.getKey()), entry.getValue());
+            doc.put(DataTypeCodec.keywordWireToString(entry.getKey()), entry.getValue());
         }
         return new TxOp.Put(doc);
     }
@@ -157,7 +156,7 @@ public final class TxOpCodec {
     private static TxOp readAddOrRetract(Map<String, Object> map, boolean retract)
             throws IOException {
         EntityRef entity = takeEntityRef(map, "entity");
-        Keyword attr = DataTypeCodec.keywordFromWire(takeString(map, "attr"));
+        String attr = DataTypeCodec.keywordWireToString(takeString(map, "attr"));
         Object value = requireField(map, "value");
         return retract ? new TxOp.Retract(entity, attr, value) : new TxOp.Add(entity, attr, value);
     }
