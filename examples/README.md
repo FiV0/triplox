@@ -35,6 +35,7 @@ From the `examples/rust/` directory:
 
 ```bash
 cargo run --bin simple-example
+cargo run --bin simple-example-edn
 ```
 
 ### Clojure
@@ -53,3 +54,7 @@ From the `examples/java/` directory:
 ### simple-example
 
 Connects to the running server, defines `:name` and `:age` schema attributes, inserts two documents (alice and bob), queries them back, and prints the results.
+
+### simple-example-edn
+
+Same flow as `simple-example`, but sends static EDN strings through the Rust `IntoTxOp` API instead of constructing typed `TxOp` values.
