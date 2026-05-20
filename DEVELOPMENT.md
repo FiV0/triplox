@@ -33,23 +33,9 @@ cargo publish -p triplox-edn
 cargo publish -p triplox-client
 ```
 
-### JVM client (Clojars)
+### JVM client (Maven Central)
 
 From `triplox-jvm/`:
 
-Alpha release:
-
-```bash
-./gradlew publishMavenPublicationToClojarsRepository
-```
-
-Alpha SNAPSHOT:
-
-```bash
-./gradlew publishMavenPublicationToClojarsRepository \
-    -Dorg.gradle.internal.publish.checksums.insecure=true \
-    -PtriploxVersion=0.1.0-alpha-SNAPSHOT
-```
-
-See [triplox-jvm/README.md](triplox-jvm/README.md) for running the JVM
-client's unit and integration tests.
+See [triplox-jvm/README.md](triplox-jvm/README.md) for Maven Central
+publishing commands, credentials, and local JVM client tests.

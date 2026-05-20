@@ -19,9 +19,6 @@
   <!-- <a href="https://crates.io/crates/triplox-client"> -->
   <!--   <img alt="crates.io" src="https://img.shields.io/crates/v/triplox-client.svg?style=flat-square"> -->
   <!-- </a> -->
-  <!-- <a href="https://clojars.org/xyz.triplox/triplox"> -->
-  <!--   <img alt="Clojars" src="https://img.shields.io/clojars/v/xyz.triplox/triplox.svg?style=flat-square"> -->
-  <!-- </a> -->
 </p>
 
 > 🚧 **WARNING: Alpha Software** 🚧
