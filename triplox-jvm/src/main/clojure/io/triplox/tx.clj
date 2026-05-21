@@ -1,6 +1,7 @@
 (ns io.triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
-  (:import [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
+  (:import [clojure.lang MapEntry]
+           [io.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
             TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
 
 (defn- ->entity-ref
@@ -17,12 +18,9 @@
 (defn- map->put
   "Convert a Clojure map to a TxOp.Put."
   [m]
-  (TxOp$Put. (into {} (map (fn [[k v]]
-                              (when-not (keyword? k)
-                                (throw (ex-info "TxOp.Put map keys must be keywords"
-                                                {:key k :map m})))
-                              [(str k) v])
-                            m))))
+  (when-not (every? keyword? (keys m))
+    (throw (ex-info "TxOp.Put map keys must be keywords" {:map m})))
+  (TxOp$Put. (into {} (map (fn [[k v]] (MapEntry/create (str k) v)) m))))
 
 (defn- vec->tx-op
   "Convert a Datomic-style tx-data vector to a TxOp."
