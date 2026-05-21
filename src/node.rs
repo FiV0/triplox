@@ -251,6 +251,10 @@ impl<L: TxLog> Node<L> {
         self.slate.db.clone()
     }
 
+    pub(crate) fn range_stats(&self) -> Arc<slatedb_estimates::RangeStats> {
+        self.slate.range_stats.clone()
+    }
+
     pub(crate) fn db_path(&self) -> &str {
         &self.slate.path
     }

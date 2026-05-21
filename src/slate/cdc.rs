@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codec;
 use crate::indexer::eav_key_to_parts;
-use crate::ops::{Datom, DatomOp, DataType};
+use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
 
 /// Tracks position in the WAL stream for resumability.
@@ -181,15 +181,19 @@ pub fn datoms_from_cdc_transaction(
 
         let entity = match entity_dt {
             DataType::Long(id) => id,
-            other => return Err(anyhow::anyhow!(
-                "Expected Long entity in EAV key, got {:?}", other
-            )),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Expected Long entity in EAV key, got {:?}",
+                    other
+                ))
+            }
         };
 
-        let attribute = schema.get_ident(attribute_id)
-            .ok_or_else(|| anyhow::anyhow!(
-                "Unknown attribute entity_id {} in EAV key", attribute_id
-            ))?
+        let attribute = schema
+            .get_ident(attribute_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unknown attribute entity_id {} in EAV key", attribute_id)
+            })?
             .clone();
 
         let op = match op_byte {
@@ -198,7 +202,12 @@ pub fn datoms_from_cdc_transaction(
             other => return Err(anyhow::anyhow!("Unknown op byte: {}", other)),
         };
 
-        datoms.push(Datom { entity, attribute, value, op });
+        datoms.push(Datom {
+            entity,
+            attribute,
+            value,
+            op,
+        });
     }
     Ok(datoms)
 }
@@ -691,13 +700,13 @@ mod tests {
 
     // --- datoms_from_cdc_transaction tests (Node-based) ---
 
-    use std::collections::BTreeMap;
     use crate::memory_log::MemoryLog;
     use crate::node::{Node, SubmitNode};
     use crate::ops::TxOp;
     use crate::schema::{load_schema_from_indices, test_schema_tx};
     use crate::transaction::TransactionResult;
     use edn::kw;
+    use std::collections::BTreeMap;
 
     async fn setup_node_with_schema() -> Node<MemoryLog> {
         let node = Node::memory_node().await;
@@ -708,20 +717,25 @@ mod tests {
 
     async fn collect_cdc_datoms(node: &Node<MemoryLog>) -> Vec<Vec<Datom>> {
         // Flush WAL to object store so CdcStream can read it.
-        node.slatedb().flush_with_options(FlushOptions {
-            flush_type: FlushType::Wal,
-        }).await.unwrap();
+        node.slatedb()
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::Wal,
+            })
+            .await
+            .unwrap();
 
         let wal_reader = WalReader::new(node.db_path(), node.object_store());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let schema = load_schema_from_indices(node.slatedb()).await;
+        let schema = load_schema_from_indices(node.slatedb(), node.range_stats()).await;
         let mut stream = CdcStream::new(
             wal_reader,
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let mut all_tx_datoms = Vec::new();
         while let Some(tx) = stream.next_transaction().await.unwrap() {
@@ -747,20 +761,19 @@ mod tests {
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
         // Find the transaction containing our entity 100 datoms.
-        let entity_datoms: Vec<&Datom> = all_tx_datoms.iter()
+        let entity_datoms: Vec<&Datom> = all_tx_datoms
+            .iter()
             .flatten()
             .filter(|d| d.entity == 100)
             .collect();
 
         assert_eq!(entity_datoms.len(), 2);
-        assert!(entity_datoms.iter().any(|d|
-            d.attribute == kw!(:name) && d.value == DataType::String("alice".to_string())
-            && d.op == DatomOp::Assert
-        ));
-        assert!(entity_datoms.iter().any(|d|
-            d.attribute == kw!(:age) && d.value == DataType::Long(30)
-            && d.op == DatomOp::Assert
-        ));
+        assert!(entity_datoms.iter().any(|d| d.attribute == kw!(:name)
+            && d.value == DataType::String("alice".to_string())
+            && d.op == DatomOp::Assert));
+        assert!(entity_datoms.iter().any(|d| d.attribute == kw!(:age)
+            && d.value == DataType::Long(30)
+            && d.op == DatomOp::Assert));
 
         node.close().await;
     }
@@ -784,20 +797,31 @@ mod tests {
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
         // Find all datoms for entity 100, attribute :name.
-        let name_datoms: Vec<&Datom> = all_tx_datoms.iter()
+        let name_datoms: Vec<&Datom> = all_tx_datoms
+            .iter()
             .flatten()
             .filter(|d| d.entity == 100 && d.attribute == kw!(:name))
             .collect();
 
-        assert!(name_datoms.iter().any(|d|
-            d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Assert
-        ), "Expected assert for alice");
-        assert!(name_datoms.iter().any(|d|
-            d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Retract
-        ), "Expected retract for alice");
-        assert!(name_datoms.iter().any(|d|
-            d.value == DataType::String("bob".to_string()) && d.op == DatomOp::Assert
-        ), "Expected assert for bob");
+        assert!(
+            name_datoms.iter().any(
+                |d| d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Assert
+            ),
+            "Expected assert for alice"
+        );
+        assert!(
+            name_datoms
+                .iter()
+                .any(|d| d.value == DataType::String("alice".to_string())
+                    && d.op == DatomOp::Retract),
+            "Expected retract for alice"
+        );
+        assert!(
+            name_datoms
+                .iter()
+                .any(|d| d.value == DataType::String("bob".to_string()) && d.op == DatomOp::Assert),
+            "Expected assert for bob"
+        );
 
         node.close().await;
     }
@@ -813,14 +837,22 @@ mod tests {
         doc2.insert(kw!(:db/id), DataType::Long(200));
         doc2.insert(kw!(:name), DataType::String("bob".to_string()));
         doc2.insert(kw!(:age), DataType::Long(25));
-        node.execute_tx(vec![TxOp::Put(doc1), TxOp::Put(doc2)]).await.unwrap();
+        node.execute_tx(vec![TxOp::Put(doc1), TxOp::Put(doc2)])
+            .await
+            .unwrap();
 
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
-        let entity_100: Vec<&Datom> = all_tx_datoms.iter().flatten()
-            .filter(|d| d.entity == 100).collect();
-        let entity_200: Vec<&Datom> = all_tx_datoms.iter().flatten()
-            .filter(|d| d.entity == 200).collect();
+        let entity_100: Vec<&Datom> = all_tx_datoms
+            .iter()
+            .flatten()
+            .filter(|d| d.entity == 100)
+            .collect();
+        let entity_200: Vec<&Datom> = all_tx_datoms
+            .iter()
+            .flatten()
+            .filter(|d| d.entity == 200)
+            .collect();
 
         assert_eq!(entity_100.len(), 1); // name only
         assert_eq!(entity_200.len(), 2); // name + age

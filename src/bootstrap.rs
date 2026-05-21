@@ -93,7 +93,8 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
     {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
-            let schema = load_schema_from_indices(slate).await;
+            let schema =
+                load_schema_from_indices(slate.db.clone(), slate.range_stats.clone()).await;
             let pm = scan_partition_counters(&slate.db).await?;
             Ok(Metadata::new(schema, pm))
         }
