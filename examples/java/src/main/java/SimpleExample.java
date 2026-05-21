@@ -4,20 +4,12 @@ import io.triplox.client.TxOp;
 import io.triplox.client.TxResult;
 
 import java.util.List;
-import java.util.Map;
 
 import static io.triplox.client.Util.kw;
 import static io.triplox.client.Util.map;
 
 public final class SimpleExample {
     private SimpleExample() {
-    }
-
-    private static Map<String, Object> schemaAttribute(String name, String valueType) {
-        return map(
-                ":db/ident", kw(":" + name),
-                ":db/valueType", kw(":db.type/" + valueType),
-                ":db/cardinality", kw(":db.cardinality/one"));
     }
 
     private static TxResult requireCommitted(String label, TxResult result) {
@@ -36,8 +28,14 @@ public final class SimpleExample {
             System.out.println("Connected.");
 
             var schemaResult = requireCommitted("Schema", node.executeTx(List.of(
-                    new TxOp.Put(schemaAttribute("name", "string")),
-                    new TxOp.Put(schemaAttribute("age", "long")))));
+                    new TxOp.Put(map(
+                            ":db/ident", kw(":name"),
+                            ":db/valueType", kw(":db.type/string"),
+                            ":db/cardinality", kw(":db.cardinality/one"))),
+                    new TxOp.Put(map(
+                            ":db/ident", kw(":age"),
+                            ":db/valueType", kw(":db.type/long"),
+                            ":db/cardinality", kw(":db.cardinality/one"))))));
             System.out.println("Schema defined (tx_id=" + schemaResult.txId() + ").");
 
             var dataResult = requireCommitted("Data", node.executeTx(List.of(
