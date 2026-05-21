@@ -390,8 +390,8 @@ mod tests {
     // --- Cursor + CdcStream integration tests ---
 
     #[tokio::test]
-    async fn test_cdc_from_current_seq_all_caught_up() {
-        let (db, object_store) = setup_db("/test_snap_caught_up").await;
+    async fn test_cdc_cursor_at_end_returns_none() {
+        let (db, object_store) = setup_db("/test_cursor_at_end").await;
 
         db.put(b"k1", b"v1").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
@@ -403,7 +403,7 @@ mod tests {
         let current_seq = db.status().durable_seq;
 
         // CdcStream starting from the current durable seq has nothing new.
-        let wal_reader = WalReader::new("/test_snap_caught_up", object_store);
+        let wal_reader = WalReader::new("/test_cursor_at_end", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stream = CdcStream::new(
@@ -424,8 +424,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_from_current_seq_some_new() {
-        let (db, object_store) = setup_db("/test_snap_some_new").await;
+    async fn test_cdc_cursor_skips_existing_transactions() {
+        let (db, object_store) = setup_db("/test_cursor_skips_existing").await;
 
         // Before cursor.
         db.put(b"k1", b"v1").await.unwrap();
@@ -441,7 +441,7 @@ mod tests {
         db.put(b"k4", b"v4").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        let wal_reader = WalReader::new("/test_snap_some_new", object_store);
+        let wal_reader = WalReader::new("/test_cursor_skips_existing", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stream = CdcStream::new(
@@ -475,8 +475,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_from_current_seq_all_after() {
-        let (db, object_store) = setup_db("/test_snap_all_after").await;
+    async fn test_cdc_cursor_from_zero_reads_later_transactions() {
+        let (db, object_store) = setup_db("/test_cursor_from_zero").await;
 
         // Cursor on empty-ish DB.
         let current_seq = db.status().durable_seq;
@@ -487,7 +487,7 @@ mod tests {
         db.put(b"k2", b"v2").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        let wal_reader = WalReader::new("/test_snap_all_after", object_store);
+        let wal_reader = WalReader::new("/test_cursor_from_zero", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stream = CdcStream::new(
@@ -521,9 +521,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_from_current_seq_live_streaming() {
+    async fn test_cdc_cursor_waits_for_live_transactions() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (db, object_store) = setup_db("/test_snap_live").await;
+            let (db, object_store) = setup_db("/test_cursor_live").await;
 
             db.put(b"k1", b"v1").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
@@ -531,7 +531,7 @@ mod tests {
             let current_seq = db.status().durable_seq;
 
             // Create stream BEFORE new transactions exist.
-            let wal_reader = WalReader::new("/test_snap_live", object_store);
+            let wal_reader = WalReader::new("/test_cursor_live", object_store);
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
@@ -575,13 +575,13 @@ mod tests {
             );
         })
         .await
-        .expect("test_cdc_from_current_seq_live_streaming timed out");
+        .expect("test_cdc_cursor_waits_for_live_transactions timed out");
     }
 
     #[tokio::test]
-    async fn test_cdc_from_current_seq_mixed_timing() {
+    async fn test_cdc_cursor_reads_existing_and_live_transactions() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (db, object_store) = setup_db("/test_snap_mixed").await;
+            let (db, object_store) = setup_db("/test_cursor_mixed").await;
 
             // Before cursor.
             db.put(b"k1", b"v1").await.unwrap();
@@ -594,7 +594,7 @@ mod tests {
             db.flush_with_options(flush_opts()).await.unwrap();
 
             // Create stream — k2 is already in WAL.
-            let wal_reader = WalReader::new("/test_snap_mixed", object_store);
+            let wal_reader = WalReader::new("/test_cursor_mixed", object_store);
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
@@ -636,6 +636,6 @@ mod tests {
             );
         })
         .await
-        .expect("test_cdc_from_current_seq_mixed_timing timed out");
+        .expect("test_cdc_cursor_reads_existing_and_live_transactions timed out");
     }
 }
