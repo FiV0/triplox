@@ -1,5 +1,6 @@
 package io.triplox.client;
 
+import clojure.lang.Keyword;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -10,6 +11,12 @@ class UtilTest {
     @Test
     void testListPreservesItems() {
         assertEquals(List.of("a", "b", "c"), Util.list("a", "b", "c"));
+    }
+
+    @Test
+    void testKwParsesColonPrefixedKeyword() {
+        assertEquals(Keyword.intern("db.type", "string"), Util.kw(":db.type/string"));
+        assertEquals(Keyword.intern("name"), Util.kw(":name"));
     }
 
     @Test

@@ -230,8 +230,7 @@ public final class DataTypeCodec {
      * into a {@link Keyword}. Kept for the Clojure layer.
      */
     public static Keyword parseKeyword(String s) {
-        String stripped = s.startsWith(":") ? s.substring(1) : s;
-        return keywordFromWire(stripped);
+        return Util.kw(s);
     }
 
     private static String validateWireKeyword(String s) {

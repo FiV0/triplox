@@ -1,11 +1,11 @@
 package io.triplox.client.integration;
 
-import clojure.lang.Keyword;
 import io.triplox.client.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static io.triplox.client.Util.kw;
 import static io.triplox.client.Util.map;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,9 +24,9 @@ class TriploxNodeTest {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
             node.executeTx(List.of(new TxOp.Put(map(
-                    ":db/ident", Keyword.intern("name"),
-                    ":db/valueType", Keyword.intern("db.type", "string"),
-                    ":db/cardinality", Keyword.intern("db.cardinality", "one")))));
+                    ":db/ident", kw(":name"),
+                    ":db/valueType", kw(":db.type/string"),
+                    ":db/cardinality", kw(":db.cardinality/one")))));
 
             // Data
             var txResult = node.executeTx(List.of(new TxOp.Put(map(":name", "alice"))));
@@ -45,9 +45,9 @@ class TriploxNodeTest {
     void testOpenDbAtHistoricalTx() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             node.executeTx(List.of(new TxOp.Put(map(
-                    ":db/ident", Keyword.intern("historical-name"),
-                    ":db/valueType", Keyword.intern("db.type", "string"),
-                    ":db/cardinality", Keyword.intern("db.cardinality", "one")))));
+                    ":db/ident", kw(":historical-name"),
+                    ":db/valueType", kw(":db.type/string"),
+                    ":db/cardinality", kw(":db.cardinality/one")))));
 
             var tx1 = node.executeTx(List.of(new TxOp.Put(map(":historical-name", "alice"))));
             assertTrue(tx1.isCommitted());

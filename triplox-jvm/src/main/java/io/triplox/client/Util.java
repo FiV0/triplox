@@ -1,5 +1,7 @@
 package io.triplox.client;
 
+import clojure.lang.Keyword;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +20,21 @@ public final class Util {
             out.add(item);
         }
         return out;
+    }
+
+    public static Keyword kw(String s) {
+        String stripped = s.startsWith(":") ? s.substring(1) : s;
+        if (stripped.isEmpty()) {
+            throw new IllegalArgumentException("empty keyword");
+        }
+        int slash = stripped.indexOf('/');
+        if (slash < 0) {
+            return Keyword.intern(stripped);
+        }
+        if (slash == 0 || slash == stripped.length() - 1) {
+            throw new IllegalArgumentException("invalid keyword: " + stripped);
+        }
+        return Keyword.intern(stripped.substring(0, slash), stripped.substring(slash + 1));
     }
 
     public static Map<String, Object> map(Object... keyValues) {
