@@ -1,4 +1,3 @@
-import clojure.lang.Keyword;
 import io.triplox.client.Db;
 import io.triplox.client.TriploxNode;
 import io.triplox.client.TxOp;
@@ -6,25 +5,23 @@ import io.triplox.client.TxResult;
 
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
+
+import static io.triplox.client.Util.kw;
+import static io.triplox.client.Util.map;
 
 public final class SimpleExample {
     private SimpleExample() {
     }
 
-    private static Map<Keyword, Object> schemaAttribute(String name, String valueType) {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "ident"), Keyword.intern(name));
-        doc.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", valueType));
-        doc.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
-        return doc;
+    private static Map<String, Object> schemaAttribute(String name, String valueType) {
+        return map(
+                ":db/ident", kw(":" + name),
+                ":db/valueType", kw(":db.type/" + valueType),
+                ":db/cardinality", kw(":db.cardinality/one"));
     }
 
-    private static Map<Keyword, Object> person(String name, long age) {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("name"), name);
-        doc.put(Keyword.intern("age"), age);
-        return doc;
+    private static Map<String, Object> person(String name, long age) {
+        return map(":name", name, ":age", age);
     }
 
     private static TxResult requireCommitted(String label, TxResult result) {

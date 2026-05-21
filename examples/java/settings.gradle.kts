@@ -13,3 +13,9 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "triplox-java-example"
+
+includeBuild("../../triplox-jvm") {
+    dependencySubstitution {
+        substitute(module("xyz.triplox:triplox")).using(project(":"))
+    }
+}
