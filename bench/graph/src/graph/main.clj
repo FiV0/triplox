@@ -3,7 +3,7 @@
   (:require [clojure.tools.cli :as cli]
             [clojure.tools.logging :as log]
             [graph.graph-gen :as gg]
-            [io.triplox.api :as tc])
+            [xyz.triplox.api :as tc])
   (:import [java.lang AutoCloseable]))
 
 (set! *print-namespace-maps* false)
