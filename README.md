@@ -104,7 +104,7 @@ Transactions get send to the log to get a [total-order](https://en.wikipedia.org
 the primary indexing node into SlateDB. Reads can then be served from the primary node immediately and form any reader node
 as soon as the reader nodes receive new WALs (Write-Ahead Logs) from Object Storage.
 
-There are some design decisions that still are up for grabs. In particular the external log has been a thorn in my side and I would like to get rid of it. See [Open Questions > Log](https://triplox.xyz/open-questions/log/) on the website.
+There are some design decisions that still are up for grabs. In particular the external log has been a thorn in my side and I would like to get rid of it. See [Open Questions > Log](https://triplox.xyz/roadmap/open-questions/#log) on the website.
 
 ```
 
