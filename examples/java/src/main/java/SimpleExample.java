@@ -20,10 +20,6 @@ public final class SimpleExample {
                 ":db/cardinality", kw(":db.cardinality/one"));
     }
 
-    private static Map<String, Object> person(String name, long age) {
-        return map(":name", name, ":age", age);
-    }
-
     private static TxResult requireCommitted(String label, TxResult result) {
         if (!result.isCommitted()) {
             throw new IllegalStateException(label + " transaction aborted: " + result.errorMessage());
@@ -45,8 +41,8 @@ public final class SimpleExample {
             System.out.println("Schema defined (tx_id=" + schemaResult.txId() + ").");
 
             var dataResult = requireCommitted("Data", node.executeTx(List.of(
-                    new TxOp.Put(person("alice", 30)),
-                    new TxOp.Put(person("bob", 25)))));
+                    new TxOp.Put(map(":name", "alice", ":age", 30L)),
+                    new TxOp.Put(map(":name", "bob", ":age", 25L)))));
             System.out.println("Data inserted (tx_id=" + dataResult.txId() + ").");
 
             try (Db db = node.openDb()) {
