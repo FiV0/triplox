@@ -2,9 +2,8 @@ import io.triplox.client.Db;
 import io.triplox.client.TriploxNode;
 import io.triplox.client.TxOp;
 
-import java.util.List;
-
 import static io.triplox.client.Util.kw;
+import static io.triplox.client.Util.list;
 import static io.triplox.client.Util.map;
 
 public final class SimpleExample {
@@ -19,7 +18,7 @@ public final class SimpleExample {
         try (var node = TriploxNode.connect(host, port)) {
             System.out.println("Connected.");
 
-            var schemaResult = node.executeTx(List.of(
+            var schemaResult = node.executeTx(list(
                     new TxOp.Put(map(
                             ":db/ident", kw(":name"),
                             ":db/valueType", kw(":db.type/string"),
@@ -33,7 +32,7 @@ public final class SimpleExample {
             }
             System.out.println("Schema defined (tx_id=" + schemaResult.txId() + ").");
 
-            var dataResult = node.executeTx(List.of(
+            var dataResult = node.executeTx(list(
                     new TxOp.Put(map(":name", "alice", ":age", 30L)),
                     new TxOp.Put(map(":name", "bob", ":age", 25L))));
             if (!dataResult.isCommitted()) {
