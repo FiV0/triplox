@@ -26,8 +26,7 @@ and are reserved for a future revision.
 | Endpoint                  | Method   | Request Body              | Success Body               |
 |---------------------------|----------|---------------------------|-----------------------------|
 | `/db/open`                | `POST`   | OpenDb                    | DbOpened                    |
-| `/db/{db_id}`             | `DELETE` | *(empty)*                 | DbClosed                    |
-| `/db/{db_id}/query`       | `POST`   | Query                     | QueryResponse               |
+| `/db/query`               | `POST`   | Query                     | QueryResponse               |
 | `/tx/submit`              | `POST`   | Execute                   | TxKey                       |
 | `/tx/execute`             | `POST`   | Execute                   | TxResult                    |
 
@@ -42,28 +41,20 @@ outcome.
 |--------|---------------------|---------------|
 | **200** | Success             | Request processed successfully. For `/tx/execute`, check the `status` field of the TxResult body: `0` = committed, `1` = aborted. |
 | **400** | Bad Request         | Malformed request body (decode failure), Datalog parse error, or invalid field combinations. |
-| **404** | Not Found           | Invalid or expired `db_id` handle. |
+| **409** | Conflict            | Requested DB basis has not been indexed yet. |
 | **500** | Internal Server Error | Unexpected engine error: query execution failure or transaction infrastructure error. |
 
 All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body) body.
 
-### 1.2 DB Handle Lifecycle
+### 1.2 DB Values
 
-DB handles are scoped to an HTTP/2 connection. Each `db_id` maps to a
-transaction basis: the transaction log key (`tx_id` + `system_time`) plus the
-transaction entity ID (`tx_eid`) that bounds temporal reads. The server does
-not cache pinned SlateDB read state for handles; it creates transient read views from the
-stored basis when queries execute. Each connection is assigned a unique
-`conn_id` on accept, and all handles opened on that connection are tracked
-against it. Two cleanup mechanisms ensure handles are released:
+DB values are immutable read bases. A DB value contains the transaction log key
+(`tx_id` + `system_time`) plus the transaction entity ID (`tx_eid`) that bounds
+temporal reads. The server does not allocate or retain per-DB resources. Query
+requests carry the DB value, and the server creates a transient read view from
+that basis when the query executes.
 
-1. **Connection-drop** (fast path): When an HTTP/2 connection closes, all
-   handles belonging to that connection are released immediately.
-2. **TTL reaper** (safety net): A background task periodically evicts handles
-   that have not been used for 24 hours.
-
-Using an invalid or closed `db_id` returns
-`ErrorResponse(code=5000 InvalidDbHandle)` with HTTP status 404.
+DB values do not need to be closed.
 
 ---
 
@@ -210,26 +201,21 @@ Either all three fields are present (pinned transaction basis) or all three are
 ### 4.3 DbOpened Response
 
 ```
-{"db_id": <int>, "tx_eid": <int>}
+{"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>}
 ```
 
-`db_id` is a server-assigned u32 handle. `tx_eid` is the transaction entity ID
-that bounds reads through that handle.
+The response is the immutable DB read basis. `tx_eid` is the transaction entity
+ID that bounds temporal reads.
 
-### 4.4 DbClosed Response — `DELETE /db/{db_id}`
-
-```
-{"db_id": <int>}
-```
-
-Echoes the released handle.
-
-### 4.5 Query Request — `POST /db/{db_id}/query`
+### 4.4 Query Request — `POST /db/query`
 
 ```
-{"query": <str>, "args": [<QueryArg>, ...]}
+{"db": {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "query": <str>,
+ "args": [<QueryArg>, ...]}
 ```
 
+`db` is a DB read basis returned by `DbOpened` or a previous transaction result.
 `query` is a Datalog query in EDN text. `args` provides values for variables
 declared in the query's `:in` clause; the number and order must match. For
 queries without `:in`, pass an empty array.
@@ -304,7 +290,6 @@ a numeric error code (see §5).
 | 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted, 3002 TxNotIndexed                    |
 | 4xxx  | Internal/protocol     | 4000 InternalError, 4001 MessageTooLarge, 4002 InvalidMessageType, 4003 QueryCancelled, 4004 ServerShuttingDown |
-| 5xxx  | DB handle errors      | 5000 InvalidDbHandle                                                |
 
 ---
 
