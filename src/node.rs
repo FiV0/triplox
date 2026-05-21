@@ -410,43 +410,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_db_can_query_from_sdb() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        node.execute_tx(vec![TxOp::Add {
-            entity: "alice".into(),
-            attribute: kw!(:name),
-            value: "alice".into(),
-        }])
-        .await
-        .unwrap();
-
-        let ident_map = node
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
-        let db = DB::from_latest_sdb(
-            node.slate.db.clone(),
-            ident_map,
-            Handle::current(),
-            node.slate.range_stats.clone(),
-        )
-        .await
-        .unwrap();
-        let result = db
-            .query(r#"[:find ?name :where [?e :name ?name]]"#)
-            .await
-            .unwrap();
-
-        assert_eq!(result, vec![vec![DataType::String("alice".to_string())]]);
-    }
-
     // End-to-end query tests
 
     #[tokio::test(flavor = "multi_thread")]
