@@ -747,6 +747,19 @@ mod tests {
         all_tx_datoms
     }
 
+    fn transactions_with_entity(datoms: &[Vec<Datom>], entity: i64) -> Vec<Vec<&Datom>> {
+        datoms
+            .iter()
+            .map(|tx_datoms| {
+                tx_datoms
+                    .iter()
+                    .filter(|datom| datom.entity == entity)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|tx_datoms| !tx_datoms.is_empty())
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_datoms_from_cdc_happy_path() {
         let node = setup_node_with_schema().await;
@@ -760,12 +773,9 @@ mod tests {
 
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
-        // Find the transaction containing our entity 100 datoms.
-        let entity_datoms: Vec<&Datom> = all_tx_datoms
-            .iter()
-            .flatten()
-            .filter(|d| d.entity == 100)
-            .collect();
+        let entity_transactions = transactions_with_entity(&all_tx_datoms, 100);
+        assert_eq!(entity_transactions.len(), 1);
+        let entity_datoms = &entity_transactions[0];
 
         assert_eq!(entity_datoms.len(), 2);
         assert!(entity_datoms.iter().any(|d| d.attribute == kw!(:name)
@@ -796,32 +806,50 @@ mod tests {
 
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
-        // Find all datoms for entity 100, attribute :name.
-        let name_datoms: Vec<&Datom> = all_tx_datoms
-            .iter()
-            .flatten()
-            .filter(|d| d.entity == 100 && d.attribute == kw!(:name))
+        let entity_transactions = transactions_with_entity(&all_tx_datoms, 100);
+        assert_eq!(entity_transactions.len(), 2);
+        let name_transactions: Vec<Vec<&Datom>> = entity_transactions
+            .into_iter()
+            .map(|tx_datoms| {
+                tx_datoms
+                    .into_iter()
+                    .filter(|datom| datom.attribute == kw!(:name))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|tx_datoms| !tx_datoms.is_empty())
             .collect();
 
-        assert!(
-            name_datoms.iter().any(
-                |d| d.value == DataType::String("alice".to_string()) && d.op == DatomOp::Assert
-            ),
-            "Expected assert for alice"
-        );
-        assert!(
-            name_datoms
-                .iter()
-                .any(|d| d.value == DataType::String("alice".to_string())
-                    && d.op == DatomOp::Retract),
-            "Expected retract for alice"
-        );
-        assert!(
-            name_datoms
-                .iter()
-                .any(|d| d.value == DataType::String("bob".to_string()) && d.op == DatomOp::Assert),
-            "Expected assert for bob"
-        );
+        let initial_txs: Vec<&Vec<&Datom>> = name_transactions
+            .iter()
+            .filter(|tx_datoms| {
+                tx_datoms.iter().any(|datom| {
+                    datom.value == DataType::String("alice".to_string())
+                        && datom.op == DatomOp::Assert
+                })
+            })
+            .collect();
+        assert_eq!(initial_txs.len(), 1);
+        assert_eq!(initial_txs[0].len(), 1);
+
+        let update_txs: Vec<&Vec<&Datom>> = name_transactions
+            .iter()
+            .filter(|tx_datoms| {
+                tx_datoms.iter().any(|datom| {
+                    datom.value == DataType::String("alice".to_string())
+                        && datom.op == DatomOp::Retract
+                }) || tx_datoms.iter().any(|datom| {
+                    datom.value == DataType::String("bob".to_string())
+                        && datom.op == DatomOp::Assert
+                })
+            })
+            .collect();
+        assert_eq!(update_txs.len(), 1);
+        assert!(update_txs[0].iter().any(|datom| {
+            datom.value == DataType::String("alice".to_string()) && datom.op == DatomOp::Retract
+        }));
+        assert!(update_txs[0].iter().any(|datom| {
+            datom.value == DataType::String("bob".to_string()) && datom.op == DatomOp::Assert
+        }));
 
         node.close().await;
     }
@@ -843,16 +871,17 @@ mod tests {
 
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 
-        let entity_100: Vec<&Datom> = all_tx_datoms
+        let target_transactions: Vec<&Vec<Datom>> = all_tx_datoms
             .iter()
-            .flatten()
-            .filter(|d| d.entity == 100)
+            .filter(|tx_datoms| {
+                tx_datoms.iter().any(|datom| datom.entity == 100)
+                    || tx_datoms.iter().any(|datom| datom.entity == 200)
+            })
             .collect();
-        let entity_200: Vec<&Datom> = all_tx_datoms
-            .iter()
-            .flatten()
-            .filter(|d| d.entity == 200)
-            .collect();
+        assert_eq!(target_transactions.len(), 1);
+        let tx_datoms = target_transactions[0];
+        let entity_100: Vec<&Datom> = tx_datoms.iter().filter(|d| d.entity == 100).collect();
+        let entity_200: Vec<&Datom> = tx_datoms.iter().filter(|d| d.entity == 200).collect();
 
         assert_eq!(entity_100.len(), 1); // name only
         assert_eq!(entity_200.len(), 2); // name + age
