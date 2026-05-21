@@ -1,4 +1,4 @@
-(require '[io.triplox.api :as tc])
+(require '[xyz.triplox.api :as tc])
 
 (def host "localhost")
 (def port 5490)

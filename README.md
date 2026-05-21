@@ -56,7 +56,7 @@ In this case a new in-memory DB is created on every connection.
 
 Afterwards you connect with your favorite client.
 ```clj
-(require '[io.triplox.api :as tc])
+(require '[xyz.triplox.api :as tc])
 
 (def conn (tc/connect "localhost" 5490))
 

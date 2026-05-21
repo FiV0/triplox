@@ -1,10 +1,10 @@
-import io.triplox.client.Db;
-import io.triplox.client.TriploxNode;
-import io.triplox.client.TxOp;
+import xyz.triplox.client.Db;
+import xyz.triplox.client.TriploxNode;
+import xyz.triplox.client.TxOp;
 
-import static io.triplox.client.Util.kw;
-import static io.triplox.client.Util.list;
-import static io.triplox.client.Util.map;
+import static xyz.triplox.client.Util.kw;
+import static xyz.triplox.client.Util.list;
+import static xyz.triplox.client.Util.map;
 
 public final class SimpleExample {
     private SimpleExample() {

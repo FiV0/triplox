@@ -1,8 +1,0 @@
-package io.triplox.client;
-
-import java.util.List;
-
-/**
- * Result of a query: column descriptions + rows of values.
- */
-record QueryResult(List<ColumnDesc> columns, List<List<Object>> rows) {}
