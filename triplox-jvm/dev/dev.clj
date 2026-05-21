@@ -12,11 +12,11 @@
   (t/transact conn [{:db/id 1001 :person/name "alice" :person/age 30}
                     {:db/id 1002 :person/name "bob" :person/age 25}])
 
-  ;; Open a DB handle and query
-  (with-open [db (t/db conn)]
-    (t/q db '{:find [?name ?age]
-                   :where [[?e :person/name ?name]
-                           [?e :person/age ?age]]}))
+  ;; Open a DB value and query
+  (def db (t/db conn))
+  (t/q db '{:find [?name ?age]
+            :where [[?e :person/name ?name]
+                    [?e :person/age ?age]]})
 
   ;; Clean up
   (.close conn)

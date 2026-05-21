@@ -26,7 +26,7 @@ fn schema_attribute(name: &str, value_type: &str) -> TxOp {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let addr = "127.0.0.1:5490";
+    let addr = "http://127.0.0.1:5490";
     println!("Connecting to {addr}...");
     let node = ClientNode::connect(addr).await?;
     println!("Connected.");
@@ -67,9 +67,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 3. Open a DB handle and query
+    // 3. Open a DB value and query
     let db = node.db().await?;
-    println!("Opened DB handle (tx_id={}).", db.tx_id());
+    println!("Opened DB value (tx_eid={}).", db.tx_eid());
 
     let rows = db
         .query(r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#)
@@ -80,9 +80,6 @@ async fn main() -> Result<()> {
         println!("  {:?}", row);
     }
 
-    // 4. Clean up
-    db.close().await?;
-    node.close().await?;
     println!("Done.");
 
     Ok(())

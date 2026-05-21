@@ -1,4 +1,3 @@
-import xyz.triplox.client.Db;
 import xyz.triplox.client.TriploxNode;
 import xyz.triplox.client.TxOp;
 
@@ -40,14 +39,13 @@ public final class SimpleExample {
             }
             System.out.println("Data inserted (tx_id=" + dataResult.txId() + ").");
 
-            try (Db db = node.openDb()) {
-                System.out.println("Opened DB snapshot (tx_eid=" + db.txEid() + ").");
-                var rows = db.query("{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}");
+            var db = node.openDb();
+            System.out.println("Opened DB value (tx_eid=" + db.txEid() + ").");
+            var rows = db.query("{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}");
 
-                System.out.println("Query returned " + rows.size() + " row(s):");
-                for (var row : rows) {
-                    System.out.println("  " + row);
-                }
+            System.out.println("Query returned " + rows.size() + " row(s):");
+            for (var row : rows) {
+                System.out.println("  " + row);
             }
         }
 

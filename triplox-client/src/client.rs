@@ -88,10 +88,16 @@ impl ClientNode {
 
         let data = check_response(resp).await?;
         let opened = decode_db_opened_response(&data)?;
+        let basis = TxBasis {
+            tx_key: TxKey {
+                tx_id: opened.tx_id,
+                system_time: opened.system_time,
+            },
+            tx_eid: opened.tx_eid,
+        };
 
         Ok(ClientDb {
-            db_id: opened.db_id,
-            tx_eid: opened.tx_eid,
+            basis,
             client: self.client.clone(),
             base_url: self.base_url.clone(),
         })
@@ -169,33 +175,22 @@ impl QueryNode for ClientNode {
 // ClientDb
 // ---------------------------------------------------------------------------
 
-/// A remote DB read handle. Mirrors the `DB` API.
-///
-/// Callers should call [`.close()`](ClientDb::close) when done to release
-/// the server-side handle. If not closed explicitly, the server will clean
-/// up via TTL expiration or connection-drop detection.
+/// A remote DB read basis. Mirrors the `DB` API.
 pub struct ClientDb {
-    db_id: u32,
-    tx_eid: i64,
+    basis: TxBasis,
     client: Client,
     base_url: String,
 }
 
 impl ClientDb {
-    /// The transaction entity id this handle is pinned to.
+    /// The transaction entity id this DB value is pinned to.
     pub fn tx_eid(&self) -> i64 {
-        self.tx_eid
+        self.basis.tx_eid
     }
 
-    /// Release this DB handle on the server.
-    pub async fn close(self) -> Result<()> {
-        let resp = self
-            .client
-            .delete(format!("{}/db/{}", self.base_url, self.db_id))
-            .send()
-            .await?;
-        check_response(resp).await?;
-        Ok(())
+    /// The transaction basis this DB value is pinned to.
+    pub fn tx_basis(&self) -> TxBasis {
+        self.basis
     }
 }
 
@@ -211,12 +206,13 @@ impl Database for ClientDb {
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
         let body = encode_query_request(&QueryRequest {
+            db: self.basis,
             query: query.to_string(),
             args: args.to_vec(),
         })?;
         let resp = self
             .client
-            .post(format!("{}/db/{}/query", self.base_url, self.db_id))
+            .post(format!("{}/db/query", self.base_url))
             .header("Content-Type", CONTENT_TYPE)
             .body(body)
             .send()
