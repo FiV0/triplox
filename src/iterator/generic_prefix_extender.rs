@@ -112,7 +112,7 @@ where
             IndexType::AE | IndexType::AV => Box::new(
                 SlateIterator::new(
                     slate_prefix,
-                    &self.slate,
+                    self.slate.as_ref(),
                     self.handle.clone(),
                     extractor,
                     self.range_stats.clone(),
@@ -122,7 +122,7 @@ where
             IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => Box::new(
                 TemporalFilterIterator::new(
                     slate_prefix,
-                    &self.slate,
+                    self.slate.as_ref(),
                     self.handle.clone(),
                     extractor,
                     self.as_of,

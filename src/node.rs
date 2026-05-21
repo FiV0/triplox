@@ -59,7 +59,7 @@ where
         }
     }
 
-    /// Construct a DB from sdb by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
+    /// Construct a DB from a Db by scanning EAV for TX_PARTITION entities to find the latest TxBasis.
     pub async fn from_latest_sdb(
         sdb: Arc<D>,
         ident_map: IdentMap,

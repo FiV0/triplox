@@ -37,7 +37,7 @@ where
 {
     pub fn new<D>(
         prefix: &[u8],
-        slate: &Arc<D>,
+        slate: &D,
         handle: Handle,
         extractor: Extractor,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
@@ -46,11 +46,8 @@ where
         D: DbReadOps + Send + Sync,
     {
         let prefix_bytes = Bytes::from(prefix.to_vec());
-        let mut iterator = handle.block_on(
-            slate
-                .as_ref()
-                .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS),
-        )?;
+        let mut iterator =
+            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
         let mut current_key = None;
         if let Some(next_key) = handle.block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());
@@ -281,7 +278,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
+            let mut iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -310,7 +308,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
+            let mut iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -334,7 +333,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
+            let iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         })
@@ -365,7 +365,8 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &sdb, handle, extractor, range_stats).unwrap();
+            let iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
             assert_eq!(count, 3);
         })
