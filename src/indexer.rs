@@ -2,6 +2,7 @@ use anyhow::{bail, Error, Result};
 use bytes::Bytes;
 use log::{error, trace, warn};
 use slatedb::Db;
+use slatedb::DbReadOps;
 use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -141,9 +142,12 @@ pub(crate) fn write_index_entries(
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
 /// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
 /// `:db/txInstant`.
-pub async fn latest_tx_basis_from_snapshot(snapshot: &Arc<slatedb::DbSnapshot>) -> Result<TxBasis> {
+pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
+where
+    D: DbReadOps + Sync,
+{
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
-    let mut iter = snapshot
+    let mut iter = sdb
         .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut first_eid: Option<i64> = None;
@@ -938,8 +942,7 @@ mod tests {
         }];
         indexer.transact_tx(tx_key, tx_ops).await?;
 
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let latest = latest_tx_basis_from_sdb(slate.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 42);
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(1000));
         assert!(latest.tx_eid > 0, "tx_eid should be a valid entity ID");
@@ -966,8 +969,7 @@ mod tests {
             indexer.transact_tx(tx_key, tx_ops).await?;
         }
 
-        let snapshot = Arc::new(slate.snapshot().await?);
-        let latest = latest_tx_basis_from_snapshot(&snapshot).await?;
+        let latest = latest_tx_basis_from_sdb(slate.as_ref()).await?;
         assert_eq!(latest.tx_key.tx_id, 3, "Should return highest tx_id");
         assert_eq!(latest.tx_key.system_time, st_from_unix_epoch(300));
         Ok(())
@@ -1498,20 +1500,12 @@ mod tests {
             .await?;
 
         let query: ParsedQuery = r#"[:find ?e ?name :where [?e :name ?name]]"#.parse()?;
-        let snapshot = slate.snapshot().await?;
+        let sdb = slate.clone();
         let handle = tokio::runtime::Handle::current();
         let ident_map = indexer.metadata().schema.ident_map.clone();
         let range_stats = components.range_stats.clone();
         let rows = tokio::task::spawn_blocking(move || {
-            execute_query(
-                &query,
-                &[],
-                snapshot,
-                handle,
-                &ident_map,
-                i64::MAX,
-                range_stats,
-            )
+            execute_query(&query, &[], sdb, handle, &ident_map, i64::MAX, range_stats)
         })
         .await??;
 

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use bytes::Bytes;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
@@ -15,22 +16,30 @@ use super::temporal_filter_iterator::TemporalFilterIterator;
 /// GenericPrefixExtender implements PrefixExtender using SlateDB with byte prefixes.
 ///
 /// The caller is responsible for determining index types, attribute IDs, and level participation.
-pub struct GenericPrefixExtender {
-    slate: Arc<slatedb::DbSnapshot>,
+pub struct GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
+    slate: Arc<D>,
     handle: Handle,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     index_types: Vec<IndexType>,      // e.g., [AV, AVE]
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
     as_of: i64,                       // temporal filter: only see facts at or before this time
 }
 
-impl GenericPrefixExtender {
+impl<D, M> GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        slate: Arc<slatedb::DbSnapshot>,
+        slate: Arc<D>,
         handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
         index_types: Vec<IndexType>,
         attribute_id: i64,
         constant_prefix: Vec<u8>,
@@ -145,7 +154,11 @@ impl GenericPrefixExtender {
     }
 }
 
-impl PrefixExtender for GenericPrefixExtender {
+impl<D, M> PrefixExtender for GenericPrefixExtender<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
     fn count(&self, join_prefix: &Prefix) -> usize {
         // TODO: proper error handling
         let (slate_prefix, index_type) = self
@@ -252,10 +265,8 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let slate = components.db.clone();
         let range_stats = components.range_stats.clone();
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
@@ -289,10 +300,8 @@ mod tests {
             }))
             .unwrap();
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -319,10 +328,8 @@ mod tests {
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -353,10 +360,8 @@ mod tests {
         runtime.block_on(insert_ave(&slate, attr_name, encode_string("Alice"), 1))?;
         runtime.block_on(insert_ave(&slate, attr_name, encode_string("Bob"), 2))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV, IndexType::AVE],
@@ -387,10 +392,8 @@ mod tests {
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Alice")))?;
         runtime.block_on(insert_av(&slate, attr_name, encode_string("Bob")))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],
@@ -431,14 +434,12 @@ mod tests {
         let value_bytes = Bytes::from(DataType::String("alice".to_string()).encode());
         runtime.block_on(insert_ave(&slate, attr_name, value_bytes.clone(), 1))?;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         // This mirrors how compile_pattern sets up a single-variable AVE pattern:
         // - index_types: [AVE]
         // - constant_prefix: serialized value bytes
         // - participating_levels: [0] (only one variable)
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AVE],
@@ -464,10 +465,8 @@ mod tests {
         let range_stats = components.range_stats.clone();
         let attr_name = 42i64;
 
-        let snapshot = runtime.block_on(slate.snapshot()).unwrap();
-
         let extender = GenericPrefixExtender::new(
-            snapshot,
+            slate,
             runtime.handle().clone(),
             range_stats.clone(),
             vec![IndexType::AV],

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use anyhow::Error;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::codec;
@@ -21,14 +22,17 @@ use super::slate_iterator::{Extractor, Index};
 ///
 /// TODO(#102): Add a history mode option that iterates over all history
 /// <= `as_of` including retractions, rather than resolving to current state.
-pub(crate) struct TemporalFilterIterator {
+pub(crate) struct TemporalFilterIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
     prefix: Bytes,
     handle: Handle,
     extractor: Extractor,
     as_of_encoded: [u8; 8],
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
@@ -37,15 +41,21 @@ fn logical_key(key: &[u8]) -> &[u8] {
     &key[..key.len() - codec::TX_EID_OP_SUFFIX]
 }
 
-impl TemporalFilterIterator {
-    pub fn new(
+impl<M> TemporalFilterIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
+    pub fn new<D>(
         prefix: &[u8],
-        slate: &slatedb::DbSnapshot,
+        slate: &D,
         handle: Handle,
         extractor: Extractor,
         as_of: i64,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
-    ) -> Result<Self, Error> {
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    ) -> Result<Self, Error>
+    where
+        D: DbReadOps + Send + Sync,
+    {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let as_of_encoded = codec::encode_i64_bytes(as_of);
         let iterator =
@@ -133,7 +143,10 @@ impl TemporalFilterIterator {
     }
 }
 
-impl Index for TemporalFilterIterator {
+impl<M> Index for TemporalFilterIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
     fn count(&self) -> Result<u64, Error> {
         Ok(self.handle.block_on(
             self.range_stats
@@ -209,14 +222,20 @@ mod tests {
             .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000, range_stats)
-                    .unwrap();
+            let iter = TemporalFilterIterator::new(
+                PFX,
+                sdb.as_ref(),
+                handle,
+                extractor,
+                2000,
+                range_stats,
+            )
+            .unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
@@ -241,14 +260,14 @@ mod tests {
             .put(&make_key(PFX, b"alice", t2, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             // Query as-of t1 — should see alice (t2 is in the future)
             let extractor = make_test_extractor(PFX.len());
             let iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, t1, range_stats)
+                TemporalFilterIterator::new(PFX, sdb.as_ref(), handle, extractor, t1, range_stats)
                     .unwrap();
 
             assert!(iter.has_next());
@@ -269,15 +288,21 @@ mod tests {
             .put(&make_key(PFX, b"alice", t1, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             // Query as-of before t1 — should see nothing
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 1000, range_stats)
-                    .unwrap();
+            let iter = TemporalFilterIterator::new(
+                PFX,
+                sdb.as_ref(),
+                handle,
+                extractor,
+                1000,
+                range_stats,
+            )
+            .unwrap();
 
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
@@ -300,14 +325,20 @@ mod tests {
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
         slate.put(&make_key(PFX, b"bob", t2, codec::ADD), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 3000, range_stats)
-                    .unwrap();
+            let mut iter = TemporalFilterIterator::new(
+                PFX,
+                sdb.as_ref(),
+                handle,
+                extractor,
+                3000,
+                range_stats,
+            )
+            .unwrap();
 
             // Should see alice and bob (deduplicated)
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
@@ -345,15 +376,17 @@ mod tests {
             .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         // as-of T0: nothing
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t0, rs).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t0, rs)
+                    .unwrap();
             assert!(!iter.has_next());
         })
         .await
@@ -361,12 +394,13 @@ mod tests {
 
         // as-of T1: alice visible
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1, rs).unwrap();
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t1, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert!(!iter.has_next());
@@ -376,11 +410,13 @@ mod tests {
 
         // as-of T2: alice hidden (retracted)
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2, rs).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t2, rs)
+                    .unwrap();
             assert!(!iter.has_next());
         })
         .await
@@ -388,12 +424,13 @@ mod tests {
 
         // as-of T3: alice visible again (re-added)
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3, rs).unwrap();
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t3, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert!(!iter.has_next());
@@ -419,14 +456,20 @@ mod tests {
             .put(&make_key(PFX, b"charlie", t1, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000, range_stats)
-                    .unwrap();
+            let mut iter = TemporalFilterIterator::new(
+                PFX,
+                sdb.as_ref(),
+                handle,
+                extractor,
+                2000,
+                range_stats,
+            )
+            .unwrap();
 
             // Initially at alice
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
@@ -466,16 +509,17 @@ mod tests {
             .await;
         slate.put(&make_key(PFX, b"bob", t1, codec::ADD), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         // as-of T1: alice and bob
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1, rs).unwrap();
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t1, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
             iter.next().unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
@@ -487,12 +531,13 @@ mod tests {
 
         // as-of T2: only bob (alice retracted)
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2, rs).unwrap();
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t2, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("bob")));
             iter.next().unwrap();
             assert!(!iter.has_next());
@@ -522,15 +567,17 @@ mod tests {
             .put(&make_key(PFX, b"alice", t3, codec::ADD), b"")
             .await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         // as-of T1: alice visible
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t1, rs).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t1, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         })
         .await
@@ -538,11 +585,13 @@ mod tests {
 
         // as-of T2: alice retracted
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t2, rs).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t2, rs)
+                    .unwrap();
             assert!(!iter.has_next());
         })
         .await
@@ -550,11 +599,13 @@ mod tests {
 
         // as-of T3: alice visible again
         let handle = tokio::runtime::Handle::current();
-        let snap = snapshot.clone();
+        let sdb_for_query = sdb.clone();
         let rs = range_stats.clone();
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = TemporalFilterIterator::new(PFX, &snap, handle, extractor, t3, rs).unwrap();
+            let iter =
+                TemporalFilterIterator::new(PFX, sdb_for_query.as_ref(), handle, extractor, t3, rs)
+                    .unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("alice")));
         })
         .await
@@ -584,14 +635,20 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
         let handle = tokio::runtime::Handle::current();
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter =
-                TemporalFilterIterator::new(PFX, &snapshot, handle, extractor, 2000, range_stats)
-                    .unwrap();
+            let iter = TemporalFilterIterator::new(
+                PFX,
+                sdb.as_ref(),
+                handle,
+                extractor,
+                2000,
+                range_stats,
+            )
+            .unwrap();
             let count = iter.count().unwrap();
             assert_eq!(count, 3);
         })

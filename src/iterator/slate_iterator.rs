@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use anyhow::Error;
+use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -18,23 +19,32 @@ pub(crate) trait Index {
 /// Type alias for extractor functions that extract a component from a full key.
 pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
 
-pub(crate) struct SlateIterator {
+pub(crate) struct SlateIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
     inner: slatedb::DbIterator,
     current_key: Option<Bytes>,
     prefix: Bytes,
     handle: Handle,
     extractor: Extractor,
-    range_stats: Arc<slatedb_estimates::RangeStats>,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 }
 
-impl SlateIterator {
-    pub fn new(
+impl<M> SlateIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
+    pub fn new<D>(
         prefix: &[u8],
-        slate: &slatedb::DbSnapshot,
+        slate: &D,
         handle: Handle,
         extractor: Extractor,
-        range_stats: Arc<slatedb_estimates::RangeStats>,
-    ) -> Result<Self, Error> {
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    ) -> Result<Self, Error>
+    where
+        D: DbReadOps + Send + Sync,
+    {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let mut iterator =
             handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
@@ -53,7 +63,10 @@ impl SlateIterator {
     }
 }
 
-impl Index for SlateIterator {
+impl<M> Index for SlateIterator<M>
+where
+    M: DbMetadataOps + Send + Sync,
+{
     fn count(&self) -> Result<u64, Error> {
         Ok(self.handle.block_on(
             self.range_stats
@@ -261,12 +274,12 @@ mod tests {
         slate.put(&make_key(PFX, b"cc"), b"").await;
         slate.put(&make_key(OTHER_PFX, b"xx"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
 
             assert!(iter.has_next());
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
@@ -291,12 +304,12 @@ mod tests {
         slate.put(&make_key(PFX, b"cc"), b"").await;
         slate.put(&make_key(PFX, b"ee"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
             let mut iter =
-                SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
 
             iter.seek(Bytes::from("cc")).unwrap();
             assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
@@ -316,11 +329,12 @@ mod tests {
 
         slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
             assert!(!iter.has_next());
             assert_eq!(iter.get_value().unwrap(), None);
         })
@@ -347,11 +361,12 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot = slate.snapshot().await.unwrap();
+        let sdb = slate;
 
         tokio::task::spawn_blocking(move || {
             let extractor = make_test_extractor(PFX.len());
-            let iter = SlateIterator::new(PFX, &snapshot, handle, extractor, range_stats).unwrap();
+            let iter =
+                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
             let count = iter.count().unwrap();
             assert_eq!(count, 3);
         })

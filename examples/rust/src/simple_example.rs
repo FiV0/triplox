@@ -67,9 +67,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 3. Open a DB snapshot and query
+    // 3. Open a DB handle and query
     let db = node.db().await?;
-    println!("Opened DB snapshot (tx_id={}).", db.tx_id());
+    println!("Opened DB handle (tx_id={}).", db.tx_id());
 
     let rows = db
         .query(r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#)
