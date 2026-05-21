@@ -1,6 +1,5 @@
 package io.triplox.client;
 
-import clojure.lang.Keyword;
 import org.junit.jupiter.api.Test;
 import org.msgpack.core.MessagePack;
 import org.msgpack.core.MessagePacker;
@@ -70,8 +69,8 @@ class WireCodecTest {
 
     @Test
     void testEncodeExecuteBody() throws IOException {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "id"), 1L);
+        var doc = new TreeMap<String, Object>();
+        doc.put(":db/id", 1L);
         var ops = List.<TxOp>of(new TxOp.Put(doc));
 
         byte[] body = WireCodec.encodeExecuteBody(ops);

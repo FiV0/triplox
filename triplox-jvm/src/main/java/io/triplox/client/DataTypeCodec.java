@@ -202,16 +202,25 @@ public final class DataTypeCodec {
         return ns == null ? kw.getName() : ns + "/" + kw.getName();
     }
 
-    static Keyword keywordFromWire(String s) {
-        if (s.isEmpty()) {
-            throw new IllegalArgumentException("empty keyword");
+    static String keywordStringToWire(String s) {
+        if (s == null) {
+            throw new IllegalArgumentException("keyword string cannot be null");
         }
+        if (!s.startsWith(":")) {
+            throw new IllegalArgumentException("keyword string must start with ':': " + s);
+        }
+        return validateWireKeyword(s.substring(1));
+    }
+
+    static String keywordWireToString(String s) {
+        return ":" + validateWireKeyword(s);
+    }
+
+    static Keyword keywordFromWire(String s) {
+        validateWireKeyword(s);
         int slash = s.indexOf('/');
         if (slash < 0) {
             return Keyword.intern(s);
-        }
-        if (slash == 0 || slash == s.length() - 1) {
-            throw new IllegalArgumentException("invalid keyword: " + s);
         }
         return Keyword.intern(s.substring(0, slash), s.substring(slash + 1));
     }
@@ -221,8 +230,18 @@ public final class DataTypeCodec {
      * into a {@link Keyword}. Kept for the Clojure layer.
      */
     public static Keyword parseKeyword(String s) {
-        String stripped = s.startsWith(":") ? s.substring(1) : s;
-        return keywordFromWire(stripped);
+        return Util.kw(s);
+    }
+
+    private static String validateWireKeyword(String s) {
+        if (s.isEmpty()) {
+            throw new IllegalArgumentException("empty keyword");
+        }
+        int slash = s.indexOf('/');
+        if (slash == 0 || slash == s.length() - 1) {
+            throw new IllegalArgumentException("invalid keyword: " + s);
+        }
+        return s;
     }
 
     // ---------------------------------------------------------------

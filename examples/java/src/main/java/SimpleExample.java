@@ -1,37 +1,13 @@
-import clojure.lang.Keyword;
 import io.triplox.client.Db;
 import io.triplox.client.TriploxNode;
 import io.triplox.client.TxOp;
-import io.triplox.client.TxResult;
 
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import static io.triplox.client.Util.kw;
+import static io.triplox.client.Util.list;
+import static io.triplox.client.Util.map;
 
 public final class SimpleExample {
     private SimpleExample() {
-    }
-
-    private static Map<Keyword, Object> schemaAttribute(String name, String valueType) {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("db", "ident"), Keyword.intern(name));
-        doc.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", valueType));
-        doc.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
-        return doc;
-    }
-
-    private static Map<Keyword, Object> person(String name, long age) {
-        var doc = new TreeMap<Keyword, Object>();
-        doc.put(Keyword.intern("name"), name);
-        doc.put(Keyword.intern("age"), age);
-        return doc;
-    }
-
-    private static TxResult requireCommitted(String label, TxResult result) {
-        if (!result.isCommitted()) {
-            throw new IllegalStateException(label + " transaction aborted: " + result.errorMessage());
-        }
-        return result;
     }
 
     public static void main(String[] args) throws Exception {
@@ -42,14 +18,26 @@ public final class SimpleExample {
         try (var node = TriploxNode.connect(host, port)) {
             System.out.println("Connected.");
 
-            var schemaResult = requireCommitted("Schema", node.executeTx(List.of(
-                    new TxOp.Put(schemaAttribute("name", "string")),
-                    new TxOp.Put(schemaAttribute("age", "long")))));
+            var schemaResult = node.executeTx(list(
+                    new TxOp.Put(map(
+                            ":db/ident", kw(":name"),
+                            ":db/valueType", kw(":db.type/string"),
+                            ":db/cardinality", kw(":db.cardinality/one"))),
+                    new TxOp.Put(map(
+                            ":db/ident", kw(":age"),
+                            ":db/valueType", kw(":db.type/long"),
+                            ":db/cardinality", kw(":db.cardinality/one")))));
+            if (!schemaResult.isCommitted()) {
+                throw new IllegalStateException("Schema transaction aborted: " + schemaResult.errorMessage());
+            }
             System.out.println("Schema defined (tx_id=" + schemaResult.txId() + ").");
 
-            var dataResult = requireCommitted("Data", node.executeTx(List.of(
-                    new TxOp.Put(person("alice", 30)),
-                    new TxOp.Put(person("bob", 25)))));
+            var dataResult = node.executeTx(list(
+                    new TxOp.Put(map(":name", "alice", ":age", 30L)),
+                    new TxOp.Put(map(":name", "bob", ":age", 25L))));
+            if (!dataResult.isCommitted()) {
+                throw new IllegalStateException("Data transaction aborted: " + dataResult.errorMessage());
+            }
             System.out.println("Data inserted (tx_id=" + dataResult.txId() + ").");
 
             try (Db db = node.openDb()) {

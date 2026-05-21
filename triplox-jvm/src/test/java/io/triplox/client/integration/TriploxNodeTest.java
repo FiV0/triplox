@@ -1,13 +1,12 @@
 package io.triplox.client.integration;
 
-import clojure.lang.Keyword;
 import io.triplox.client.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
 
+import static io.triplox.client.Util.kw;
+import static io.triplox.client.Util.map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class TriploxNodeTest {
@@ -24,16 +23,13 @@ class TriploxNodeTest {
     void testConnectTransactQueryClose() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             // Schema: name attribute
-            var schema = new TreeMap<Keyword, Object>();
-            schema.put(Keyword.intern("db", "ident"), Keyword.intern("name"));
-            schema.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", "string"));
-            schema.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
-            node.executeTx(List.of(new TxOp.Put(schema)));
+            node.executeTx(List.of(new TxOp.Put(map(
+                    ":db/ident", kw(":name"),
+                    ":db/valueType", kw(":db.type/string"),
+                    ":db/cardinality", kw(":db.cardinality/one")))));
 
             // Data
-            var data = new TreeMap<Keyword, Object>();
-            data.put(Keyword.intern("name"), "alice");
-            var txResult = node.executeTx(List.of(new TxOp.Put(data)));
+            var txResult = node.executeTx(List.of(new TxOp.Put(map(":name", "alice"))));
             assertTrue(txResult.isCommitted());
 
             // Query
@@ -48,20 +44,15 @@ class TriploxNodeTest {
     @Test
     void testOpenDbAtHistoricalTx() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
-            var schema = new TreeMap<Keyword, Object>();
-            schema.put(Keyword.intern("db", "ident"), Keyword.intern("historical-name"));
-            schema.put(Keyword.intern("db", "valueType"), Keyword.intern("db.type", "string"));
-            schema.put(Keyword.intern("db", "cardinality"), Keyword.intern("db.cardinality", "one"));
-            node.executeTx(List.of(new TxOp.Put(schema)));
+            node.executeTx(List.of(new TxOp.Put(map(
+                    ":db/ident", kw(":historical-name"),
+                    ":db/valueType", kw(":db.type/string"),
+                    ":db/cardinality", kw(":db.cardinality/one")))));
 
-            var alice = new TreeMap<Keyword, Object>();
-            alice.put(Keyword.intern("historical-name"), "alice");
-            var tx1 = node.executeTx(List.of(new TxOp.Put(alice)));
+            var tx1 = node.executeTx(List.of(new TxOp.Put(map(":historical-name", "alice"))));
             assertTrue(tx1.isCommitted());
 
-            var bob = new TreeMap<Keyword, Object>();
-            bob.put(Keyword.intern("historical-name"), "bob");
-            var tx2 = node.executeTx(List.of(new TxOp.Put(bob)));
+            var tx2 = node.executeTx(List.of(new TxOp.Put(map(":historical-name", "bob"))));
             assertTrue(tx2.isCommitted());
 
             try (var db = node.openDbAsOf(tx1.basis())) {

@@ -10,8 +10,8 @@
           op (first ops)]
       (is (instance? TxOp$Put op))
       (let [doc (.document ^TxOp$Put op)]
-        (is (= 1 (.get doc :db/id)))
-        (is (= "alice" (.get doc :person/name)))))))
+        (is (= 1 (.get doc ":db/id")))
+        (is (= "alice" (.get doc ":person/name")))))))
 
 (deftest vec-to-add
   (testing "[:db/add e a v] -> TxOp.Add"
@@ -19,7 +19,7 @@
           op (first ops)]
       (is (instance? TxOp$Add op))
       (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Add op))))
-      (is (= :email (.attribute ^TxOp$Add op)))
+      (is (= ":email" (.attribute ^TxOp$Add op)))
       (is (= "test@example.com" (.value ^TxOp$Add op))))))
 
 (deftest vec-to-retract
@@ -28,7 +28,7 @@
           op (first ops)]
       (is (instance? TxOp$Retract op))
       (is (= 42 (.id ^EntityRef$Id (.entity ^TxOp$Retract op))))
-      (is (= :email (.attribute ^TxOp$Retract op)))
+      (is (= ":email" (.attribute ^TxOp$Retract op)))
       (is (= "old@example.com" (.value ^TxOp$Retract op))))))
 
 (deftest vec-to-delete
@@ -71,7 +71,7 @@
     (let [ops (tx/tx-data->ops [[:db/add :person/alice :name "Alice"]])
           op (first ops)]
       (is (instance? EntityRef$Ident (.entity ^TxOp$Add op)))
-      (is (= :person/alice (.ident ^EntityRef$Ident (.entity ^TxOp$Add op)))))))
+      (is (= ":person/alice" (.ident ^EntityRef$Ident (.entity ^TxOp$Add op)))))))
 
 (deftest lookup-ref-entity-ref
   (testing "Lookup ref vector in entity position becomes LookupRef"
@@ -79,7 +79,7 @@
           op (first ops)]
       (is (instance? TxOp$Add op))
       (is (instance? EntityRef$LookupRef (.entity ^TxOp$Add op)))
-      (is (= :email (.attr ^EntityRef$LookupRef (.entity ^TxOp$Add op))))
+      (is (= ":email" (.attr ^EntityRef$LookupRef (.entity ^TxOp$Add op))))
       (is (= "test@example.com" (.value ^EntityRef$LookupRef (.entity ^TxOp$Add op)))))))
 
 (deftest invalid-form-throws
