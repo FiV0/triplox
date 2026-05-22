@@ -73,10 +73,10 @@ Afterwards you connect with your favorite client.
                    {:name "bob" :age 25}])
 
 ;; query
-(with-open [db (tc/db conn)]
-  (tc/q db '{:find [?e ?name ?age]
-             :where [[?e :name ?name]
-                     [?e :age ?age]]}))
+(def db (tc/db conn))
+(tc/q db '{:find [?e ?name ?age]
+           :where [[?e :name ?name]
+                   [?e :age ?age]]})
 ;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]
 ```
 
