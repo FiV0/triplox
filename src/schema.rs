@@ -457,6 +457,11 @@ impl Schema {
         Some((*eid, attr))
     }
 
+    /// Look up the keyword/ident for a given entity ID.
+    pub fn get_ident(&self, entity_id: Entid) -> Option<&Keyword> {
+        self.entid_map.get(&entity_id)
+    }
+
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
     pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
@@ -825,7 +830,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// Queries 2 and 3 re-fetch values already retrieved in query 1. This is only run
 /// at startup so the inefficiency is minor, but a single-pass approach would be
 /// cleaner. Could likely be done with an `optional` clause.
-pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
+pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_ident_map: IdentMap = HashMap::new();
     bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);

@@ -128,7 +128,7 @@ where
 pub struct Node<L: TxLog> {
     log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
-    slate: SlateComponents,
+    pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
 }
 
