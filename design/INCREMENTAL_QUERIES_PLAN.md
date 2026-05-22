@@ -203,15 +203,15 @@ dbsp dependency and module scaffolding
 **Description:** Add crate-internal registration methods on `Node<L>` and an incremental service that owns query circuits, subscription senders, and cancellation-aware service state.
 
 **Acceptance criteria:**
-- [ ] `register_incremental_query(query)` validates and installs a query circuit.
-- [ ] `unregister_incremental_query(handle)` removes the circuit and closes that subscription's sender.
-- [ ] Dropped receivers are treated as normal cleanup.
-- [ ] The API returns only future deltas, not an initial snapshot.
-- [ ] `IncrementalQuerySubscription` exposes the registration `TxBasis` as the cutover basis for those future deltas.
+- [x] `register_incremental_query(query)` validates and installs a query circuit.
+- [x] `unregister_incremental_query(handle)` removes the circuit and closes that subscription's sender.
+- [x] Dropped receivers are treated as normal cleanup.
+- [x] The API returns only future deltas, not an initial snapshot.
+- [x] `IncrementalQuerySubscription` exposes the registration `TxBasis` as the cutover basis for those future deltas.
 
 **Verification:**
-- [ ] Unit or node-level tests for register, unregister, duplicate unregister, and receiver-drop cleanup.
-- [ ] `cargo test -p triplox incremental`
+- [x] Unit or node-level tests for register, unregister, duplicate unregister, and receiver-drop cleanup.
+- [x] `cargo test -p triplox incremental`
 
 **Dependencies:** Task 6
 

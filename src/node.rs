@@ -8,6 +8,10 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
+use crate::inc_query::plan_query;
+use crate::incremental::{
+    IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
+};
 use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
@@ -131,6 +135,7 @@ pub struct Node<L: TxLog> {
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
+    incremental: IncrementalQueryService,
 }
 
 impl Node<MemoryLog> {
@@ -151,6 +156,7 @@ impl Node<MemoryLog> {
             indexer,
             slate,
             subscription,
+            incremental: IncrementalQueryService::new(),
         }
     }
 }
@@ -207,6 +213,7 @@ impl Node<FileLog> {
             indexer,
             slate,
             subscription,
+            incremental: IncrementalQueryService::new(),
         })
     }
 
@@ -275,6 +282,28 @@ impl<L: TxLog> Node<L> {
             basis,
             range_stats,
         ))
+    }
+
+    pub(crate) async fn register_incremental_query(
+        &self,
+        query: ParsedQuery,
+    ) -> Result<IncrementalQuerySubscription, Error> {
+        let basis = latest_tx_basis_from_sdb(self.slate.db.as_ref()).await?;
+        let indexer = self.indexer.read().await;
+        let plan = plan_query(&query, &indexer.metadata().schema)?;
+        self.incremental.register(plan, basis).await
+    }
+
+    pub(crate) async fn unregister_incremental_query(
+        &self,
+        handle: IncrementalQueryHandle,
+    ) -> Result<(), Error> {
+        self.incremental.unregister(handle).await
+    }
+
+    #[cfg(test)]
+    async fn active_incremental_query_count(&self) -> usize {
+        self.incremental.active_query_count().await
     }
 }
 
@@ -351,6 +380,96 @@ mod tests {
     async fn define_test_schema(node: &impl SubmitNode) {
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
+    }
+
+    fn parse_query(input: &str) -> ParsedQuery {
+        edn::parse::parse_query(input).expect("query should parse")
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_installs_subscription() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let expected_basis = *node.db().await.unwrap().tx_basis();
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert_eq!(subscription.basis, expected_basis);
+        assert_eq!(node.active_incremental_query_count().await, 1);
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_unsupported_query() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?e :where [?e ?a ?v]]"))
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Incremental query pattern attributes must be constant"));
+        assert_eq!(node.active_incremental_query_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_incremental_query_removes_subscription() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+
+        node.unregister_incremental_query(handle).await.unwrap();
+
+        assert_eq!(node.active_incremental_query_count().await, 0);
+        assert!(subscription.deltas.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_unregister_incremental_query_rejects_duplicate_unregister() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+
+        node.unregister_incremental_query(handle).await.unwrap();
+        let err = node.unregister_incremental_query(handle).await.unwrap_err();
+
+        assert!(err.to_string().contains("Unknown incremental query handle"));
+    }
+
+    #[tokio::test]
+    async fn test_dropped_incremental_query_receiver_is_cleaned_up() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+        drop(subscription);
+
+        assert_eq!(node.active_incremental_query_count().await, 0);
+        let err = node.unregister_incremental_query(handle).await.unwrap_err();
+        assert!(err.to_string().contains("Unknown incremental query handle"));
     }
 
     #[tokio::test]

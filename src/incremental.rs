@@ -1,10 +1,239 @@
 //! Writer-node incremental query service.
 
+use std::collections::HashMap;
+use std::sync::mpsc as std_mpsc;
+use std::thread;
+
+use anyhow::{anyhow, Error, Result};
+use dbsp::{CircuitHandle, OutputHandle, RootCircuit, ZSetHandle};
+use tokio::sync::{mpsc, oneshot};
+use triplox_client::transaction::TxBasis;
+
+use crate::inc_query::IncrementalQueryPlan;
+use crate::incremental::circuit::{query_find_stream, RowZSet};
+use crate::ops::DataType;
+
 pub(crate) mod cdc;
 pub(crate) mod circuit;
 
+const SUBSCRIPTION_CAPACITY: usize = 128;
+
 pub(crate) type EncodedValue = Vec<u8>;
 pub(crate) type EncodedRow = Vec<EncodedValue>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct IncrementalQueryHandle {
+    id: IncrementalQueryId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct IncrementalQueryId(u64);
+
+#[derive(Debug)]
+pub(crate) struct IncrementalQuerySubscription {
+    pub handle: IncrementalQueryHandle,
+    pub basis: TxBasis,
+    pub deltas: mpsc::Receiver<IncrementalQueryDelta>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IncrementalQueryDelta {
+    pub basis: Option<TxBasis>,
+    pub wal_seq: u64,
+    pub rows: Vec<(Vec<DataType>, isize)>,
+}
+
+pub(crate) struct IncrementalQueryService {
+    commands: std_mpsc::Sender<IncrementalCommand>,
+}
+
+impl IncrementalQueryService {
+    pub(crate) fn new() -> Self {
+        let (sender, receiver) = std_mpsc::channel();
+        thread::Builder::new()
+            .name("triplox-incremental-query".to_string())
+            .spawn(move || IncrementalQueryServiceInner::new().run(receiver))
+            .expect("incremental query service thread should start");
+
+        Self { commands: sender }
+    }
+
+    pub(crate) async fn register(
+        &self,
+        plan: IncrementalQueryPlan,
+        basis: TxBasis,
+    ) -> Result<IncrementalQuerySubscription> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::Register {
+                plan,
+                basis,
+                response,
+            })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow!("Incremental query service stopped"))?
+            .map_err(|err| anyhow!("{}", err))
+    }
+
+    pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::Unregister { handle, response })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow!("Incremental query service stopped"))?
+            .map_err(|err| anyhow!("{}", err))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn active_query_count(&self) -> usize {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::ActiveQueryCount { response })
+            .expect("incremental query service should be running");
+        result
+            .await
+            .expect("incremental query service should respond")
+    }
+}
+
+enum IncrementalCommand {
+    Register {
+        plan: IncrementalQueryPlan,
+        basis: TxBasis,
+        response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
+    },
+    Unregister {
+        handle: IncrementalQueryHandle,
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+    #[cfg(test)]
+    ActiveQueryCount { response: oneshot::Sender<usize> },
+}
+
+type ServiceResult<T> = std::result::Result<T, String>;
+
+struct IncrementalQueryServiceInner {
+    next_query_id: u64,
+    queries: HashMap<IncrementalQueryId, RegisteredQuery>,
+}
+
+impl IncrementalQueryServiceInner {
+    fn new() -> Self {
+        Self {
+            next_query_id: 1,
+            queries: HashMap::new(),
+        }
+    }
+
+    fn run(mut self, receiver: std_mpsc::Receiver<IncrementalCommand>) {
+        while let Ok(command) = receiver.recv() {
+            match command {
+                IncrementalCommand::Register {
+                    plan,
+                    basis,
+                    response,
+                } => {
+                    let _ = response.send(self.register(plan, basis));
+                }
+                IncrementalCommand::Unregister { handle, response } => {
+                    let _ = response.send(self.unregister(handle));
+                }
+                #[cfg(test)]
+                IncrementalCommand::ActiveQueryCount { response } => {
+                    let _ = response.send(self.active_query_count());
+                }
+            }
+        }
+    }
+
+    fn register(
+        &mut self,
+        plan: IncrementalQueryPlan,
+        basis: TxBasis,
+    ) -> ServiceResult<IncrementalQuerySubscription> {
+        self.cleanup_closed_subscriptions();
+
+        let circuit = QueryCircuit::build(plan.clone()).map_err(|err| format!("{:#}", err))?;
+        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
+        let handle = IncrementalQueryHandle {
+            id: self.allocate_query_id(),
+        };
+
+        self.queries.insert(
+            handle.id,
+            RegisteredQuery {
+                _plan: plan,
+                _circuit: circuit,
+                sender,
+                _basis: basis,
+            },
+        );
+
+        Ok(IncrementalQuerySubscription {
+            handle,
+            basis,
+            deltas: receiver,
+        })
+    }
+
+    fn unregister(&mut self, handle: IncrementalQueryHandle) -> ServiceResult<()> {
+        self.cleanup_closed_subscriptions();
+        self.queries
+            .remove(&handle.id)
+            .map(|_| ())
+            .ok_or_else(|| format!("Unknown incremental query handle: {:?}", handle.id))
+    }
+
+    #[cfg(test)]
+    fn active_query_count(&mut self) -> usize {
+        self.cleanup_closed_subscriptions();
+        self.queries.len()
+    }
+
+    fn allocate_query_id(&mut self) -> IncrementalQueryId {
+        let id = IncrementalQueryId(self.next_query_id);
+        self.next_query_id += 1;
+        id
+    }
+
+    fn cleanup_closed_subscriptions(&mut self) {
+        self.queries.retain(|_, query| !query.sender.is_closed());
+    }
+}
+
+struct RegisteredQuery {
+    _plan: IncrementalQueryPlan,
+    _circuit: QueryCircuit,
+    sender: mpsc::Sender<IncrementalQueryDelta>,
+    _basis: TxBasis,
+}
+
+struct QueryCircuit {
+    _circuit: CircuitHandle,
+    _input: ZSetHandle<EncodedTriple>,
+    _output: OutputHandle<RowZSet>,
+}
+
+impl QueryCircuit {
+    fn build(plan: IncrementalQueryPlan) -> Result<Self> {
+        let (circuit, (input, output)) = RootCircuit::build(|circuit| {
+            let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
+            let rows = query_find_stream(&input, plan);
+            Ok((handle, rows.output()))
+        })
+        .map_err(Error::from)?;
+
+        Ok(Self {
+            _circuit: circuit,
+            _input: input,
+            _output: output,
+        })
+    }
+}
 
 #[derive(
     Clone,
