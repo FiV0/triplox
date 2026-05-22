@@ -1,17 +1,28 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use dbsp::{utils::Tup2, OrdZSet, ZWeight};
+use dbsp::{typed_batch::IndexedZSetReader, utils::Tup2, OrdZSet, ZWeight};
+use log::error;
+use slatedb::object_store::ObjectStore;
+use slatedb::WalReader;
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::codec::Encode;
 use crate::inc_query::IncrementalQueryPlan;
-use crate::incremental::EncodedTriple;
-use crate::indexer::eav_key_to_parts;
+use crate::incremental::{EncodedTriple, IncrementalQueryService};
+use crate::indexer::{eav_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
+use crate::slate::cdc::{CdcCursor, CdcStream};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::transaction::{TxBasis, TxKey};
 use crate::{codec, util::concat_bytes};
+
+const CDC_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSet<EncodedTriple>> {
     let tuples = datoms
@@ -36,6 +47,104 @@ pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSe
         .collect::<Result<Vec<_>>>()?;
 
     Ok(OrdZSet::from_keys((), tuples))
+}
+
+pub(crate) fn zset_to_tuples(zset: &OrdZSet<EncodedTriple>) -> Vec<Tup2<EncodedTriple, ZWeight>> {
+    zset.iter()
+        .map(|(triple, (), weight)| Tup2(triple, weight))
+        .collect()
+}
+
+pub(crate) fn spawn_writer_cdc_loop(
+    path: String,
+    object_store: Arc<dyn ObjectStore>,
+    indexer: Arc<RwLock<Indexer>>,
+    service: IncrementalQueryService,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = run_writer_cdc_loop(path, object_store, indexer, service, cancel).await {
+            error!("Incremental query CDC loop stopped: {:#}", err);
+        }
+    });
+}
+
+async fn run_writer_cdc_loop(
+    path: String,
+    object_store: Arc<dyn ObjectStore>,
+    indexer: Arc<RwLock<Indexer>>,
+    service: IncrementalQueryService,
+    cancel: CancellationToken,
+) -> Result<()> {
+    let mut cursor = CdcCursor::default();
+
+    loop {
+        let drain_cancel = CancellationToken::new();
+        drain_cancel.cancel();
+        let wal_reader = WalReader::new(path.clone(), object_store.clone());
+        let mut stream =
+            CdcStream::new(wal_reader, cursor.clone(), CDC_POLL_INTERVAL, drain_cancel).await?;
+
+        while let Some(tx) = stream.next_transaction().await? {
+            let seq = tx.seq;
+            let (datoms, basis) = {
+                let indexer = indexer.read().await;
+                let datoms = crate::slate::cdc::datoms_from_cdc_transaction(
+                    &tx,
+                    &indexer.metadata().schema,
+                )?;
+                let basis = tx_basis_from_datoms(&datoms);
+                (datoms, basis)
+            };
+
+            if let Some(basis) = basis {
+                let waiter = indexer.read().await.tx_waiter();
+                waiter.await_indexed(basis.tx_key).await?;
+            }
+
+            let zset = {
+                let indexer = indexer.read().await;
+                datoms_to_zset(&datoms, &indexer.metadata().schema)?
+            };
+            service
+                .apply_triples(basis, seq, zset_to_tuples(&zset))
+                .await?;
+            cursor.last_seq = seq;
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(CDC_POLL_INTERVAL) => {}
+            _ = cancel.cancelled() => return Ok(()),
+        }
+    }
+}
+
+pub(crate) fn tx_basis_from_datoms(datoms: &[Datom]) -> Option<TxBasis> {
+    let mut by_entity: HashMap<i64, (Option<i64>, Option<crate::clock::Instant>)> = HashMap::new();
+    for datom in datoms {
+        let entry = by_entity.entry(datom.entity).or_default();
+        match &datom.value {
+            DataType::Long(tx_id) if datom.attribute == edn::kw!(:db/txId) => {
+                entry.0 = Some(*tx_id);
+            }
+            DataType::Instant(instant) if datom.attribute == edn::kw!(:db/txInstant) => {
+                entry.1 = Some(*instant);
+            }
+            _ => {}
+        }
+    }
+
+    by_entity
+        .into_iter()
+        .find_map(|(tx_eid, (tx_id, instant))| {
+            Some(TxBasis {
+                tx_key: TxKey {
+                    tx_id: tx_id?,
+                    system_time: instant?,
+                },
+                tx_eid,
+            })
+        })
 }
 
 pub(crate) async fn scan_current_triples<D>(

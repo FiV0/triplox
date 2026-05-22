@@ -44,6 +44,7 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
+#[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: std_mpsc::Sender<IncrementalCommand>,
 }
@@ -248,11 +249,20 @@ impl IncrementalQueryServiceInner {
         let mut closed = Vec::new();
 
         for (id, query) in &mut self.queries {
+            if basis.is_none() && wal_seq <= query._wal_cursor.last_seq {
+                continue;
+            }
+            if basis.is_some_and(|basis| basis.tx_key.tx_id <= query._basis.tx_key.tx_id) {
+                query._wal_cursor.last_seq = wal_seq;
+                continue;
+            }
+
             let rows = query
                 ._circuit
                 .apply(triples.clone())
                 .map_err(|err| format!("{:#}", err))?;
             if rows.is_empty() {
+                query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
             let delta = IncrementalQueryDelta {
@@ -262,6 +272,8 @@ impl IncrementalQueryServiceInner {
             };
             if query.sender.blocking_send(delta).is_err() {
                 closed.push(*id);
+            } else {
+                query._wal_cursor.last_seq = wal_seq;
             }
         }
 

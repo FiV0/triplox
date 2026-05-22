@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::inc_query::plan_query;
-use crate::incremental::cdc::scan_current_triples;
+use crate::incremental::cdc::{scan_current_triples, spawn_writer_cdc_loop};
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
@@ -138,6 +139,7 @@ pub struct Node<L: TxLog> {
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
+    incremental_cdc_started: Arc<AtomicBool>,
 }
 
 impl Node<MemoryLog> {
@@ -152,13 +154,15 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let incremental = IncrementalQueryService::new();
 
         Node {
             log,
             indexer,
             slate,
             subscription,
-            incremental: IncrementalQueryService::new(),
+            incremental,
+            incremental_cdc_started: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -203,6 +207,7 @@ impl Node<FileLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+        let incremental = IncrementalQueryService::new();
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
@@ -215,7 +220,8 @@ impl Node<FileLog> {
             indexer,
             slate,
             subscription,
-            incremental: IncrementalQueryService::new(),
+            incremental,
+            incremental_cdc_started: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -301,9 +307,12 @@ impl<L: TxLog> Node<L> {
             wal_id: 0,
             last_seq: self.slate.db.status().durable_seq,
         };
-        self.incremental
+        let subscription = self
+            .incremental
             .register(plan, basis, wal_cursor, initial_triples)
-            .await
+            .await?;
+        self.start_incremental_cdc_once();
+        Ok(subscription)
     }
 
     pub(crate) async fn unregister_incremental_query(
@@ -328,6 +337,22 @@ impl<L: TxLog> Node<L> {
         self.incremental
             .apply_triples(basis, wal_seq, triples)
             .await
+    }
+
+    fn start_incremental_cdc_once(&self) {
+        if self
+            .incremental_cdc_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            spawn_writer_cdc_loop(
+                self.slate.path.clone(),
+                self.slate.object_store.clone(),
+                self.indexer.clone(),
+                self.incremental.clone(),
+                self.subscription.clone(),
+            );
+        }
     }
 }
 
@@ -400,6 +425,7 @@ mod tests {
     };
     use edn::kw;
     use edn::Keyword;
+    use slatedb::config::{FlushOptions, FlushType};
     use triplox_client::transaction::TransactionResult;
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
@@ -410,6 +436,25 @@ mod tests {
 
     fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
+    }
+
+    async fn flush_wal(node: &Node<MemoryLog>) {
+        node.slate
+            .db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::Wal,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn recv_incremental_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+            .await
+            .expect("timed out waiting for incremental delta")
+            .expect("subscription should be open")
     }
 
     #[tokio::test]
@@ -521,6 +566,126 @@ mod tests {
                 vec![DataType::String("Alice".to_string()), DataType::Long(30)],
                 1
             )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_emits_single_transaction_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_groups_multi_entity_transaction() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:name),
+                    value: DataType::String("Bob".to_string()),
+                },
+            ])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let mut delta = recv_incremental_delta(&mut subscription).await;
+        delta.rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![
+                (vec![DataType::String("Alice".to_string())], 1),
+                (vec![DataType::String("Bob".to_string())], 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_cardinality_one_overwrite_emits_retract_and_assert() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let mut delta = recv_incremental_delta(&mut subscription).await;
+        delta.rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![
+                (vec![DataType::String("Alice".to_string())], -1),
+                (vec![DataType::String("Bob".to_string())], 1),
+            ]
         );
     }
 

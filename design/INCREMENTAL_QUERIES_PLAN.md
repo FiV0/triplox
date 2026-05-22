@@ -251,16 +251,16 @@ dbsp dependency and module scaffolding
 **Description:** Run one writer-node CDC task that reads SlateDB WAL transactions, decodes datoms with `datoms_from_cdc_transaction()`, waits for the corresponding transaction to be visible in memory indexes when possible, steps every registered circuit, and sends exact deltas to subscribers.
 
 **Acceptance criteria:**
-- [ ] Uses `CdcStream::next_transaction()` and `datoms_from_cdc_transaction()`.
-- [ ] Uses the existing `TxWaiter` path when tx metadata can be derived from CDC datoms.
-- [ ] Falls back to sequence-only output basis if tx metadata cannot be derived.
-- [ ] Advances CDC cursor only after circuit stepping and subscription delivery succeed.
-- [ ] Relies on normal SlateDB WAL availability and does not force WAL flushes.
+- [x] Uses `CdcStream::next_transaction()` and `datoms_from_cdc_transaction()`.
+- [x] Uses the existing `TxWaiter` path when tx metadata can be derived from CDC datoms.
+- [x] Falls back to sequence-only output basis if tx metadata cannot be derived.
+- [x] Advances CDC cursor only after circuit stepping and subscription delivery succeed.
+- [x] Relies on normal SlateDB WAL availability and does not force WAL flushes.
 
 **Verification:**
-- [ ] Node-level tests for a single transaction, multi-entity transaction grouped into one delta, and cardinality-one overwrite producing retract/assert result changes.
-- [ ] `cargo test -p triplox incremental`
-- [ ] `cargo test -p triplox slate::cdc`
+- [x] Node-level tests for a single transaction, multi-entity transaction grouped into one delta, and cardinality-one overwrite producing retract/assert result changes.
+- [x] `cargo test -p triplox incremental`
+- [x] `cargo test -p triplox slate::cdc`
 
 **Dependencies:** Task 8
 
