@@ -204,6 +204,7 @@ dbsp dependency and module scaffolding
 - [ ] `unregister_incremental_query(handle)` removes the circuit and closes that subscription's sender.
 - [ ] Dropped receivers are treated as normal cleanup.
 - [ ] The API returns only future deltas, not an initial snapshot.
+- [ ] `IncrementalQuerySubscription` exposes the registration `TxBasis` as the cutover basis for those future deltas.
 
 **Verification:**
 - [ ] Unit or node-level tests for register, unregister, duplicate unregister, and receiver-drop cleanup.
@@ -372,6 +373,4 @@ dbsp dependency and module scaffolding
 
 ## Open Questions
 
-- What bounded channel capacity should v1 use for each subscription?
-- Should `IncrementalQueryDelta.rows` use `isize` weights exactly, or the concrete DBSP weight type converted at the boundary?
-- Should the v1 API expose registration basis metadata separately even though it does not return initial snapshot rows?
+- None.

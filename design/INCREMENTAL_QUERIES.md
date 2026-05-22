@@ -212,6 +212,7 @@ pub(crate) struct IncrementalQueryHandle {
 
 pub(crate) struct IncrementalQuerySubscription {
     pub handle: IncrementalQueryHandle,
+    pub basis: TxBasis,
     pub deltas: tokio::sync::mpsc::Receiver<IncrementalQueryDelta>,
 }
 
@@ -234,7 +235,9 @@ impl<L: TxLog> Node<L> {
 }
 ```
 
-Use a bounded `tokio::sync::mpsc` channel for the subscription. Incremental deltas are an ordered log: dropping one delta corrupts the receiver's integrated result. Bounded `mpsc` makes backpressure explicit by letting the WAL/DBSP task lag rather than silently losing updates.
+`IncrementalQuerySubscription::basis` is the registration cutover basis. The subscription emits only deltas after that basis, so a caller can combine an independently fetched snapshot at `basis` with future subscription deltas without gaps or overlap.
+
+Use a bounded `tokio::sync::mpsc` channel with capacity 128 for each subscription. Incremental deltas are an ordered log: dropping one delta corrupts the receiver's integrated result. Bounded `mpsc` makes backpressure explicit by letting the WAL/DBSP task lag rather than silently losing updates.
 
 Do not use `tokio::sync::broadcast` for v1 exact subscriptions; lagging receivers can miss messages and would need a resync protocol. Do not use `tokio::sync::watch`; it only retains the latest value and is suited to state snapshots, not deltas.
 
@@ -334,3 +337,6 @@ Equivalence tests:
 3. V1 does not persist `last_applied_seq`; applied progress is implicit in the ordered CDC apply loop and can become in-memory instrumentation later if useful.
 4. The CDC task relies on normal SlateDB WAL-file availability and does not force WAL flushes after writer-node commits.
 5. Repeated variables inside one triple pattern are rejected by registration validation.
+6. Each subscription channel has capacity 128.
+7. `IncrementalQueryDelta.rows` uses `isize` weights at the Triplox API boundary.
+8. `IncrementalQuerySubscription` exposes the registration `TxBasis` as its cutover basis.
