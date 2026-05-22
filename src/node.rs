@@ -9,6 +9,7 @@ use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::inc_query::plan_query;
+use crate::incremental::cdc::scan_current_triples;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
@@ -19,6 +20,7 @@ use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
 use crate::schema::IdentMap;
+use crate::slate::cdc::CdcCursor;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -289,9 +291,19 @@ impl<L: TxLog> Node<L> {
         query: ParsedQuery,
     ) -> Result<IncrementalQuerySubscription, Error> {
         let basis = latest_tx_basis_from_sdb(self.slate.db.as_ref()).await?;
-        let indexer = self.indexer.read().await;
-        let plan = plan_query(&query, &indexer.metadata().schema)?;
-        self.incremental.register(plan, basis).await
+        let plan = {
+            let indexer = self.indexer.read().await;
+            plan_query(&query, &indexer.metadata().schema)?
+        };
+        let initial_triples =
+            scan_current_triples(self.slate.db.as_ref(), &plan, basis.tx_eid).await?;
+        let wal_cursor = CdcCursor {
+            wal_id: 0,
+            last_seq: self.slate.db.status().durable_seq,
+        };
+        self.incremental
+            .register(plan, basis, wal_cursor, initial_triples)
+            .await
     }
 
     pub(crate) async fn unregister_incremental_query(
@@ -304,6 +316,18 @@ impl<L: TxLog> Node<L> {
     #[cfg(test)]
     async fn active_incremental_query_count(&self) -> usize {
         self.incremental.active_query_count().await
+    }
+
+    #[cfg(test)]
+    async fn apply_incremental_triples_for_test(
+        &self,
+        basis: Option<TxBasis>,
+        wal_seq: u64,
+        triples: Vec<dbsp::utils::Tup2<crate::incremental::EncodedTriple, dbsp::ZWeight>>,
+    ) -> Result<(), Error> {
+        self.incremental
+            .apply_triples(basis, wal_seq, triples)
+            .await
     }
 }
 
@@ -366,7 +390,9 @@ mod tests {
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
+    use crate::codec::Encode;
     use crate::error::TriploxError;
+    use crate::incremental::EncodedTriple;
     use crate::ops::{DataType, EntityRef, TxOp};
     use crate::partition::{extract_partition, TX_PARTITION};
     use crate::schema::{
@@ -403,6 +429,99 @@ mod tests {
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_after_existing_data_emits_no_initial_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_primed_incremental_query_uses_existing_rows_for_future_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let age_attr = {
+            let indexer = node.indexer.read().await;
+            indexer
+                .metadata()
+                .schema
+                .get_attribute(&kw!(:age))
+                .unwrap()
+                .0
+        };
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let future_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        node.apply_incremental_triples_for_test(
+            Some(future_basis),
+            1,
+            vec![dbsp::utils::Tup2(
+                EncodedTriple {
+                    entity: DataType::Long(100).encode(),
+                    attribute: age_attr,
+                    value: DataType::Long(30).encode(),
+                },
+                1,
+            )],
+        )
+        .await
+        .unwrap();
+
+        let delta = subscription.deltas.recv().await.unwrap();
+        assert_eq!(delta.basis, Some(future_basis));
+        assert_eq!(
+            delta.rows,
+            vec![(
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                1
+            )]
+        );
     }
 
     #[tokio::test]

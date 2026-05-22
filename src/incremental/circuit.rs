@@ -38,7 +38,9 @@ pub(crate) fn query_find_stream(
     plan: IncrementalQueryPlan,
 ) -> Stream<RootCircuit, RowZSet> {
     let find_positions = positions(&plan.variables, &plan.find_vars);
-    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
+    query_row_stream(&input.integrate(), plan)
+        .map(move |row| project_row(row, &find_positions))
+        .differentiate()
 }
 
 pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {

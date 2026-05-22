@@ -227,15 +227,15 @@ dbsp dependency and module scaffolding
 **Description:** During registration, capture a consistent basis and WAL cursor, scan current EAV state for the query's needed attributes, feed positive triples into the circuit, step once, and discard the initial output.
 
 **Acceptance criteria:**
-- [ ] The registration basis is captured from existing indexed state.
-- [ ] Initial rows are installed into DBSP state but not emitted as live deltas.
-- [ ] The WAL cursor starts after the captured basis so existing facts are not replayed.
-- [ ] The implementation can use simple EAV scans and in-memory filtering for v1.
+- [x] The registration basis is captured from existing indexed state.
+- [x] Initial rows are installed into DBSP state but not emitted as live deltas.
+- [x] The WAL cursor starts after the captured basis so existing facts are not replayed.
+- [x] The implementation can use simple EAV scans and in-memory filtering for v1.
 
 **Verification:**
-- [ ] Node-level test: register after existing data, then assert no initial delta is received.
-- [ ] Node-level test: a future matching transaction emits exactly one live delta.
-- [ ] `cargo test -p triplox incremental`
+- [x] Node-level test: register after existing data, then assert no initial delta is received.
+- [x] Node-level test: a future matching transaction emits exactly one live delta.
+- [x] `cargo test -p triplox incremental`
 
 **Dependencies:** Task 7
 

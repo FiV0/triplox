@@ -5,13 +5,14 @@ use std::sync::mpsc as std_mpsc;
 use std::thread;
 
 use anyhow::{anyhow, Error, Result};
-use dbsp::{CircuitHandle, OutputHandle, RootCircuit, ZSetHandle};
+use dbsp::{utils::Tup2, CircuitHandle, OutputHandle, RootCircuit, ZSetHandle, ZWeight};
 use tokio::sync::{mpsc, oneshot};
 use triplox_client::transaction::TxBasis;
 
 use crate::inc_query::IncrementalQueryPlan;
-use crate::incremental::circuit::{query_find_stream, RowZSet};
+use crate::incremental::circuit::{decode_output_rows, query_find_stream, RowZSet};
 use crate::ops::DataType;
+use crate::slate::cdc::CdcCursor;
 
 pub(crate) mod cdc;
 pub(crate) mod circuit;
@@ -62,12 +63,16 @@ impl IncrementalQueryService {
         &self,
         plan: IncrementalQueryPlan,
         basis: TxBasis,
+        wal_cursor: CdcCursor,
+        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
                 plan,
                 basis,
+                wal_cursor,
+                initial_triples,
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -81,6 +86,27 @@ impl IncrementalQueryService {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Unregister { handle, response })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow!("Incremental query service stopped"))?
+            .map_err(|err| anyhow!("{}", err))
+    }
+
+    pub(crate) async fn apply_triples(
+        &self,
+        basis: Option<TxBasis>,
+        wal_seq: u64,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<()> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::ApplyTriples {
+                basis,
+                wal_seq,
+                triples,
+                response,
+            })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
         result
             .await
@@ -104,10 +130,18 @@ enum IncrementalCommand {
     Register {
         plan: IncrementalQueryPlan,
         basis: TxBasis,
+        wal_cursor: CdcCursor,
+        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
     },
     Unregister {
         handle: IncrementalQueryHandle,
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+    ApplyTriples {
+        basis: Option<TxBasis>,
+        wal_seq: u64,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<()>>,
     },
     #[cfg(test)]
@@ -135,12 +169,22 @@ impl IncrementalQueryServiceInner {
                 IncrementalCommand::Register {
                     plan,
                     basis,
+                    wal_cursor,
+                    initial_triples,
                     response,
                 } => {
-                    let _ = response.send(self.register(plan, basis));
+                    let _ = response.send(self.register(plan, basis, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
                     let _ = response.send(self.unregister(handle));
+                }
+                IncrementalCommand::ApplyTriples {
+                    basis,
+                    wal_seq,
+                    triples,
+                    response,
+                } => {
+                    let _ = response.send(self.apply_triples(basis, wal_seq, triples));
                 }
                 #[cfg(test)]
                 IncrementalCommand::ActiveQueryCount { response } => {
@@ -154,10 +198,15 @@ impl IncrementalQueryServiceInner {
         &mut self,
         plan: IncrementalQueryPlan,
         basis: TxBasis,
+        wal_cursor: CdcCursor,
+        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<IncrementalQuerySubscription> {
         self.cleanup_closed_subscriptions();
 
         let circuit = QueryCircuit::build(plan.clone()).map_err(|err| format!("{:#}", err))?;
+        circuit
+            .prime(initial_triples)
+            .map_err(|err| format!("{:#}", err))?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         let handle = IncrementalQueryHandle {
             id: self.allocate_query_id(),
@@ -170,6 +219,7 @@ impl IncrementalQueryServiceInner {
                 _circuit: circuit,
                 sender,
                 _basis: basis,
+                _wal_cursor: wal_cursor,
             },
         );
 
@@ -186,6 +236,39 @@ impl IncrementalQueryServiceInner {
             .remove(&handle.id)
             .map(|_| ())
             .ok_or_else(|| format!("Unknown incremental query handle: {:?}", handle.id))
+    }
+
+    fn apply_triples(
+        &mut self,
+        basis: Option<TxBasis>,
+        wal_seq: u64,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> ServiceResult<()> {
+        self.cleanup_closed_subscriptions();
+        let mut closed = Vec::new();
+
+        for (id, query) in &mut self.queries {
+            let rows = query
+                ._circuit
+                .apply(triples.clone())
+                .map_err(|err| format!("{:#}", err))?;
+            if rows.is_empty() {
+                continue;
+            }
+            let delta = IncrementalQueryDelta {
+                basis,
+                wal_seq,
+                rows,
+            };
+            if query.sender.blocking_send(delta).is_err() {
+                closed.push(*id);
+            }
+        }
+
+        for id in closed {
+            self.queries.remove(&id);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -210,6 +293,7 @@ struct RegisteredQuery {
     _circuit: QueryCircuit,
     sender: mpsc::Sender<IncrementalQueryDelta>,
     _basis: TxBasis,
+    _wal_cursor: CdcCursor,
 }
 
 struct QueryCircuit {
@@ -232,6 +316,22 @@ impl QueryCircuit {
             _input: input,
             _output: output,
         })
+    }
+
+    fn prime(&self, mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<()> {
+        self._input.append(&mut initial_triples);
+        self._circuit.transaction().map_err(Error::from)?;
+        let _ = self._output.consolidate();
+        Ok(())
+    }
+
+    fn apply(
+        &self,
+        mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        self._input.append(&mut triples);
+        self._circuit.transaction().map_err(Error::from)?;
+        decode_output_rows(&self._output.consolidate())
     }
 }
 

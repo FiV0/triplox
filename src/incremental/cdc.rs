@@ -1,10 +1,17 @@
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
 use dbsp::{utils::Tup2, OrdZSet, ZWeight};
 
 use crate::codec::Encode;
+use crate::inc_query::IncrementalQueryPlan;
 use crate::incremental::EncodedTriple;
+use crate::indexer::eav_key_to_parts;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
+use crate::slate::DEFAULT_SCAN_OPTIONS;
+use crate::{codec, util::concat_bytes};
 
 pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSet<EncodedTriple>> {
     let tuples = datoms
@@ -29,6 +36,63 @@ pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSe
         .collect::<Result<Vec<_>>>()?;
 
     Ok(OrdZSet::from_keys((), tuples))
+}
+
+pub(crate) async fn scan_current_triples<D>(
+    db: &D,
+    plan: &IncrementalQueryPlan,
+    as_of_tx_eid: i64,
+) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>
+where
+    D: slatedb::DbReadOps + Sync,
+{
+    let attributes = plan
+        .patterns
+        .iter()
+        .map(|pattern| pattern.attribute)
+        .collect::<HashSet<_>>();
+    let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();
+    let mut iter = db
+        .scan_with_options(
+            concat_bytes(&[&[codec::EAV]])..vec![codec::EAV_END],
+            &DEFAULT_SCAN_OPTIONS,
+        )
+        .await?;
+
+    while let Some(kv) = iter.next().await? {
+        let (entity, attribute, value, tx_eid, op) = eav_key_to_parts(Bytes::from(kv.key))?;
+        if tx_eid > as_of_tx_eid || !attributes.contains(&attribute) {
+            continue;
+        }
+
+        let entity = match entity {
+            DataType::Long(entity) => DataType::Long(entity).encode(),
+            other => return Err(anyhow!("Expected Long entity in EAV key, got {:?}", other)),
+        };
+        match op {
+            codec::ADD | codec::RETRACT => {}
+            other => return Err(anyhow!("Unknown op byte: {}", other)),
+        }
+
+        let triple = EncodedTriple {
+            entity,
+            attribute,
+            value: value.encode(),
+        };
+        let should_replace = latest_by_triple
+            .get(&triple)
+            .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
+        if should_replace {
+            latest_by_triple.insert(triple, (tx_eid, op));
+        }
+    }
+
+    let mut triples = latest_by_triple
+        .into_iter()
+        .filter_map(|(triple, (_tx_eid, op))| (op == codec::ADD).then_some(Tup2(triple, 1)))
+        .collect::<Vec<_>>();
+    triples.sort();
+    Ok(triples)
 }
 
 #[cfg(test)]
