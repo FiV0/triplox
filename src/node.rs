@@ -835,28 +835,53 @@ mod tests {
 
         execute_and_flush(
             &node,
-            vec![
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:name),
-                    value: DataType::String("Alice".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:name),
-                    value: DataType::String("Bob".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:age),
-                    value: DataType::Long(40),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:follows),
-                    value: DataType::Long(101),
-                },
-            ],
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:follows),
+                value: DataType::Long(101),
+            }],
         )
         .await;
         integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
@@ -886,23 +911,43 @@ mod tests {
 
         execute_and_flush(
             &node,
-            vec![
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:name),
-                    value: DataType::String("Alice".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:age),
-                    value: DataType::Long(30),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(102),
-                    attribute: kw!(:age),
-                    value: DataType::Long(40),
-                },
-            ],
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::Long(30)
+            ]]
+        );
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(102),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
         )
         .await;
         integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
