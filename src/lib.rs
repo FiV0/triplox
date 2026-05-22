@@ -17,6 +17,7 @@ pub mod ops;
 mod ops_server;
 pub mod partition;
 mod query;
+mod query_validation;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod schema;
 #[cfg(not(any(test, feature = "test-helpers")))]
