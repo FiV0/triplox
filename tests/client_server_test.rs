@@ -190,8 +190,8 @@ async fn test_multiple_stateless_dbs_for_same_basis() {
     // Open two DB values for the same basis.
     let db1 = client.db_as_of(basis).await.unwrap();
     let db2 = client.db_as_of(basis).await.unwrap();
-    assert_eq!(db1.tx_eid(), basis.tx_eid);
-    assert_eq!(db2.tx_eid(), basis.tx_eid);
+    assert_eq!(db1.tx_basis().tx_eid, basis.tx_eid);
+    assert_eq!(db2.tx_basis().tx_eid, basis.tx_eid);
 
     // Both should return the same data independently.
     let r1 = db1
@@ -301,7 +301,7 @@ async fn test_db_as_of() {
 
     // Open DB pinned to the first transaction basis — should only see alice
     let db = client.db_as_of(basis1).await.unwrap();
-    assert_eq!(db.tx_eid(), basis1.tx_eid);
+    assert_eq!(db.tx_basis().tx_eid, basis1.tx_eid);
     let result = db
         .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
@@ -332,7 +332,7 @@ async fn test_open_latest_db_value_stays_pinned_after_later_tx() {
     };
 
     let db = client.db().await.unwrap();
-    assert_eq!(db.tx_eid(), basis1.tx_eid);
+    assert_eq!(db.tx_basis().tx_eid, basis1.tx_eid);
 
     client
         .execute_tx(vec![TxOp::Add {

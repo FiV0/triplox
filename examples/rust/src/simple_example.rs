@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 
     // 3. Open a DB value and query
     let db = node.db().await?;
-    println!("Opened DB value (tx_eid={}).", db.tx_eid());
+    println!("Opened DB value (tx_eid={}).", db.tx_basis().tx_eid);
 
     let rows = db
         .query(r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#)

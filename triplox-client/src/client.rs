@@ -183,11 +183,6 @@ pub struct ClientDb {
 }
 
 impl ClientDb {
-    /// The transaction entity id this DB value is pinned to.
-    pub fn tx_eid(&self) -> i64 {
-        self.basis.tx_eid
-    }
-
     /// The transaction basis this DB value is pinned to.
     pub fn tx_basis(&self) -> TxBasis {
         self.basis

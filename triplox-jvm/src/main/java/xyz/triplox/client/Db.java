@@ -17,7 +17,7 @@ public class Db {
         this.basis = basis;
     }
 
-    TxBasis basis() { return basis; }
+    public TxBasis basis() { return basis; }
     public long txEid() { return basis.txEid(); }
 
     /**
