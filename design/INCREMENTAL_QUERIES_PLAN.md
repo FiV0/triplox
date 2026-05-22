@@ -97,14 +97,14 @@ dbsp dependency and module scaffolding
 **Description:** Create `src/inc_query.rs` with validation for the v1 query subset and a deterministic pattern plan that describes pattern filters, variable layout, join keys, Cartesian products, and final projection order.
 
 **Acceptance criteria:**
-- [ ] Accepts `WhereClause::Pattern` queries with constant ident/entid attributes.
-- [ ] Accepts disconnected pattern groups and records them as Cartesian-product joins.
-- [ ] Rejects variable/placeholder attributes, repeated variables inside one pattern, `:in`, non-relational find specs, `OrJoin`, `NotJoin`, predicates, functions, rules, aggregates, order, and limit.
-- [ ] Produces stable variable ordering for supported queries without calling or modifying `src/query.rs`.
+- [x] Accepts `WhereClause::Pattern` queries with constant ident/entid attributes.
+- [x] Accepts disconnected pattern groups and records them as Cartesian-product joins.
+- [x] Rejects variable/placeholder attributes, repeated variables inside one pattern, `:in`, non-relational find specs, `OrJoin`, `NotJoin`, predicates, functions, rules, aggregates, order, and limit.
+- [x] Produces stable variable ordering for supported queries without calling or modifying `src/query.rs`.
 
 **Verification:**
-- [ ] Planner tests for single pattern, entity join, ref-value join, three-pattern chain, constants, placeholders, rejected unsupported forms, and disconnected Cartesian products.
-- [ ] `cargo test -p triplox inc_query`
+- [x] Planner tests for single pattern, entity join, ref-value join, three-pattern chain, constants, placeholders, rejected unsupported forms, and disconnected Cartesian products.
+- [x] `cargo test -p triplox inc_query`
 
 **Dependencies:** Task 1
 
