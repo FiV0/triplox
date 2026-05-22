@@ -172,14 +172,14 @@ dbsp dependency and module scaffolding
 **Description:** Attach output handles to the final projected delta stream, drain each DBSP step, consolidate weights, and decode final `EncodedValue` rows back to `DataType` values for subscription delivery.
 
 **Acceptance criteria:**
-- [ ] Output rows are ordered according to `:find`.
-- [ ] Positive and negative weights are preserved.
-- [ ] Empty output steps do not emit subscription messages.
-- [ ] Decode errors surface as query-service errors and do not silently corrupt output.
+- [x] Output rows are ordered according to `:find`.
+- [x] Positive and negative weights are preserved.
+- [x] Empty output steps do not emit subscription messages.
+- [x] Decode errors surface as query-service errors and do not silently corrupt output.
 
 **Verification:**
-- [ ] Unit tests for output projection order, negative deltas, empty steps, and decode failure handling.
-- [ ] `cargo test -p triplox incremental::circuit`
+- [x] Unit tests for output projection order, negative deltas, empty steps, and decode failure handling.
+- [x] `cargo test -p triplox incremental::circuit`
 
 **Dependencies:** Task 5
 

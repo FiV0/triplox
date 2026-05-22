@@ -1,7 +1,12 @@
-use dbsp::{DynZWeight, OrdWSet, OrdZSet, RootCircuit, Stream, ZWeight};
+use anyhow::{anyhow, Result};
+use dbsp::{
+    typed_batch::IndexedZSetReader, DynZWeight, OrdWSet, OrdZSet, RootCircuit, Stream, ZWeight,
+};
 
+use crate::codec::Decode;
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedRow, EncodedTriple};
+use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
@@ -26,6 +31,29 @@ pub(crate) fn query_row_stream(
     }
 
     stream
+}
+
+pub(crate) fn query_find_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    plan: IncrementalQueryPlan,
+) -> Stream<RootCircuit, RowZSet> {
+    let find_positions = positions(&plan.variables, &plan.find_vars);
+    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
+}
+
+pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+    batch
+        .iter()
+        .map(|(row, (), weight)| {
+            let decoded = row
+                .iter()
+                .map(|value| DataType::decode(value).map_err(anyhow::Error::from))
+                .collect::<Result<Vec<_>>>()?;
+            let weight = isize::try_from(weight)
+                .map_err(|_| anyhow!("DBSP weight {} does not fit in isize", weight))?;
+            Ok((decoded, weight))
+        })
+        .collect()
 }
 
 fn join_rows(
@@ -145,6 +173,13 @@ fn row_key(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
         .collect()
 }
 
+fn project_row(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
+    positions
+        .iter()
+        .map(|position| row[*position].clone())
+        .collect()
+}
+
 fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> EncodedRow {
     sources
         .iter()
@@ -157,10 +192,7 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
 
 #[cfg(test)]
 mod tests {
-    use dbsp::{
-        typed_batch::IndexedZSetReader, utils::Tup2, OrdZSet, OutputHandle, RootCircuit,
-        ZSetHandle, ZWeight,
-    };
+    use dbsp::{utils::Tup2, OrdZSet, OutputHandle, RootCircuit, ZSetHandle, ZWeight};
     use edn::query::ToVariable;
 
     use super::*;
@@ -183,6 +215,15 @@ mod tests {
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let rows = query_row_stream(&input, plan);
+        Ok((handle, rows.output()))
+    }
+
+    fn build_find_circuit(
+        circuit: &mut RootCircuit,
+        plan: IncrementalQueryPlan,
+    ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
+        let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
+        let rows = query_find_stream(&input, plan);
         Ok((handle, rows.output()))
     }
 
@@ -555,5 +596,71 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn projects_rows_to_find_order_and_decodes() {
+        let (circuit, (handle, output)) =
+            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+
+        append(
+            &handle,
+            [
+                (triple(42, 10, DataType::String("Alice".to_string())), 1),
+                (triple(42, 11, DataType::Long(30)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                1
+            )]
+        );
+    }
+
+    #[test]
+    fn preserves_negative_delta_weights() {
+        let (circuit, (handle, output)) =
+            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+
+        append(
+            &handle,
+            [
+                (triple(42, 10, DataType::String("Alice".to_string())), -1),
+                (triple(42, 11, DataType::Long(30)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                -1
+            )]
+        );
+    }
+
+    #[test]
+    fn empty_steps_decode_to_no_rows() {
+        let (circuit, (_handle, output)) =
+            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+
+        circuit.transaction().unwrap();
+
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn decode_errors_surface() {
+        let batch = RowZSet::from_keys((), vec![Tup2(vec![vec![0xff]], 1)]);
+        let err = decode_output_rows(&batch).unwrap_err();
+
+        assert!(err.to_string().contains("DecodeError"));
     }
 }
