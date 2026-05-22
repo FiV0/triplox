@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use bytes::Bytes;
 use dbsp::{typed_batch::IndexedZSetReader, utils::Tup2, OrdZSet, ZWeight};
 use log::error;
 use slatedb::object_store::ObjectStore;
@@ -169,7 +168,7 @@ where
         .await?;
 
     while let Some(kv) = iter.next().await? {
-        let (entity, attribute, value, tx_eid, op) = eav_key_to_parts(Bytes::from(kv.key))?;
+        let (entity, attribute, value, tx_eid, op) = eav_key_to_parts(kv.key)?;
         if tx_eid > as_of_tx_eid || !attributes.contains(&attribute) {
             continue;
         }

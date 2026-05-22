@@ -70,7 +70,6 @@ cargo clippy --workspace --all-targets --all-features
 
 ```text
 src/incremental.rs        -> Writer-node incremental query service, handles, state, and public crate-internal API
-src/incremental/plan.rs   -> Query subset validation and DBSP plan construction data
 src/incremental/circuit.rs -> DBSP circuit assembly and typed input/output handles
 src/incremental/cdc.rs    -> WAL CDC task, cursor tracking, and datom-to-circuit delta conversion
 src/inc_query.rs          -> Incremental-query AST helpers, subset validation, variable ordering, and pattern planning
@@ -144,9 +143,10 @@ Each registered query owns a DBSP circuit:
 1. Add one input Z-set stream of `EncodedTriple`.
 2. For each triple pattern, derive a stream from the input using filters for attribute and constants.
 3. Map each pattern stream from `EncodedTriple` into an `EncodedRow` in the variable layout chosen by the planner.
-4. Build a deterministic left-deep chain of binary indexed joins over `EncodedRow` values using `map_index()` and `join_index()`.
-5. Map the final `EncodedRow` into `:find` order.
-6. Attach an output handle to the final delta stream.
+4. Integrate the base input stream so later deltas can join with already-known facts.
+5. Build a deterministic left-deep chain of binary indexed joins over `EncodedRow` values using `map_index()` and `stream_join()`.
+6. Map the final `EncodedRow` into `:find` order, then differentiate the projected result stream so subscribers receive deltas.
+7. Attach an output handle to the final delta stream.
 
 The planner should be deterministic. Mirror the current one-shot query variable ordering semantics in `src/inc_query.rs`, including disconnected pattern groups as Cartesian products. Do not move or expose helpers from `src/query.rs`.
 
@@ -188,6 +188,8 @@ Meanings:
 Do not persist a separate `last_applied_seq` in v1. In the writer-node-only design, the single ordered CDC apply loop defines applied progress: after a CDC transaction has been appended to DBSP, stepped, and sent to subscriptions, it is applied. If future observability needs a "DBSP has caught up to WAL seq N" metric, add it as in-memory instrumentation rather than correctness state.
 
 For writer nodes, `last_indexed_basis` should normally be ahead of the WAL reader. Still, the service should only apply a CDC transaction after the corresponding write has reached memory indexes. In v1 this can be implemented by extracting the transaction entity datoms from the CDC transaction, deriving the `TxKey`, and using the existing `TxWaiter::await_indexed()` path before circuit application. If the tx entity cannot be derived, apply the CDC transaction but mark its output basis as sequence-only and keep this as a test-covered fallback.
+
+The writer-node implementation polls WAL availability with short-lived `CdcStream`s from the last processed sequence. This is intentionally more I/O than a permanently blocked stream, but it handles SlateDB setups where additional rows can become visible under the current WAL id. It still uses `CdcStream::next_transaction()` for transaction grouping and advances the in-memory cursor only after DBSP stepping and subscription delivery succeed.
 
 Applying one CDC transaction:
 

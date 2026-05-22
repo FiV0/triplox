@@ -116,11 +116,11 @@ dbsp dependency and module scaffolding
 
 ### Checkpoint: Foundation
 
-- [ ] `cargo fmt --check`
-- [ ] `cargo check -p triplox`
-- [ ] `cargo test -p triplox incremental`
-- [ ] `cargo test -p triplox inc_query`
-- [ ] Review the DBSP trait bounds before moving into circuit construction.
+- [x] `cargo fmt --check`
+- [x] `cargo check -p triplox`
+- [x] `cargo test -p triplox incremental`
+- [x] `cargo test -p triplox inc_query`
+- [x] Review the DBSP trait bounds before moving into circuit construction.
 
 ### Phase 2: DBSP Circuit
 
@@ -191,10 +191,10 @@ dbsp dependency and module scaffolding
 
 ### Checkpoint: Circuit
 
-- [ ] All circuit tests pass.
-- [ ] Integrated circuit outputs match expected rows for in-memory datom sequences.
-- [ ] `cargo fmt --check`
-- [ ] `cargo check -p triplox`
+- [x] All circuit tests pass.
+- [x] Integrated circuit outputs match expected rows for in-memory datom sequences.
+- [x] `cargo fmt --check`
+- [x] `cargo check -p triplox`
 
 ### Phase 3: Writer-Node Service
 
@@ -274,12 +274,12 @@ dbsp dependency and module scaffolding
 
 ### Checkpoint: Writer Node
 
-- [ ] Registration returns future deltas only.
-- [ ] Unregistration stops delivery and releases service state.
-- [ ] CDC cursor state advances monotonically in tests.
-- [ ] `cargo fmt --check`
-- [ ] `cargo test -p triplox incremental`
-- [ ] `cargo test -p triplox slate::cdc`
+- [x] Registration returns future deltas only.
+- [x] Unregistration stops delivery and releases service state.
+- [x] CDC cursor state advances monotonically in tests.
+- [x] `cargo fmt --check`
+- [x] `cargo test -p triplox incremental`
+- [x] `cargo test -p triplox slate::cdc`
 
 ### Phase 4: Equivalence and Hardening
 
@@ -329,15 +329,15 @@ dbsp dependency and module scaffolding
 **Description:** Tighten errors, remove temporary scaffolding, update the design doc if implementation discovers a necessary deviation, and run the full workspace verification required by the repository.
 
 **Acceptance criteria:**
-- [ ] Unsupported query errors are clear and stable enough for tests.
-- [ ] The design doc and implementation agree on API names, state, and semantics.
-- [ ] No public client or protocol API has been added.
-- [ ] `src/query.rs` remains untouched by this feature.
+- [x] Unsupported query errors are clear and stable enough for tests.
+- [x] The design doc and implementation agree on API names, state, and semantics.
+- [x] No public client or protocol API has been added.
+- [x] `src/query.rs` remains untouched by this feature.
 
 **Verification:**
-- [ ] `cargo fmt --check`
-- [ ] `cargo test --workspace`
-- [ ] `cargo clippy --workspace --all-targets --all-features`
+- [x] `cargo fmt --check`
+- [x] `cargo test --workspace`
+- [x] `cargo clippy --workspace --all-targets --all-features`
 
 **Dependencies:** Task 11
 
@@ -349,11 +349,11 @@ dbsp dependency and module scaffolding
 
 ### Checkpoint: Complete
 
-- [ ] Writer nodes can register and unregister supported incremental queries.
-- [ ] Initial state is primed but not emitted as live deltas.
-- [ ] Future SlateDB CDC transactions produce exact per-transaction deltas.
-- [ ] Integrated deltas match the standard one-shot query engine, including disconnected Cartesian products.
-- [ ] Full workspace tests and clippy pass.
+- [x] Writer nodes can register and unregister supported incremental queries.
+- [x] Initial state is primed but not emitted as live deltas.
+- [x] Future SlateDB CDC transactions produce exact per-transaction deltas.
+- [x] Integrated deltas match the standard one-shot query engine, including disconnected Cartesian products.
+- [x] Full workspace tests and clippy pass.
 
 ## Parallelization Opportunities
 
