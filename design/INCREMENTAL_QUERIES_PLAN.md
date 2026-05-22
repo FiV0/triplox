@@ -49,17 +49,18 @@ dbsp dependency and module scaffolding
 **Description:** Add the `dbsp` dependency and introduce the incremental-query module boundary without changing runtime behavior. This should prove the selected crate version compiles with the workspace before any feature logic is built on it.
 
 **Acceptance criteria:**
-- [ ] `Cargo.toml` includes `dbsp = "0.299.0"` for the `triplox` crate.
-- [ ] `src/lib.rs` declares `mod inc_query;` and an incremental service module, either `mod incremental;` or `mod incremental { ... }` through files.
-- [ ] No existing query behavior changes.
+- [x] `Cargo.toml` includes `dbsp = "0.299.0"` for the `triplox` crate.
+- [x] `src/lib.rs` declares `mod inc_query;` and an incremental service module, either `mod incremental;` or `mod incremental { ... }` through files.
+- [x] No existing query behavior changes.
 
 **Verification:**
-- [ ] `cargo check -p triplox`
-- [ ] `cargo fmt --check`
+- [x] `cargo check -p triplox`
+- [x] `cargo fmt --check`
 
 **Dependencies:** None
 
 **Files likely touched:**
+- `.cargo/config.toml`
 - `Cargo.toml`
 - `Cargo.lock`
 - `src/lib.rs`
