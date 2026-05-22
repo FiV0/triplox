@@ -73,18 +73,20 @@ dbsp dependency and module scaffolding
 **Description:** Define the encoded input and row types used by DBSP and implement conversion from one transaction's CDC datoms into a weighted `OrdZSet<EncodedTriple>` input batch.
 
 **Acceptance criteria:**
-- [ ] `type EncodedValue = Vec<u8>` and `type EncodedRow = Vec<EncodedValue>` exist in the incremental module boundary.
-- [ ] `EncodedTriple` derives the ordering and hashing traits required for DBSP Z-set keys.
-- [ ] `datoms_to_zset(datoms, schema)` encodes entity as `DataType::Long(entity)`, resolves attributes to entids, and maps assert/retract weights correctly.
-- [ ] Duplicate triples in one transaction consolidate through the chosen Z-set representation.
+- [x] `type EncodedValue = Vec<u8>` and `type EncodedRow = Vec<EncodedValue>` exist in the incremental module boundary.
+- [x] `EncodedTriple` derives the ordering and hashing traits required for DBSP Z-set keys.
+- [x] `datoms_to_zset(datoms, schema)` encodes entity as `DataType::Long(entity)`, resolves attributes to entids, and maps assert/retract weights correctly.
+- [x] Duplicate triples in one transaction consolidate through the chosen Z-set representation.
 
 **Verification:**
-- [ ] Unit tests for assert, retract, unknown attribute, and duplicate consolidation.
-- [ ] `cargo test -p triplox incremental`
+- [x] Unit tests for assert, retract, unknown attribute, and duplicate consolidation.
+- [x] `cargo test -p triplox incremental`
 
 **Dependencies:** Task 1
 
 **Files likely touched:**
+- `Cargo.toml`
+- `Cargo.lock`
 - `src/incremental.rs`
 - `src/incremental/cdc.rs`
 
