@@ -132,7 +132,6 @@ Always supported in v1:
 Rejected in v1:
 
 - Variable or placeholder attribute positions.
-- Disconnected pattern groups; v1 does not support Cartesian products.
 - Repeated variables inside one triple pattern.
 - `OrJoin`, `NotJoin`, `Pred`, `WhereFn`, rules, aggregates, order, limit, and non-relational find specs.
 - `:in` bindings and query args.
@@ -149,7 +148,7 @@ Each registered query owns a DBSP circuit:
 5. Map the final `EncodedRow` into `:find` order.
 6. Attach an output handle to the final delta stream.
 
-The planner should be deterministic. Mirror the current one-shot query variable ordering semantics in `src/inc_query.rs` for connected query plans; reject disconnected plans rather than adding Cartesian-product support. Do not move or expose helpers from `src/query.rs`.
+The planner should be deterministic. Mirror the current one-shot query variable ordering semantics in `src/inc_query.rs`, including disconnected pattern groups as Cartesian products. Do not move or expose helpers from `src/query.rs`.
 
 ## Initialization
 
@@ -281,7 +280,7 @@ Unit tests:
 - Planner rejects unsupported query forms with stable error messages.
 - Planner accepts single-pattern and multi-pattern fixed-attribute queries.
 - Datom-batch-to-Z-set conversion maps assert/retract to `+1`/`-1` and consolidates duplicate triples.
-- Repeated variable patterns are rejected or equality-filtered, depending on implementation choice.
+- Repeated variable patterns are rejected during registration validation.
 
 Circuit tests:
 
@@ -289,7 +288,7 @@ Circuit tests:
 - Two-pattern join on entity.
 - Join through ref value, where one pattern's value equals another pattern's entity.
 - Three-pattern chain.
-- Disconnected patterns are rejected during registration.
+- Cartesian product when patterns share no variables.
 - Constant entity/value filtering.
 
 Writer-node CDC tests:
@@ -331,7 +330,7 @@ Equivalence tests:
 ## Resolved Decisions
 
 1. Registration returns only future deltas after the registration basis. Initial snapshot delivery can be added later as an explicit option.
-2. V1 rejects disconnected pattern groups instead of supporting Cartesian products.
+2. V1 supports disconnected pattern groups as Cartesian products, matching the standard query engine.
 3. V1 does not persist `last_applied_seq`; applied progress is implicit in the ordered CDC apply loop and can become in-memory instrumentation later if useful.
 4. The CDC task relies on normal SlateDB WAL-file availability and does not force WAL flushes after writer-node commits.
 5. Repeated variables inside one triple pattern are rejected by registration validation.
