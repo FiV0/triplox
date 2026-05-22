@@ -57,11 +57,12 @@ public final class WireCodec {
     }
 
     /**
-     * {@code POST /db/{id}/query} body: {@code {"query": str, "args": [QueryArg, ...]}}.
+     * {@code POST /db/query} body: {@code {"db": TxBasis, "query": str, "args": [QueryArg, ...]}}.
      */
-    public static byte[] encodeQueryBody(String query, List<QueryArg> args) throws IOException {
+    public static byte[] encodeQueryBody(TxBasis basis, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(2);
+            packer.packMapHeader(3);
+            packer.packString("db"); packTxBasis(packer, basis);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -85,15 +86,10 @@ public final class WireCodec {
 
     public static BackendMessage.DbOpened decodeDbOpened(byte[] body) throws IOException {
         var fields = readFields(body);
-        long dbId = expectLong(fields, "db_id");
+        long txId = expectLong(fields, "tx_id");
+        Instant systemTime = expectInstant(fields, "system_time");
         long txEid = expectLong(fields, "tx_eid");
-        return new BackendMessage.DbOpened(toInt(dbId), txEid);
-    }
-
-    public static BackendMessage.DbClosed decodeDbClosed(byte[] body) throws IOException {
-        var fields = readFields(body);
-        long dbId = expectLong(fields, "db_id");
-        return new BackendMessage.DbClosed(toInt(dbId));
+        return new BackendMessage.DbOpened(txId, systemTime, txEid);
     }
 
     public static QueryResult decodeQueryResponse(byte[] body) throws IOException {
@@ -189,6 +185,13 @@ public final class WireCodec {
     // ---------------------------------------------------------------
     // Field-map helpers
     // ---------------------------------------------------------------
+
+    private static void packTxBasis(MessagePacker packer, TxBasis basis) throws IOException {
+        packer.packMapHeader(3);
+        packer.packString("tx_id"); packer.packLong(basis.txId());
+        packer.packString("system_time"); packer.packTimestamp(basis.systemTime());
+        packer.packString("tx_eid"); packer.packLong(basis.txEid());
+    }
 
     private static Map<String, Object> readFields(byte[] body) throws IOException {
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {

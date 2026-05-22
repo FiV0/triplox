@@ -86,8 +86,6 @@ pub enum ErrorCode {
     InvalidMessageType = 4002,
     QueryCancelled = 4003,
     ServerShuttingDown = 4004,
-    // DB handle errors (5xxx)
-    InvalidDbHandle = 5000,
 }
 
 impl ErrorCode {
@@ -107,7 +105,6 @@ impl ErrorCode {
             4002 => Ok(ErrorCode::InvalidMessageType),
             4003 => Ok(ErrorCode::QueryCancelled),
             4004 => Ok(ErrorCode::ServerShuttingDown),
-            5000 => Ok(ErrorCode::InvalidDbHandle),
             _ => bail!("Unknown error code: {}", code),
         }
     }

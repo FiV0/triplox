@@ -70,8 +70,6 @@ async fn test_execute_tx_and_query() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -110,8 +108,6 @@ async fn test_execute_tx_with_string_ops() {
         rows,
         vec![("Alice".to_string(), 30), ("Bob".to_string(), 42)]
     );
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -168,13 +164,11 @@ async fn test_multiple_transactions_and_query() {
     assert_eq!(result.len(), 2);
     assert!(result.contains(&vec![DataType::String("alice".to_string())]));
     assert!(result.contains(&vec![DataType::String("bob".to_string())]));
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_open_close_multiple_dbs() {
+async fn test_multiple_stateless_dbs_for_same_basis() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
@@ -193,13 +187,13 @@ async fn test_open_close_multiple_dbs() {
         _ => panic!("Expected TxCommited"),
     };
 
-    // Open two DB handles for the same basis.
+    // Open two DB values for the same basis.
     let db1 = client.db_as_of(basis).await.unwrap();
     let db2 = client.db_as_of(basis).await.unwrap();
-    assert_eq!(db1.tx_eid(), basis.tx_eid);
-    assert_eq!(db2.tx_eid(), basis.tx_eid);
+    assert_eq!(db1.tx_basis().tx_eid, basis.tx_eid);
+    assert_eq!(db2.tx_basis().tx_eid, basis.tx_eid);
 
-    // Both should return same data
+    // Both should return the same data independently.
     let r1 = db1
         .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
         .await
@@ -210,15 +204,12 @@ async fn test_open_close_multiple_dbs() {
         .unwrap();
     assert_eq!(r1.len(), 1);
     assert_eq!(r2.len(), 1);
-
-    db1.close().await.unwrap();
-    let r2_after_close = db2
+    drop(db1);
+    let r2_after_drop = db2
         .query(r#"{:find [?e] :where [[?e :name "alice"]]}"#)
         .await
         .unwrap();
-    assert_eq!(r2_after_close.len(), 1);
-
-    db2.close().await.unwrap();
+    assert_eq!(r2_after_drop.len(), 1);
     token.cancel();
 }
 
@@ -246,8 +237,6 @@ async fn test_two_connections() {
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -312,7 +301,7 @@ async fn test_db_as_of() {
 
     // Open DB pinned to the first transaction basis — should only see alice
     let db = client.db_as_of(basis1).await.unwrap();
-    assert_eq!(db.tx_eid(), basis1.tx_eid);
+    assert_eq!(db.tx_basis().tx_eid, basis1.tx_eid);
     let result = db
         .query("{:find [?name] :where [[?e :name ?name]]}")
         .await
@@ -320,13 +309,11 @@ async fn test_db_as_of() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_open_latest_db_handle_stays_pinned_after_later_tx() {
+async fn test_open_latest_db_value_stays_pinned_after_later_tx() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
@@ -345,7 +332,7 @@ async fn test_open_latest_db_handle_stays_pinned_after_later_tx() {
     };
 
     let db = client.db().await.unwrap();
-    assert_eq!(db.tx_eid(), basis1.tx_eid);
+    assert_eq!(db.tx_basis().tx_eid, basis1.tx_eid);
 
     client
         .execute_tx(vec![TxOp::Add {
@@ -363,8 +350,6 @@ async fn test_open_latest_db_handle_stays_pinned_after_later_tx() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -422,9 +407,6 @@ async fn test_dev_server_connections_are_isolated() {
         .await
         .unwrap();
     assert_eq!(result2.len(), 0, "client2 should not see client1's data");
-
-    db1.close().await.unwrap();
-    db2.close().await.unwrap();
     token.cancel();
 }
 
@@ -497,8 +479,6 @@ async fn test_query_keyword_value_comparison_via_wire() {
     );
     assert!(result.contains(&vec![DataType::String("Ivan".to_string())]));
     assert!(result.contains(&vec![DataType::String("Petr".to_string())]));
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -569,8 +549,6 @@ async fn test_aggregates_and_or() {
         DataType::Long(1),
         DataType::Long(21),
     ]));
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -599,8 +577,6 @@ async fn test_aggregate_set_semantics() {
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(3)]]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -637,8 +613,6 @@ async fn test_datascript_aggregates() {
     assert_eq!(row[2], DataType::Long(3), "max");
     assert_eq!(row[3], DataType::Long(4), "count");
     assert_eq!(row[4], DataType::Long(2), "count-distinct");
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -666,8 +640,6 @@ async fn test_aggregate_avg() {
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Double(22.0)]]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -697,8 +669,6 @@ async fn test_aggregate_min_max_strings() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0][0], DataType::String("Alice".to_string()));
     assert_eq!(result[0][1], DataType::String("Charlie".to_string()));
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -716,8 +686,6 @@ async fn test_aggregate_empty_result() {
         .await
         .unwrap();
     assert_eq!(result, vec![vec![DataType::Long(0)]]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -805,8 +773,6 @@ async fn test_order_and_limit() {
         result[4],
         vec![DataType::String("Eve".to_string()), DataType::Long(50)]
     );
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -832,8 +798,6 @@ async fn test_aggregate_min_incompatible_types() {
         .query("{:find [(min ?v)] :where [(or [?e :name ?v] [?e :age ?v])]}")
         .await;
     assert!(result.is_err(), "min over incompatible types should error");
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -860,7 +824,6 @@ async fn test_join_ref_with_plain_long() {
         DataType::Long(id) => *id,
         other => panic!("Expected Long entity ID, got {:?}", other),
     };
-    db.close().await.unwrap();
 
     // Insert Alice with :follows pointing to Bob's entity id
     client
@@ -880,8 +843,6 @@ async fn test_join_ref_with_plain_long() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("Bob".to_string())]);
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -911,7 +872,6 @@ async fn test_upsert_with_resolved_entity_id() {
         DataType::Long(id) => *id,
         other => panic!("Expected Long entity ID, got {:?}", other),
     };
-    db.close().await.unwrap();
 
     // Upsert: update age using the discovered entity ID
     client
@@ -934,8 +894,6 @@ async fn test_upsert_with_resolved_entity_id() {
         result[0],
         vec![DataType::String("alice".to_string()), DataType::Long(31)]
     );
-
-    db.close().await.unwrap();
     token.cancel();
 }
 
@@ -980,7 +938,5 @@ async fn test_year_and_month_extraction() {
         .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::Long(6)]);
-
-    db.close().await.unwrap();
     token.cancel();
 }

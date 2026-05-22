@@ -27,9 +27,9 @@
 
 
 
-;; 3. Open a DB handle and query
-(with-open [db (tc/db conn)]
-  (tc/q db '{:find [?e ?name ?age]
-             :where [[?e :name ?name]
-                     [?e :age ?age]]}))
+;; 3. Open a DB value and query
+(def db (tc/db conn))
+(tc/q db '{:find [?e ?name ?age]
+           :where [[?e :name ?name]
+                   [?e :age ?age]]})
 ;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]

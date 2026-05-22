@@ -4,24 +4,21 @@ import java.io.IOException;
 import java.util.List;
 
 /**
- * Handle to an open DB read basis on the server.
+ * Immutable DB read basis.
  *
- * <p>Obtained via {@link TriploxNode#openDb()}. Provides query execution
- * and must be closed when no longer needed to release server resources.</p>
+ * <p>Obtained via {@link TriploxNode#openDb()}. Provides query execution.</p>
  */
-public class Db implements AutoCloseable {
+public class Db {
     private final TriploxNode node;
-    private final int dbId;
-    private final long txEid;
+    private final TxBasis basis;
 
-    Db(TriploxNode node, int dbId, long txEid) {
+    Db(TriploxNode node, TxBasis basis) {
         this.node = node;
-        this.dbId = dbId;
-        this.txEid = txEid;
+        this.basis = basis;
     }
 
-    int dbId() { return dbId; }
-    public long txEid() { return txEid; }
+    public TxBasis basis() { return basis; }
+    public long txEid() { return basis.txEid(); }
 
     /**
      * Execute a Datalog query against this DB read basis.
@@ -35,13 +32,5 @@ public class Db implements AutoCloseable {
      */
     public List<List<Object>> query(String edn, List<QueryArg> args) throws IOException {
         return node.queryInternal(this, edn, args).rows();
-    }
-
-    /**
-     * Release this DB handle on the server.
-     */
-    @Override
-    public void close() throws IOException {
-        node.closeDbInternal(this);
     }
 }

@@ -3,27 +3,24 @@
 //! Replaces the custom TCP wire protocol with HTTP/2 transport while keeping
 //! the same binary payload encoding. Each operation maps to an HTTP endpoint:
 //!
-//! - `POST /db/open`           — Open a DB read handle
-//! - `DELETE /db/{db_id}`      — Release a DB read handle
-//! - `POST /db/{db_id}/query`  — Execute a Datalog query
+//! - `POST /db/open`           — Open a DB read basis
+//! - `POST /db/query`          — Execute a Datalog query
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Error, Result};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, post};
+use axum::routing::post;
 use axum::Router;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -37,90 +34,14 @@ use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request,
-    encode_db_closed_response, encode_db_opened_response, encode_error_body, encode_query_response,
-    encode_tx_key_response, encode_tx_result_response, DbClosedResponse, DbOpenedResponse,
-    ErrorResponseBody, QueryResponse, TxKeyResponse, TxResultResponse,
+    encode_db_opened_response, encode_error_body, encode_query_response, encode_tx_key_response,
+    encode_tx_result_response, DbOpenedResponse, ErrorResponseBody, QueryResponse, TxKeyResponse,
+    TxResultResponse,
 };
 use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
 };
 use triplox_client::transaction::{TxBasis, TxKey};
-
-// ---------------------------------------------------------------------------
-// Handle Store
-// ---------------------------------------------------------------------------
-
-struct HandleEntry {
-    conn_id: u64,
-    basis: TxBasis,
-    last_used: Instant,
-}
-
-struct HandleStore {
-    handles: RwLock<HashMap<u32, HandleEntry>>,
-    next_id: AtomicU32,
-}
-
-impl HandleStore {
-    fn new() -> Self {
-        HandleStore {
-            handles: RwLock::new(HashMap::new()),
-            next_id: AtomicU32::new(1),
-        }
-    }
-
-    /// Allocate a DB read handle for a transaction basis.
-    async fn open(&self, conn_id: u64, basis: TxBasis) -> Result<u32> {
-        let db_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut handles = self.handles.write().await;
-        handles.insert(
-            db_id,
-            HandleEntry {
-                conn_id,
-                basis,
-                last_used: Instant::now(),
-            },
-        );
-        Ok(db_id)
-    }
-
-    // TODO(P1): Validate conn_id in get_db/remove so global db_ids cannot cross connection boundaries.
-    async fn get_basis(&self, db_id: u32) -> Option<TxBasis> {
-        let mut handles = self.handles.write().await;
-        if let Some(entry) = handles.get_mut(&db_id) {
-            entry.last_used = Instant::now();
-            Some(entry.basis)
-        } else {
-            None
-        }
-    }
-
-    /// Remove a handle. Returns true if the handle existed.
-    async fn remove(&self, db_id: u32) -> bool {
-        self.handles.write().await.remove(&db_id).is_some()
-    }
-
-    /// Remove all handles belonging to a connection.
-    async fn remove_by_conn(&self, conn_id: u64) {
-        let mut handles = self.handles.write().await;
-        handles.retain(|_, entry| entry.conn_id != conn_id);
-    }
-
-    /// Remove handles idle for longer than `ttl`.
-    async fn reap_expired(&self, ttl: Duration) {
-        let mut handles = self.handles.write().await;
-        let now = Instant::now();
-        handles.retain(|_, entry| now.duration_since(entry.last_used) <= ttl);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Connection ID middleware
-// ---------------------------------------------------------------------------
-
-/// Extension inserted into each request to identify its HTTP/2 connection.
-#[derive(Clone, Copy)]
-struct ConnId(u64);
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -202,7 +123,6 @@ impl IntoResponse for ApiError {
 
 async fn open_db<L: TxLog + 'static>(
     State(state): State<Arc<Server<L>>>,
-    axum::Extension(conn_id): axum::Extension<ConnId>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let open_request = decode_open_db_request(&body).map_err(|e| {
@@ -212,7 +132,7 @@ async fn open_db<L: TxLog + 'static>(
         )
     })?;
 
-    let (db_id, tx_eid) = match (
+    let basis = match (
         open_request.tx_id,
         open_request.system_time,
         open_request.tx_eid,
@@ -223,13 +143,7 @@ async fn open_db<L: TxLog + 'static>(
                 .db()
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            let basis = *db.tx_basis();
-            let db_id = state
-                .handle_store
-                .open(conn_id.0, basis)
-                .await
-                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            (db_id, basis.tx_eid)
+            *db.tx_basis()
         }
         (Some(tid), Some(system_time), Some(tx_eid)) => {
             let basis = TxBasis {
@@ -240,12 +154,7 @@ async fn open_db<L: TxLog + 'static>(
                 tx_eid,
             };
             state.node.db_as_of(basis).await.map_err(open_db_error)?;
-            let db_id = state
-                .handle_store
-                .open(conn_id.0, basis)
-                .await
-                .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            (db_id, tx_eid)
+            basis
         }
         _ => {
             return Err(ApiError::bad_request(
@@ -255,50 +164,30 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    let body = encode_db_opened_response(&DbOpenedResponse { db_id, tx_eid })
-        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    let body = encode_db_opened_response(&DbOpenedResponse {
+        tx_id: basis.tx_key.tx_id,
+        system_time: basis.tx_key.system_time,
+        tx_eid: basis.tx_eid,
+    })
+    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
-}
-
-async fn close_db<L: TxLog + 'static>(
-    State(state): State<Arc<Server<L>>>,
-    Path(db_id): Path<u32>,
-) -> Result<Response, ApiError> {
-    if state.handle_store.remove(db_id).await {
-        let body = encode_db_closed_response(&DbClosedResponse { db_id })
-            .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-        Ok(ok_response(body))
-    } else {
-        Err(ApiError::not_found(
-            ErrorCode::InvalidDbHandle,
-            format!("Invalid DB handle: {}", db_id),
-        ))
-    }
 }
 
 async fn query<L: TxLog + 'static>(
     State(state): State<Arc<Server<L>>>,
-    Path(db_id): Path<u32>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let basis = state.handle_store.get_basis(db_id).await.ok_or_else(|| {
-        ApiError::not_found(
-            ErrorCode::InvalidDbHandle,
-            format!("Invalid DB handle: {}", db_id),
-        )
-    })?;
-    let db = state
-        .node
-        .db_as_of(basis)
-        .await
-        .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
-
     let query_request = decode_query_request(&body).map_err(|e| {
         ApiError::bad_request(
             ErrorCode::ParseError,
             format!("Invalid query request: {}", e),
         )
     })?;
+    let db = state
+        .node
+        .db_as_of(query_request.db)
+        .await
+        .map_err(open_db_error)?;
 
     let parsed = query_request
         .query
@@ -403,8 +292,7 @@ async fn execute_tx<L: TxLog + 'static>(
 fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
     Router::new()
         .route("/db/open", post(open_db::<L>))
-        .route("/db/{db_id}", delete(close_db::<L>))
-        .route("/db/{db_id}/query", post(query::<L>))
+        .route("/db/query", post(query::<L>))
         .route("/tx/submit", post(submit_tx::<L>))
         .route("/tx/execute", post(execute_tx::<L>))
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_MESSAGE_SIZE as usize))
@@ -413,13 +301,11 @@ fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
 
 pub struct Server<L: TxLog> {
     node: Arc<Node<L>>,
-    handle_store: Arc<HandleStore>,
 }
 
 impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>) -> Self {
-        let handle_store = Arc::new(HandleStore::new());
-        Server { node, handle_store }
+        Server { node }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -428,36 +314,18 @@ impl<L: TxLog + 'static> Server<L> {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
-        let reaper_handle_store = self.handle_store.clone();
-        let reaper_token = token.clone();
-        tokio::spawn(async move {
-            let ttl = Duration::from_secs(86400); // 24 hours
-            let mut interval = tokio::time::interval(Duration::from_secs(300));
-            loop {
-                tokio::select! {
-                    _ = reaper_token.cancelled() => break,
-                    _ = interval.tick() => reaper_handle_store.reap_expired(ttl).await,
-                }
-            }
-        });
-
         let app_state = Arc::new(Server {
             node: self.node.clone(),
-            handle_store: self.handle_store.clone(),
         });
-        let handle_store = self.handle_store.clone();
 
         accept_loop(
             listener,
             token,
             "HTTP",
             move |stream, _peer, conn_id, conn_token, join_set| {
-                let router =
-                    build_router(app_state.clone()).layer(axum::Extension(ConnId(conn_id)));
-                let handle_store = handle_store.clone();
+                let router = build_router(app_state.clone());
                 join_set.spawn(async move {
                     serve_connection(stream, router, conn_id, conn_token, "HTTP").await;
-                    handle_store.remove_by_conn(conn_id).await;
                     info!("HTTP connection {} closed", conn_id);
                 });
             },
@@ -496,17 +364,12 @@ impl DevServer {
             move |stream, _peer, conn_id, conn_token, join_set| {
                 join_set.spawn(async move {
                     let node = Arc::new(Node::memory_node().await);
-                    let handle_store = Arc::new(HandleStore::new());
 
-                    let app_state = Arc::new(Server {
-                        node: node.clone(),
-                        handle_store: handle_store.clone(),
-                    });
-                    let router = build_router(app_state).layer(axum::Extension(ConnId(conn_id)));
+                    let app_state = Arc::new(Server { node: node.clone() });
+                    let router = build_router(app_state);
 
                     serve_connection(stream, router, conn_id, conn_token, "Dev HTTP").await;
 
-                    handle_store.remove_by_conn(conn_id).await;
                     let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
                         panic!("dev node Arc should have refcount 1 after connection close")
                     });

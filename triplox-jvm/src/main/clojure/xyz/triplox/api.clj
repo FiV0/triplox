@@ -10,7 +10,7 @@
   (TriploxNode/connect host (int port)))
 
 (defn db
-  "Open a DB handle. Returns a Db (AutoCloseable)."
+  "Open a DB value. Returns a Db."
   (^Db [conn]
    (db conn nil))
   (^Db [conn {:keys [tx-basis] :as _opts}]

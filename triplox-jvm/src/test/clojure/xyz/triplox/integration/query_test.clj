@@ -34,17 +34,17 @@
 (use-fixtures :each with-conn with-people-schema)
 
 (defn q
-  "Open a DB, run query, close DB, return results as a set.
+  "Open a DB, run query, return results as a set.
   Additional arguments bind `:in` variables as scalars."
   [query-edn & args]
-  (with-open [db (tc/db *conn*)]
+  (let [db (tc/db *conn*)]
     (set (apply tc/q db query-edn args))))
 
 (defn q-ordered
-  "Open a DB, run query, close DB, return results as a vector (preserves order)."
+  "Open a DB, run query, return results as a vector (preserves order)."
   ([query-edn] (q-ordered *conn* query-edn))
   ([conn query-edn]
-   (with-open [db (tc/db conn)]
+   (let [db (tc/db conn)]
      (vec (tc/q db query-edn)))))
 
 ;; ---------------------------------------------------------------------------

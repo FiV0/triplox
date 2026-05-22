@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::ops::{DataType, EntityRef, QueryArg, TxOp};
 use crate::protocol::ColumnDescription;
+use crate::transaction::{TxBasis, TxKey};
 
 // =============================================================================
 // Ext type codes
@@ -640,17 +641,14 @@ pub struct OpenDbRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DbOpenedResponse {
-    pub db_id: u32,
+    pub tx_id: i64,
+    pub system_time: DateTime<Utc>,
     pub tx_eid: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DbClosedResponse {
-    pub db_id: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct QueryRequest {
+    pub db: TxBasis,
     pub query: String,
     pub args: Vec<QueryArg>,
 }
@@ -715,12 +713,14 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     })
 }
 
-/// Encode a DbOpened response: `{"db_id": int, "tx_eid": int}`.
+/// Encode a DbOpened response: `{"tx_id": int, "system_time": Timestamp, "tx_eid": int}`.
 pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2)?;
-    rmp::encode::write_str(&mut buf, "db_id")?;
-    rmp::encode::write_uint(&mut buf, resp.db_id as u64)?;
+    rmp::encode::write_map_len(&mut buf, 3)?;
+    rmp::encode::write_str(&mut buf, "tx_id")?;
+    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
+    rmp::encode::write_str(&mut buf, "system_time")?;
+    write_timestamp(&mut buf, &resp.system_time)?;
     rmp::encode::write_str(&mut buf, "tx_eid")?;
     rmp::encode::write_sint(&mut buf, resp.tx_eid)?;
     Ok(buf)
@@ -728,41 +728,44 @@ pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
 
 pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
-    let db_id = take_i64(&mut map, "db_id")?;
+    let tx_id = take_i64(&mut map, "tx_id")?;
+    let system_time = take_timestamp(&mut map, "system_time")?;
     let tx_eid = take_i64(&mut map, "tx_eid")?;
-    if db_id < 0 || db_id > u32::MAX as i64 {
-        bail!("db_id out of u32 range: {db_id}");
-    }
     Ok(DbOpenedResponse {
-        db_id: db_id as u32,
+        tx_id,
+        system_time,
         tx_eid,
     })
 }
 
-/// Encode a DbClosed response: `{"db_id": int}`.
-pub fn encode_db_closed_response(resp: &DbClosedResponse) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 1)?;
-    rmp::encode::write_str(&mut buf, "db_id")?;
-    rmp::encode::write_uint(&mut buf, resp.db_id as u64)?;
-    Ok(buf)
+fn write_tx_basis<W: Write>(w: &mut W, basis: &TxBasis) -> Result<()> {
+    rmp::encode::write_map_len(w, 3)?;
+    rmp::encode::write_str(w, "tx_id")?;
+    rmp::encode::write_sint(w, basis.tx_key.tx_id)?;
+    rmp::encode::write_str(w, "system_time")?;
+    write_timestamp(w, &basis.tx_key.system_time)?;
+    rmp::encode::write_str(w, "tx_eid")?;
+    rmp::encode::write_sint(w, basis.tx_eid)?;
+    Ok(())
 }
 
-pub fn decode_db_closed_response(data: &[u8]) -> Result<DbClosedResponse> {
-    let mut map = map_from_value(read_body_value(data)?)?;
-    let db_id = take_i64(&mut map, "db_id")?;
-    if db_id < 0 || db_id > u32::MAX as i64 {
-        bail!("db_id out of u32 range: {db_id}");
-    }
-    Ok(DbClosedResponse {
-        db_id: db_id as u32,
+fn tx_basis_from_value(value: Value) -> Result<TxBasis> {
+    let mut map = map_from_value(value)?;
+    Ok(TxBasis {
+        tx_key: TxKey {
+            tx_id: take_i64(&mut map, "tx_id")?,
+            system_time: take_timestamp(&mut map, "system_time")?,
+        },
+        tx_eid: take_i64(&mut map, "tx_eid")?,
     })
 }
 
-/// Encode a Query request: `{"query": str, "args": [QueryArg, ...]}`.
+/// Encode a Query request: `{"db": TxBasis, "query": str, "args": [QueryArg, ...]}`.
 pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2)?;
+    rmp::encode::write_map_len(&mut buf, 3)?;
+    rmp::encode::write_str(&mut buf, "db")?;
+    write_tx_basis(&mut buf, &req.db)?;
     rmp::encode::write_str(&mut buf, "query")?;
     rmp::encode::write_str(&mut buf, &req.query)?;
     rmp::encode::write_str(&mut buf, "args")?;
@@ -775,6 +778,7 @@ pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
 
 pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
+    let db = tx_basis_from_value(take_field(&mut map, "db")?)?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
         Value::Array(arr) => arr,
@@ -784,7 +788,7 @@ pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     for item in arr {
         args.push(query_arg_from_value(item)?);
     }
-    Ok(QueryRequest { query, args })
+    Ok(QueryRequest { db, query, args })
 }
 
 /// Encode a query response: `{"columns": [...], "rows": [[...], ...]}`.
@@ -1285,8 +1289,10 @@ mod tests {
 
     #[test]
     fn round_trip_db_opened_response_body() {
+        let system_time = Utc.timestamp_opt(1_700_000_001, 0).unwrap();
         let response = DbOpenedResponse {
-            db_id: 7,
+            tx_id: 7,
+            system_time,
             tx_eid: 12345,
         };
         let buf = encode_db_opened_response(&response).unwrap();
@@ -1294,15 +1300,15 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_db_closed_response_body() {
-        let response = DbClosedResponse { db_id: 11 };
-        let buf = encode_db_closed_response(&response).unwrap();
-        assert_eq!(decode_db_closed_response(&buf).unwrap(), response);
-    }
-
-    #[test]
     fn round_trip_query_request_body() {
         let q = "{:find [?n] :where [[?e :name ?n]]}";
+        let db = TxBasis {
+            tx_key: TxKey {
+                tx_id: 42,
+                system_time: Utc.timestamp_opt(1_700_000_002, 0).unwrap(),
+            },
+            tx_eid: 100,
+        };
         let args = vec![
             QueryArg::Scalar(DataType::Long(7)),
             QueryArg::Collection(vec![
@@ -1311,6 +1317,7 @@ mod tests {
             ]),
         ];
         let request = QueryRequest {
+            db,
             query: q.into(),
             args,
         };
@@ -1439,23 +1446,23 @@ mod tests {
 
     #[test]
     fn decode_db_opened_rejects_wrong_type() {
-        // {"db_id": "not an int", "tx_eid": 7}
+        // {"tx_id": "not an int", "system_time": ts, "tx_eid": 7}
         let body = pack(Value::Map(vec![
-            (Value::String("db_id".into()), Value::String("nope".into())),
+            (Value::String("tx_id".into()), Value::String("nope".into())),
+            (
+                Value::String("system_time".into()),
+                Value::Ext(EXT_TIMESTAMP, vec![0, 0, 0, 0]),
+            ),
             (Value::String("tx_eid".into()), Value::Integer(7.into())),
         ]));
         assert!(decode_db_opened_response(&body).is_err());
     }
 
     #[test]
-    fn decode_db_opened_rejects_db_id_overflow() {
-        // db_id > u32::MAX
+    fn decode_db_opened_rejects_missing_system_time() {
         let body = pack(Value::Map(vec![
-            (
-                Value::String("db_id".into()),
-                Value::Integer((u64::from(u32::MAX) + 1).into()),
-            ),
-            (Value::String("tx_eid".into()), Value::Integer(0.into())),
+            (Value::String("tx_id".into()), Value::Integer(1.into())),
+            (Value::String("tx_eid".into()), Value::Integer(2.into())),
         ]));
         assert!(decode_db_opened_response(&body).is_err());
     }
@@ -1545,13 +1552,15 @@ mod tests {
     #[test]
     fn decode_body_rejects_trailing_bytes() {
         // Two consecutive valid maps — only one body is allowed.
-        let one = pack(Value::Map(vec![(
-            Value::String("db_id".into()),
-            Value::Integer(7.into()),
-        )]));
+        let one = encode_open_db_request(&OpenDbRequest {
+            tx_id: None,
+            system_time: None,
+            tx_eid: None,
+        })
+        .unwrap();
         let mut two = one.clone();
         two.extend_from_slice(&one);
-        assert!(decode_db_closed_response(&two).is_err());
+        assert!(decode_open_db_request(&two).is_err());
     }
 
     #[test]

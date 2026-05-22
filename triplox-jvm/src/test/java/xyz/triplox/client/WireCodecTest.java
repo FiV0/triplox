@@ -57,9 +57,18 @@ class WireCodecTest {
 
     @Test
     void testEncodeQueryBody() throws IOException {
-        byte[] body = WireCodec.encodeQueryBody("{:find [?e]}", List.of());
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body = WireCodec.encodeQueryBody(new TxBasis(42L, now, 100L), "{:find [?e]}", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
-            assertEquals(2, unpacker.unpackMapHeader());
+            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals("db", unpacker.unpackString());
+            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals("tx_id", unpacker.unpackString());
+            assertEquals(42L, unpacker.unpackLong());
+            assertEquals("system_time", unpacker.unpackString());
+            assertEquals(now, unpacker.unpackTimestamp());
+            assertEquals("tx_eid", unpacker.unpackString());
+            assertEquals(100L, unpacker.unpackLong());
             assertEquals("query", unpacker.unpackString());
             assertEquals("{:find [?e]}", unpacker.unpackString());
             assertEquals("args", unpacker.unpackString());
@@ -89,17 +98,20 @@ class WireCodecTest {
 
     @Test
     void testDecodeDbOpened() throws IOException {
-        byte[] body = packMap2("db_id", 5L, "tx_eid", 42L);
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("tx_id"); packer.packLong(5);
+            packer.packString("system_time"); packer.packTimestamp(now);
+            packer.packString("tx_eid"); packer.packLong(42);
+            body = packer.toByteArray();
+        }
         var opened = WireCodec.decodeDbOpened(body);
-        assertEquals(5, opened.dbId());
+        assertEquals(5L, opened.txId());
+        assertEquals(now, opened.systemTime());
         assertEquals(42L, opened.txEid());
-    }
-
-    @Test
-    void testDecodeDbClosed() throws IOException {
-        byte[] body = packMap1("db_id", 5L);
-        var closed = WireCodec.decodeDbClosed(body);
-        assertEquals(5, closed.dbId());
+        assertEquals(new TxBasis(5L, now, 42L), opened.basis());
     }
 
     @Test
@@ -233,20 +245,4 @@ class WireCodecTest {
         packer.packString("type"); packer.packLong(Byte.toUnsignedLong(type));
     }
 
-    private static byte[] packMap1(String k1, long v1) throws IOException {
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(1);
-            packer.packString(k1); packer.packLong(v1);
-            return packer.toByteArray();
-        }
-    }
-
-    private static byte[] packMap2(String k1, long v1, String k2, long v2) throws IOException {
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(2);
-            packer.packString(k1); packer.packLong(v1);
-            packer.packString(k2); packer.packLong(v2);
-            return packer.toByteArray();
-        }
-    }
 }

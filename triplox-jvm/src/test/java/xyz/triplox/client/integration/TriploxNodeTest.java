@@ -33,11 +33,10 @@ class TriploxNodeTest {
             assertTrue(txResult.isCommitted());
 
             // Query
-            try (var db = node.openDb()) {
-                var rows = db.query("{:find [?name] :where [[?e :name ?name]]}");
-                assertEquals(1, rows.size());
-                assertEquals("alice", rows.get(0).get(0));
-            }
+            var db = node.openDb();
+            var rows = db.query("{:find [?name] :where [[?e :name ?name]]}");
+            assertEquals(1, rows.size());
+            assertEquals("alice", rows.get(0).get(0));
         }
     }
 
@@ -55,10 +54,9 @@ class TriploxNodeTest {
             var tx2 = node.executeTx(List.of(new TxOp.Put(map(":historical-name", "bob"))));
             assertTrue(tx2.isCommitted());
 
-            try (var db = node.openDbAsOf(tx1.basis())) {
-                var rows = db.query("{:find [?name] :where [[?e :historical-name ?name]]}");
-                assertEquals(List.of(List.of("alice")), rows);
-            }
+            var db = node.openDbAsOf(tx1.basis());
+            var rows = db.query("{:find [?name] :where [[?e :historical-name ?name]]}");
+            assertEquals(List.of(List.of("alice")), rows);
         }
     }
 }

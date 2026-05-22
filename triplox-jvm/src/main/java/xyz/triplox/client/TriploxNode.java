@@ -37,14 +37,14 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Open a DB read handle at the latest indexed transaction.
+     * Open a DB value at the latest indexed transaction.
      */
     public Db openDb() throws IOException {
         return openDbInternal(null);
     }
 
     /**
-     * Open a DB read handle at a specific indexed transaction basis.
+     * Open a DB value at a specific indexed transaction basis.
      */
     public Db openDbAsOf(TxBasis basis) throws IOException {
         return openDbInternal(basis);
@@ -54,18 +54,11 @@ public class TriploxNode implements AutoCloseable {
         byte[] body = WireCodec.encodeOpenDbBody(basis);
         byte[] responseBody = postBinary("/db/open", body);
         var opened = WireCodec.decodeDbOpened(responseBody);
-        return new Db(this, opened.dbId(), opened.txEid());
+        return new Db(this, opened.basis());
     }
 
     /**
-     * Release a previously opened DB read handle.
-     */
-    void closeDbInternal(Db db) throws IOException {
-        deleteBinary("/db/" + db.dbId());
-    }
-
-    /**
-     * Execute a Datalog query against an open DB read handle.
+     * Execute a Datalog query against a DB value.
      */
     QueryResult queryInternal(Db db, String edn) throws IOException {
         return queryInternal(db, edn, List.of());
@@ -75,8 +68,8 @@ public class TriploxNode implements AutoCloseable {
      * Execute a Datalog query with input binding arguments.
      */
     QueryResult queryInternal(Db db, String edn, List<QueryArg> args) throws IOException {
-        byte[] body = WireCodec.encodeQueryBody(edn, args);
-        byte[] responseBody = postBinary("/db/" + db.dbId() + "/query", body);
+        byte[] body = WireCodec.encodeQueryBody(db.basis(), edn, args);
+        byte[] responseBody = postBinary("/db/query", body);
         return WireCodec.decodeQueryResponse(responseBody);
     }
 
@@ -132,14 +125,6 @@ public class TriploxNode implements AutoCloseable {
                 .uri(URI.create(baseUrl + path))
                 .header("Content-Type", CONTENT_TYPE)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                .build();
-        return sendAndCheck(request);
-    }
-
-    private byte[] deleteBinary(String path) throws IOException {
-        var request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + path))
-                .DELETE()
                 .build();
         return sendAndCheck(request);
     }

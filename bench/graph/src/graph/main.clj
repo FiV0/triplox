@@ -84,7 +84,7 @@
         (ingest-graph! conn config)
         (let [end-ingest (System/nanoTime)
               config (assoc config :ingest-secs (/ (- (System/nanoTime) start) 1e9))
-              triangle-count (with-open [db (tc/db conn)]
+              triangle-count (let [db (tc/db conn)]
                                (count (tc/q db gg/triangle-query)))]
           (print-report (assoc config
                                :ingest-secs (/ (- end-ingest start) 1e9)
@@ -100,7 +100,7 @@
   (ingest-graph! conn {:vertices 10000 :probability 0.00182 :batch-size 1000})
 
   (time
-   (with-open [db (tc/db conn)]
+   (let [db (tc/db conn)]
      (count (tc/q db gg/triangle-query))))
 
   )
