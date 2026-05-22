@@ -512,13 +512,25 @@ mod tests {
         basis: TxBasis,
         query: &str,
     ) {
-        if let Some(delta) = try_recv_incremental_delta(subscription).await {
-            integrate_delta(rows, delta);
-        }
-
         let db = node.db_as_of(basis).await.unwrap();
         let mut expected = db.query(query).await.unwrap();
         sort_query_rows(&mut expected);
+
+        if rows != &expected {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while rows != &expected {
+                    let delta = subscription
+                        .deltas
+                        .recv()
+                        .await
+                        .expect("subscription should be open");
+                    integrate_delta(rows, delta);
+                }
+            })
+            .await
+            .expect("timed out waiting for incremental rows to match one-shot query");
+        }
+
         assert_eq!(&expected, rows);
     }
 
