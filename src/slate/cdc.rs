@@ -717,17 +717,18 @@ mod tests {
 
     async fn collect_cdc_datoms(node: &Node<MemoryLog>) -> Vec<Vec<Datom>> {
         // Flush WAL to object store so CdcStream can read it.
-        node.slatedb()
+        node.slate
+            .db
             .flush_with_options(FlushOptions {
                 flush_type: FlushType::Wal,
             })
             .await
             .unwrap();
 
-        let wal_reader = WalReader::new(node.db_path(), node.object_store());
+        let wal_reader = WalReader::new(node.slate.path.as_str(), node.slate.object_store.clone());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let schema = load_schema_from_indices(node.slatedb(), node.range_stats()).await;
+        let schema = load_schema_from_indices(&node.slate).await;
         let mut stream = CdcStream::new(
             wal_reader,
             CdcCursor::default(),

@@ -128,7 +128,7 @@ where
 pub struct Node<L: TxLog> {
     log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
-    slate: SlateComponents,
+    pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
 }
 
@@ -243,22 +243,6 @@ impl Node<FileLog> {
 }
 
 impl<L: TxLog> Node<L> {
-    pub(crate) fn object_store(&self) -> Arc<dyn slatedb::object_store::ObjectStore> {
-        self.slate.object_store.clone()
-    }
-
-    pub(crate) fn slatedb(&self) -> Arc<slatedb::Db> {
-        self.slate.db.clone()
-    }
-
-    pub(crate) fn range_stats(&self) -> Arc<slatedb_estimates::RangeStats> {
-        self.slate.range_stats.clone()
-    }
-
-    pub(crate) fn db_path(&self) -> &str {
-        &self.slate.path
-    }
-
     pub async fn close(self) {
         self.subscription.cancel();
         self.slate.db.close().await.unwrap();

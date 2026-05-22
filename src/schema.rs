@@ -4,7 +4,6 @@ use std::sync::{Arc, LazyLock};
 use anyhow::{Error, Result};
 use edn::kw;
 use edn::symbols::Keyword;
-use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
@@ -831,20 +830,15 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// Queries 2 and 3 re-fetch values already retrieved in query 1. This is only run
 /// at startup so the inefficiency is minor, but a single-pass approach would be
 /// cleaner. Could likely be done with an `optional` clause.
-pub async fn load_schema_from_indices<D, M>(
-    sdb: Arc<D>,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-) -> Schema
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
+pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_ident_map: IdentMap = HashMap::new();
     bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
+    let sdb = slate.db.clone();
+    let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
 
     let ident_query: ParsedQuery = "[:find ?e ?ident :where [?e :db/ident ?ident]]"
