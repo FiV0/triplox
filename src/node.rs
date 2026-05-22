@@ -457,6 +457,15 @@ mod tests {
             .expect("subscription should be open")
     }
 
+    async fn try_recv_incremental_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> Option<crate::incremental::IncrementalQueryDelta> {
+        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
         rows.sort_by_key(|row| format!("{:?}", row));
     }
@@ -494,6 +503,23 @@ mod tests {
         };
         flush_wal(node).await;
         basis
+    }
+
+    async fn assert_incremental_matches_db(
+        node: &Node<MemoryLog>,
+        subscription: &mut IncrementalQuerySubscription,
+        rows: &mut Vec<Vec<DataType>>,
+        basis: TxBasis,
+        query: &str,
+    ) {
+        if let Some(delta) = try_recv_incremental_delta(subscription).await {
+            integrate_delta(rows, delta);
+        }
+
+        let db = node.db_as_of(basis).await.unwrap();
+        let mut expected = db.query(query).await.unwrap();
+        sort_query_rows(&mut expected);
+        assert_eq!(&expected, rows);
     }
 
     #[tokio::test]
@@ -888,6 +914,105 @@ mod tests {
                 vec![DataType::String("Alice".to_string()), DataType::Long(40)],
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_equivalence_entity_join() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]";
+        let mut subscription = node
+            .register_incremental_query(parse_query(query))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:name),
+                    value: DataType::String("Bob".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: DataType::Long(40),
+                },
+            ],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+    }
+
+    #[tokio::test]
+    async fn test_incremental_equivalence_cartesian_product() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = "[:find ?name ?age :where [?e :name ?name] [?other :age ?age]]";
+        let mut subscription = node
+            .register_incremental_query(parse_query(query))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(102),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
     }
 
     #[tokio::test]

@@ -309,12 +309,12 @@ dbsp dependency and module scaffolding
 **Description:** For representative supported queries, compare integrated incremental deltas after each transaction with `DB::query()` at the same basis.
 
 **Acceptance criteria:**
-- [ ] Equivalence tests use the public `QueryNode`/`SubmitNode` flow where possible.
-- [ ] Each checked transaction basis compares the same query semantics between incremental and one-shot execution.
-- [ ] The Cartesian-product case is included.
+- [x] Equivalence tests use the public `QueryNode`/`SubmitNode` flow where possible.
+- [x] Each checked transaction basis compares the same query semantics between incremental and one-shot execution.
+- [x] The Cartesian-product case is included.
 
 **Verification:**
-- [ ] `cargo test -p triplox incremental_equivalence`
+- [x] `cargo test -p triplox incremental_equivalence`
 
 **Dependencies:** Task 10
 
