@@ -830,7 +830,7 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// Queries 2 and 3 re-fetch values already retrieved in query 1. This is only run
 /// at startup so the inefficiency is minor, but a single-pass approach would be
 /// cleaner. Could likely be done with an `optional` clause.
-pub async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
+pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
     // Build attribute map from bootstrap constants — sufficient to query schema entities
     let mut bootstrap_ident_map: IdentMap = HashMap::new();
     bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
