@@ -129,13 +129,13 @@ dbsp dependency and module scaffolding
 **Description:** Compile each planned triple pattern into a DBSP stream derived from the shared `EncodedTriple` input. Pattern streams filter by attribute and constants, then map matching triples into the pattern's `EncodedRow` layout.
 
 **Acceptance criteria:**
-- [ ] Constant entity and value filters compare encoded values.
-- [ ] Placeholder positions do not appear in output rows.
-- [ ] Pattern rows use the planner's variable order, including entity/value variables encoded the same way.
+- [x] Constant entity and value filters compare encoded values.
+- [x] Placeholder positions do not appear in output rows.
+- [x] Pattern rows use the planner's variable order, including entity/value variables encoded the same way.
 
 **Verification:**
-- [ ] Circuit unit tests for single-pattern add, retract, constants, and placeholders.
-- [ ] `cargo test -p triplox incremental::circuit`
+- [x] Circuit unit tests for single-pattern add, retract, constants, and placeholders.
+- [x] `cargo test -p triplox incremental::circuit`
 
 **Dependencies:** Tasks 2 and 3
 

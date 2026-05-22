@@ -1,6 +1,7 @@
 //! Writer-node incremental query service.
 
 pub(crate) mod cdc;
+pub(crate) mod circuit;
 
 pub(crate) type EncodedValue = Vec<u8>;
 pub(crate) type EncodedRow = Vec<EncodedValue>;
