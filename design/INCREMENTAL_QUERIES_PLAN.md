@@ -151,13 +151,13 @@ dbsp dependency and module scaffolding
 **Description:** Build the deterministic left-deep DBSP operator chain over `EncodedRow` streams. Shared variables use indexed joins; disconnected groups use Cartesian-product semantics instead of rejection.
 
 **Acceptance criteria:**
-- [ ] Joins preserve one row layout with no duplicated shared-variable columns.
-- [ ] Entity-to-value joins work because both sides use encoded Triplox values.
-- [ ] Disconnected patterns produce the same Cartesian-product multiplicities as the one-shot engine.
+- [x] Joins preserve one row layout with no duplicated shared-variable columns.
+- [x] Entity-to-value joins work because both sides use encoded Triplox values.
+- [x] Disconnected patterns produce the same Cartesian-product multiplicities as the one-shot engine.
 
 **Verification:**
-- [ ] Circuit tests for two-pattern entity join, ref-value join, three-pattern chain, and disconnected Cartesian product.
-- [ ] `cargo test -p triplox incremental::circuit`
+- [x] Circuit tests for two-pattern entity join, ref-value join, three-pattern chain, and disconnected Cartesian product.
+- [x] `cargo test -p triplox incremental::circuit`
 
 **Dependencies:** Task 4
 
