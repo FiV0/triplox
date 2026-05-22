@@ -457,6 +457,45 @@ mod tests {
             .expect("subscription should be open")
     }
 
+    fn sort_query_rows(rows: &mut [Vec<DataType>]) {
+        rows.sort_by_key(|row| format!("{:?}", row));
+    }
+
+    fn integrate_delta(
+        rows: &mut Vec<Vec<DataType>>,
+        delta: crate::incremental::IncrementalQueryDelta,
+    ) {
+        for (row, weight) in delta.rows {
+            match weight.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    for _ in 0..weight {
+                        rows.push(row.clone());
+                    }
+                }
+                std::cmp::Ordering::Less => {
+                    for _ in 0..(-weight) {
+                        let index = rows
+                            .iter()
+                            .position(|existing| existing == &row)
+                            .expect("negative delta should remove an existing row");
+                        rows.remove(index);
+                    }
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+        sort_query_rows(rows);
+    }
+
+    async fn execute_and_flush(node: &Node<MemoryLog>, tx_ops: Vec<TxOp>) -> TxBasis {
+        let basis = match node.execute_tx(tx_ops).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(node).await;
+        basis
+    }
+
     #[tokio::test]
     async fn test_register_incremental_query_installs_subscription() {
         let node = Node::memory_node().await;
@@ -685,6 +724,168 @@ mod tests {
             vec![
                 (vec![DataType::String("Alice".to_string())], -1),
                 (vec![DataType::String("Bob".to_string())], 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_entity_join_integrates_live_result() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:age),
+                    value: DataType::Long(30),
+                },
+            ],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::Long(30)
+            ]]
+        );
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
+        )
+        .await;
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                vec![DataType::String("Bob".to_string()), DataType::Long(40)],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_ref_value_and_three_pattern_chain() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?friend-name ?age :where [?e :name ?name] [?e :follows ?friend] [?friend :name ?friend-name] [?friend :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:name),
+                    value: DataType::String("Bob".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: DataType::Long(40),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:follows),
+                    value: DataType::Long(101),
+                },
+            ],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::String("Bob".to_string()),
+                DataType::Long(40),
+            ]]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_constants_placeholders_and_cartesian_product() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                r#"[:find ?name ?age :where [?e :name ?name] [_ :age ?age] [?e :name "Alice"]]"#,
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: DataType::Long(30),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(102),
+                    attribute: kw!(:age),
+                    value: DataType::Long(40),
+                },
+            ],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                vec![DataType::String("Alice".to_string()), DataType::Long(40)],
             ]
         );
     }

@@ -288,13 +288,13 @@ dbsp dependency and module scaffolding
 **Description:** Cover the complete writer-node flow for the supported query subset, including joins and Cartesian products, using normal transaction submission and subscription delivery.
 
 **Acceptance criteria:**
-- [ ] Tests cover single pattern, entity join, ref-value join, three-pattern chain, constants, placeholders, retracts, and disconnected Cartesian products.
-- [ ] Tests integrate deltas locally and assert the expected live result after each transaction.
-- [ ] Tests do not require client protocol changes.
+- [x] Tests cover single pattern, entity join, ref-value join, three-pattern chain, constants, placeholders, retracts, and disconnected Cartesian products.
+- [x] Tests integrate deltas locally and assert the expected live result after each transaction.
+- [x] Tests do not require client protocol changes.
 
 **Verification:**
-- [ ] `cargo test -p triplox incremental`
-- [ ] `cargo test -p triplox node`
+- [x] `cargo test -p triplox incremental`
+- [x] `cargo test -p triplox node`
 
 **Dependencies:** Task 9
 
