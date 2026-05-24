@@ -20,7 +20,6 @@ use crate::aggregate::{make_accumulator, Accumulator};
 use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple, SingleLevelExtender};
 use crate::codec::{Decode, Encode};
 use crate::expr::{expr_variables, BinaryExpr, BinaryOp, Expr, RegexpLikeExpr, UnaryExpr, UnaryOp};
-use regex::Regex;
 use crate::index::IndexType;
 use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
 use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
@@ -29,6 +28,7 @@ use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::{DataType, QueryArg};
+use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
 pub type QueryResult = Vec<Vec<DataType>>;
@@ -249,7 +249,7 @@ fn convert_fn_arg(arg: &edn::query::FnArg) -> Result<Expr, Error> {
 }
 
 /// Extract a literal string from a FnArg, for operators that require a literal pattern.
-fn fn_arg_as_text_literal<'a>(arg: &'a edn::query::FnArg) -> Option<&'a str> {
+fn fn_arg_as_text_literal(arg: &edn::query::FnArg) -> Option<&str> {
     if let edn::query::FnArg::Constant(NonIntegerConstant::Text(s)) = arg {
         Some(s.as_str())
     } else {
@@ -271,7 +271,11 @@ fn build_regexp_like(args: &[edn::query::FnArg]) -> Result<Expr, Error> {
         anyhow::anyhow!("regexp_like requires a string literal as second argument (pattern)")
     })?;
     let pattern = Regex::new(pattern_src).map_err(|e| {
-        anyhow::anyhow!("invalid regex pattern for regexp_like `{}`: {}", pattern_src, e)
+        anyhow::anyhow!(
+            "invalid regex pattern for regexp_like `{}`: {}",
+            pattern_src,
+            e
+        )
     })?;
     Ok(Expr::RegexpLike(RegexpLikeExpr {
         pattern_src: pattern_src.to_string(),
@@ -1197,6 +1201,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query_validation::validate_query;
 
     /// Parse an EDN query string into a ParsedQuery.
     fn parse_query(input: &str) -> ParsedQuery {
@@ -1438,18 +1443,16 @@ mod tests {
 
     #[test]
     fn test_regexp_like_valid_query() {
-        let parsed = parse_query(
-            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "^B")]]"#,
-        );
+        let parsed =
+            parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "^B")]]"#);
         let result = validate_query(&parsed, &[]);
         assert!(result.is_ok(), "expected ok, got {:?}", result);
     }
 
     #[test]
     fn test_regexp_like_invalid_pattern_rejected_at_plan_time() {
-        let parsed = parse_query(
-            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "[")]]"#,
-        );
+        let parsed =
+            parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "[")]]"#);
         let result = validate_query(&parsed, &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1469,18 +1472,12 @@ mod tests {
         let result = validate_query(&parsed, &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("string literal"),
-            "unexpected error: {}",
-            msg
-        );
+        assert!(msg.contains("string literal"), "unexpected error: {}", msg);
     }
 
     #[test]
     fn test_regexp_like_wrong_arity_rejected() {
-        let parsed = parse_query(
-            r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name)]]"#,
-        );
+        let parsed = parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name)]]"#);
         let result = validate_query(&parsed, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expects 2 args"));
