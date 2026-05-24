@@ -424,7 +424,7 @@
                           [?e :age ?real-age]
                           [(quot ?real-age 2) ?half-age]]}))))
 
-    ;; Commented out — requires negative number literals in expressions (triplox-qns)
+    ;; Commented out — requires negative number literals in expressions
     #_(testing "Binding more than once intersects result"
         (is (= #{["Ivan" 15]}
                (q '{:find [?name ?half-age]
