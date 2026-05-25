@@ -293,8 +293,11 @@ peg::parser! {
         rule query_function() -> query::QueryFunction
             = __() n:$(symbol_name() / "/" / "+" / "-") __() {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
-        rule fn_arg() -> query::FnArg
+        rule sexpr() -> query::FnArg
             = __() "(" func:query_function() args:fn_arg()* ")" __() { query::FnArg::SExpr(func.0, args) }
+
+        rule fn_arg() -> query::FnArg
+            = sexpr()
             / v:value() {? query::FnArg::from_value(&v).ok_or("expected query function argument") }
 
         rule find_elem() -> query::Element
@@ -415,7 +418,7 @@ peg::parser! {
             }
 
         rule pred() -> query::WhereClause
-            = __() "[" __() expr:fn_arg() __() "]" __() {
+            = __() "[" __() expr:sexpr() __() "]" __() {
                 query::WhereClause::Pred(
                     query::Predicate {
                         expr,
@@ -423,7 +426,7 @@ peg::parser! {
             }
 
         pub rule where_fn() -> query::WhereClause
-            = __() "[" __() expr:fn_arg() __() binding:binding() "]" __() {
+            = __() "[" __() expr:sexpr() __() binding:binding() "]" __() {
                 query::WhereClause::WhereFn(
                     query::WhereFn {
                         expr,

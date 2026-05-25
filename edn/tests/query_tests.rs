@@ -349,6 +349,16 @@ fn round_trip_where_fn() {
 }
 
 #[test]
+fn rejects_literal_top_level_predicate() {
+    assert!(parse_query(r#"[:find ?x :where [?x _ ?y] ["foo"]]"#).is_err());
+}
+
+#[test]
+fn rejects_literal_top_level_where_fn() {
+    assert!(parse_query(r#"[:find ?x ?out :where [?x _ ?y] ["foo" ?out]]"#).is_err());
+}
+
+#[test]
 fn round_trip_nested_expr_in_where_fn() {
     assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ (* ?y 2) 1) ?result]]");
 }
