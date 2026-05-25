@@ -31,6 +31,8 @@ Prefer one-line TODOs.
 
 Only commit and push when explicitly asked to by the user.
 End Codex-created commits with `Co-authored-by: Codex <noreply@openai.com>`.
+Don't ever open the default editor for creating commit messages. Always do
+rebases non-interactively. If the command needs an editor always use `GIT_EDITOR=true`.
 
 ## Formatting
 
