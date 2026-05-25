@@ -30,6 +30,7 @@ pub struct CdcStream {
     current_iter: Option<WalFileIterator>,
     buffered: Option<RowEntry>,
     cursor: CdcCursor,
+    next_wal_id_to_list: u64,
     poll_interval: Duration,
     cancel: CancellationToken,
 }
@@ -46,7 +47,8 @@ impl CdcStream {
         poll_interval: Duration,
         cancel: CancellationToken,
     ) -> Result<Self, slatedb::Error> {
-        let wal_files: VecDeque<WalFile> = wal_reader.list(cursor.wal_id..).await?.into();
+        let next_wal_id_to_list = cursor.wal_id;
+        let wal_files: VecDeque<WalFile> = wal_reader.list(next_wal_id_to_list..).await?.into();
 
         let mut stream = CdcStream {
             wal_reader,
@@ -54,6 +56,7 @@ impl CdcStream {
             current_iter: None,
             buffered: None,
             cursor,
+            next_wal_id_to_list,
             poll_interval,
             cancel,
         };
@@ -76,9 +79,9 @@ impl CdcStream {
         let seq = first.seq;
         let mut entries = vec![first];
 
-        // Accumulate entries with the same seq.
+        // Accumulate entries with the same seq inside the current WAL file.
         loop {
-            match self.next_entry().await? {
+            match self.next_entry_in_current_file().await? {
                 Some(entry) if entry.seq == seq => {
                     entries.push(entry);
                 }
@@ -88,7 +91,8 @@ impl CdcStream {
                     break;
                 }
                 None => {
-                    // Cancelled or no more data — yield what we have.
+                    // WAL files are immutable and transactions do not cross file
+                    // boundaries, so EOF completes the current transaction.
                     break;
                 }
             }
@@ -107,16 +111,9 @@ impl CdcStream {
             return Ok(Some(entry));
         }
 
-        let skip_seq = self.cursor.last_seq;
-
         loop {
-            // Try reading from current iterator, skipping already-processed entries.
-            if let Some(ref mut iter) = self.current_iter {
-                while let Some(entry) = iter.next().await? {
-                    if entry.seq > skip_seq {
-                        return Ok(Some(entry));
-                    }
-                }
+            if let Some(entry) = self.next_entry_in_current_file().await? {
+                return Ok(Some(entry));
             }
 
             // Current file exhausted — try next file.
@@ -128,7 +125,7 @@ impl CdcStream {
             loop {
                 let new_files: VecDeque<WalFile> = self
                     .wal_reader
-                    .list((self.cursor.wal_id + 1)..)
+                    .list(self.next_wal_id_to_list..)
                     .await?
                     .into();
 
@@ -138,7 +135,7 @@ impl CdcStream {
                     break;
                 }
 
-                // Wait for new data or cancellation.
+                // Wait for a newly visible immutable WAL file or cancellation.
                 tokio::select! {
                     _ = tokio::time::sleep(self.poll_interval) => continue,
                     _ = self.cancel.cancelled() => return Ok(None),
@@ -147,11 +144,28 @@ impl CdcStream {
         }
     }
 
+    /// Get the next entry from the already-open WAL file.
+    /// Returns None when that immutable file is exhausted.
+    async fn next_entry_in_current_file(&mut self) -> Result<Option<RowEntry>, slatedb::Error> {
+        let Some(ref mut iter) = self.current_iter else {
+            return Ok(None);
+        };
+
+        while let Some(entry) = iter.next().await? {
+            if entry.seq > self.cursor.last_seq {
+                return Ok(Some(entry));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Pop the next WAL file from the queue and open its iterator.
     /// Returns true if a new file was opened, false if queue is empty.
     async fn advance_to_next_file(&mut self) -> Result<bool, slatedb::Error> {
         if let Some(file) = self.wal_files.pop_front() {
             self.cursor.wal_id = file.id;
+            self.next_wal_id_to_list = file.id + 1;
             self.current_iter = Some(file.iterator().await?);
             Ok(true)
         } else {
@@ -635,6 +649,50 @@ mod tests {
         })
         .await
         .expect("test_cdc_cursor_waits_for_live_transactions timed out");
+    }
+
+    #[tokio::test]
+    async fn test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (db, object_store) = setup_db("/test_cursor_wal_file_eof").await;
+
+            db.put(b"k1", b"v1").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+
+            let current_seq = db.status().durable_seq;
+            let wal_reader = WalReader::new("/test_cursor_wal_file_eof", object_store);
+            let cancel = CancellationToken::new();
+            let mut stream = CdcStream::new(
+                wal_reader,
+                CdcCursor {
+                    wal_id: 0,
+                    last_seq: current_seq,
+                },
+                Duration::from_millis(10),
+                cancel,
+            )
+            .await
+            .unwrap();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                db.put(b"k2", b"v2").await.unwrap();
+                db.flush_with_options(flush_opts()).await.unwrap();
+            });
+
+            let tx = stream
+                .next_transaction()
+                .await
+                .unwrap()
+                .expect("transaction at WAL file EOF should be yielded without cancellation");
+
+            assert!(tx.seq > current_seq);
+            assert_eq!(tx.entries.len(), 1);
+        })
+        .await
+        .expect(
+            "test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation timed out",
+        );
     }
 
     #[tokio::test]
