@@ -218,9 +218,6 @@ pub enum FnArg {
     EntidOrInteger(i64),
     IdentOrKeyword(Keyword),
     Constant(NonIntegerConstant),
-    // The collection values representable in EDN.  There's no advantage to destructuring up front,
-    // since consumers will need to handle arbitrarily nested EDN themselves anyway.
-    Vector(Vec<FnArg>),
 }
 
 impl FromValue<FnArg> for FnArg {
@@ -271,16 +268,6 @@ impl std::fmt::Display for FnArg {
             &FnArg::EntidOrInteger(entid) => write!(f, "{}", entid),
             FnArg::IdentOrKeyword(kw) => write!(f, "{}", kw),
             FnArg::Constant(constant) => write!(f, "{}", constant),
-            FnArg::Vector(vec) => {
-                write!(f, "[")?;
-                for (i, arg) in vec.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, "]")
-            }
         }
     }
 }
