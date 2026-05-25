@@ -21,7 +21,7 @@ use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::transaction::{TxBasis, TxKey};
 use crate::{codec, util::concat_bytes};
 
-const CDC_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const CDC_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSet<EncodedTriple>> {
     let tuples = datoms
