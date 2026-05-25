@@ -38,9 +38,7 @@ pub(crate) fn query_find_stream(
     plan: IncrementalQueryPlan,
 ) -> Stream<RootCircuit, RowZSet> {
     let find_positions = positions(&plan.variables, &plan.find_vars);
-    query_row_stream(&input.integrate(), plan)
-        .map(move |row| project_row(row, &find_positions))
-        .differentiate()
+    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
 }
 
 pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
@@ -94,11 +92,9 @@ fn join_rows(
     let right_indexed =
         right.map_index(move |row| (row_key(row, &right_key_positions), row.clone()));
 
-    left_indexed
-        .stream_join(&right_indexed, move |_key, left_row, right_row| {
-            merge_rows(left_row, right_row, &output_sources)
-        })
-        .map(|row| row.clone())
+    left_indexed.join(&right_indexed, move |_key, left_row, right_row| {
+        merge_rows(left_row, right_row, &output_sources)
+    })
 }
 
 fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedRow> {
@@ -194,8 +190,11 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
 
 #[cfg(test)]
 mod tests {
-    use dbsp::{utils::Tup2, OrdZSet, OutputHandle, RootCircuit, ZSetHandle, ZWeight};
+    use dbsp::{
+        utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
+    };
     use edn::query::ToVariable;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::codec::Encode;
@@ -227,6 +226,20 @@ mod tests {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let rows = query_find_stream(&input, plan);
         Ok((handle, rows.output()))
+    }
+
+    fn build_test_circuit<T, F>(constructor: F) -> (DBSPHandle, T, TempDir)
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut RootCircuit) -> anyhow::Result<T> + Clone + Send + 'static,
+    {
+        let storage = tempfile::tempdir().unwrap();
+        let (circuit, handles) = Runtime::init_circuit(
+            super::super::storage_circuit_config(storage.path()).unwrap(),
+            constructor,
+        )
+        .unwrap();
+        (circuit, handles, storage)
     }
 
     fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(EncodedRow, ZWeight)> {
@@ -298,9 +311,8 @@ mod tests {
 
     #[test]
     fn single_pattern_emits_matching_add() {
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_pattern_circuit(circuit, single_var_pattern()))
-                .unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
 
         append(
             &handle,
@@ -322,9 +334,8 @@ mod tests {
 
     #[test]
     fn single_pattern_emits_matching_retract() {
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_pattern_circuit(circuit, single_var_pattern()))
-                .unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
 
         append(
             &handle,
@@ -352,8 +363,8 @@ mod tests {
             value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
             output_vars: vec!["?e".to_var()],
         };
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_pattern_circuit(circuit, pattern)).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_pattern_circuit(circuit, pattern.clone()));
 
         append(
             &handle,
@@ -379,8 +390,8 @@ mod tests {
             value: PatternSlot::Variable("?name".to_var()),
             output_vars: vec!["?name".to_var()],
         };
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_pattern_circuit(circuit, pattern)).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_pattern_circuit(circuit, pattern.clone()));
 
         append(
             &handle,
@@ -396,8 +407,8 @@ mod tests {
 
     #[test]
     fn joins_two_patterns_on_entity() {
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_query_circuit(circuit, entity_join_plan())).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_query_circuit(circuit, entity_join_plan()));
 
         append(
             &handle,
@@ -450,8 +461,8 @@ mod tests {
             }],
             patterns,
         };
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_query_circuit(circuit, plan)).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -497,8 +508,8 @@ mod tests {
             ],
         });
         plan.variables.push("?friend".to_var());
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_query_circuit(circuit, plan)).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -562,8 +573,8 @@ mod tests {
             }],
             patterns,
         };
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_query_circuit(circuit, plan)).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -602,8 +613,8 @@ mod tests {
 
     #[test]
     fn projects_rows_to_find_order_and_decodes() {
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
 
         append(
             &handle,
@@ -625,8 +636,8 @@ mod tests {
 
     #[test]
     fn preserves_negative_delta_weights() {
-        let (circuit, (handle, output)) =
-            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
 
         append(
             &handle,
@@ -648,8 +659,8 @@ mod tests {
 
     #[test]
     fn empty_steps_decode_to_no_rows() {
-        let (circuit, (_handle, output)) =
-            RootCircuit::build(|circuit| build_find_circuit(circuit, entity_join_plan())).unwrap();
+        let (mut circuit, (_handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
 
         circuit.transaction().unwrap();
 

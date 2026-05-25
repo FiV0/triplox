@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,7 +154,7 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new();
+        let incremental = IncrementalQueryService::new(memory_incremental_storage_path(&slate));
 
         Node {
             log,
@@ -170,7 +170,11 @@ impl Node<MemoryLog> {
 impl Node<FileLog> {
     /// Shared setup: given a slate and a path to the log file, bootstrap the
     /// database, create the indexer & FileLog, subscribe, and catch up.
-    async fn from_slate_and_log(slate: SlateComponents, log_file: &Path) -> Result<Self, Error> {
+    async fn from_slate_and_log(
+        slate: SlateComponents,
+        log_file: &Path,
+        incremental_storage_path: PathBuf,
+    ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
         // Determine the latest already-indexed tx_id so we skip replaying it
@@ -207,7 +211,7 @@ impl Node<FileLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new();
+        let incremental = IncrementalQueryService::new(incremental_storage_path);
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
@@ -232,7 +236,12 @@ impl Node<FileLog> {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
         let slate = local_slate(db_path_str).await;
-        Self::from_slate_and_log(slate, &root_path.join("log")).await
+        Self::from_slate_and_log(
+            slate,
+            &root_path.join("log"),
+            root_path.join("dbsp-incremental"),
+        )
+        .await
     }
 
     pub async fn remote_node(
@@ -254,8 +263,19 @@ impl Node<FileLog> {
             &cache_path,
         )
         .await?;
-        Self::from_slate_and_log(slate, &log_path.join("log")).await
+        Self::from_slate_and_log(
+            slate,
+            &log_path.join("log"),
+            log_path.join("dbsp-incremental"),
+        )
+        .await
     }
+}
+
+fn memory_incremental_storage_path(slate: &SlateComponents) -> PathBuf {
+    std::env::temp_dir()
+        .join(&slate.path)
+        .join("dbsp-incremental")
 }
 
 impl<L: TxLog> Node<L> {

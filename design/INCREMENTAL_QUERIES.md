@@ -128,10 +128,11 @@ Triplox should distinguish service metadata from relation state:
 - Service metadata, such as active query handles, subscription senders, and CDC cursors, can remain in memory for v1.
 - DBSP relation state must live in trace-backed operators. Do not represent current base facts, pattern rows, join rows, or projected result state as full accumulated `OrdZSet`s held by the circuit.
 - Configure one file-backed DBSP storage root per writer node, with per-query circuit state under that root. Tests can use temporary storage directories, but they should still exercise the file-backed path.
+- Delete a query's per-query DBSP storage directory when the query is unregistered or removed because its subscription receiver was dropped.
 - Assign stable persistent IDs to trace-bearing operators when DBSP checkpoint/restore requires them, so future restart support can restore traces instead of rebuilding every circuit from scratch.
 - Keep SlateDB as the source of truth. DBSP trace files are derived query state and can be rebuilt from a registration snapshot plus WAL replay if necessary.
 
-DBSP `integrate_trace()` returns a `Spine` trace. The crate documents this result as durably stored for fault tolerance when runtime storage is configured. The implementation should rely on that trace machinery instead of manually maintaining full relation snapshots in Triplox data structures.
+DBSP `integrate_trace()` returns a `Spine` trace. The crate documents this result as durably stored for fault tolerance when runtime storage is configured. Triplox v1 uses the high-level DBSP `join()` operator for binary joins; in `dbsp = "0.299.0"` that operator lowers to trace joins internally. This keeps the circuit output as deltas without manually maintaining full relation snapshots in Triplox data structures.
 
 ## Query Scope
 
@@ -159,9 +160,9 @@ Each registered query owns a DBSP circuit:
 2. For each triple pattern, derive a delta stream from the input using filters for attribute and constants.
 3. Map each pattern stream from `EncodedTriple` into an `EncodedRow` in the variable layout chosen by the planner.
 4. Convert pattern row streams to indexed delta streams with `map_index()` according to the join key for the next operator.
-5. Build a deterministic left-deep chain of trace-backed binary joins using DBSP `join()`/`join_index()` or an explicit `integrate_trace()`/trace-join shape. Do not use `input.integrate()` followed by `stream_join()` for query semantics, because that accumulates full Z-sets in memory.
-6. Represent disconnected Cartesian products as trace-backed joins over a constant unit key.
-7. Map the final joined delta stream into `:find` order. The result should already be a delta stream; do not differentiate a fully materialized projected relation.
+5. Build a deterministic left-deep chain of trace-backed binary joins using DBSP `join()` over the indexed row streams. Do not use base-relation integration followed by nonincremental stream joins for query semantics, because that accumulates full Z-sets in memory.
+6. Represent disconnected Cartesian products as trace-backed joins over an empty encoded row key.
+7. Map the final joined delta stream into `:find` order. The result should already be a delta stream; do not derive deltas by differentiating a fully materialized projected relation.
 8. Attach an output handle to the final delta stream.
 
 The planner should be deterministic. Mirror the current one-shot query variable ordering semantics in `src/inc_query.rs`, including disconnected pattern groups as Cartesian products. Do not move or expose helpers from `src/query.rs`.
@@ -172,7 +173,7 @@ Registering a query must create a consistent starting point:
 
 1. Capture the writer node's latest indexed transaction basis from the existing `Indexer` state or `latest_tx_basis_from_sdb()`.
 2. Capture a SlateDB WAL cursor from the database status at the same point, using the durable sequence as `CdcCursor.last_seq`.
-3. Create the query circuit with file-backed DBSP trace storage configured.
+3. Create the query circuit with `Runtime::init_circuit()` and a `CircuitConfig` whose `CircuitStorageConfig` points at the writer node's file-backed incremental storage root.
 4. Scan current EAV index state up to the captured `tx_eid` and feed the circuit with positive triples to prime DBSP trace state.
 5. Step the circuit once and discard the initial output.
 6. Store the query with its starting `TxBasis` and CDC cursor.
@@ -360,4 +361,4 @@ Equivalence tests:
 6. Each subscription channel has capacity 128.
 7. `IncrementalQueryDelta.rows` uses `isize` weights at the Triplox API boundary.
 8. `IncrementalQuerySubscription` exposes the registration `TxBasis` as its cutover basis.
-9. DBSP query state is trace-backed and file-backed. Use `integrate_trace()`/`Spine` or trace-backed join operators, and avoid `integrate()` over the base relation followed by `stream_join()` for query semantics.
+9. DBSP query state is trace-backed and file-backed. The current implementation uses DBSP `join()` trace joins and avoids base-relation integration followed by nonincremental stream joins for query semantics.

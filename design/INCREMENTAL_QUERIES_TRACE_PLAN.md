@@ -12,6 +12,15 @@ Update the current writer-node incremental query implementation so DBSP circuit 
 - Keep Triplox service metadata in memory for v1: active query handles, subscription senders, and CDC cursors do not need persistence in this pass.
 - Keep SlateDB as the source of truth. DBSP trace files are derived query state and may be rebuilt from a registration snapshot plus WAL replay if restart support is deferred.
 
+## Implemented DBSP Contract
+
+- `dbsp = "0.299.0"` implements `Stream::join()`/`Stream::join_index()` through trace joins internally, so Triplox uses `join()` for row joins instead of explicitly exposing `Spine` values in the Triplox circuit API.
+- Query circuits are built with `Runtime::init_circuit()` and a `CircuitConfig` containing `CircuitStorageConfig::for_config(StorageConfig, StorageOptions)`.
+- `StorageOptions::min_storage_bytes` is set to `Some(0)` for the incremental-query runtime so tests and small queries exercise the file-backed path.
+- Each registered query gets a `query-<id>` directory below the writer node's incremental DBSP storage root. Existing per-query directories are removed before construction because v1 does not restore persisted query registrations or DBSP traces.
+- Per-query storage is removed when a query is explicitly unregistered or implicitly cleaned up after its subscription receiver is dropped.
+- Stable persistent operator IDs are deferred until restart/restore support is added. In this pass, SlateDB remains the source of truth and query state can be rebuilt from a registration snapshot plus WAL replay.
+
 ## Non-Goals
 
 - Do not add public client or wire protocol APIs.
@@ -45,13 +54,13 @@ DBSP storage/runtime contract
 **Description:** Inspect the `dbsp = "0.299.0"` APIs used by this branch and decide the exact construction path for file-backed trace state. Confirm whether `join()`/`join_index()` provides the desired trace-backed implementation or whether the circuit must call `integrate_trace()` explicitly.
 
 **Acceptance criteria:**
-- [ ] Document the chosen DBSP APIs in this plan or the main design doc.
-- [ ] Identify the runtime/storage configuration type and where it must be initialized.
-- [ ] Identify any persistent-id requirements for trace/checkpoint operators.
+- [x] Document the chosen DBSP APIs in this plan or the main design doc.
+- [x] Identify the runtime/storage configuration type and where it must be initialized.
+- [x] Identify any persistent-id requirements for trace/checkpoint operators.
 
 **Verification:**
-- [ ] Minimal compile-only experiment or targeted test proves a circuit can be built with file-backed DBSP storage enabled.
-- [ ] `cargo check -p triplox`
+- [x] Minimal compile-only experiment or targeted test proves a circuit can be built with file-backed DBSP storage enabled.
+- [x] `cargo check -p triplox`
 
 **Dependencies:** None
 
@@ -66,14 +75,14 @@ DBSP storage/runtime contract
 **Description:** Thread a DBSP storage root through the writer-node incremental service and use it when constructing query circuits. Tests should use temporary directories, while real writer nodes should derive a stable storage directory from the node/database path.
 
 **Acceptance criteria:**
-- [ ] Query circuits are constructed in a DBSP runtime with storage enabled.
-- [ ] Each registered query gets isolated storage namespace or stable persistent IDs to avoid trace-state collisions.
-- [ ] The implementation fails fast if production circuit construction would run with storage disabled.
+- [x] Query circuits are constructed in a DBSP runtime with storage enabled.
+- [x] Each registered query gets isolated storage namespace or stable persistent IDs to avoid trace-state collisions.
+- [x] The implementation fails fast if production circuit construction would run with storage disabled.
 
 **Verification:**
-- [ ] Unit or node-level test proves registration succeeds with a temporary file-backed storage root.
-- [ ] Test or assertion covers the storage-disabled failure path if the API permits detection.
-- [ ] `cargo test -p triplox incremental`
+- [x] Unit or node-level test proves registration succeeds with a temporary file-backed storage root.
+- [x] Test or assertion covers the storage-disabled failure path if the API permits detection.
+- [x] `cargo test -p triplox incremental`
 
 **Dependencies:** Task 1
 
@@ -86,10 +95,10 @@ DBSP storage/runtime contract
 
 ### Checkpoint: Storage Foundation
 
-- [ ] File-backed DBSP storage is configured before any query circuit is built.
-- [ ] Existing registration/unregistration tests pass.
-- [ ] `cargo fmt --check`
-- [ ] `cargo check -p triplox`
+- [x] File-backed DBSP storage is configured before any query circuit is built.
+- [x] Existing registration/unregistration tests pass.
+- [x] `cargo fmt --check`
+- [x] `cargo check -p triplox`
 
 ### Phase 2: Trace-Backed Circuit Shape
 
@@ -98,14 +107,14 @@ DBSP storage/runtime contract
 **Description:** Refactor `src/incremental/circuit.rs` so query semantics do not depend on `input.integrate()` plus `stream_join()` plus final `differentiate()`. Pattern streams should remain delta streams, and joins should use trace-backed DBSP operators.
 
 **Acceptance criteria:**
-- [ ] `query_find_stream()` no longer calls `input.integrate()`.
-- [ ] The join path no longer uses `stream_join()` over fully integrated current relations.
-- [ ] The projected output is produced as a delta stream without differentiating a full materialized result relation.
+- [x] `query_find_stream()` no longer calls `input.integrate()`.
+- [x] The join path no longer uses `stream_join()` over fully integrated current relations.
+- [x] The projected output is produced as a delta stream without differentiating a full materialized result relation.
 
 **Verification:**
-- [ ] Circuit tests for single pattern, entity join, ref-value join, chain join, and Cartesian product pass.
-- [ ] `rg "integrate\\(|stream_join|differentiate\\(" src/incremental/circuit.rs` shows no full-Z-set query-state path remains, except comments/tests explicitly explaining why.
-- [ ] `cargo test -p triplox incremental::circuit`
+- [x] Circuit tests for single pattern, entity join, ref-value join, chain join, and Cartesian product pass.
+- [x] `rg "integrate\\(|stream_join|differentiate\\(" src/incremental/circuit.rs` shows no full-Z-set query-state path remains, except comments/tests explicitly explaining why.
+- [x] `cargo test -p triplox incremental::circuit`
 
 **Dependencies:** Task 2
 
@@ -119,14 +128,14 @@ DBSP storage/runtime contract
 **Description:** Update registration priming so the current EAV snapshot initializes DBSP traces without emitting initial rows as live subscription deltas. Keep the existing future-only subscription contract.
 
 **Acceptance criteria:**
-- [ ] Snapshot triples are loaded into trace state during registration.
-- [ ] Initial output produced by priming is drained and discarded.
-- [ ] Transactions after the registration basis still emit exact future deltas.
+- [x] Snapshot triples are loaded into trace state during registration.
+- [x] Initial output produced by priming is drained and discarded.
+- [x] Transactions after the registration basis still emit exact future deltas.
 
 **Verification:**
-- [ ] Existing node test for “register after existing data emits no initial delta” passes.
-- [ ] Existing node test for “future matching transaction emits one live delta” passes.
-- [ ] `cargo test -p triplox test_register_incremental_query_after_existing_data_emits_no_initial_delta`
+- [x] Existing node test for “register after existing data emits no initial delta” passes.
+- [x] Existing node test for “future matching transaction emits one live delta” passes.
+- [x] `cargo test -p triplox test_register_incremental_query_after_existing_data_emits_no_initial_delta`
 
 **Dependencies:** Task 3
 
@@ -142,14 +151,14 @@ DBSP storage/runtime contract
 **Description:** Verify that trace-backed joins preserve the same multiplicities as the one-shot query engine, including disconnected patterns represented as Cartesian products over a unit key.
 
 **Acceptance criteria:**
-- [ ] Entity joins preserve shared-variable semantics.
-- [ ] Ref-value joins still compare encoded entity values and encoded ref values correctly.
-- [ ] Disconnected patterns produce the same Cartesian-product multiplicities as `DB::query()`.
+- [x] Entity joins preserve shared-variable semantics.
+- [x] Ref-value joins still compare encoded entity values and encoded ref values correctly.
+- [x] Disconnected patterns produce the same Cartesian-product multiplicities as `DB::query()`.
 
 **Verification:**
-- [ ] Circuit tests cover Cartesian products and ref-value joins.
-- [ ] End-to-end equivalence tests cover entity join and Cartesian product.
-- [ ] `cargo test -p triplox incremental_equivalence`
+- [x] Circuit tests cover Cartesian products and ref-value joins.
+- [x] End-to-end equivalence tests cover entity join and Cartesian product.
+- [x] `cargo test -p triplox incremental_equivalence`
 
 **Dependencies:** Task 3
 
@@ -161,9 +170,9 @@ DBSP storage/runtime contract
 
 ### Checkpoint: Circuit Semantics
 
-- [ ] No full-Z-set `integrate()` query-state path remains.
-- [ ] Circuit and node-level incremental tests pass.
-- [ ] Integrated deltas still match one-shot query results.
+- [x] No full-Z-set `integrate()` query-state path remains.
+- [x] Circuit and node-level incremental tests pass.
+- [x] Integrated deltas still match one-shot query results.
 
 ### Phase 3: Hardening and Documentation
 
@@ -172,13 +181,13 @@ DBSP storage/runtime contract
 **Description:** Add tests that would fail if circuit state were only kept as an in-memory full Z-set or if file-backed storage were not configured. Prefer direct assertions against the DBSP storage setup where available, plus behavioral tests across enough data to exercise trace state.
 
 **Acceptance criteria:**
-- [ ] Tests prove query registration uses a file-backed DBSP storage root.
-- [ ] Tests cover multiple transactions after priming with trace-backed state.
-- [ ] Tests clean up temporary storage directories.
+- [x] Tests prove query registration uses a file-backed DBSP storage root.
+- [x] Tests cover multiple transactions after priming with trace-backed state.
+- [x] Tests clean up temporary storage directories.
 
 **Verification:**
-- [ ] `cargo test -p triplox incremental`
-- [ ] `cargo test -p triplox node`
+- [x] `cargo test -p triplox incremental`
+- [x] `cargo test -p triplox node`
 
 **Dependencies:** Tasks 2-5
 
@@ -194,13 +203,13 @@ DBSP storage/runtime contract
 **Description:** Update the main incremental query design doc after the implementation lands, replacing the current `integrate() + stream_join() + differentiate()` circuit description with the trace-backed/file-backed design.
 
 **Acceptance criteria:**
-- [ ] `design/INCREMENTAL_QUERIES.md` states that relation state is trace-backed and file-backed.
-- [ ] The circuit shape section matches the implemented operator graph.
-- [ ] The docs distinguish in-memory service metadata from file-backed DBSP relation state.
+- [x] `design/INCREMENTAL_QUERIES.md` states that relation state is trace-backed and file-backed.
+- [x] The circuit shape section matches the implemented operator graph.
+- [x] The docs distinguish in-memory service metadata from file-backed DBSP relation state.
 
 **Verification:**
-- [ ] `rg "input\\.integrate\\(|stream_join\\(\\)|differentiate a full" design/INCREMENTAL_QUERIES.md` finds no stale prescribed circuit shape.
-- [ ] `cargo fmt --check`
+- [x] `rg "input\\.integrate\\(|stream_join\\(\\)|differentiate a full" design/INCREMENTAL_QUERIES.md` finds no stale prescribed circuit shape.
+- [x] `cargo fmt --check`
 
 **Dependencies:** Tasks 2-6
 
@@ -212,13 +221,13 @@ DBSP storage/runtime contract
 
 ### Checkpoint: Complete
 
-- [ ] DBSP query relation state is trace-backed.
-- [ ] DBSP trace state is file-backed through configured runtime storage.
-- [ ] Registration still returns only future deltas after its basis.
-- [ ] CDC delivery remains exact and ordered.
-- [ ] One-shot equivalence tests still pass.
-- [ ] `cargo test --workspace`
-- [ ] `cargo clippy --workspace --all-targets --all-features`
+- [x] DBSP query relation state is trace-backed.
+- [x] DBSP trace state is file-backed through configured runtime storage.
+- [x] Registration still returns only future deltas after its basis.
+- [x] CDC delivery remains exact and ordered.
+- [x] One-shot equivalence tests still pass.
+- [x] `cargo test --workspace`
+- [x] `cargo clippy --workspace --all-targets --all-features`
 
 ## Parallelization Opportunities
 
