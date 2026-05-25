@@ -474,6 +474,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_rejects_entity_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let db = node.db().await.unwrap();
+        let err = db
+            .query("[:find ?name :where [_ :name ?name]]")
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("entity position"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_rejects_value_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let db = node.db().await.unwrap();
+        let err = db
+            .query("[:find ?e :where [?e :name _]]")
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("value position"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_two_patterns_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
