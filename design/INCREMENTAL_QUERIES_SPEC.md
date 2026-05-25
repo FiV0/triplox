@@ -207,7 +207,7 @@ Do not persist a separate `last_applied_seq` in v1. In the writer-node-only desi
 
 For writer nodes, `last_indexed_basis` should normally be ahead of the WAL reader. Still, the service should only apply a CDC transaction after the corresponding write has reached memory indexes. In v1 this can be implemented by extracting the transaction entity datoms from the CDC transaction, deriving the `TxKey`, and using the existing `TxWaiter::await_indexed()` path before circuit application. If the tx entity cannot be derived, apply the CDC transaction but mark its output basis as sequence-only and keep this as a test-covered fallback.
 
-The writer-node implementation polls WAL availability with short-lived `CdcStream`s from the last processed sequence. This is intentionally more I/O than a permanently blocked stream, but it handles SlateDB setups where additional rows can become visible under the current WAL id. It still uses `CdcStream::next_transaction()` for transaction grouping and advances the in-memory cursor only after DBSP stepping and subscription delivery succeed.
+The writer-node implementation keeps one long-lived `CdcStream` per writer-node CDC task. Awaiting `CdcStream::next_transaction()` parks the Tokio task cooperatively while the stream polls WAL availability, reopens the current WAL file when needed, and observes cancellation. The live `CdcStream` owns an in-memory read cursor that advances as rows are read. A future durable applied watermark must advance only after DBSP stepping and subscription delivery succeed.
 
 Applying one CDC transaction:
 

@@ -119,6 +119,19 @@ into transaction-sized batches, extracts EAV datoms, waits for the writer node's
 memory indexes to contain the corresponding transaction, and then applies the
 weighted triple delta to the incremental query service.
 
+The CDC cursor is the WAL read-position marker. It contains the WAL file id
+where reading should resume and the last SlateDB row sequence that should be
+skipped because it has already been read. In the current writer-node
+implementation this cursor is in-memory state owned by the live `CdcStream`;
+it lets the stream park on `next_transaction().await`, reopen the current WAL
+file when needed, and continue without rereading earlier rows.
+
+This cursor is not yet a durable query checkpoint. Future crash recovery needs
+a durable applied watermark that advances only after a WAL transaction has been
+decoded, indexed, applied to DBSP, and delivered to subscriptions. That
+watermark can then be used to restart without replay gaps; duplicate replay
+handling also needs to be defined at that point.
+
 For each transaction:
 
 1. `CdcStream` yields one grouped WAL transaction.
@@ -128,7 +141,7 @@ For each transaction:
 5. Datoms become a weighted batch of encoded triples.
 6. The incremental service steps each registered query circuit.
 7. Non-empty result deltas are sent on each subscription channel.
-8. The CDC cursor advances after successful application.
+8. The live stream cursor advances as rows are read.
 
 The current CDC state is in memory. This is sufficient for the writer-node-only
 prototype, but it is not enough for crash recovery or reader nodes.

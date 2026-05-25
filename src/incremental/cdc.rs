@@ -86,48 +86,36 @@ async fn run_writer_cdc_loop(
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let mut cursor = CdcCursor::default();
+    let wal_reader = WalReader::new(path, object_store);
+    let mut stream =
+        CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
 
-    loop {
-        let drain_cancel = CancellationToken::new();
-        drain_cancel.cancel();
-        let wal_reader = WalReader::new(path.clone(), object_store.clone());
-        let mut stream =
-            CdcStream::new(wal_reader, cursor.clone(), CDC_POLL_INTERVAL, drain_cancel).await?;
+    while let Some(tx) = stream.next_transaction().await? {
+        let seq = tx.seq;
+        let (datoms, basis) = {
+            let indexer = indexer.read().await;
+            let datoms =
+                crate::slate::cdc::datoms_from_cdc_transaction(&tx, &indexer.metadata().schema)?;
+            let basis = tx_basis_from_datoms(&datoms);
+            (datoms, basis)
+        };
 
-        while let Some(tx) = stream.next_transaction().await? {
-            let seq = tx.seq;
-            let (datoms, basis) = {
-                let indexer = indexer.read().await;
-                let datoms = crate::slate::cdc::datoms_from_cdc_transaction(
-                    &tx,
-                    &indexer.metadata().schema,
-                )?;
-                let basis = tx_basis_from_datoms(&datoms);
-                (datoms, basis)
-            };
-
-            if let Some(basis) = basis {
-                let waiter = indexer.read().await.tx_waiter();
-                waiter.await_indexed(basis.tx_key).await?;
-            }
-
-            let zset = {
-                let indexer = indexer.read().await;
-                datoms_to_zset(&datoms, &indexer.metadata().schema)?
-            };
-            let _registration_guard = registration_gate.lock().await;
-            service
-                .apply_triples(basis, seq, zset_to_tuples(&zset))
-                .await?;
-            cursor.last_seq = seq;
+        if let Some(basis) = basis {
+            let waiter = indexer.read().await.tx_waiter();
+            waiter.await_indexed(basis.tx_key).await?;
         }
 
-        tokio::select! {
-            _ = tokio::time::sleep(CDC_POLL_INTERVAL) => {}
-            _ = cancel.cancelled() => return Ok(()),
-        }
+        let zset = {
+            let indexer = indexer.read().await;
+            datoms_to_zset(&datoms, &indexer.metadata().schema)?
+        };
+        let _registration_guard = registration_gate.lock().await;
+        service
+            .apply_triples(basis, seq, zset_to_tuples(&zset))
+            .await?;
     }
+
+    Ok(())
 }
 
 pub(crate) fn tx_basis_from_datoms(datoms: &[Datom]) -> Option<TxBasis> {
