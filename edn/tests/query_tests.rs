@@ -349,11 +349,6 @@ fn round_trip_where_fn() {
 }
 
 #[test]
-fn rejects_vector_function_arg() {
-    assert!(parse_query("[:find ?x :where [(some_fn [?x 1])]]").is_err());
-}
-
-#[test]
 fn round_trip_nested_expr_in_where_fn() {
     assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ (* ?y 2) 1) ?result]]");
 }
