@@ -45,7 +45,7 @@ the root `triplox` crate (`src/`), `edn`, and `triplox-client`:
 
 ```bash
 cargo test -p triplox
-cargo test -p edn
+cargo test -p triplox-edn
 cargo test -p triplox-client
 ```
 

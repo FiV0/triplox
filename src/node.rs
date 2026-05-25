@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Error;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 
 use crate::clock;
 use crate::error::TriploxError;
@@ -140,6 +141,15 @@ pub struct Node<L: TxLog> {
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
     incremental_cdc_started: Arc<AtomicBool>,
+    incremental_registration_gate: Arc<Mutex<()>>,
+    #[cfg(test)]
+    incremental_registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
+}
+
+#[cfg(test)]
+struct IncrementalRegistrationPause {
+    reached: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl Node<MemoryLog> {
@@ -155,6 +165,7 @@ impl Node<MemoryLog> {
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
         let incremental = IncrementalQueryService::new(memory_incremental_storage_path(&slate));
+        let incremental_registration_gate = Arc::new(Mutex::new(()));
 
         Node {
             log,
@@ -163,6 +174,9 @@ impl Node<MemoryLog> {
             subscription,
             incremental,
             incremental_cdc_started: Arc::new(AtomicBool::new(false)),
+            incremental_registration_gate,
+            #[cfg(test)]
+            incremental_registration_pause: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -226,6 +240,9 @@ impl Node<FileLog> {
             subscription,
             incremental,
             incremental_cdc_started: Arc::new(AtomicBool::new(false)),
+            incremental_registration_gate: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            incremental_registration_pause: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -316,6 +333,7 @@ impl<L: TxLog> Node<L> {
         &self,
         query: ParsedQuery,
     ) -> Result<IncrementalQuerySubscription, Error> {
+        let _registration_guard = self.incremental_registration_gate.lock().await;
         let basis = latest_tx_basis_from_sdb(self.slate.db.as_ref()).await?;
         let plan = {
             let indexer = self.indexer.read().await;
@@ -323,6 +341,9 @@ impl<L: TxLog> Node<L> {
         };
         let initial_triples =
             scan_current_triples(self.slate.db.as_ref(), &plan, basis.tx_eid).await?;
+        #[cfg(test)]
+        self.pause_incremental_registration_after_snapshot_for_test()
+            .await;
         let wal_cursor = CdcCursor {
             wal_id: 0,
             last_seq: self.slate.db.status().durable_seq,
@@ -370,8 +391,34 @@ impl<L: TxLog> Node<L> {
                 self.slate.object_store.clone(),
                 self.indexer.clone(),
                 self.incremental.clone(),
+                self.incremental_registration_gate.clone(),
                 self.subscription.clone(),
             );
+        }
+    }
+
+    #[cfg(test)]
+    async fn pause_next_incremental_registration_after_snapshot_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached, reached_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self.incremental_registration_pause.lock().await = Some(IncrementalRegistrationPause {
+            reached,
+            release: release_rx,
+        });
+        (reached_rx, release)
+    }
+
+    #[cfg(test)]
+    async fn pause_incremental_registration_after_snapshot_for_test(&self) {
+        let pause = self.incremental_registration_pause.lock().await.take();
+        if let Some(IncrementalRegistrationPause { reached, release }) = pause {
+            let _ = reached.send(());
+            let _ = release.await;
         }
     }
 }
@@ -431,6 +478,7 @@ impl<L: TxLog> QueryNode for Node<L> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
@@ -696,6 +744,115 @@ mod tests {
             delta.rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
         );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_registration_does_not_miss_tx_between_basis_and_insert() {
+        let node = Arc::new(Node::memory_node().await);
+        define_test_schema(node.as_ref()).await;
+        flush_wal(node.as_ref()).await;
+        let mut first_subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        let (registration_paused, release_registration) = node
+            .pause_next_incremental_registration_after_snapshot_for_test()
+            .await;
+        let registering_node = node.clone();
+        let registration = tokio::spawn(async move {
+            registering_node
+                .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(5), registration_paused)
+            .await
+            .expect("timed out waiting for registration pause")
+            .expect("registration pause sender dropped");
+
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(node.as_ref()).await;
+        assert!(try_recv_incremental_delta(&mut first_subscription)
+            .await
+            .is_none());
+
+        release_registration
+            .send(())
+            .expect("registration release receiver should be waiting");
+        let mut second_subscription = registration.await.unwrap();
+
+        let first_delta = recv_incremental_delta(&mut first_subscription).await;
+        let second_delta = recv_incremental_delta(&mut second_subscription).await;
+        assert_eq!(first_delta.basis, Some(basis));
+        assert_eq!(second_delta.basis, Some(basis));
+        assert_eq!(
+            first_delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+        assert_eq!(second_delta.rows, first_delta.rows);
+    }
+
+    #[tokio::test]
+    async fn test_incremental_registration_basis_inside_wal_replays_after_basis_only() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let first_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        assert_eq!(subscription.basis, first_basis);
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+
+        let second_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(second_basis));
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Bob".to_string())], 1)]
+        );
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
     }
 
     #[tokio::test]

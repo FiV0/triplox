@@ -342,7 +342,7 @@ dbsp dependency and module scaffolding
 **Dependencies:** Task 11
 
 **Files likely touched:**
-- `design/INCREMENTAL_QUERIES.md`
+- `design/INCREMENTAL_QUERIES_SPEC.md`
 - Implementation files from earlier tasks as needed
 
 **Estimated scope:** S

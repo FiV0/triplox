@@ -7,7 +7,7 @@ use dbsp::{typed_batch::IndexedZSetReader, utils::Tup2, OrdZSet, ZWeight};
 use log::error;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::Encode;
@@ -59,10 +59,20 @@ pub(crate) fn spawn_writer_cdc_loop(
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
+    registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
 ) {
     tokio::spawn(async move {
-        if let Err(err) = run_writer_cdc_loop(path, object_store, indexer, service, cancel).await {
+        if let Err(err) = run_writer_cdc_loop(
+            path,
+            object_store,
+            indexer,
+            service,
+            registration_gate,
+            cancel,
+        )
+        .await
+        {
             error!("Incremental query CDC loop stopped: {:#}", err);
         }
     });
@@ -73,6 +83,7 @@ async fn run_writer_cdc_loop(
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
+    registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
 ) -> Result<()> {
     let mut cursor = CdcCursor::default();
@@ -105,6 +116,7 @@ async fn run_writer_cdc_loop(
                 let indexer = indexer.read().await;
                 datoms_to_zset(&datoms, &indexer.metadata().schema)?
             };
+            let _registration_guard = registration_gate.lock().await;
             service
                 .apply_triples(basis, seq, zset_to_tuples(&zset))
                 .await?;

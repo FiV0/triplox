@@ -203,18 +203,18 @@ DBSP storage/runtime contract
 **Description:** Update the main incremental query design doc after the implementation lands, replacing the current `integrate() + stream_join() + differentiate()` circuit description with the trace-backed/file-backed design.
 
 **Acceptance criteria:**
-- [x] `design/INCREMENTAL_QUERIES.md` states that relation state is trace-backed and file-backed.
+- [x] `design/INCREMENTAL_QUERIES_SPEC.md` states that relation state is trace-backed and file-backed.
 - [x] The circuit shape section matches the implemented operator graph.
 - [x] The docs distinguish in-memory service metadata from file-backed DBSP relation state.
 
 **Verification:**
-- [x] `rg "input\\.integrate\\(|stream_join\\(\\)|differentiate a full" design/INCREMENTAL_QUERIES.md` finds no stale prescribed circuit shape.
+- [x] `rg "input\\.integrate\\(|stream_join\\(\\)|differentiate a full" design/INCREMENTAL_QUERIES_SPEC.md` finds no stale prescribed circuit shape.
 - [x] `cargo fmt --check`
 
 **Dependencies:** Tasks 2-6
 
 **Files likely touched:**
-- `design/INCREMENTAL_QUERIES.md`
+- `design/INCREMENTAL_QUERIES_SPEC.md`
 - `design/INCREMENTAL_QUERIES_TRACE_PLAN.md`
 
 **Estimated scope:** S
