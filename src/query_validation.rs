@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Error;
 use edn::query::{
-    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, Variable, WhereClause,
+    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
+    PatternValuePlace, Variable, WhereClause,
 };
 
 use crate::expr::expr_variables;
@@ -77,6 +78,17 @@ fn validate_pattern_variables_in_clause(clause: &WhereClause) -> Result<(), Erro
 }
 
 fn validate_single_pattern_variables(pattern: &Pattern) -> Result<(), Error> {
+    if matches!(&pattern.entity, PatternNonValuePlace::Placeholder) {
+        return Err(anyhow::anyhow!(
+            "Placeholders in entity position are not supported"
+        ));
+    }
+    if matches!(&pattern.value, PatternValuePlace::Placeholder) {
+        return Err(anyhow::anyhow!(
+            "Placeholders in value position are not supported"
+        ));
+    }
+
     let mut seen = HashSet::new();
     for var in pattern_variables(pattern) {
         if !seen.insert(var.clone()) {
