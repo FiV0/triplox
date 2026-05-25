@@ -344,6 +344,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_rejects_unary_predicate_function() {
+        let parsed = parse_query(r#"[:find ?e :where [?e :age ?age] [(abs ?age)]]"#);
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Unsupported operator"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
     fn test_validate_rejects_repeated_variable_in_single_pattern() {
         let parsed = parse_query("{:find [?x] :where [[?x :g/to ?x]]}");
         let err = validate_query(&parsed, &[]).unwrap_err();

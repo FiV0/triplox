@@ -319,7 +319,30 @@ fn build_regexp_like(args: &[edn::query::FnArg]) -> Result<Expr, Error> {
 }
 
 pub(crate) fn convert_predicate(pred: &Predicate) -> Result<Expr, Error> {
-    convert_fn_arg(&pred.expr)
+    let edn::query::FnArg::SExpr(func, args) = &pred.expr else {
+        return Err(anyhow::anyhow!(
+            "Predicate expression must be a function call"
+        ));
+    };
+    let op_name = func.0.as_str();
+    if op_name == "regexp_like" {
+        return build_regexp_like(args);
+    }
+    let op = convert_binary_op(op_name)?;
+    if args.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "Predicate '{}' expects 2 args, got {}",
+            op_name,
+            args.len()
+        ));
+    }
+    let left = convert_fn_arg(&args[0])?;
+    let right = convert_fn_arg(&args[1])?;
+    Ok(Expr::BinaryExpr(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    }))
 }
 
 fn is_direct_regexp_like(arg: &edn::query::FnArg) -> bool {
