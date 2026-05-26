@@ -84,7 +84,71 @@ from a snapshot plus WAL replay or restore them from DBSP checkpoints.
 
 ---
 
-## 3. Registration Basis
+## 3. Runtime Flow
+
+The main runtime boundary is `IncrementalQueryService`. It is a cloneable handle
+used by async code, but it does not own the mutable query state directly.
+Instead, it sends `IncrementalCommand`s to one dedicated service thread. That
+thread owns the registry of active queries and every query's DBSP circuit.
+
+Registration flows through the system as follows:
+
+```text
+Node::register_incremental_query
+    captures a TxBasis and WAL cursor
+    plans the query with inc_query.rs
+    scans initial triples with incremental/cdc.rs
+    sends Register to IncrementalQueryService
+
+triplox-incremental-query thread
+    builds one QueryCircuit for the plan
+    primes it with the initial triples
+    stores the circuit, basis, WAL cursor, and subscription sender
+    returns an IncrementalQuerySubscription
+```
+
+The split exists because DBSP circuit handles are mutable state that should be
+stepped serially. The service thread gives the async node and CDC tasks a small
+message-passing API while keeping circuit mutation, query registration, and
+query cleanup in one place.
+
+Live WAL application follows the same boundary:
+
+```text
+Tokio CDC task
+    reads one WAL transaction
+    decodes it to datoms using the node schema
+    converts datoms to weighted EncodedTriple tuples
+    sends ApplyTriples to IncrementalQueryService
+
+triplox-incremental-query thread
+    loops over registered queries
+    skips transactions at or before each query basis
+    steps each relevant QueryCircuit
+    sends non-empty IncrementalQueryDelta values to that query's receiver
+```
+
+There are two channel directions:
+
+- `std::sync::mpsc` carries commands into the service thread. It fits the
+  blocking `receiver.recv()` loop used by the dedicated thread.
+- `tokio::sync::mpsc` carries `IncrementalQueryDelta` values back to async
+  subscribers. The service thread uses `blocking_send`, so a slow subscriber
+  applies backpressure instead of losing deltas.
+
+`IncrementalQueryDelta` is therefore not the command protocol. It is the
+subscriber-facing result batch emitted after a circuit step. The command
+protocol exists to serialize mutations to the query registry and DBSP circuits.
+
+Registration is serialized against CDC application by a node-level registration
+gate. The gate covers the snapshot/register cutover on the registration path and
+the `apply_triples` call on the CDC path. This prevents a transaction after the
+registration basis from being consumed by the global CDC loop before the new
+query is present in the service registry.
+
+---
+
+## 4. Registration Basis
 
 Registration creates a cutover point:
 
@@ -111,13 +175,17 @@ registration basis and applies later ones.
 
 ---
 
-## 4. CDC Flow
+## 5. CDC Flow
 
 The writer node has one CDC loop for all incremental queries. It uses SlateDB
 `WalReader` through Triplox's `CdcStream` helper. The loop decodes WAL entries
-into transaction-sized batches, extracts EAV datoms, waits for the writer node's
-memory indexes to contain the corresponding transaction, and then applies the
-weighted triple delta to the incremental query service.
+into transaction-sized batches, extracts EAV datoms using the current node
+schema, and then applies the weighted triple delta to the incremental query
+service. It does not wait on the writer indexer before applying a WAL entry;
+in the current writer-node path, a WAL entry observed here has already passed
+through the write/indexing path that produced it. The schema still comes through
+the node boundary because CDC decoding needs the current ident and attribute
+maps.
 
 The CDC cursor is the WAL read-position marker. It contains the WAL file id
 where reading should resume and the last SlateDB row sequence that should be
@@ -137,18 +205,18 @@ For each transaction:
 1. `CdcStream` yields one grouped WAL transaction.
 2. EAV entries are decoded into datoms.
 3. Transaction metadata is converted into a `TxBasis` when possible.
-4. The CDC task waits until that transaction has been indexed.
-5. Datoms become a weighted batch of encoded triples.
-6. The incremental service steps each registered query circuit.
-7. Non-empty result deltas are sent on each subscription channel.
-8. The live stream cursor advances as rows are read.
+4. Datoms become a weighted batch of encoded triples.
+5. The incremental service steps each registered query circuit that has not
+   already advanced past this transaction.
+6. Non-empty result deltas are sent on each subscription channel.
+7. The live stream cursor advances as rows are read.
 
 The current CDC state is in memory. This is sufficient for the writer-node-only
 prototype, but it is not enough for crash recovery or reader nodes.
 
 ---
 
-## 5. Subscription Lifecycle
+## 6. Subscription Lifecycle
 
 Each registration returns:
 
@@ -167,7 +235,52 @@ query's per-query DBSP storage directory.
 
 ---
 
-## 6. What Is Missing
+## 7. Threading and Tuning Knobs
+
+The current implementation has one incremental service thread per
+`IncrementalQueryService`, not one thread per query. All registered queries are
+stored in one registry and are stepped sequentially on that thread when an
+`ApplyTriples` command arrives. Each registered query still owns a separate DBSP
+circuit and separate DBSP storage directory.
+
+The CDC reader is a Tokio task, not a dedicated OS thread. It parks on
+`CdcStream::next_transaction().await`, decodes one transaction at a time, and
+sends work to the service thread. Regular node APIs also run on Tokio runtime
+threads.
+
+Current tuning knobs are intentionally small and mostly hard-coded:
+
+- `SUBSCRIPTION_CAPACITY` controls each result channel's bounded capacity.
+  Raising it absorbs longer subscriber pauses at the cost of memory and lag;
+  lowering it applies backpressure sooner.
+- `CDC_POLL_INTERVAL` controls how often the CDC stream polls for new WAL
+  transactions when no transaction is immediately available.
+- `CircuitConfig::with_workers(1)` makes each query circuit single-worker
+  today. Increasing DBSP workers would require checking circuit handle
+  ownership, storage layout, and whether one service thread should still drive
+  all query steps.
+- The current service has one command loop for all queries. Future scaling
+  options include sharding registered queries across service threads, grouping
+  queries by database or workload, or introducing a worker pool for circuit
+  stepping.
+- Each query has its own circuit. Future sharing could reuse circuits,
+  arrangements, or pattern streams across equivalent or overlapping queries.
+- The initial scan currently scans EAV and filters needed attributes in memory.
+  Attribute-specific scans are a straightforward read-path optimization.
+- CDC currently applies one WAL transaction at a time. Future batching could
+  coalesce multiple WAL transactions, but that would change delta granularity
+  and basis reporting semantics.
+- DBSP storage is file-backed per query. Cache sizing, storage roots,
+  compaction, and checkpoint/restore policy are future operational controls.
+
+The backpressure behavior is deliberate: result deltas are lossless state
+changes. If a subscriber cannot keep up, the service thread blocks while sending
+that query's delta instead of dropping it and corrupting the receiver's
+integrated view.
+
+---
+
+## 8. What Is Missing
 
 The current implementation is useful as the first execution path, but it is not
 the final incremental query system.
@@ -204,7 +317,7 @@ Missing performance work:
 
 ---
 
-## 7. Direction
+## 9. Direction
 
 The next major step is to make incremental queries robust across restarts. That
 requires a durable CDC cursor, a clear WAL-retention contract, and either DBSP
