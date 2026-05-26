@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
-use log::error;
+use log::{error, info};
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
 use tokio::sync::{Mutex, RwLock};
@@ -111,6 +111,7 @@ async fn run_writer_cdc_loop(
         // The registration gate is released before polling the next WAL transaction.
     }
 
+    info!("Incremental query CDC stream exited normally");
     Ok(())
 }
 
@@ -202,11 +203,41 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use edn::kw;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::metadata::{Metadata, PartitionMap};
     use crate::schema::{Attribute, Schema, ValueType};
+
+    #[tokio::test]
+    async fn writer_cdc_loop_exits_ok_when_cancelled() {
+        let slate = crate::slate::in_memory_slate().await;
+        let indexer = Arc::new(RwLock::new(Indexer::new(
+            slate.db.clone(),
+            Metadata::new(test_schema(), PartitionMap::new()),
+            None,
+        )));
+        let service =
+            IncrementalQueryService::new(tempfile::tempdir().unwrap().path().to_path_buf());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = run_writer_cdc_loop(
+            slate.path,
+            slate.object_store,
+            indexer,
+            service,
+            Arc::new(Mutex::new(())),
+            cancel,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
 
     fn test_schema() -> Schema {
         let name = kw!(:name);
