@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
-use crate::schema::IdentMap;
+use crate::schema::{IdentMap, Schema};
 use crate::slate::cdc::CdcCursor;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
@@ -145,6 +146,22 @@ pub struct Node<L: TxLog> {
     // Test hook for deterministically exercising the registration snapshot race.
     #[cfg(test)]
     incremental_registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
+}
+
+pub(crate) trait InternalNode: Send + Sync + 'static {
+    fn schema(&self) -> impl Future<Output = Schema> + Send + '_;
+}
+
+impl InternalNode for tokio::sync::RwLock<Indexer> {
+    async fn schema(&self) -> Schema {
+        self.read().await.metadata().schema.clone()
+    }
+}
+
+impl<L: TxLog> InternalNode for Node<L> {
+    async fn schema(&self) -> Schema {
+        self.indexer.schema().await
+    }
 }
 
 #[cfg(test)]

@@ -442,7 +442,7 @@ fn is_schema_attribute(attribute: &Keyword) -> bool {
 }
 
 /// The schema: bidirectional ident/entid maps + attribute definitions.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Schema {
     pub entid_map: EntidMap,
     pub ident_map: IdentMap,

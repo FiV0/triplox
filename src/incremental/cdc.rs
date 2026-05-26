@@ -7,13 +7,14 @@ use dbsp::{utils::Tup2, ZWeight};
 use log::{error, info};
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::Encode;
 use crate::inc_query::IncrementalQueryPlan;
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
-use crate::indexer::{eav_key_to_parts, Indexer};
+use crate::indexer::eav_key_to_parts;
+use crate::node::InternalNode;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
 use crate::slate::cdc::{CdcCursor, CdcStream};
@@ -51,56 +52,46 @@ pub(crate) fn datoms_to_tuples(
         .collect::<Result<Vec<_>>>()
 }
 
-pub(crate) fn spawn_cdc_loop(
+pub(crate) fn spawn_cdc_loop<N>(
     path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    node: Arc<N>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
-) {
+) where
+    N: InternalNode,
+{
     tokio::spawn(async move {
-        if let Err(err) = run_cdc_loop(
-            path,
-            object_store,
-            indexer,
-            service,
-            registration_gate,
-            cancel,
-        )
-        .await
+        if let Err(err) =
+            run_cdc_loop(path, object_store, node, service, registration_gate, cancel).await
         {
             error!("Incremental query CDC loop stopped: {:#}", err);
         }
     });
 }
 
-async fn run_cdc_loop(
+async fn run_cdc_loop<N>(
     path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    node: Arc<N>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
-) -> Result<()> {
+) -> Result<()>
+where
+    N: InternalNode,
+{
     let wal_reader = WalReader::new(path, object_store);
     let mut stream =
         CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
         let seq = tx.seq;
-        let (datoms, basis) = {
-            let indexer = indexer.read().await;
-            let datoms =
-                crate::slate::cdc::datoms_from_cdc_transaction(&tx, &indexer.metadata().schema)?;
-            let basis = tx_basis_from_datoms(&datoms);
-            (datoms, basis)
-        };
-
-        let tuples = {
-            let indexer = indexer.read().await;
-            datoms_to_tuples(&datoms, &indexer.metadata().schema)?
-        };
+        let schema = node.schema().await;
+        let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
+        let basis = tx_basis_from_datoms(&datoms);
+        let tuples = datoms_to_tuples(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
         service.apply_triples(basis, seq, tuples).await?;
         // The registration gate is released before polling the next WAL transaction.
@@ -205,6 +196,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::indexer::Indexer;
     use crate::metadata::{Metadata, PartitionMap};
     use crate::schema::{Attribute, Schema, ValueType};
 
