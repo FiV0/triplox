@@ -9,11 +9,23 @@ use crate::indexer::eav_key_to_parts;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
 
-/// Tracks position in the WAL stream for resumability.
-#[derive(Debug, Default, Clone)]
+/// Tracks the CDC stream position.
+///
+/// `last_seq` is the exclusive lower bound for rows yielded by the stream.
+/// `wal_id` is the WAL file currently being read, or the next WAL id to discover.
+#[derive(Debug, Clone)]
 pub struct CdcCursor {
     pub wal_id: u64,
     pub last_seq: u64,
+}
+
+impl Default for CdcCursor {
+    fn default() -> Self {
+        Self {
+            wal_id: 1,
+            last_seq: 0,
+        }
+    }
 }
 
 /// A single CDC transaction: all RowEntries sharing one seq number.
@@ -76,9 +88,9 @@ impl CdcStream {
         let seq = first.seq;
         let mut entries = vec![first];
 
-        // Accumulate entries with the same seq.
+        // Accumulate entries with the same seq inside the current WAL file.
         loop {
-            match self.next_entry().await? {
+            match self.next_entry_in_current_file().await? {
                 Some(entry) if entry.seq == seq => {
                     entries.push(entry);
                 }
@@ -88,7 +100,8 @@ impl CdcStream {
                     break;
                 }
                 None => {
-                    // Cancelled or no more data — yield what we have.
+                    // WAL files are immutable and transactions do not cross file
+                    // boundaries, so EOF completes the current transaction.
                     break;
                 }
             }
@@ -107,16 +120,9 @@ impl CdcStream {
             return Ok(Some(entry));
         }
 
-        let skip_seq = self.cursor.last_seq;
-
         loop {
-            // Try reading from current iterator, skipping already-processed entries.
-            if let Some(ref mut iter) = self.current_iter {
-                while let Some(entry) = iter.next().await? {
-                    if entry.seq > skip_seq {
-                        return Ok(Some(entry));
-                    }
-                }
+            if let Some(entry) = self.next_entry_in_current_file().await? {
+                return Ok(Some(entry));
             }
 
             // Current file exhausted — try next file.
@@ -124,13 +130,10 @@ impl CdcStream {
                 continue;
             }
 
-            // No more files — poll for new WAL files (after the one we already processed).
+            // No more files — poll for the current cursor WAL or later.
             loop {
-                let new_files: VecDeque<WalFile> = self
-                    .wal_reader
-                    .list((self.cursor.wal_id + 1)..)
-                    .await?
-                    .into();
+                let new_files: VecDeque<WalFile> =
+                    self.wal_reader.list(self.cursor.wal_id..).await?.into();
 
                 if !new_files.is_empty() {
                     self.wal_files = new_files;
@@ -138,13 +141,31 @@ impl CdcStream {
                     break;
                 }
 
-                // Wait for new data or cancellation.
+                // Wait for a newly visible immutable WAL file or cancellation.
                 tokio::select! {
                     _ = tokio::time::sleep(self.poll_interval) => continue,
                     _ = self.cancel.cancelled() => return Ok(None),
                 }
             }
         }
+    }
+
+    /// Get the next entry from the already-open WAL file.
+    /// Returns None when that immutable file is exhausted.
+    async fn next_entry_in_current_file(&mut self) -> Result<Option<RowEntry>, slatedb::Error> {
+        let Some(ref mut iter) = self.current_iter else {
+            return Ok(None);
+        };
+
+        while let Some(entry) = iter.next().await? {
+            if entry.seq > self.cursor.last_seq {
+                return Ok(Some(entry));
+            }
+        }
+
+        self.cursor.wal_id += 1;
+        self.current_iter = None;
+        Ok(None)
     }
 
     /// Pop the next WAL file from the queue and open its iterator.
@@ -580,17 +601,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_cursor_waits_for_live_transactions() {
+    async fn test_cdc_cursor_polls_cursor_wal_when_initial_list_is_empty() {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (db, object_store) = setup_db("/test_cursor_empty_initial_list").await;
+
+            let wal_reader = WalReader::new("/test_cursor_empty_initial_list", object_store);
+            let next_wal_id = wal_reader
+                .list(..)
+                .await
+                .unwrap()
+                .last()
+                .map(|file| file.id + 1)
+                .unwrap_or(1);
+            assert!(wal_reader.list(next_wal_id..).await.unwrap().is_empty());
+
+            let cancel = CancellationToken::new();
+            let mut stream = CdcStream::new(
+                wal_reader,
+                CdcCursor {
+                    wal_id: next_wal_id,
+                    last_seq: 0,
+                },
+                Duration::from_millis(10),
+                cancel,
+            )
+            .await
+            .unwrap();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                db.put(b"k1", b"v1").await.unwrap();
+                db.flush_with_options(flush_opts()).await.unwrap();
+            });
+
+            let tx = stream
+                .next_transaction()
+                .await
+                .unwrap()
+                .expect("stream should poll the cursor WAL id after an empty initial list");
+
+            assert!(tx.entries.iter().any(|entry| {
+                entry.key.as_ref() == b"k1"
+                    && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v1")
+            }));
+        })
+        .await
+        .expect("test_cdc_cursor_polls_cursor_wal_when_initial_list_is_empty timed out");
+    }
+
+    #[tokio::test]
+    async fn test_cdc_cursor_skips_old_wals_then_reads_live_transactions() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (db, object_store) = setup_db("/test_cursor_live").await;
+            let (db, object_store) = setup_db("/test_cursor_skip_then_live").await;
 
             db.put(b"k1", b"v1").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
+            db.put(b"k2", b"v2").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
 
             let current_seq = db.status().durable_seq;
-
-            // Create stream BEFORE new transactions exist.
-            let wal_reader = WalReader::new("/test_cursor_live", object_store);
+            let wal_reader = WalReader::new("/test_cursor_skip_then_live", object_store);
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             let mut stream = CdcStream::new(
@@ -605,13 +675,12 @@ mod tests {
             .await
             .unwrap();
 
-            // Spawn background task to write new transactions then cancel.
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                db.put(b"k2", b"v2").await.unwrap();
+                db.put(b"k3", b"v3").await.unwrap();
                 db.flush_with_options(flush_opts()).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                db.put(b"k3", b"v3").await.unwrap();
+                db.put(b"k4", b"v4").await.unwrap();
                 db.flush_with_options(flush_opts()).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 cancel_clone.cancel();
@@ -632,9 +701,65 @@ mod tests {
                 "expected at least 2 live transactions, got {}",
                 txs.len()
             );
+            assert!(txs.iter().any(|tx| {
+                tx.entries.iter().any(|entry| {
+                    entry.key.as_ref() == b"k3"
+                        && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v3")
+                })
+            }));
+            assert!(txs.iter().any(|tx| {
+                tx.entries.iter().any(|entry| {
+                    entry.key.as_ref() == b"k4"
+                        && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v4")
+                })
+            }));
         })
         .await
-        .expect("test_cdc_cursor_waits_for_live_transactions timed out");
+        .expect("test_cdc_cursor_skips_old_wals_then_reads_live_transactions timed out");
+    }
+
+    #[tokio::test]
+    async fn test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (db, object_store) = setup_db("/test_cursor_wal_file_eof").await;
+
+            db.put(b"k1", b"v1").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+
+            let current_seq = db.status().durable_seq;
+            let wal_reader = WalReader::new("/test_cursor_wal_file_eof", object_store);
+            let cancel = CancellationToken::new();
+            let mut stream = CdcStream::new(
+                wal_reader,
+                CdcCursor {
+                    wal_id: 0,
+                    last_seq: current_seq,
+                },
+                Duration::from_millis(10),
+                cancel,
+            )
+            .await
+            .unwrap();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                db.put(b"k2", b"v2").await.unwrap();
+                db.flush_with_options(flush_opts()).await.unwrap();
+            });
+
+            let tx = stream
+                .next_transaction()
+                .await
+                .unwrap()
+                .expect("transaction at WAL file EOF should be yielded without cancellation");
+
+            assert!(tx.seq > current_seq);
+            assert_eq!(tx.entries.len(), 1);
+        })
+        .await
+        .expect(
+            "test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation timed out",
+        );
     }
 
     #[tokio::test]
