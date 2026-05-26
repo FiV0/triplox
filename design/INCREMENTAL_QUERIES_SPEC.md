@@ -105,7 +105,7 @@ Entity positions are encoded as `DataType::Long(entity).encode()`. This keeps jo
 `EncodedTriple` is only the base fact input shape. After pattern filtering, DBSP operators should pass around rows of encoded values:
 
 ```text
-OrdZSet<EncodedTriple>  -> base CDC/input relation
+Vec<Tup2<EncodedTriple, ZWeight>> -> base CDC/input batch
 OrdZSet<EncodedRow>     -> pattern rows, join rows, and projected result rows
 ```
 
@@ -114,10 +114,10 @@ For example, `[?e :name ?name]` maps an `EncodedTriple` to an `EncodedRow` conta
 CDC conversion should operate at the transaction/batch level, not one helper call per datom:
 
 ```rust
-fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSet<EncodedTriple>>;
+fn datoms_to_tuples(datoms: &[Datom], schema: &Schema) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>;
 ```
 
-`datoms_to_zset()` translates every CDC datom in one transaction into weighted `EncodedTriple` records, using `+1` for `DatomOp::Assert` and `-1` for `DatomOp::Retract`. Duplicate triples in the same CDC transaction are combined by the Z-set representation before the circuit step.
+`datoms_to_tuples()` translates every CDC datom in one transaction into weighted `EncodedTriple` records, using `+1` for `DatomOp::Assert` and `-1` for `DatomOp::Retract`. The current per-transaction CDC path assumes these tuples form a set because Triplox transaction semantics guarantee that today, so this conversion does not consolidate duplicates before the circuit step.
 
 Projection decodes final `EncodedValue`s back to `DataType` for `QueryResult`-compatible rows.
 
@@ -263,7 +263,7 @@ Do not use `tokio::sync::broadcast` for v1 exact subscriptions; lagging receiver
 
 The internal execution model still follows DBSP handles, not channels:
 
-1. The CDC task converts one WAL transaction to an `OrdZSet<EncodedTriple>`.
+1. The CDC task converts one WAL transaction to a `Vec<Tup2<EncodedTriple, ZWeight>>`.
 2. The task appends it to the DBSP input handle.
 3. The task steps the circuit, letting trace-backed operators update DBSP-managed file-backed state.
 4. The task immediately drains/consolidates the DBSP output handle.
@@ -302,7 +302,7 @@ Unit tests:
 
 - Planner rejects unsupported query forms with stable error messages.
 - Planner accepts single-pattern and multi-pattern fixed-attribute queries.
-- Datom-batch-to-Z-set conversion maps assert/retract to `+1`/`-1` and consolidates duplicate triples.
+- Datom-batch conversion maps assert/retract to `+1`/`-1`.
 - Repeated variable patterns are rejected during registration validation.
 
 Circuit tests:

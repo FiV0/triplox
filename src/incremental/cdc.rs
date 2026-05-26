@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use dbsp::{typed_batch::IndexedZSetReader, utils::Tup2, OrdZSet, ZWeight};
+use dbsp::{utils::Tup2, ZWeight};
 use log::error;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
@@ -23,8 +23,13 @@ use crate::{codec, util::concat_bytes};
 
 const CDC_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSet<EncodedTriple>> {
-    let tuples = datoms
+pub(crate) fn datoms_to_tuples(
+    datoms: &[Datom],
+    schema: &Schema,
+) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>> {
+    // Triplox transaction semantics currently guarantee that the tuples going
+    // into the circuit form a set, so this conversion does not consolidate.
+    datoms
         .iter()
         .map(|datom| {
             let (attribute, _) = schema
@@ -43,15 +48,7 @@ pub(crate) fn datoms_to_zset(datoms: &[Datom], schema: &Schema) -> Result<OrdZSe
                 weight,
             ))
         })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(OrdZSet::from_keys((), tuples))
-}
-
-pub(crate) fn zset_to_tuples(zset: &OrdZSet<EncodedTriple>) -> Vec<Tup2<EncodedTriple, ZWeight>> {
-    zset.iter()
-        .map(|(triple, (), weight)| Tup2(triple, weight))
-        .collect()
+        .collect::<Result<Vec<_>>>()
 }
 
 pub(crate) fn spawn_writer_cdc_loop(
@@ -105,14 +102,12 @@ async fn run_writer_cdc_loop(
             waiter.await_indexed(basis.tx_key).await?;
         }
 
-        let zset = {
+        let tuples = {
             let indexer = indexer.read().await;
-            datoms_to_zset(&datoms, &indexer.metadata().schema)?
+            datoms_to_tuples(&datoms, &indexer.metadata().schema)?
         };
         let _registration_guard = registration_gate.lock().await;
-        service
-            .apply_triples(basis, seq, zset_to_tuples(&zset))
-            .await?;
+        service.apply_triples(basis, seq, tuples).await?;
     }
 
     Ok(())
@@ -207,7 +202,6 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use dbsp::{typed_batch::IndexedZSetReader, ZSet};
     use edn::kw;
 
     use super::*;
@@ -249,12 +243,6 @@ mod tests {
         }
     }
 
-    fn zset_tuples(zset: &OrdZSet<EncodedTriple>) -> Vec<(EncodedTriple, ZWeight)> {
-        zset.iter()
-            .map(|(triple, (), weight)| (triple, weight))
-            .collect()
-    }
-
     #[test]
     fn assert_datom_becomes_positive_encoded_triple() {
         let schema = test_schema();
@@ -265,13 +253,11 @@ mod tests {
             op: DatomOp::Assert,
         }];
 
-        let zset = datoms_to_zset(&datoms, &schema).unwrap();
-        let tuples = zset_tuples(&zset);
+        let tuples = datoms_to_tuples(&datoms, &schema).unwrap();
 
-        assert_eq!(zset.weighted_count(), 1);
         assert_eq!(
             tuples,
-            vec![(
+            vec![Tup2(
                 EncodedTriple {
                     entity: DataType::Long(42).encode(),
                     attribute: 10,
@@ -292,13 +278,11 @@ mod tests {
             op: DatomOp::Retract,
         }];
 
-        let zset = datoms_to_zset(&datoms, &schema).unwrap();
-        let tuples = zset_tuples(&zset);
+        let tuples = datoms_to_tuples(&datoms, &schema).unwrap();
 
-        assert_eq!(zset.weighted_count(), -1);
         assert_eq!(
             tuples,
-            vec![(
+            vec![Tup2(
                 EncodedTriple {
                     entity: DataType::Long(42).encode(),
                     attribute: 11,
@@ -319,48 +303,7 @@ mod tests {
             op: DatomOp::Assert,
         }];
 
-        let err = datoms_to_zset(&datoms, &schema).unwrap_err();
+        let err = datoms_to_tuples(&datoms, &schema).unwrap_err();
         assert!(err.to_string().contains("Unknown attribute: :unknown"));
-    }
-
-    #[test]
-    fn duplicate_triples_are_consolidated() {
-        let schema = test_schema();
-        let datoms = [
-            Datom {
-                entity: 42,
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-                op: DatomOp::Assert,
-            },
-            Datom {
-                entity: 42,
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-                op: DatomOp::Assert,
-            },
-            Datom {
-                entity: 42,
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-                op: DatomOp::Retract,
-            },
-        ];
-
-        let zset = datoms_to_zset(&datoms, &schema).unwrap();
-        let tuples = zset_tuples(&zset);
-
-        assert_eq!(zset.weighted_count(), 1);
-        assert_eq!(
-            tuples,
-            vec![(
-                EncodedTriple {
-                    entity: DataType::Long(42).encode(),
-                    attribute: 11,
-                    value: DataType::Long(30).encode(),
-                },
-                1,
-            )]
-        );
     }
 }

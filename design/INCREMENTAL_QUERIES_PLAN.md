@@ -8,7 +8,7 @@ Implement the first writer-node incremental query path for fixed-attribute tripl
 
 - Use `dbsp` directly for circuit construction. Each registered query owns one DBSP circuit with an `OrdZSet<EncodedTriple>` input and `EncodedRow` streams between operators.
 - Keep query-subset validation and variable layout in `src/inc_query.rs`, separate from the existing one-shot query compiler.
-- Convert CDC datoms to DBSP input at transaction granularity with `datoms_to_zset(datoms, schema)`, mapping assertions to `+1` and retractions to `-1`.
+- Convert CDC datoms to DBSP input at transaction granularity with `datoms_to_tuples(datoms, schema)`, mapping assertions to `+1` and retractions to `-1`.
 - Support disconnected pattern groups as Cartesian products, matching the standard query engine.
 - Expose crate-internal registration through `Node<L>::register_incremental_query()` and `Node<L>::unregister_incremental_query()`.
 - Use bounded `tokio::sync::mpsc` receivers as the subscription boundary. DBSP handles remain internal to the incremental service.
@@ -70,16 +70,16 @@ dbsp dependency and module scaffolding
 
 #### Task 2: Add Encoded Data Model and Datom Batch Conversion
 
-**Description:** Define the encoded input and row types used by DBSP and implement conversion from one transaction's CDC datoms into a weighted `OrdZSet<EncodedTriple>` input batch.
+**Description:** Define the encoded input and row types used by DBSP and implement conversion from one transaction's CDC datoms into a weighted tuple input batch.
 
 **Acceptance criteria:**
 - [x] `type EncodedValue = Vec<u8>` and `type EncodedRow = Vec<EncodedValue>` exist in the incremental module boundary.
 - [x] `EncodedTriple` derives the ordering and hashing traits required for DBSP Z-set keys.
-- [x] `datoms_to_zset(datoms, schema)` encodes entity as `DataType::Long(entity)`, resolves attributes to entids, and maps assert/retract weights correctly.
-- [x] Duplicate triples in one transaction consolidate through the chosen Z-set representation.
+- [x] `datoms_to_tuples(datoms, schema)` encodes entity as `DataType::Long(entity)`, resolves attributes to entids, and maps assert/retract weights correctly.
+- [x] The per-transaction CDC path assumes the generated tuples form a set because Triplox transaction semantics currently guarantee that.
 
 **Verification:**
-- [x] Unit tests for assert, retract, unknown attribute, and duplicate consolidation.
+- [x] Unit tests for assert, retract, and unknown attribute.
 - [x] `cargo test -p triplox incremental`
 
 **Dependencies:** Task 1
