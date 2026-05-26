@@ -507,6 +507,58 @@ mod tests {
         assert!(!storage_path.exists());
     }
 
+    #[test]
+    fn apply_triples_skips_transactions_at_or_before_query_basis() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = IncrementalQueryServiceInner::new(dir.path().to_path_buf());
+        let old_basis = test_basis_with_tx_id(1);
+        let new_basis = test_basis_with_tx_id(2);
+        let mut old_subscription = service
+            .register(
+                single_pattern_plan(),
+                old_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .unwrap();
+        let mut new_subscription = service
+            .register(
+                single_pattern_plan(),
+                new_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice"), name_triple(43, "Bob")],
+            )
+            .unwrap();
+
+        service
+            .apply_triples(Some(new_basis), 2, vec![name_triple(43, "Bob")])
+            .unwrap();
+
+        assert_eq!(
+            old_subscription.deltas.try_recv().unwrap().rows,
+            vec![(vec![DataType::String("Bob".to_string())], 1)]
+        );
+        assert!(new_subscription.deltas.try_recv().is_err());
+        assert_eq!(
+            service
+                .queries
+                .get(&old_subscription.handle.id)
+                .unwrap()
+                ._wal_cursor
+                .last_seq,
+            2
+        );
+        assert_eq!(
+            service
+                .queries
+                .get(&new_subscription.handle.id)
+                .unwrap()
+                ._wal_cursor
+                .last_seq,
+            2
+        );
+    }
+
     fn single_pattern_plan() -> IncrementalQueryPlan {
         let pattern = PatternPlan {
             attribute: 10,
@@ -523,23 +575,31 @@ mod tests {
     }
 
     fn initial_triples() -> Vec<Tup2<EncodedTriple, ZWeight>> {
-        vec![Tup2(
+        vec![name_triple(42, "Alice")]
+    }
+
+    fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
             EncodedTriple {
-                entity: DataType::Long(42).encode(),
+                entity: DataType::Long(entity).encode(),
                 attribute: 10,
-                value: DataType::String("Alice".to_string()).encode(),
+                value: DataType::String(name.to_string()).encode(),
             },
             1,
-        )]
+        )
     }
 
     fn test_basis() -> TxBasis {
+        test_basis_with_tx_id(1)
+    }
+
+    fn test_basis_with_tx_id(tx_id: i64) -> TxBasis {
         TxBasis {
             tx_key: TxKey {
-                tx_id: 1,
+                tx_id,
                 system_time: Utc::now(),
             },
-            tx_eid: 2,
+            tx_eid: tx_id + 1,
         }
     }
 
