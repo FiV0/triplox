@@ -1507,6 +1507,48 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_predicate_nested_expr() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let db = node.db().await.unwrap();
+        // Only Ivan (30+10=40 < 50) passes; Bob (50) and Dominic (60) do not.
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :age ?age] [(< (+ ?age 10) 50)]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec![DataType::String("Ivan".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_fn_nested_expr() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?result :where [?e :name ?name] [?e :age ?age] [(+ (* ?age 2) 1) ?result]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&vec![
+            DataType::String("Ivan".to_string()),
+            DataType::Long(61)
+        ]));
+        assert!(result.contains(&vec![
+            DataType::String("Bob".to_string()),
+            DataType::Long(81)
+        ]));
+        assert!(result.contains(&vec![
+            DataType::String("Dominic".to_string()),
+            DataType::Long(101)
+        ]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_fn_sub() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;

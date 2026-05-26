@@ -43,8 +43,10 @@ fn can_parse_predicates() {
                 tx: PatternNonValuePlace::Placeholder,
             }),
             WhereClause::Pred(Predicate {
-                operator: PlainSymbol::plain("<"),
-                args: vec![FnArg::Variable("?y".to_var()), FnArg::EntidOrInteger(10),]
+                expr: FnArg::SExpr(
+                    PlainSymbol::plain("<"),
+                    vec![FnArg::Variable("?y".to_var()), FnArg::EntidOrInteger(10)],
+                ),
             }),
         ]
     );
@@ -187,8 +189,10 @@ fn can_parse_simple_or_and_join() {
                         ],
                     )),
                     WhereClause::Pred(Predicate {
-                        operator: PlainSymbol::plain("<"),
-                        args: vec![FnArg::Variable("?y".to_var()), FnArg::EntidOrInteger(1),]
+                        expr: FnArg::SExpr(
+                            PlainSymbol::plain("<"),
+                            vec![FnArg::Variable("?y".to_var()), FnArg::EntidOrInteger(1)],
+                        ),
                     }),
                 ],)
             ],
@@ -342,6 +346,26 @@ fn round_trip_predicate() {
 #[test]
 fn round_trip_where_fn() {
     assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ ?y 2) ?result]]");
+}
+
+#[test]
+fn rejects_literal_top_level_predicate() {
+    assert!(parse_query(r#"[:find ?x :where [?x _ ?y] ["foo"]]"#).is_err());
+}
+
+#[test]
+fn rejects_literal_top_level_where_fn() {
+    assert!(parse_query(r#"[:find ?x ?out :where [?x _ ?y] ["foo" ?out]]"#).is_err());
+}
+
+#[test]
+fn round_trip_nested_expr_in_where_fn() {
+    assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ (* ?y 2) 1) ?result]]");
+}
+
+#[test]
+fn round_trip_nested_expr_in_predicate() {
+    assert_round_trip("[:find ?x :where [?x _ ?y] [(< (+ ?y 1) 10)]]");
 }
 
 #[test]
