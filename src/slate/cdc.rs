@@ -9,7 +9,10 @@ use crate::indexer::eav_key_to_parts;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
 
-/// Tracks position in the WAL stream for resumability.
+/// Tracks the CDC stream position.
+///
+/// `last_seq` is the exclusive lower bound for rows yielded by the stream.
+/// `wal_id` is a WAL discovery hint and is updated to the last opened WAL file.
 #[derive(Debug, Default, Clone)]
 pub struct CdcCursor {
     pub wal_id: u64,
@@ -30,7 +33,6 @@ pub struct CdcStream {
     current_iter: Option<WalFileIterator>,
     buffered: Option<RowEntry>,
     cursor: CdcCursor,
-    next_wal_id_to_list: u64,
     poll_interval: Duration,
     cancel: CancellationToken,
 }
@@ -47,8 +49,7 @@ impl CdcStream {
         poll_interval: Duration,
         cancel: CancellationToken,
     ) -> Result<Self, slatedb::Error> {
-        let next_wal_id_to_list = cursor.wal_id;
-        let wal_files: VecDeque<WalFile> = wal_reader.list(next_wal_id_to_list..).await?.into();
+        let wal_files: VecDeque<WalFile> = wal_reader.list(cursor.wal_id..).await?.into();
 
         let mut stream = CdcStream {
             wal_reader,
@@ -56,7 +57,6 @@ impl CdcStream {
             current_iter: None,
             buffered: None,
             cursor,
-            next_wal_id_to_list,
             poll_interval,
             cancel,
         };
@@ -125,7 +125,7 @@ impl CdcStream {
             loop {
                 let new_files: VecDeque<WalFile> = self
                     .wal_reader
-                    .list(self.next_wal_id_to_list..)
+                    .list((self.cursor.wal_id + 1)..)
                     .await?
                     .into();
 
@@ -165,7 +165,6 @@ impl CdcStream {
     async fn advance_to_next_file(&mut self) -> Result<bool, slatedb::Error> {
         if let Some(file) = self.wal_files.pop_front() {
             self.cursor.wal_id = file.id;
-            self.next_wal_id_to_list = file.id + 1;
             self.current_iter = Some(file.iterator().await?);
             Ok(true)
         } else {
@@ -591,6 +590,53 @@ mod tests {
             txs.len()
         );
         db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cdc_cursor_last_seq_skips_old_wals_then_polls_next_wal() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (db, object_store) = setup_db("/test_cursor_seq_start_then_live").await;
+
+            db.put(b"k1", b"v1").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+            db.put(b"k2", b"v2").await.unwrap();
+            db.flush_with_options(flush_opts()).await.unwrap();
+
+            let current_seq = db.status().durable_seq;
+            let wal_reader = WalReader::new("/test_cursor_seq_start_then_live", object_store);
+            let cancel = CancellationToken::new();
+            let mut stream = CdcStream::new(
+                wal_reader,
+                CdcCursor {
+                    wal_id: 0,
+                    last_seq: current_seq,
+                },
+                Duration::from_millis(10),
+                cancel,
+            )
+            .await
+            .unwrap();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                db.put(b"k3", b"v3").await.unwrap();
+                db.flush_with_options(flush_opts()).await.unwrap();
+            });
+
+            let tx = stream
+                .next_transaction()
+                .await
+                .unwrap()
+                .expect("stream should skip old WALs and yield the next live transaction");
+
+            assert!(tx.seq > current_seq);
+            assert!(tx.entries.iter().any(|entry| {
+                entry.key.as_ref() == b"k3"
+                    && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v3")
+            }));
+        })
+        .await
+        .expect("test_cdc_cursor_last_seq_skips_old_wals_then_polls_next_wal timed out");
     }
 
     #[tokio::test]
