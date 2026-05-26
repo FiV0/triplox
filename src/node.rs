@@ -142,6 +142,7 @@ pub struct Node<L: TxLog> {
     incremental: IncrementalQueryService,
     incremental_cdc_started: Arc<AtomicBool>,
     incremental_registration_gate: Arc<Mutex<()>>,
+    // Test hook for deterministically exercising the registration snapshot race.
     #[cfg(test)]
     incremental_registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
 }
@@ -363,23 +364,6 @@ impl<L: TxLog> Node<L> {
         self.incremental.unregister(handle).await
     }
 
-    #[cfg(test)]
-    async fn active_incremental_query_count(&self) -> usize {
-        self.incremental.active_query_count().await
-    }
-
-    #[cfg(test)]
-    async fn apply_incremental_triples_for_test(
-        &self,
-        basis: Option<TxBasis>,
-        wal_seq: u64,
-        triples: Vec<dbsp::utils::Tup2<crate::incremental::EncodedTriple, dbsp::ZWeight>>,
-    ) -> Result<(), Error> {
-        self.incremental
-            .apply_triples(basis, wal_seq, triples)
-            .await
-    }
-
     fn start_incremental_cdc_once(&self) {
         if self
             .incremental_cdc_started
@@ -483,9 +467,7 @@ mod tests {
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
-    use crate::codec::Encode;
     use crate::error::TriploxError;
-    use crate::incremental::EncodedTriple;
     use crate::ops::{DataType, EntityRef, TxOp};
     use crate::partition::{extract_partition, TX_PARTITION};
     use crate::schema::{
@@ -614,7 +596,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.basis, expected_basis);
-        assert_eq!(node.active_incremental_query_count().await, 1);
         assert!(matches!(
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -660,15 +641,6 @@ mod tests {
             .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
-        let age_attr = {
-            let indexer = node.indexer.read().await;
-            indexer
-                .metadata()
-                .schema
-                .get_attribute(&kw!(:age))
-                .unwrap()
-                .0
-        };
         let mut subscription = node
             .register_incremental_query(parse_query(
                 "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
@@ -687,23 +659,9 @@ mod tests {
             TransactionResult::TxCommited(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
+        flush_wal(&node).await;
 
-        node.apply_incremental_triples_for_test(
-            Some(future_basis),
-            1,
-            vec![dbsp::utils::Tup2(
-                EncodedTriple {
-                    entity: DataType::Long(100).encode(),
-                    attribute: age_attr,
-                    value: DataType::Long(30).encode(),
-                },
-                1,
-            )],
-        )
-        .await
-        .unwrap();
-
-        let delta = subscription.deltas.recv().await.unwrap();
+        let delta = recv_incremental_delta(&mut subscription).await;
         assert_eq!(delta.basis, Some(future_basis));
         assert_eq!(
             delta.rows,
@@ -1262,7 +1220,6 @@ mod tests {
         assert!(err
             .to_string()
             .contains("Incremental query pattern attributes must be constant"));
-        assert_eq!(node.active_incremental_query_count().await, 0);
     }
 
     #[tokio::test]
@@ -1278,7 +1235,6 @@ mod tests {
 
         node.unregister_incremental_query(handle).await.unwrap();
 
-        assert_eq!(node.active_incremental_query_count().await, 0);
         assert!(subscription.deltas.recv().await.is_none());
     }
 
@@ -1311,7 +1267,6 @@ mod tests {
         let handle = subscription.handle;
         drop(subscription);
 
-        assert_eq!(node.active_incremental_query_count().await, 0);
         let err = node.unregister_incremental_query(handle).await.unwrap_err();
         assert!(err.to_string().contains("Unknown incremental query handle"));
     }

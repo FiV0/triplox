@@ -119,17 +119,6 @@ impl IncrementalQueryService {
             .map_err(|_| anyhow!("Incremental query service stopped"))?
             .map_err(|err| anyhow!("{}", err))
     }
-
-    #[cfg(test)]
-    pub(crate) async fn active_query_count(&self) -> usize {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::ActiveQueryCount { response })
-            .expect("incremental query service should be running");
-        result
-            .await
-            .expect("incremental query service should respond")
-    }
 }
 
 enum IncrementalCommand {
@@ -150,8 +139,6 @@ enum IncrementalCommand {
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<()>>,
     },
-    #[cfg(test)]
-    ActiveQueryCount { response: oneshot::Sender<usize> },
 }
 
 type ServiceResult<T> = std::result::Result<T, String>;
@@ -193,10 +180,6 @@ impl IncrementalQueryServiceInner {
                     response,
                 } => {
                     let _ = response.send(self.apply_triples(basis, wal_seq, triples));
-                }
-                #[cfg(test)]
-                IncrementalCommand::ActiveQueryCount { response } => {
-                    let _ = response.send(self.active_query_count());
                 }
             }
         }
@@ -286,13 +269,6 @@ impl IncrementalQueryServiceInner {
             self.remove_query(id)?;
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    fn active_query_count(&mut self) -> usize {
-        self.cleanup_closed_subscriptions()
-            .expect("closed subscription cleanup should succeed");
-        self.queries.len()
     }
 
     fn allocate_query_id(&mut self) -> IncrementalQueryId {
@@ -501,9 +477,11 @@ mod tests {
         let storage_path = dir.path().join("query-1");
 
         assert!(path_has_entries(&storage_path));
+        let handle = subscription.handle;
         drop(subscription);
 
-        assert_eq!(service.active_query_count(), 0);
+        let err = service.unregister(handle).unwrap_err();
+        assert!(err.contains("Unknown incremental query handle"));
         assert!(!storage_path.exists());
     }
 
