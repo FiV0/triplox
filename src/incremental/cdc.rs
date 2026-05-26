@@ -108,6 +108,7 @@ async fn run_writer_cdc_loop(
         };
         let _registration_guard = registration_gate.lock().await;
         service.apply_triples(basis, seq, tuples).await?;
+        // The registration gate is released before polling the next WAL transaction.
     }
 
     Ok(())
