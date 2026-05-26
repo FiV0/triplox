@@ -172,6 +172,14 @@ fn validate_aggregate_clauses(
     for elem in elements {
         if let Element::Aggregate(agg) = elem {
             let func_name = agg.func.0.to_string();
+            for arg in &agg.args {
+                if matches!(arg, edn::query::FnArg::SExpr(..)) {
+                    return Err(anyhow::anyhow!(
+                        "Nested expressions are not supported as arguments to aggregate '{}'",
+                        func_name
+                    ));
+                }
+            }
             if agg.args.len() == 1 {
                 if let edn::query::FnArg::Variable(ref var) = agg.args[0] {
                     if !var_index.contains_key(var) {
@@ -423,6 +431,18 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("not bound as a scalar in :in clause"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_sexpr_in_aggregate() {
+        let parsed = parse_query("[:find ?e (count (+ ?age 1)) :where [?e :age ?age]]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Nested expressions are not supported"),
             "unexpected error: {}",
             err
         );
