@@ -103,7 +103,7 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     }
     for clause in &query.where_clauses {
         if !matches!(clause, WhereClause::Pattern(_)) {
-            bail!("Incremental queries support only triple patterns in :where");
+            bail!("Incremental queries currently support only triple patterns in :where");
         }
     }
     Ok(())
