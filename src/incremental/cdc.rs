@@ -51,7 +51,7 @@ pub(crate) fn datoms_to_tuples(
         .collect::<Result<Vec<_>>>()
 }
 
-pub(crate) fn spawn_writer_cdc_loop(
+pub(crate) fn spawn_cdc_loop(
     path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
@@ -60,7 +60,7 @@ pub(crate) fn spawn_writer_cdc_loop(
     cancel: CancellationToken,
 ) {
     tokio::spawn(async move {
-        if let Err(err) = run_writer_cdc_loop(
+        if let Err(err) = run_cdc_loop(
             path,
             object_store,
             indexer,
@@ -75,7 +75,7 @@ pub(crate) fn spawn_writer_cdc_loop(
     });
 }
 
-async fn run_writer_cdc_loop(
+async fn run_cdc_loop(
     path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
@@ -96,11 +96,6 @@ async fn run_writer_cdc_loop(
             let basis = tx_basis_from_datoms(&datoms);
             (datoms, basis)
         };
-
-        if let Some(basis) = basis {
-            let waiter = indexer.read().await.tx_waiter();
-            waiter.await_indexed(basis.tx_key).await?;
-        }
 
         let tuples = {
             let indexer = indexer.read().await;
@@ -214,7 +209,7 @@ mod tests {
     use crate::schema::{Attribute, Schema, ValueType};
 
     #[tokio::test]
-    async fn writer_cdc_loop_exits_ok_when_cancelled() {
+    async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
         let indexer = Arc::new(RwLock::new(Indexer::new(
             slate.db.clone(),
@@ -226,7 +221,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let result = run_writer_cdc_loop(
+        let result = run_cdc_loop(
             slate.path,
             slate.object_store,
             indexer,

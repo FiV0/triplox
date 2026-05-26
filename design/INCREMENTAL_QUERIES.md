@@ -93,7 +93,7 @@ Registration creates a cutover point:
 3. Scan the current EAV index up to the captured transaction entity.
 4. Prime the DBSP circuit with positive triples from that snapshot.
 5. Insert the registered query into the incremental service.
-6. Start the writer CDC loop if it is not already running.
+6. Start the CDC loop if it is not already running.
 
 The subscription does not emit initial snapshot rows. It emits only transactions
 after the returned basis.

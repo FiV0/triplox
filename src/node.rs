@@ -11,7 +11,7 @@ use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::inc_query::plan_query;
-use crate::incremental::cdc::{scan_current_triples, spawn_writer_cdc_loop};
+use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
@@ -386,7 +386,7 @@ impl<L: TxLog> Node<L> {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            spawn_writer_cdc_loop(
+            spawn_cdc_loop(
                 self.slate.path.clone(),
                 self.slate.object_store.clone(),
                 self.indexer.clone(),

@@ -205,7 +205,7 @@ Meanings:
 
 Do not persist a separate `last_applied_seq` in v1. In the writer-node-only design, the single ordered CDC apply loop defines applied progress: after a CDC transaction has been appended to DBSP, stepped, and sent to subscriptions, it is applied. If future observability needs a "DBSP has caught up to WAL seq N" metric, add it as in-memory instrumentation rather than correctness state.
 
-For writer nodes, `last_indexed_basis` should normally be ahead of the WAL reader. Still, the service should only apply a CDC transaction after the corresponding write has reached memory indexes. In v1 this can be implemented by extracting the transaction entity datoms from the CDC transaction, deriving the `TxKey`, and using the existing `TxWaiter::await_indexed()` path before circuit application. If the tx entity cannot be derived, apply the CDC transaction but mark its output basis as sequence-only and keep this as a test-covered fallback.
+For the current node implementation, WAL CDC transactions observed by the incremental query CDC loop have already gone through the writer indexer. The loop therefore derives the transaction basis for delta metadata and per-query relevance, but does not wait on `TxWaiter::await_indexed()` before circuit application.
 
 The writer-node implementation keeps one long-lived `CdcStream` per writer-node CDC task. Awaiting `CdcStream::next_transaction()` parks the Tokio task cooperatively while the stream polls WAL availability, reopens the current WAL file when needed, and observes cancellation. The live `CdcStream` owns an in-memory read cursor that advances as rows are read. A future durable applied watermark must advance only after DBSP stepping and subscription delivery succeed.
 

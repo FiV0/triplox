@@ -369,7 +369,7 @@ dbsp dependency and module scaffolding
 | DBSP requires additional trait derives or archive traits for `EncodedTriple`/`EncodedRow`. | High | Fail fast in Task 1 or 2 with a minimal compiling circuit before building the service. |
 | Cartesian-product DBSP implementation produces multiplicities that differ from the one-shot engine. | High | Include circuit tests and equivalence tests specifically for disconnected patterns. |
 | Registration captures an inconsistent EAV snapshot and WAL cursor. | High | Keep Task 8 focused on the basis/cursor invariant and test that existing facts are not replayed as live deltas. |
-| WAL CDC arrives before memory indexes are visible. | Medium | Use existing `TxWaiter::await_indexed()` when tx metadata can be derived, with a sequence-only fallback covered by tests. |
+| WAL CDC arrives before memory indexes are visible. | Low | Current node CDC observes WAL entries after the writer indexer has processed them, so the CDC loop does not wait on `TxWaiter::await_indexed()`. |
 | Bounded subscription channels can lag the CDC task. | Medium | Treat backpressure as service lag, not data loss; avoid `broadcast` unless a future resync protocol exists. |
 | Query semantics drift from `src/query.rs` because helpers cannot be reused directly. | Medium | Use one-shot equivalence tests as the semantic guardrail and keep `src/query.rs` read-only. |
 | Pulling `dbsp` increases compile time or introduces workspace feature conflicts. | Medium | Add the dependency before other work and keep Task 1 as an explicit compile checkpoint. |
