@@ -186,6 +186,7 @@ impl Node<MemoryLog> {
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
         let incremental = IncrementalQueryService::new_with_cancel(
             memory_incremental_storage_path(&slate),
+            Handle::current(),
             subscription.clone(),
         );
         let incremental_registration_gate = Arc::new(Mutex::new(()));
@@ -251,6 +252,7 @@ impl Node<FileLog> {
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
         let incremental = IncrementalQueryService::new_with_cancel(
             incremental_storage_path,
+            Handle::current(),
             subscription.clone(),
         );
 

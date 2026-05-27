@@ -212,6 +212,7 @@ mod tests {
         )));
         let service = IncrementalQueryService::new_with_cancel(
             tempfile::tempdir().unwrap().path().to_path_buf(),
+            tokio::runtime::Handle::current(),
             CancellationToken::new(),
         );
         let cancel = CancellationToken::new();

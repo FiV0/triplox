@@ -5,10 +5,10 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxBasis;
@@ -22,7 +22,6 @@ pub(crate) mod cdc;
 pub(crate) mod circuit;
 
 const SUBSCRIPTION_CAPACITY: usize = 128;
-const DELTA_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) type EncodedValue = Vec<u8>;
 pub(crate) type EncodedRow = Vec<EncodedValue>;
@@ -55,11 +54,17 @@ pub(crate) struct IncrementalQueryService {
 }
 
 impl IncrementalQueryService {
-    pub(crate) fn new_with_cancel(storage_root: PathBuf, cancel: CancellationToken) -> Self {
+    pub(crate) fn new_with_cancel(
+        storage_root: PathBuf,
+        runtime: Handle,
+        cancel: CancellationToken,
+    ) -> Self {
         let (sender, receiver) = std_mpsc::channel();
         thread::Builder::new()
             .name("triplox-incremental-query".to_string())
-            .spawn(move || IncrementalQueryServiceInner::new(storage_root, cancel).run(receiver))
+            .spawn(move || {
+                IncrementalQueryServiceInner::new(storage_root, runtime, cancel).run(receiver)
+            })
             .expect("incremental query service thread should start");
 
         Self { commands: sender }
@@ -161,15 +166,17 @@ struct IncrementalQueryServiceInner {
     next_query_id: u64,
     storage_root: PathBuf,
     queries: HashMap<IncrementalQueryId, RegisteredQuery>,
+    runtime: Handle,
     cancel: CancellationToken,
 }
 
 impl IncrementalQueryServiceInner {
-    fn new(storage_root: PathBuf, cancel: CancellationToken) -> Self {
+    fn new(storage_root: PathBuf, runtime: Handle, cancel: CancellationToken) -> Self {
         Self {
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
+            runtime,
             cancel,
         }
     }
@@ -279,7 +286,7 @@ impl IncrementalQueryServiceInner {
                 wal_seq,
                 rows,
             };
-            match send_delta(&query.sender, delta, &cancel) {
+            match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
                 DeltaDelivery::Cancelled => return Ok(()),
@@ -363,23 +370,23 @@ enum DeltaDelivery {
 }
 
 fn send_delta(
+    runtime: &Handle,
     sender: &mpsc::Sender<IncrementalQueryDelta>,
-    mut delta: IncrementalQueryDelta,
+    delta: IncrementalQueryDelta,
     cancel: &CancellationToken,
 ) -> DeltaDelivery {
-    loop {
-        if cancel.is_cancelled() {
-            return DeltaDelivery::Cancelled;
-        }
-        match sender.try_send(delta) {
-            Ok(()) => return DeltaDelivery::Delivered,
-            Err(mpsc::error::TrySendError::Closed(_)) => return DeltaDelivery::Closed,
-            Err(mpsc::error::TrySendError::Full(returned_delta)) => {
-                delta = returned_delta;
-                thread::sleep(DELTA_SEND_RETRY_INTERVAL);
+    runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => DeltaDelivery::Cancelled,
+            result = sender.send(delta) => {
+                match result {
+                    Ok(()) => DeltaDelivery::Delivered,
+                    Err(_) => DeltaDelivery::Closed,
+                }
             }
         }
-    }
+    })
 }
 
 struct RegisteredQuery {
@@ -430,8 +437,12 @@ mod tests {
     #[test]
     fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            IncrementalQueryServiceInner::new(dir.path().to_path_buf(), CancellationToken::new());
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
         let subscription = service
             .register(
                 single_pattern_plan(),
@@ -452,8 +463,12 @@ mod tests {
     #[test]
     fn dropped_receiver_cleanup_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            IncrementalQueryServiceInner::new(dir.path().to_path_buf(), CancellationToken::new());
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
         let subscription = service
             .register(
                 single_pattern_plan(),
@@ -476,8 +491,12 @@ mod tests {
     #[test]
     fn apply_triples_skips_transactions_at_or_before_query_basis() {
         let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            IncrementalQueryServiceInner::new(dir.path().to_path_buf(), CancellationToken::new());
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
         let old_basis = test_basis_with_tx_id(1);
         let new_basis = test_basis_with_tx_id(2);
         let mut old_subscription = service
@@ -529,9 +548,13 @@ mod tests {
     #[test]
     fn apply_triples_stops_waiting_on_full_subscription_when_cancelled() {
         let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
         let cancel = CancellationToken::new();
-        let mut service =
-            IncrementalQueryServiceInner::new(dir.path().to_path_buf(), cancel.clone());
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            cancel.clone(),
+        );
         let _subscription = service
             .register(
                 single_pattern_plan(),
@@ -567,6 +590,10 @@ mod tests {
             .expect("apply_triples should stop waiting after cancellation");
         assert!(result.is_ok());
         handle.join().unwrap();
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().unwrap()
     }
 
     fn single_pattern_plan() -> IncrementalQueryPlan {
