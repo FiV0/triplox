@@ -210,8 +210,10 @@ mod tests {
             Metadata::new(test_schema(), PartitionMap::new()),
             None,
         )));
-        let service =
-            IncrementalQueryService::new(tempfile::tempdir().unwrap().path().to_path_buf());
+        let service = IncrementalQueryService::new_with_cancel(
+            tempfile::tempdir().unwrap().path().to_path_buf(),
+            CancellationToken::new(),
+        );
         let cancel = CancellationToken::new();
         cancel.cancel();
 

@@ -184,7 +184,10 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(memory_incremental_storage_path(&slate));
+        let incremental = IncrementalQueryService::new_with_cancel(
+            memory_incremental_storage_path(&slate),
+            subscription.clone(),
+        );
         let incremental_registration_gate = Arc::new(Mutex::new(()));
 
         Node {
@@ -246,7 +249,10 @@ impl Node<FileLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(incremental_storage_path);
+        let incremental = IncrementalQueryService::new_with_cancel(
+            incremental_storage_path,
+            subscription.clone(),
+        );
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {

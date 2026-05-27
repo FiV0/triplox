@@ -134,8 +134,9 @@ There are two channel directions:
 - `std::sync::mpsc` carries commands into the service thread. It fits the
   blocking `receiver.recv()` loop used by the dedicated thread.
 - `tokio::sync::mpsc` carries `IncrementalQueryDelta` values back to async
-  subscribers. The service thread uses `blocking_send`, so a slow subscriber
-  applies backpressure instead of losing deltas.
+  subscribers. The service thread retries bounded sends, so a slow subscriber
+  applies backpressure instead of losing deltas; node cancellation breaks that
+  wait during shutdown.
 
 `IncrementalQueryDelta` is therefore not the command protocol. It is the
 subscriber-facing result batch emitted after a circuit step. The command
@@ -277,7 +278,8 @@ Current tuning knobs are intentionally small and mostly hard-coded:
 The backpressure behavior is deliberate: result deltas are lossless state
 changes. If a subscriber cannot keep up, the service thread blocks while sending
 that query's delta instead of dropping it and corrupting the receiver's
-integrated view.
+integrated view. During node shutdown, the node cancellation token interrupts
+that wait so a full subscriber channel cannot keep the CDC task alive forever.
 
 ---
 
