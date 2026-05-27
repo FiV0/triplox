@@ -245,6 +245,7 @@ fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
     for pattern in patterns.iter().skip(1) {
         let right_vars = pattern.output_vars.clone();
         let right_set: HashSet<Variable> = right_vars.iter().cloned().collect();
+        // Note: Not using intersection to preserve ordering from left_vars
         let key_vars = left_vars
             .iter()
             .filter(|var| right_set.contains(*var))
