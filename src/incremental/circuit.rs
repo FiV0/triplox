@@ -17,101 +17,7 @@ use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
-// TODO: This filtering should happen at storage level. See #329
-pub(crate) fn pattern_stream(
-    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    pattern: PatternPlan,
-) -> Stream<RootCircuit, RowZSet> {
-    input.flat_map(move |triple| pattern_row(&pattern, triple))
-}
-
-pub(crate) fn query_row_stream(
-    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    plan: IncrementalQueryPlan,
-) -> Stream<RootCircuit, RowZSet> {
-    let patterns = plan.patterns;
-    let joins = plan.joins;
-    let mut stream = pattern_stream(input, patterns[0].clone());
-
-    for join in joins {
-        let right = pattern_stream(input, patterns[join.right_pattern_index].clone());
-        stream = join_rows(stream, right, &join);
-    }
-
-    stream
-}
-
-pub(crate) fn query_find_stream(
-    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    plan: IncrementalQueryPlan,
-) -> Stream<RootCircuit, RowZSet> {
-    let output_vars = plan
-        .joins
-        .last()
-        .map(|join| &join.output_vars)
-        .unwrap_or(&plan.patterns[0].output_vars);
-    let find_positions = positions(output_vars, &plan.find_vars);
-    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
-}
-
-pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
-    batch
-        .iter()
-        .map(|(row, (), weight)| {
-            let decoded = row
-                .iter()
-                .map(|value| DataType::decode(value).map_err(anyhow::Error::from))
-                .collect::<Result<Vec<_>>>()?;
-            let weight = isize::try_from(weight)
-                .map_err(|_| anyhow!("DBSP weight {} does not fit in isize", weight))?;
-            Ok((decoded, weight))
-        })
-        .collect()
-}
-
-pub(super) struct QueryCircuit {
-    _circuit: DBSPHandle,
-    _input: ZSetHandle<EncodedTriple>,
-    _output: OutputHandle<RowZSet>,
-}
-
-impl QueryCircuit {
-    pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        let config = storage_circuit_config(storage_path)?;
-        let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
-            let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-            let rows = query_find_stream(&input, plan);
-            Ok((handle, rows.output()))
-        })
-        .map_err(anyhow::Error::from)?;
-
-        Ok(Self {
-            _circuit: circuit,
-            _input: input,
-            _output: output,
-        })
-    }
-
-    pub(super) fn prime(
-        &mut self,
-        mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<()> {
-        self._input.append(&mut initial_triples);
-        self._circuit.transaction().map_err(anyhow::Error::from)?;
-        let _ = self._output.consolidate();
-        Ok(())
-    }
-
-    pub(super) fn apply(
-        &mut self,
-        mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        self._input.append(&mut triples);
-        self._circuit.transaction().map_err(anyhow::Error::from)?;
-        decode_output_rows(&self._output.consolidate())
-    }
-}
-
+// Builds the file-backed DBSP runtime configuration for a single query circuit.
 fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     if storage_path.exists() {
         std::fs::remove_dir_all(storage_path)?;
@@ -132,6 +38,100 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
 }
 
+// Checks whether a pattern slot accepts the encoded triple value.
+fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
+    match slot {
+        PatternSlot::Variable(_) => true,
+        PatternSlot::Constant(constant) => constant.as_slice() == value,
+    }
+}
+
+// Converts one matching encoded triple into the row shape requested by a pattern.
+fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedRow> {
+    if triple.attribute != pattern.attribute {
+        return None;
+    }
+    if !slot_matches(&pattern.entity, &triple.entity) {
+        return None;
+    }
+    if !slot_matches(&pattern.value, &triple.value) {
+        return None;
+    }
+
+    Some(
+        pattern
+            .output_vars
+            .iter()
+            .filter_map(|var| {
+                if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var)
+                {
+                    Some(triple.entity.clone())
+                } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
+                {
+                    Some(triple.value.clone())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    )
+}
+
+// Finds the positions of selected variables in a row variable order.
+fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
+    selected
+        .iter()
+        .map(|selected_var| {
+            vars.iter()
+                .position(|var| var == selected_var)
+                .expect("selected var must be present")
+        })
+        .collect()
+}
+
+// Extracts an encoded join key from a row.
+fn row_key(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
+    positions
+        .iter()
+        .map(|position| row[*position].clone())
+        .collect()
+}
+
+// Projects a row to the requested output positions.
+fn project_row(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
+    positions
+        .iter()
+        .map(|position| row[*position].clone())
+        .collect()
+}
+
+#[derive(Clone)]
+enum RowSource {
+    Left(usize),
+    Right(usize),
+}
+
+// Merges joined left and right rows into the planned output row order.
+fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> EncodedRow {
+    sources
+        .iter()
+        .map(|source| match source {
+            RowSource::Left(position) => left[*position].clone(),
+            RowSource::Right(position) => right[*position].clone(),
+        })
+        .collect()
+}
+
+// TODO: This filtering should happen at storage level. See #329
+// Creates the DBSP stream of rows matching one planned triple pattern.
+pub(crate) fn pattern_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    pattern: PatternPlan,
+) -> Stream<RootCircuit, RowZSet> {
+    input.flat_map(move |triple| pattern_row(&pattern, triple))
+}
+
+// Joins two row streams according to one planned join step.
 fn join_rows(
     left: Stream<RootCircuit, RowZSet>,
     right: Stream<RootCircuit, RowZSet>,
@@ -167,82 +167,97 @@ fn join_rows(
     })
 }
 
-fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedRow> {
-    if triple.attribute != pattern.attribute {
-        return None;
-    }
-    if !slot_matches(&pattern.entity, &triple.entity) {
-        return None;
-    }
-    if !slot_matches(&pattern.value, &triple.value) {
-        return None;
+// Creates the DBSP stream of joined rows for the whole incremental query plan.
+pub(crate) fn query_row_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    plan: IncrementalQueryPlan,
+) -> Stream<RootCircuit, RowZSet> {
+    let patterns = plan.patterns;
+    let joins = plan.joins;
+    let mut stream = pattern_stream(input, patterns[0].clone());
+
+    for join in joins {
+        let right = pattern_stream(input, patterns[join.right_pattern_index].clone());
+        stream = join_rows(stream, right, &join);
     }
 
-    Some(
-        pattern
-            .output_vars
-            .iter()
-            .filter_map(|var| {
-                if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var)
-                {
-                    Some(triple.entity.clone())
-                } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
-                {
-                    Some(triple.value.clone())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    )
+    stream
 }
 
-fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
-    match slot {
-        PatternSlot::Variable(_) => true,
-        PatternSlot::Constant(constant) => constant.as_slice() == value,
-    }
+// Creates the DBSP stream of rows projected to the query find variables.
+pub(crate) fn query_find_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    plan: IncrementalQueryPlan,
+) -> Stream<RootCircuit, RowZSet> {
+    let output_vars = plan
+        .joins
+        .last()
+        .map(|join| &join.output_vars)
+        .unwrap_or(&plan.patterns[0].output_vars);
+    let find_positions = positions(output_vars, &plan.find_vars);
+    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
 }
 
-#[derive(Clone)]
-enum RowSource {
-    Left(usize),
-    Right(usize),
-}
-
-fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
-    selected
+// Decodes a DBSP output batch into user-facing values and signed weights.
+pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+    batch
         .iter()
-        .map(|selected_var| {
-            vars.iter()
-                .position(|var| var == selected_var)
-                .expect("selected var must be present")
+        .map(|(row, (), weight)| {
+            let decoded = row
+                .iter()
+                .map(|value| DataType::decode(value).map_err(anyhow::Error::from))
+                .collect::<Result<Vec<_>>>()?;
+            let weight = isize::try_from(weight)
+                .map_err(|_| anyhow!("DBSP weight {} does not fit in isize", weight))?;
+            Ok((decoded, weight))
         })
         .collect()
 }
 
-fn row_key(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
-    positions
-        .iter()
-        .map(|position| row[*position].clone())
-        .collect()
+pub(super) struct QueryCircuit {
+    _circuit: DBSPHandle,
+    _input: ZSetHandle<EncodedTriple>,
+    _output: OutputHandle<RowZSet>,
 }
 
-fn project_row(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
-    positions
-        .iter()
-        .map(|position| row[*position].clone())
-        .collect()
-}
-
-fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> EncodedRow {
-    sources
-        .iter()
-        .map(|source| match source {
-            RowSource::Left(position) => left[*position].clone(),
-            RowSource::Right(position) => right[*position].clone(),
+impl QueryCircuit {
+    // Builds a DBSP circuit for one incremental query plan.
+    pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
+        let config = storage_circuit_config(storage_path)?;
+        let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
+            let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
+            let rows = query_find_stream(&input, plan);
+            Ok((handle, rows.output()))
         })
-        .collect()
+        .map_err(anyhow::Error::from)?;
+
+        Ok(Self {
+            _circuit: circuit,
+            _input: input,
+            _output: output,
+        })
+    }
+
+    // Loads the initial snapshot into the circuit and discards the bootstrap output.
+    pub(super) fn prime(
+        &mut self,
+        mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<()> {
+        self._input.append(&mut initial_triples);
+        self._circuit.transaction().map_err(anyhow::Error::from)?;
+        let _ = self._output.consolidate();
+        Ok(())
+    }
+
+    // Applies one weighted triple batch and returns the decoded query result delta.
+    pub(super) fn apply(
+        &mut self,
+        mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        self._input.append(&mut triples);
+        self._circuit.transaction().map_err(anyhow::Error::from)?;
+        decode_output_rows(&self._output.consolidate())
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +339,15 @@ mod tests {
             attribute,
             value: value.encode(),
         }
+    }
+
+    fn path_has_entries(path: &Path) -> bool {
+        std::fs::read_dir(path)
+            .unwrap()
+            .next()
+            .transpose()
+            .unwrap()
+            .is_some()
     }
 
     fn single_var_pattern() -> PatternPlan {
@@ -831,14 +855,5 @@ mod tests {
         let err = decode_output_rows(&batch).unwrap_err();
 
         assert!(err.to_string().contains("DecodeError"));
-    }
-
-    fn path_has_entries(path: &Path) -> bool {
-        std::fs::read_dir(path)
-            .unwrap()
-            .next()
-            .transpose()
-            .unwrap()
-            .is_some()
     }
 }
