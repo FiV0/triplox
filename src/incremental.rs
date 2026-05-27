@@ -119,6 +119,17 @@ impl IncrementalQueryService {
             .map_err(|_| anyhow!("Incremental query service stopped"))?
             .map_err(|err| anyhow!("{}", err))
     }
+
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::Shutdown { response })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow!("Incremental query service stopped"))?
+            .map_err(|err| anyhow!("{}", err))
+    }
 }
 
 enum IncrementalCommand {
@@ -137,6 +148,9 @@ enum IncrementalCommand {
         basis: Option<TxBasis>,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+    Shutdown {
         response: oneshot::Sender<ServiceResult<()>>,
     },
 }
@@ -180,6 +194,10 @@ impl IncrementalQueryServiceInner {
                     response,
                 } => {
                     let _ = response.send(self.apply_triples(basis, wal_seq, triples));
+                }
+                IncrementalCommand::Shutdown { response } => {
+                    let _ = response.send(self.remove_all_queries());
+                    break;
                 }
             }
         }
@@ -301,6 +319,21 @@ impl IncrementalQueryServiceInner {
         }
     }
 
+    fn remove_all_queries(&mut self) -> ServiceResult<()> {
+        let ids = self.queries.keys().copied().collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        for id in ids {
+            if let Err(err) = self.remove_query(id) {
+                errors.push(err);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
     fn cleanup_closed_subscriptions(&mut self) -> ServiceResult<()> {
         let closed = self
             .queries
@@ -311,6 +344,12 @@ impl IncrementalQueryServiceInner {
             self.remove_query(id)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for IncrementalQueryServiceInner {
+    fn drop(&mut self) {
+        let _ = self.remove_all_queries();
     }
 }
 

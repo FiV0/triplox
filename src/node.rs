@@ -316,6 +316,7 @@ fn memory_incremental_storage_path(slate: &SlateComponents) -> PathBuf {
 impl<L: TxLog> Node<L> {
     pub async fn close(self) {
         self.subscription.cancel();
+        self.incremental.shutdown().await.unwrap();
         self.slate.db.close().await.unwrap();
     }
 
@@ -1320,6 +1321,25 @@ mod tests {
 
         let err = node.unregister_incremental_query(handle).await.unwrap_err();
         assert!(err.to_string().contains("Unknown incremental query handle"));
+    }
+
+    #[tokio::test]
+    async fn test_close_removes_incremental_query_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::local_node(dir.path()).await.unwrap();
+        define_test_schema(&node).await;
+        let storage_path = dir.path().join("dbsp-incremental").join("query-1");
+
+        let _subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert!(storage_path.exists());
+
+        node.close().await;
+
+        assert!(!storage_path.exists());
     }
 
     #[tokio::test]
