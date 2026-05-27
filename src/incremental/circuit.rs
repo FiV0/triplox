@@ -129,7 +129,7 @@ fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedR
 
 fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
     match slot {
-        PatternSlot::Variable(_) | PatternSlot::Placeholder => true,
+        PatternSlot::Variable(_) => true,
         PatternSlot::Constant(constant) => constant.as_slice() == value,
     }
 }
@@ -379,29 +379,6 @@ mod tests {
         assert_eq!(
             collect_rows(&output),
             vec![(vec![DataType::Long(42).encode()], 1)]
-        );
-    }
-
-    #[test]
-    fn pattern_omits_placeholders() {
-        let pattern = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Placeholder,
-            value: PatternSlot::Variable("?name".to_var()),
-            output_vars: vec!["?name".to_var()],
-        };
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_pattern_circuit(circuit, pattern.clone()));
-
-        append(
-            &handle,
-            [(triple(42, 10, DataType::String("Alice".to_string())), 1)],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            collect_rows(&output),
-            vec![(vec![DataType::String("Alice".to_string()).encode()], 1,)]
         );
     }
 

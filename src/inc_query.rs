@@ -4,13 +4,14 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, bail, Result};
 use edn::query::{
-    Element, FindSpec, Limit, NonIntegerConstant, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Variable, WhereClause,
+    Element, FindSpec, Limit, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
+    Variable, WhereClause,
 };
 
 use crate::codec::Encode;
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
+use crate::query::non_integer_constant_to_datatype;
 use crate::schema::Schema;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,7 +34,6 @@ pub(crate) struct PatternPlan {
 pub(crate) enum PatternSlot {
     Variable(Variable),
     Constant(EncodedValue),
-    Placeholder,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,9 +102,20 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
         bail!("Incremental queries do not support :order");
     }
     for clause in &query.where_clauses {
-        if !matches!(clause, WhereClause::Pattern(_)) {
-            bail!("Incremental queries currently support only triple patterns in :where");
+        match clause {
+            WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern)?,
+            _ => bail!("Incremental queries currently support only triple patterns in :where"),
         }
+    }
+    Ok(())
+}
+
+fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
+    if matches!(pattern.entity, PatternNonValuePlace::Placeholder) {
+        bail!("Incremental query patterns do not support placeholders in entity position");
+    }
+    if matches!(pattern.value, PatternValuePlace::Placeholder) {
+        bail!("Incremental query patterns do not support placeholders in value position");
     }
     Ok(())
 }
@@ -161,7 +172,6 @@ fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
 
 fn non_value_slot(place: &PatternNonValuePlace) -> Result<PatternSlot> {
     match place {
-        PatternNonValuePlace::Placeholder => Ok(PatternSlot::Placeholder),
         PatternNonValuePlace::Variable(var) => Ok(PatternSlot::Variable(var.clone())),
         PatternNonValuePlace::Entid(entid) => {
             Ok(PatternSlot::Constant(DataType::Long(*entid).encode()))
@@ -169,12 +179,14 @@ fn non_value_slot(place: &PatternNonValuePlace) -> Result<PatternSlot> {
         PatternNonValuePlace::Ident(ident) => Ok(PatternSlot::Constant(
             DataType::Keyword(ident.as_ref().clone()).encode(),
         )),
+        PatternNonValuePlace::Placeholder => {
+            bail!("Incremental query patterns do not support placeholders in entity position")
+        }
     }
 }
 
 fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
     match place {
-        PatternValuePlace::Placeholder => Ok(PatternSlot::Placeholder),
         PatternValuePlace::Variable(var) => Ok(PatternSlot::Variable(var.clone())),
         PatternValuePlace::EntidOrInteger(value) => {
             Ok(PatternSlot::Constant(DataType::Long(*value).encode()))
@@ -183,23 +195,13 @@ fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
             DataType::Keyword(ident.as_ref().clone()).encode(),
         )),
         PatternValuePlace::Constant(constant) => Ok(PatternSlot::Constant(
-            non_integer_constant_to_datatype(constant)?.encode(),
+            non_integer_constant_to_datatype(constant)
+                .ok_or_else(|| anyhow!("BigInteger constant is outside Triplox i128 range"))?
+                .encode(),
         )),
-    }
-}
-
-fn non_integer_constant_to_datatype(constant: &NonIntegerConstant) -> Result<DataType> {
-    match constant {
-        NonIntegerConstant::Boolean(value) => Ok(DataType::Boolean(*value)),
-        NonIntegerConstant::BigInteger(value) => value
-            .to_string()
-            .parse::<i128>()
-            .map(DataType::BigInt)
-            .map_err(|_| anyhow!("BigInteger constant is outside Triplox i128 range")),
-        NonIntegerConstant::Float(value) => Ok(DataType::Double(value.into_inner())),
-        NonIntegerConstant::Text(value) => Ok(DataType::String(value.as_ref().clone())),
-        NonIntegerConstant::Instant(value) => Ok(DataType::Instant(*value)),
-        NonIntegerConstant::Uuid(value) => Ok(DataType::Uuid(*value)),
+        PatternValuePlace::Placeholder => {
+            bail!("Incremental query patterns do not support placeholders in value position")
+        }
     }
 }
 
@@ -394,16 +396,19 @@ mod tests {
     }
 
     #[test]
-    fn plans_constants_and_placeholders() {
+    fn plans_constants() {
         let schema = test_schema();
         let plan = plan_query(
-            &parse_query(r#"[:find ?e :where [?e :name "Alice"] [_ :age 30]]"#),
+            &parse_query(r#"[:find ?e :where [?e :name "Alice"] [?other :age 30]]"#),
             &schema,
         )
         .unwrap();
 
         assert_eq!(plan.patterns[0].value, encoded_string("Alice"));
-        assert!(matches!(plan.patterns[1].entity, PatternSlot::Placeholder));
+        assert_eq!(
+            plan.patterns[1].entity,
+            PatternSlot::Variable("?other".to_var())
+        );
         assert_eq!(plan.patterns[1].value, encoded_long(30));
     }
 
@@ -442,6 +447,22 @@ mod tests {
         assert_plan_err(
             "[:find ?e :where [?e _ ?value]]",
             "attributes must be constant",
+        );
+    }
+
+    #[test]
+    fn rejects_entity_placeholder() {
+        assert_plan_err(
+            "[:find ?name :where [_ :name ?name]]",
+            "placeholders in entity position",
+        );
+    }
+
+    #[test]
+    fn rejects_value_placeholder() {
+        assert_plan_err(
+            "[:find ?e :where [?e :name _]]",
+            "placeholders in value position",
         );
     }
 

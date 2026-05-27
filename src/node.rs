@@ -1061,13 +1061,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_incremental_constants_placeholders_and_cartesian_product() {
+    async fn test_incremental_constants_and_cartesian_product() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
         flush_wal(&node).await;
         let mut subscription = node
             .register_incremental_query(parse_query(
-                r#"[:find ?name ?age :where [?e :name ?name] [_ :age ?age] [?e :name "Alice"]]"#,
+                r#"[:find ?name ?age :where [?e :name ?name] [?other :age ?age] [?e :name "Alice"]]"#,
             ))
             .await
             .unwrap();
@@ -1122,6 +1122,40 @@ mod tests {
                 vec![DataType::String("Alice".to_string()), DataType::Long(30)],
                 vec![DataType::String("Alice".to_string()), DataType::Long(40)],
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_entity_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("placeholders in entity position"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_value_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("placeholders in value position"),
+            "unexpected error: {}",
+            err
         );
     }
 

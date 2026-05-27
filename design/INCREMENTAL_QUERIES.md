@@ -28,7 +28,7 @@ Currently supported:
 
 - Triple patterns in `:where`.
 - Constant attributes, written as idents or entids.
-- Variables, constants, and placeholders in entity and value positions.
+- Variables and constants in entity and value positions.
 - Joins through shared variables across patterns.
 - Disconnected pattern groups, using Cartesian-product semantics like the
   standard query engine.
@@ -38,6 +38,7 @@ Currently supported:
 Currently rejected:
 
 - Variable or placeholder attributes.
+- Placeholders in entity and value positions.
 - Repeated variables inside one triple pattern.
 - `or`, `not`, predicates, functions, aggregates, rules, pull expressions,
   `:in`, `:order`, and `:limit`.
