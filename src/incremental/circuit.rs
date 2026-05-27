@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use dbsp::{
     typed_batch::IndexedZSetReader, DynZWeight, OrdWSet, OrdZSet, RootCircuit, Stream, ZWeight,
 };
+use edn::query::Variable;
 
 use crate::codec::Decode;
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
@@ -59,8 +60,8 @@ pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, 
 fn join_rows(
     left: Stream<RootCircuit, RowZSet>,
     right: Stream<RootCircuit, RowZSet>,
-    left_vars: &[edn::query::Variable],
-    right_vars: &[edn::query::Variable],
+    left_vars: &[Variable],
+    right_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
     let output_vars = merge_vars(left_vars, right_vars);
     let key_vars = left_vars
@@ -140,10 +141,7 @@ enum RowSource {
     Right(usize),
 }
 
-fn merge_vars(
-    left_vars: &[edn::query::Variable],
-    right_vars: &[edn::query::Variable],
-) -> Vec<edn::query::Variable> {
+fn merge_vars(left_vars: &[Variable], right_vars: &[Variable]) -> Vec<Variable> {
     let mut output_vars = left_vars.to_vec();
     for var in right_vars {
         if !output_vars.contains(var) {
@@ -153,7 +151,7 @@ fn merge_vars(
     output_vars
 }
 
-fn positions(vars: &[edn::query::Variable], selected: &[edn::query::Variable]) -> Vec<usize> {
+fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
     selected
         .iter()
         .map(|selected_var| {
