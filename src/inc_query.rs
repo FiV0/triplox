@@ -176,6 +176,7 @@ fn non_value_slot(place: &PatternNonValuePlace) -> Result<PatternSlot> {
         PatternNonValuePlace::Entid(entid) => {
             Ok(PatternSlot::Constant(DataType::Long(*entid).encode()))
         }
+        // TODO This needs proper ident resolution for refs
         PatternNonValuePlace::Ident(ident) => Ok(PatternSlot::Constant(
             DataType::Keyword(ident.as_ref().clone()).encode(),
         )),
@@ -191,6 +192,7 @@ fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
         PatternValuePlace::EntidOrInteger(value) => {
             Ok(PatternSlot::Constant(DataType::Long(*value).encode()))
         }
+        // TODO This needs proper ident resolution for refs
         PatternValuePlace::IdentOrKeyword(ident) => Ok(PatternSlot::Constant(
             DataType::Keyword(ident.as_ref().clone()).encode(),
         )),
@@ -212,6 +214,7 @@ fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Result<Vec<
     }
     if let PatternSlot::Variable(var) = value {
         if vars.contains(var) {
+            // TODO move this to some common validation step for one-shot + inc queries
             bail!(
                 "Repeated variable {} inside one triple pattern is not supported",
                 var
