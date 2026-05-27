@@ -145,6 +145,7 @@ where
         .map(|pattern| pattern.attribute)
         .collect::<HashSet<_>>();
     let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();
+    // TODO: This needs to be done efficiently via AVE/AEV using attribute and query constants. See #329.
     let mut iter = db
         .scan_with_options(
             concat_bytes(&[&[codec::EAV]])..vec![codec::EAV_END],
