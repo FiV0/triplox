@@ -1,6 +1,12 @@
+use std::path::Path;
+
 use anyhow::{anyhow, Result};
+use dbsp::circuit::{
+    CircuitConfig, CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions,
+};
 use dbsp::{
-    typed_batch::IndexedZSetReader, DynZWeight, OrdWSet, OrdZSet, RootCircuit, Stream, ZWeight,
+    typed_batch::IndexedZSetReader, utils::Tup2, DBSPHandle, DynZWeight, OrdWSet, OrdZSet,
+    OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
 };
 use edn::query::Variable;
 
@@ -55,6 +61,69 @@ pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, 
             Ok((decoded, weight))
         })
         .collect()
+}
+
+pub(super) struct QueryCircuit {
+    _circuit: DBSPHandle,
+    _input: ZSetHandle<EncodedTriple>,
+    _output: OutputHandle<RowZSet>,
+}
+
+impl QueryCircuit {
+    pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
+        let config = storage_circuit_config(storage_path)?;
+        let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
+            let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
+            let rows = query_find_stream(&input, plan);
+            Ok((handle, rows.output()))
+        })
+        .map_err(anyhow::Error::from)?;
+
+        Ok(Self {
+            _circuit: circuit,
+            _input: input,
+            _output: output,
+        })
+    }
+
+    pub(super) fn prime(
+        &mut self,
+        mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<()> {
+        self._input.append(&mut initial_triples);
+        self._circuit.transaction().map_err(anyhow::Error::from)?;
+        let _ = self._output.consolidate();
+        Ok(())
+    }
+
+    pub(super) fn apply(
+        &mut self,
+        mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        self._input.append(&mut triples);
+        self._circuit.transaction().map_err(anyhow::Error::from)?;
+        decode_output_rows(&self._output.consolidate())
+    }
+}
+
+fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
+    if storage_path.exists() {
+        std::fs::remove_dir_all(storage_path)?;
+    }
+    std::fs::create_dir_all(storage_path)?;
+    let storage = CircuitStorageConfig::for_config(
+        StorageConfig {
+            path: storage_path.to_string_lossy().into_owned(),
+            cache: StorageCacheConfig::default(),
+        },
+        StorageOptions {
+            min_storage_bytes: Some(0),
+            ..StorageOptions::default()
+        },
+    )
+    .map_err(anyhow::Error::from)?;
+
+    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
 }
 
 fn join_rows(
@@ -232,11 +301,9 @@ mod tests {
         F: FnOnce(&mut RootCircuit) -> anyhow::Result<T> + Clone + Send + 'static,
     {
         let storage = tempfile::tempdir().unwrap();
-        let (circuit, handles) = Runtime::init_circuit(
-            super::super::storage_circuit_config(storage.path()).unwrap(),
-            constructor,
-        )
-        .unwrap();
+        let (circuit, handles) =
+            Runtime::init_circuit(storage_circuit_config(storage.path()).unwrap(), constructor)
+                .unwrap();
         (circuit, handles, storage)
     }
 
@@ -305,6 +372,26 @@ mod tests {
             }],
             patterns,
         }
+    }
+
+    #[test]
+    fn query_circuit_uses_file_backed_storage_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage_path = dir.path().join("query-1");
+        std::fs::create_dir_all(&storage_path).unwrap();
+        std::fs::write(storage_path.join("stale"), b"stale").unwrap();
+
+        let mut circuit = QueryCircuit::build(entity_join_plan(), &storage_path).unwrap();
+        circuit
+            .prime(vec![
+                Tup2(triple(42, 10, DataType::String("Alice".to_string())), 1),
+                Tup2(triple(42, 11, DataType::Long(30)), 1),
+            ])
+            .unwrap();
+
+        assert!(storage_path.exists());
+        assert!(!storage_path.join("stale").exists());
+        assert!(path_has_entries(&storage_path));
     }
 
     #[test]
@@ -650,5 +737,14 @@ mod tests {
         let err = decode_output_rows(&batch).unwrap_err();
 
         assert!(err.to_string().contains("DecodeError"));
+    }
+
+    fn path_has_entries(path: &Path) -> bool {
+        std::fs::read_dir(path)
+            .unwrap()
+            .next()
+            .transpose()
+            .unwrap()
+            .is_some()
     }
 }

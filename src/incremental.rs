@@ -2,20 +2,17 @@
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
-use anyhow::{anyhow, Error, Result};
-use dbsp::circuit::{
-    CircuitConfig, CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions,
-};
-use dbsp::{utils::Tup2, DBSPHandle, OutputHandle, Runtime, ZSetHandle, ZWeight};
+use anyhow::{anyhow, Result};
+use dbsp::{utils::Tup2, ZWeight};
 use tokio::sync::{mpsc, oneshot};
 use triplox_client::transaction::TxBasis;
 
 use crate::inc_query::IncrementalQueryPlan;
-use crate::incremental::circuit::{decode_output_rows, query_find_stream, RowZSet};
+use crate::incremental::circuit::QueryCircuit;
 use crate::ops::DataType;
 use crate::slate::cdc::CdcCursor;
 
@@ -361,66 +358,6 @@ struct RegisteredQuery {
     _wal_cursor: CdcCursor,
 }
 
-struct QueryCircuit {
-    _circuit: DBSPHandle,
-    _input: ZSetHandle<EncodedTriple>,
-    _output: OutputHandle<RowZSet>,
-}
-
-impl QueryCircuit {
-    fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        let config = storage_circuit_config(storage_path)?;
-        let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
-            let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-            let rows = query_find_stream(&input, plan);
-            Ok((handle, rows.output()))
-        })
-        .map_err(Error::from)?;
-
-        Ok(Self {
-            _circuit: circuit,
-            _input: input,
-            _output: output,
-        })
-    }
-
-    fn prime(&mut self, mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<()> {
-        self._input.append(&mut initial_triples);
-        self._circuit.transaction().map_err(Error::from)?;
-        let _ = self._output.consolidate();
-        Ok(())
-    }
-
-    fn apply(
-        &mut self,
-        mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        self._input.append(&mut triples);
-        self._circuit.transaction().map_err(Error::from)?;
-        decode_output_rows(&self._output.consolidate())
-    }
-}
-
-fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
-    if storage_path.exists() {
-        std::fs::remove_dir_all(storage_path)?;
-    }
-    std::fs::create_dir_all(storage_path)?;
-    let storage = CircuitStorageConfig::for_config(
-        StorageConfig {
-            path: storage_path.to_string_lossy().into_owned(),
-            cache: StorageCacheConfig::default(),
-        },
-        StorageOptions {
-            min_storage_bytes: Some(0),
-            ..StorageOptions::default()
-        },
-    )
-    .map_err(Error::from)?;
-
-    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
-}
-
 #[derive(
     Clone,
     Debug,
@@ -455,30 +392,6 @@ mod tests {
     use super::*;
     use crate::codec::Encode;
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
-
-    #[test]
-    fn query_circuit_uses_file_backed_storage_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage_path = dir.path().join("query-1");
-        std::fs::create_dir_all(&storage_path).unwrap();
-        std::fs::write(storage_path.join("stale"), b"stale").unwrap();
-
-        let mut circuit = QueryCircuit::build(single_pattern_plan(), &storage_path).unwrap();
-        circuit
-            .prime(vec![Tup2(
-                EncodedTriple {
-                    entity: DataType::Long(42).encode(),
-                    attribute: 10,
-                    value: DataType::String("Alice".to_string()).encode(),
-                },
-                1,
-            )])
-            .unwrap();
-
-        assert!(storage_path.exists());
-        assert!(!storage_path.join("stale").exists());
-        assert!(path_has_entries(&storage_path));
-    }
 
     #[test]
     fn unregister_removes_query_storage() {
