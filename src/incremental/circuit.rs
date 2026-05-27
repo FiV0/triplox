@@ -11,12 +11,13 @@ use dbsp::{
 use edn::query::Variable;
 
 use crate::codec::Decode;
-use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
+use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
+// TODO: This filtering should happen at storage level. See #329
 pub(crate) fn pattern_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     pattern: PatternPlan,
@@ -28,13 +29,13 @@ pub(crate) fn query_row_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: IncrementalQueryPlan,
 ) -> Stream<RootCircuit, RowZSet> {
-    let mut stream = pattern_stream(input, plan.patterns[0].clone());
-    let mut current_vars = plan.patterns[0].output_vars.clone();
+    let patterns = plan.patterns;
+    let joins = plan.joins;
+    let mut stream = pattern_stream(input, patterns[0].clone());
 
-    for pattern in plan.patterns.iter().skip(1) {
-        let right = pattern_stream(input, pattern.clone());
-        stream = join_rows(stream, right, &current_vars, &pattern.output_vars);
-        current_vars = merge_vars(&current_vars, &pattern.output_vars);
+    for join in joins {
+        let right = pattern_stream(input, patterns[join.right_pattern_index].clone());
+        stream = join_rows(stream, right, &join);
     }
 
     stream
@@ -44,7 +45,12 @@ pub(crate) fn query_find_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: IncrementalQueryPlan,
 ) -> Stream<RootCircuit, RowZSet> {
-    let find_positions = positions(&plan.variables, &plan.find_vars);
+    let output_vars = plan
+        .joins
+        .last()
+        .map(|join| &join.output_vars)
+        .unwrap_or(&plan.patterns[0].output_vars);
+    let find_positions = positions(output_vars, &plan.find_vars);
     query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
 }
 
@@ -129,27 +135,21 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 fn join_rows(
     left: Stream<RootCircuit, RowZSet>,
     right: Stream<RootCircuit, RowZSet>,
-    left_vars: &[Variable],
-    right_vars: &[Variable],
+    join: &JoinPlan,
 ) -> Stream<RootCircuit, RowZSet> {
-    let output_vars = merge_vars(left_vars, right_vars);
-    let key_vars = left_vars
-        .iter()
-        .filter(|var| right_vars.contains(*var))
-        .cloned()
-        .collect::<Vec<_>>();
-    let left_key_positions = positions(left_vars, &key_vars);
-    let right_key_positions = positions(right_vars, &key_vars);
-    let output_sources = output_vars
+    let left_key_positions = positions(&join.left_vars, &join.key_vars);
+    let right_key_positions = positions(&join.right_vars, &join.key_vars);
+    let output_sources = join
+        .output_vars
         .iter()
         .map(|var| {
-            left_vars
+            join.left_vars
                 .iter()
                 .position(|left_var| left_var == var)
                 .map(RowSource::Left)
                 .unwrap_or_else(|| {
                     RowSource::Right(
-                        right_vars
+                        join.right_vars
                             .iter()
                             .position(|right_var| right_var == var)
                             .expect("output var must come from one join side"),
@@ -210,16 +210,6 @@ enum RowSource {
     Right(usize),
 }
 
-fn merge_vars(left_vars: &[Variable], right_vars: &[Variable]) -> Vec<Variable> {
-    let mut output_vars = left_vars.to_vec();
-    for var in right_vars {
-        if !output_vars.contains(var) {
-            output_vars.push(var.clone());
-        }
-    }
-    output_vars
-}
-
 fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
     selected
         .iter()
@@ -265,7 +255,7 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::{IncrementalQueryPlan, JoinKind, JoinPlan, PatternSlot};
+    use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternSlot};
     use crate::ops::DataType;
 
     fn build_pattern_circuit(
@@ -364,12 +354,66 @@ mod tests {
             find_vars: vec!["?name".to_var(), "?age".to_var()],
             variables: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
             joins: vec![JoinPlan {
-                kind: JoinKind::Keyed,
+                right_pattern_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec!["?e".to_var()],
                 output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
             }],
+            patterns,
+        }
+    }
+
+    fn reordered_join_plan() -> IncrementalQueryPlan {
+        let patterns = vec![
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+            PatternPlan {
+                attribute: 12,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?friend".to_var()),
+                output_vars: vec!["?e".to_var(), "?friend".to_var()],
+            },
+        ];
+        IncrementalQueryPlan {
+            find_vars: vec!["?friend".to_var(), "?age".to_var()],
+            variables: vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
+                "?friend".to_var(),
+            ],
+            joins: vec![
+                JoinPlan {
+                    right_pattern_index: 2,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[2].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                },
+                JoinPlan {
+                    right_pattern_index: 1,
+                    left_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec![
+                        "?e".to_var(),
+                        "?name".to_var(),
+                        "?friend".to_var(),
+                        "?age".to_var(),
+                    ],
+                },
+            ],
             patterns,
         }
     }
@@ -496,6 +540,56 @@ mod tests {
     }
 
     #[test]
+    fn query_rows_follow_join_plan_order() {
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_query_circuit(circuit, reordered_join_plan()));
+
+        append(
+            &handle,
+            [
+                (triple(42, 10, DataType::String("Alice".to_string())), 1),
+                (triple(42, 11, DataType::Long(30)), 1),
+                (triple(42, 12, DataType::Long(43)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            collect_rows(&output),
+            vec![(
+                vec![
+                    DataType::Long(42).encode(),
+                    DataType::String("Alice".to_string()).encode(),
+                    DataType::Long(43).encode(),
+                    DataType::Long(30).encode(),
+                ],
+                1,
+            )]
+        );
+    }
+
+    #[test]
+    fn find_projection_uses_planned_output_order() {
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, reordered_join_plan()));
+
+        append(
+            &handle,
+            [
+                (triple(42, 10, DataType::String("Alice".to_string())), 1),
+                (triple(42, 11, DataType::Long(30)), 1),
+                (triple(42, 12, DataType::Long(43)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(43), DataType::Long(30)], 1)]
+        );
+    }
+
+    #[test]
     fn joins_through_ref_value() {
         let patterns = vec![
             PatternPlan {
@@ -515,7 +609,7 @@ mod tests {
             find_vars: vec!["?friend-name".to_var()],
             variables: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
             joins: vec![JoinPlan {
-                kind: JoinKind::Keyed,
+                right_pattern_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec!["?friend".to_var()],
@@ -558,7 +652,7 @@ mod tests {
             output_vars: vec!["?e".to_var(), "?friend".to_var()],
         });
         plan.joins.push(JoinPlan {
-            kind: JoinKind::Keyed,
+            right_pattern_index: 2,
             left_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
             right_vars: vec!["?e".to_var(), "?friend".to_var()],
             key_vars: vec!["?e".to_var()],
@@ -622,7 +716,7 @@ mod tests {
                 "?age".to_var(),
             ],
             joins: vec![JoinPlan {
-                kind: JoinKind::Cartesian,
+                right_pattern_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec![],

@@ -38,17 +38,11 @@ pub(crate) enum PatternSlot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JoinPlan {
-    pub kind: JoinKind,
+    pub right_pattern_index: usize,
     pub left_vars: Vec<Variable>,
     pub right_vars: Vec<Variable>,
     pub key_vars: Vec<Variable>,
     pub output_vars: Vec<Variable>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum JoinKind {
-    Keyed,
-    Cartesian,
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
@@ -242,7 +236,7 @@ fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
     let mut left_vars = patterns[0].output_vars.clone();
     let mut bound: HashSet<Variable> = left_vars.iter().cloned().collect();
 
-    for pattern in patterns.iter().skip(1) {
+    for (right_pattern_index, pattern) in patterns.iter().enumerate().skip(1) {
         let right_vars = pattern.output_vars.clone();
         let right_set: HashSet<Variable> = right_vars.iter().cloned().collect();
         // Note: Not using intersection to preserve ordering from left_vars
@@ -251,11 +245,6 @@ fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
             .filter(|var| right_set.contains(*var))
             .cloned()
             .collect::<Vec<_>>();
-        let kind = if key_vars.is_empty() {
-            JoinKind::Cartesian
-        } else {
-            JoinKind::Keyed
-        };
 
         let mut output_vars = left_vars.clone();
         for var in &right_vars {
@@ -265,7 +254,7 @@ fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
         }
 
         joins.push(JoinPlan {
-            kind,
+            right_pattern_index,
             left_vars,
             right_vars,
             key_vars,
@@ -361,7 +350,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].kind, JoinKind::Keyed);
+        assert_eq!(plan.joins[0].right_pattern_index, 1);
         assert_eq!(plan.joins[0].key_vars, vec!["?e".to_var()]);
         assert_eq!(
             plan.joins[0].output_vars,
@@ -380,7 +369,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins[0].kind, JoinKind::Keyed);
+        assert_eq!(plan.joins[0].right_pattern_index, 1);
         assert_eq!(plan.joins[0].key_vars, vec!["?friend".to_var()]);
     }
 
@@ -426,7 +415,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].kind, JoinKind::Cartesian);
+        assert_eq!(plan.joins[0].right_pattern_index, 1);
         assert!(plan.joins[0].key_vars.is_empty());
     }
 
