@@ -17,27 +17,6 @@ use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
-// Builds the file-backed DBSP runtime configuration for a single query circuit.
-fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
-    if storage_path.exists() {
-        std::fs::remove_dir_all(storage_path)?;
-    }
-    std::fs::create_dir_all(storage_path)?;
-    let storage = CircuitStorageConfig::for_config(
-        StorageConfig {
-            path: storage_path.to_string_lossy().into_owned(),
-            cache: StorageCacheConfig::default(),
-        },
-        StorageOptions {
-            min_storage_bytes: Some(0),
-            ..StorageOptions::default()
-        },
-    )
-    .map_err(anyhow::Error::from)?;
-
-    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
-}
-
 // Checks whether a pattern slot accepts the encoded triple value.
 fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
     match slot {
@@ -89,16 +68,8 @@ fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
         .collect()
 }
 
-// Extracts an encoded join key from a row.
-fn row_key(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
-    positions
-        .iter()
-        .map(|position| row[*position].clone())
-        .collect()
-}
-
-// Projects a row to the requested output positions.
-fn project_row(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
+// Selects row values at the requested positions.
+fn select_row_positions(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
     positions
         .iter()
         .map(|position| row[*position].clone())
@@ -158,9 +129,10 @@ fn join_rows(
         })
         .collect::<Vec<_>>();
 
-    let left_indexed = left.map_index(move |row| (row_key(row, &left_key_positions), row.clone()));
+    let left_indexed =
+        left.map_index(move |row| (select_row_positions(row, &left_key_positions), row.clone()));
     let right_indexed =
-        right.map_index(move |row| (row_key(row, &right_key_positions), row.clone()));
+        right.map_index(move |row| (select_row_positions(row, &right_key_positions), row.clone()));
 
     left_indexed.join(&right_indexed, move |_key, left_row, right_row| {
         merge_rows(left_row, right_row, &output_sources)
@@ -195,7 +167,7 @@ pub(crate) fn query_find_stream(
         .map(|join| &join.output_vars)
         .unwrap_or(&plan.patterns[0].output_vars);
     let find_positions = positions(output_vars, &plan.find_vars);
-    query_row_stream(input, plan).map(move |row| project_row(row, &find_positions))
+    query_row_stream(input, plan).map(move |row| select_row_positions(row, &find_positions))
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
@@ -212,6 +184,27 @@ pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, 
             Ok((decoded, weight))
         })
         .collect()
+}
+
+// Builds the file-backed DBSP runtime configuration for a single query circuit.
+fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
+    if storage_path.exists() {
+        std::fs::remove_dir_all(storage_path)?;
+    }
+    std::fs::create_dir_all(storage_path)?;
+    let storage = CircuitStorageConfig::for_config(
+        StorageConfig {
+            path: storage_path.to_string_lossy().into_owned(),
+            cache: StorageCacheConfig::default(),
+        },
+        StorageOptions {
+            min_storage_bytes: Some(0),
+            ..StorageOptions::default()
+        },
+    )
+    .map_err(anyhow::Error::from)?;
+
+    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
 }
 
 pub(super) struct QueryCircuit {
