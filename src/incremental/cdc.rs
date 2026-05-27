@@ -8,6 +8,7 @@ use log::{error, info};
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::Encode;
@@ -59,7 +60,8 @@ pub(crate) fn spawn_cdc_loop<N>(
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
-) where
+) -> JoinHandle<()>
+where
     N: InternalNode,
 {
     tokio::spawn(async move {
@@ -68,7 +70,7 @@ pub(crate) fn spawn_cdc_loop<N>(
         {
             error!("Incremental query CDC loop stopped: {:#}", err);
         }
-    });
+    })
 }
 
 async fn run_cdc_loop<N>(

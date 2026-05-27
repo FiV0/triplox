@@ -1,12 +1,13 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::Error;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use crate::clock;
 use crate::error::TriploxError;
@@ -142,6 +143,7 @@ pub struct Node<L: TxLog> {
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
     incremental_cdc_started: Arc<AtomicBool>,
+    incremental_cdc_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
     incremental_registration_gate: Arc<Mutex<()>>,
     // Test hook for deterministically exercising the registration snapshot race.
     #[cfg(test)]
@@ -192,6 +194,7 @@ impl Node<MemoryLog> {
             subscription,
             incremental,
             incremental_cdc_started: Arc::new(AtomicBool::new(false)),
+            incremental_cdc_task: Arc::new(StdMutex::new(None)),
             incremental_registration_gate,
             #[cfg(test)]
             incremental_registration_pause: Arc::new(Mutex::new(None)),
@@ -258,6 +261,7 @@ impl Node<FileLog> {
             subscription,
             incremental,
             incremental_cdc_started: Arc::new(AtomicBool::new(false)),
+            incremental_cdc_task: Arc::new(StdMutex::new(None)),
             incremental_registration_gate: Arc::new(Mutex::new(())),
             #[cfg(test)]
             incremental_registration_pause: Arc::new(Mutex::new(None)),
@@ -316,8 +320,16 @@ fn memory_incremental_storage_path(slate: &SlateComponents) -> PathBuf {
 impl<L: TxLog> Node<L> {
     pub async fn close(self) {
         self.subscription.cancel();
+        self.await_incremental_cdc_task().await;
         self.incremental.shutdown().await.unwrap();
         self.slate.db.close().await.unwrap();
+    }
+
+    async fn await_incremental_cdc_task(&self) {
+        let handle = self.incremental_cdc_task.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle.await.unwrap();
+        }
     }
 
     async fn db_as_of_with_timeout(&self, basis: TxBasis, timeout: Duration) -> Result<DB, Error> {
@@ -388,7 +400,7 @@ impl<L: TxLog> Node<L> {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            spawn_cdc_loop(
+            let handle = spawn_cdc_loop(
                 self.slate.path.clone(),
                 self.slate.object_store.clone(),
                 self.indexer.clone(),
@@ -396,6 +408,7 @@ impl<L: TxLog> Node<L> {
                 self.incremental_registration_gate.clone(),
                 self.subscription.clone(),
             );
+            *self.incremental_cdc_task.lock().unwrap() = Some(handle);
         }
     }
 
