@@ -17,6 +17,11 @@ use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
+pub(crate) struct PlannedWhereStream {
+    rows: Stream<RootCircuit, RowZSet>,
+    vars: Vec<Variable>,
+}
+
 // Checks whether a pattern slot accepts the encoded triple value.
 fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
     match slot {
@@ -139,35 +144,32 @@ pub(crate) fn pattern_stream(
     input.flat_map(move |triple| pattern_row(&pattern, triple))
 }
 
-// Creates the DBSP stream of joined rows for the whole incremental query plan.
-pub(crate) fn query_row_stream(
+// Creates the DBSP stream of joined where rows for the whole incremental query plan.
+pub(crate) fn query_where_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    plan: IncrementalQueryPlan,
-) -> Stream<RootCircuit, RowZSet> {
-    let patterns = plan.patterns;
-    let joins = plan.joins;
-    let mut stream = pattern_stream(input, patterns[0].clone());
+    plan: &IncrementalQueryPlan,
+) -> PlannedWhereStream {
+    let mut rows = pattern_stream(input, plan.patterns[0].clone());
+    let mut vars = plan.patterns[0].output_vars.clone();
 
-    for join in joins {
-        let right = pattern_stream(input, patterns[join.right_pattern_index].clone());
-        stream = join_rows(stream, right, &join);
+    for join in &plan.joins {
+        let right = pattern_stream(input, plan.patterns[join.right_pattern_index].clone());
+        rows = join_rows(rows, right, join);
+        vars = join.output_vars.clone();
     }
 
-    stream
+    PlannedWhereStream { rows, vars }
 }
 
 // Creates the DBSP stream of rows projected to the query find variables.
 pub(crate) fn query_find_stream(
-    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    plan: IncrementalQueryPlan,
+    where_stream: PlannedWhereStream,
+    find_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
-    let output_vars = plan
-        .joins
-        .last()
-        .map(|join| &join.output_vars)
-        .unwrap_or(&plan.patterns[0].output_vars);
-    let find_positions = positions(output_vars, &plan.find_vars);
-    query_row_stream(input, plan).map(move |row| select_row_positions(row, &find_positions))
+    let find_positions = positions(&where_stream.vars, find_vars);
+    where_stream
+        .rows
+        .map(move |row| select_row_positions(row, &find_positions))
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
@@ -219,7 +221,8 @@ impl QueryCircuit {
         let config = storage_circuit_config(storage_path)?;
         let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-            let rows = query_find_stream(&input, plan);
+            let where_stream = query_where_stream(&input, &plan);
+            let rows = query_find_stream(where_stream, &plan.find_vars);
             Ok((handle, rows.output()))
         })
         .map_err(anyhow::Error::from)?;
@@ -275,12 +278,12 @@ mod tests {
         Ok((handle, rows.output()))
     }
 
-    fn build_query_circuit(
+    fn build_where_circuit(
         circuit: &mut RootCircuit,
         plan: IncrementalQueryPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = query_row_stream(&input, plan);
+        let rows = query_where_stream(&input, &plan).rows;
         Ok((handle, rows.output()))
     }
 
@@ -289,7 +292,8 @@ mod tests {
         plan: IncrementalQueryPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = query_find_stream(&input, plan);
+        let where_stream = query_where_stream(&input, &plan);
+        let rows = query_find_stream(where_stream, &plan.find_vars);
         Ok((handle, rows.output()))
     }
 
@@ -531,7 +535,7 @@ mod tests {
     #[test]
     fn joins_two_patterns_on_entity() {
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_query_circuit(circuit, entity_join_plan()));
+            build_test_circuit(|circuit| build_where_circuit(circuit, entity_join_plan()));
 
         append(
             &handle,
@@ -559,7 +563,7 @@ mod tests {
     #[test]
     fn query_rows_follow_join_plan_order() {
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_query_circuit(circuit, reordered_join_plan()));
+            build_test_circuit(|circuit| build_where_circuit(circuit, reordered_join_plan()));
 
         append(
             &handle,
@@ -635,7 +639,7 @@ mod tests {
             patterns,
         };
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
+            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -682,7 +686,7 @@ mod tests {
         });
         plan.variables.push("?friend".to_var());
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
+            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -747,7 +751,7 @@ mod tests {
             patterns,
         };
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_query_circuit(circuit, plan.clone()));
+            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
         append(
             &handle,
