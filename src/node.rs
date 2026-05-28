@@ -1335,6 +1335,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fresh_node_tx_waiter_knows_bootstrap_tx_is_indexed() {
+        let node = Node::memory_node().await;
+
+        let db = node.db().await.unwrap();
+        let bootstrap_basis = *db.tx_basis();
+        let bootstrap_tx_key = bootstrap_basis.tx_key;
+        assert_eq!(bootstrap_tx_key.tx_id, 0);
+        assert_eq!(bootstrap_basis.tx_eid, crate::bootstrap::BOOTSTRAP_TX_EID);
+
+        let waiter = node.indexer.read().await.tx_waiter();
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            waiter.await_tx(bootstrap_tx_key),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "tx_waiter should not timeout for the already-indexed bootstrap tx"
+        );
+        let completion = result.unwrap().expect("await_tx should succeed");
+        assert_eq!(completion.basis, Some(bootstrap_basis));
+
+        node.close().await;
+    }
+
+    #[tokio::test]
     async fn test_fresh_db_has_queryable_bootstrap_transaction_entity() {
         let node = Node::memory_node().await;
 
