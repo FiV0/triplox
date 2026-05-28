@@ -130,7 +130,6 @@ where
     }
 }
 
-#[allow(unused)]
 pub struct Node<L: TxLog> {
     log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
