@@ -449,863 +449,6 @@ mod tests {
             .unwrap();
     }
 
-    async fn recv_incremental_delta(
-        subscription: &mut IncrementalQuerySubscription,
-    ) -> crate::incremental::IncrementalQueryDelta {
-        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
-            .await
-            .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open")
-    }
-
-    async fn try_recv_incremental_delta(
-        subscription: &mut IncrementalQuerySubscription,
-    ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
-            .await
-            .ok()
-            .flatten()
-    }
-
-    fn sort_query_rows(rows: &mut [Vec<DataType>]) {
-        rows.sort_by_key(|row| format!("{:?}", row));
-    }
-
-    fn integrate_delta(
-        rows: &mut Vec<Vec<DataType>>,
-        delta: crate::incremental::IncrementalQueryDelta,
-    ) {
-        for (row, weight) in delta.rows {
-            match weight.cmp(&0) {
-                std::cmp::Ordering::Greater => {
-                    for _ in 0..weight {
-                        rows.push(row.clone());
-                    }
-                }
-                std::cmp::Ordering::Less => {
-                    for _ in 0..(-weight) {
-                        let index = rows
-                            .iter()
-                            .position(|existing| existing == &row)
-                            .expect("negative delta should remove an existing row");
-                        rows.remove(index);
-                    }
-                }
-                std::cmp::Ordering::Equal => {}
-            }
-        }
-        sort_query_rows(rows);
-    }
-
-    async fn execute_and_flush(node: &Node<MemoryLog>, tx_ops: Vec<TxOp>) -> TxBasis {
-        let basis = match node.execute_tx(tx_ops).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(node).await;
-        basis
-    }
-
-    async fn assert_incremental_matches_db(
-        node: &Node<MemoryLog>,
-        subscription: &mut IncrementalQuerySubscription,
-        rows: &mut Vec<Vec<DataType>>,
-        basis: TxBasis,
-        query: &str,
-    ) {
-        let db = node.db_as_of(basis).await.unwrap();
-        let mut expected = db.query(query).await.unwrap();
-        sort_query_rows(&mut expected);
-
-        if rows != &expected {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while rows != &expected {
-                    let delta = subscription
-                        .deltas
-                        .recv()
-                        .await
-                        .expect("subscription should be open");
-                    integrate_delta(rows, delta);
-                }
-            })
-            .await
-            .expect("timed out waiting for incremental rows to match one-shot query");
-        }
-
-        assert_eq!(&expected, rows);
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_installs_subscription() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        let expected_basis = *node.db().await.unwrap().tx_basis();
-
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        assert_eq!(subscription.basis, expected_basis);
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires bootstrap latest_tx_basis to be visible through the indexer"]
-    async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
-        let node = Node::memory_node().await;
-
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?ident :where [?e :db/ident ?ident]]"))
-            .await
-            .unwrap();
-        let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(&node).await;
-
-        let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(basis));
-        let mut rows = delta.rows;
-        rows.sort_by_key(|row| format!("{:?}", row));
-        let mut expected = vec![
-            (vec![DataType::Keyword(kw!(:age))], 1),
-            (vec![DataType::Keyword(kw!(:email))], 1),
-            (vec![DataType::Keyword(kw!(:follows))], 1),
-            (vec![DataType::Keyword(kw!(:name))], 1),
-            (vec![DataType::Keyword(kw!(:tags))], 1),
-        ];
-        expected.sort_by_key(|row| format!("{:?}", row));
-        assert_eq!(rows, expected);
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_after_existing_data_emits_no_initial_delta() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        let result = node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_primed_incremental_query_uses_existing_rows_for_future_delta() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        let result = node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-
-        let mut subscription = node
-            .register_incremental_query(parse_query(
-                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
-            ))
-            .await
-            .unwrap();
-        let future_basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(&node).await;
-
-        let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(future_basis));
-        assert_eq!(
-            delta.rows,
-            vec![(
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                1
-            )]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_cdc_emits_single_transaction_delta() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-
-        flush_wal(&node).await;
-
-        let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(basis));
-        assert_eq!(
-            delta.rows,
-            vec![(vec![DataType::String("Alice".to_string())], 1)]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_registration_does_not_miss_tx_between_basis_and_insert() {
-        let node = Arc::new(Node::memory_node().await);
-        define_test_schema(node.as_ref()).await;
-        flush_wal(node.as_ref()).await;
-        let mut first_subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        let (registration_paused, release_registration) = node
-            .incremental
-            .pause_next_registration_after_snapshot_for_test()
-            .await;
-        let registering_node = node.clone();
-        let registration = tokio::spawn(async move {
-            registering_node
-                .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-                .await
-                .unwrap()
-        });
-        tokio::time::timeout(Duration::from_secs(5), registration_paused)
-            .await
-            .expect("timed out waiting for registration pause")
-            .expect("registration pause sender dropped");
-
-        let basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(node.as_ref()).await;
-        assert!(try_recv_incremental_delta(&mut first_subscription)
-            .await
-            .is_none());
-
-        release_registration
-            .send(())
-            .expect("registration release receiver should be waiting");
-        let mut second_subscription = registration.await.unwrap();
-
-        let first_delta = recv_incremental_delta(&mut first_subscription).await;
-        let second_delta = recv_incremental_delta(&mut second_subscription).await;
-        assert_eq!(first_delta.basis, Some(basis));
-        assert_eq!(second_delta.basis, Some(basis));
-        assert_eq!(
-            first_delta.rows,
-            vec![(vec![DataType::String("Alice".to_string())], 1)]
-        );
-        assert_eq!(second_delta.rows, first_delta.rows);
-    }
-
-    #[tokio::test]
-    async fn test_incremental_registration_basis_inside_wal_replays_after_basis_only() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let first_basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        assert_eq!(subscription.basis, first_basis);
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-
-        let second_basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:name),
-                value: DataType::String("Bob".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(&node).await;
-
-        let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(second_basis));
-        assert_eq!(
-            delta.rows,
-            vec![(vec![DataType::String("Bob".to_string())], 1)]
-        );
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn test_incremental_cdc_groups_multi_entity_transaction() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let basis = match node
-            .execute_tx(vec![
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:name),
-                    value: DataType::String("Alice".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:name),
-                    value: DataType::String("Bob".to_string()),
-                },
-            ])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-
-        flush_wal(&node).await;
-
-        let mut delta = recv_incremental_delta(&mut subscription).await;
-        delta.rows.sort_by_key(|row| format!("{:?}", row));
-        assert_eq!(delta.basis, Some(basis));
-        assert_eq!(
-            delta.rows,
-            vec![
-                (vec![DataType::String("Alice".to_string())], 1),
-                (vec![DataType::String("Bob".to_string())], 1),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_cdc_cardinality_one_overwrite_emits_retract_and_assert() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        let result = node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Bob".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-
-        flush_wal(&node).await;
-
-        let mut delta = recv_incremental_delta(&mut subscription).await;
-        delta.rows.sort_by_key(|row| format!("{:?}", row));
-        assert_eq!(delta.basis, Some(basis));
-        assert_eq!(
-            delta.rows,
-            vec![
-                (vec![DataType::String("Alice".to_string())], -1),
-                (vec![DataType::String("Bob".to_string())], 1),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_entity_join_integrates_live_result() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query(
-                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
-            ))
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        execute_and_flush(
-            &node,
-            vec![
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:name),
-                    value: DataType::String("Alice".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(100),
-                    attribute: kw!(:age),
-                    value: DataType::Long(30),
-                },
-            ],
-        )
-        .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
-        assert_eq!(
-            rows,
-            vec![vec![
-                DataType::String("Alice".to_string()),
-                DataType::Long(30)
-            ]]
-        );
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:age),
-                value: DataType::Long(40),
-            }],
-        )
-        .await;
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:name),
-                value: DataType::String("Bob".to_string()),
-            }],
-        )
-        .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
-        assert_eq!(
-            rows,
-            vec![
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                vec![DataType::String("Bob".to_string()), DataType::Long(40)],
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_ref_value_and_three_pattern_chain() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query(
-                "[:find ?name ?friend-name ?age :where [?e :name ?name] [?e :follows ?friend] [?friend :name ?friend-name] [?friend :age ?age]]",
-            ))
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }],
-        )
-        .await;
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-        assert!(rows.is_empty());
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:name),
-                value: DataType::String("Bob".to_string()),
-            }],
-        )
-        .await;
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-        assert!(rows.is_empty());
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:age),
-                value: DataType::Long(40),
-            }],
-        )
-        .await;
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-        assert!(rows.is_empty());
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:follows),
-                value: DataType::Long(101),
-            }],
-        )
-        .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
-
-        assert_eq!(
-            rows,
-            vec![vec![
-                DataType::String("Alice".to_string()),
-                DataType::String("Bob".to_string()),
-                DataType::Long(40),
-            ]]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_constants_and_cartesian_product() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query(
-                r#"[:find ?name ?age :where [?e :name ?name] [?other :age ?age] [?e :name "Alice"]]"#,
-            ))
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }],
-        )
-        .await;
-        assert!(try_recv_incremental_delta(&mut subscription)
-            .await
-            .is_none());
-        assert!(rows.is_empty());
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-            }],
-        )
-        .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
-        assert_eq!(
-            rows,
-            vec![vec![
-                DataType::String("Alice".to_string()),
-                DataType::Long(30)
-            ]]
-        );
-
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(102),
-                attribute: kw!(:age),
-                value: DataType::Long(40),
-            }],
-        )
-        .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
-
-        assert_eq!(
-            rows,
-            vec![
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                vec![DataType::String("Alice".to_string()), DataType::Long(40)],
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_entity_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"))
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("placeholders in entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"))
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("placeholders in value position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_equivalence_entity_join() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]";
-        let mut subscription = node
-            .register_incremental_query(parse_query(query))
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-
-        let basis = execute_and_flush(
-            &node,
-            vec![
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:name),
-                    value: DataType::String("Bob".to_string()),
-                },
-                TxOp::Add {
-                    entity: EntityRef::Id(101),
-                    attribute: kw!(:age),
-                    value: DataType::Long(40),
-                },
-            ],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-    }
-
-    #[tokio::test]
-    async fn test_incremental_equivalence_cartesian_product() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        flush_wal(&node).await;
-        let query = "[:find ?name ?age :where [?e :name ?name] [?other :age ?age]]";
-        let mut subscription = node
-            .register_incremental_query(parse_query(query))
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(101),
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(102),
-                attribute: kw!(:name),
-                value: DataType::String("Bob".to_string()),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_unsupported_query() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e ?a ?v]]"))
-            .await
-            .unwrap_err();
-
-        assert!(err
-            .to_string()
-            .contains("Incremental query pattern attributes must be constant"));
-    }
-
-    #[tokio::test]
-    async fn test_unregister_incremental_query_removes_subscription() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let handle = subscription.handle;
-
-        node.unregister_incremental_query(handle).await.unwrap();
-
-        assert!(subscription.deltas.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_unregister_incremental_query_rejects_duplicate_unregister() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let handle = subscription.handle;
-
-        node.unregister_incremental_query(handle).await.unwrap();
-        let err = node.unregister_incremental_query(handle).await.unwrap_err();
-
-        assert!(err.to_string().contains("Unknown incremental query handle"));
-    }
-
-    #[tokio::test]
-    async fn test_dropped_incremental_query_receiver_is_cleaned_up() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-        let handle = subscription.handle;
-        drop(subscription);
-
-        let err = node.unregister_incremental_query(handle).await.unwrap_err();
-        assert!(err.to_string().contains("Unknown incremental query handle"));
-    }
-
-    #[tokio::test]
-    async fn test_close_removes_incremental_query_storage() {
-        let dir = tempfile::tempdir().unwrap();
-        let node = Node::local_node(dir.path()).await.unwrap();
-        define_test_schema(&node).await;
-        let storage_path = dir.path().join("dbsp-incremental").join("query-1");
-
-        let _subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        assert!(storage_path.exists());
-
-        node.close().await;
-
-        assert!(!storage_path.exists());
-    }
-
     #[tokio::test]
     async fn test_submit_tx_async_indexing() {
         let node = Node::memory_node().await;
@@ -2646,6 +1789,863 @@ mod tests {
         // Should return exactly one row: "Ivannotov"
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![DataType::String("Ivannotov".to_string())]);
+    }
+
+    async fn recv_incremental_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+            .await
+            .expect("timed out waiting for incremental delta")
+            .expect("subscription should be open")
+    }
+
+    async fn try_recv_incremental_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> Option<crate::incremental::IncrementalQueryDelta> {
+        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    fn sort_query_rows(rows: &mut [Vec<DataType>]) {
+        rows.sort_by_key(|row| format!("{:?}", row));
+    }
+
+    fn integrate_delta(
+        rows: &mut Vec<Vec<DataType>>,
+        delta: crate::incremental::IncrementalQueryDelta,
+    ) {
+        for (row, weight) in delta.rows {
+            match weight.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    for _ in 0..weight {
+                        rows.push(row.clone());
+                    }
+                }
+                std::cmp::Ordering::Less => {
+                    for _ in 0..(-weight) {
+                        let index = rows
+                            .iter()
+                            .position(|existing| existing == &row)
+                            .expect("negative delta should remove an existing row");
+                        rows.remove(index);
+                    }
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+        sort_query_rows(rows);
+    }
+
+    async fn execute_and_flush(node: &Node<MemoryLog>, tx_ops: Vec<TxOp>) -> TxBasis {
+        let basis = match node.execute_tx(tx_ops).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(node).await;
+        basis
+    }
+
+    async fn assert_incremental_matches_db(
+        node: &Node<MemoryLog>,
+        subscription: &mut IncrementalQuerySubscription,
+        rows: &mut Vec<Vec<DataType>>,
+        basis: TxBasis,
+        query: &str,
+    ) {
+        let db = node.db_as_of(basis).await.unwrap();
+        let mut expected = db.query(query).await.unwrap();
+        sort_query_rows(&mut expected);
+
+        if rows != &expected {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while rows != &expected {
+                    let delta = subscription
+                        .deltas
+                        .recv()
+                        .await
+                        .expect("subscription should be open");
+                    integrate_delta(rows, delta);
+                }
+            })
+            .await
+            .expect("timed out waiting for incremental rows to match one-shot query");
+        }
+
+        assert_eq!(&expected, rows);
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_installs_subscription() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let expected_basis = *node.db().await.unwrap().tx_basis();
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert_eq!(subscription.basis, expected_basis);
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires bootstrap latest_tx_basis to be visible through the indexer"]
+    async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
+        let node = Node::memory_node().await;
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?ident :where [?e :db/ident ?ident]]"))
+            .await
+            .unwrap();
+        let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(basis));
+        let mut rows = delta.rows;
+        rows.sort_by_key(|row| format!("{:?}", row));
+        let mut expected = vec![
+            (vec![DataType::Keyword(kw!(:age))], 1),
+            (vec![DataType::Keyword(kw!(:email))], 1),
+            (vec![DataType::Keyword(kw!(:follows))], 1),
+            (vec![DataType::Keyword(kw!(:name))], 1),
+            (vec![DataType::Keyword(kw!(:tags))], 1),
+        ];
+        expected.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(rows, expected);
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_after_existing_data_emits_no_initial_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_primed_incremental_query_uses_existing_rows_for_future_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let future_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(future_basis));
+        assert_eq!(
+            delta.rows,
+            vec![(
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                1
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_emits_single_transaction_delta() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_registration_does_not_miss_tx_between_basis_and_insert() {
+        let node = Arc::new(Node::memory_node().await);
+        define_test_schema(node.as_ref()).await;
+        flush_wal(node.as_ref()).await;
+        let mut first_subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        let (registration_paused, release_registration) = node
+            .incremental
+            .pause_next_registration_after_snapshot_for_test()
+            .await;
+        let registering_node = node.clone();
+        let registration = tokio::spawn(async move {
+            registering_node
+                .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(5), registration_paused)
+            .await
+            .expect("timed out waiting for registration pause")
+            .expect("registration pause sender dropped");
+
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(node.as_ref()).await;
+        assert!(try_recv_incremental_delta(&mut first_subscription)
+            .await
+            .is_none());
+
+        release_registration
+            .send(())
+            .expect("registration release receiver should be waiting");
+        let mut second_subscription = registration.await.unwrap();
+
+        let first_delta = recv_incremental_delta(&mut first_subscription).await;
+        let second_delta = recv_incremental_delta(&mut second_subscription).await;
+        assert_eq!(first_delta.basis, Some(basis));
+        assert_eq!(second_delta.basis, Some(basis));
+        assert_eq!(
+            first_delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+        assert_eq!(second_delta.rows, first_delta.rows);
+    }
+
+    #[tokio::test]
+    async fn test_incremental_registration_basis_inside_wal_replays_after_basis_only() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let first_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        assert_eq!(subscription.basis, first_basis);
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+
+        let second_basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(second_basis));
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Bob".to_string())], 1)]
+        );
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_groups_multi_entity_transaction() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:name),
+                    value: DataType::String("Bob".to_string()),
+                },
+            ])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let mut delta = recv_incremental_delta(&mut subscription).await;
+        delta.rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![
+                (vec![DataType::String("Alice".to_string())], 1),
+                (vec![DataType::String("Bob".to_string())], 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_cardinality_one_overwrite_emits_retract_and_assert() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let basis = match node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+
+        flush_wal(&node).await;
+
+        let mut delta = recv_incremental_delta(&mut subscription).await;
+        delta.rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(
+            delta.rows,
+            vec![
+                (vec![DataType::String("Alice".to_string())], -1),
+                (vec![DataType::String("Bob".to_string())], 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_entity_join_integrates_live_result() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:name),
+                    value: DataType::String("Alice".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:age),
+                    value: DataType::Long(30),
+                },
+            ],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::Long(30)
+            ]]
+        );
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
+        )
+        .await;
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                vec![DataType::String("Bob".to_string()), DataType::Long(40)],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_ref_value_and_three_pattern_chain() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                "[:find ?name ?friend-name ?age :where [?e :name ?name] [?e :follows ?friend] [?friend :name ?friend-name] [?friend :age ?age]]",
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:follows),
+                value: DataType::Long(101),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::String("Bob".to_string()),
+                DataType::Long(40),
+            ]]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_constants_and_cartesian_product() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query(
+                r#"[:find ?name ?age :where [?e :name ?name] [?other :age ?age] [?e :name "Alice"]]"#,
+            ))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert!(try_recv_incremental_delta(&mut subscription)
+            .await
+            .is_none());
+        assert!(rows.is_empty());
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        assert_eq!(
+            rows,
+            vec![vec![
+                DataType::String("Alice".to_string()),
+                DataType::Long(30)
+            ]]
+        );
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(102),
+                attribute: kw!(:age),
+                value: DataType::Long(40),
+            }],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                vec![DataType::String("Alice".to_string()), DataType::Long(40)],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_entity_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("placeholders in entity position"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_value_placeholder() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("placeholders in value position"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_equivalence_entity_join() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]";
+        let mut subscription = node
+            .register_incremental_query(parse_query(query))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:name),
+                    value: DataType::String("Bob".to_string()),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: DataType::Long(40),
+                },
+            ],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+    }
+
+    #[tokio::test]
+    async fn test_incremental_equivalence_cartesian_product() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = "[:find ?name ?age :where [?e :name ?name] [?other :age ?age]]";
+        let mut subscription = node
+            .register_incremental_query(parse_query(query))
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(101),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(102),
+                attribute: kw!(:name),
+                value: DataType::String("Bob".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+    }
+
+    #[tokio::test]
+    async fn test_register_incremental_query_rejects_unsupported_query() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(parse_query("[:find ?e :where [?e ?a ?v]]"))
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Incremental query pattern attributes must be constant"));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_incremental_query_removes_subscription() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+
+        node.unregister_incremental_query(handle).await.unwrap();
+
+        assert!(subscription.deltas.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_unregister_incremental_query_rejects_duplicate_unregister() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+
+        node.unregister_incremental_query(handle).await.unwrap();
+        let err = node.unregister_incremental_query(handle).await.unwrap_err();
+
+        assert!(err.to_string().contains("Unknown incremental query handle"));
+    }
+
+    #[tokio::test]
+    async fn test_dropped_incremental_query_receiver_is_cleaned_up() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+        let handle = subscription.handle;
+        drop(subscription);
+
+        let err = node.unregister_incremental_query(handle).await.unwrap_err();
+        assert!(err.to_string().contains("Unknown incremental query handle"));
+    }
+
+    #[tokio::test]
+    async fn test_close_removes_incremental_query_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Node::local_node(dir.path()).await.unwrap();
+        define_test_schema(&node).await;
+        let storage_path = dir.path().join("dbsp-incremental").join("query-1");
+
+        let _subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .await
+            .unwrap();
+
+        assert!(storage_path.exists());
+
+        node.close().await;
+
+        assert!(!storage_path.exists());
     }
 
     /// Failed transactions return TxAborted and the indexer continues processing.
