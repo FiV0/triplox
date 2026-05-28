@@ -55,13 +55,7 @@ pub(crate) struct EncodedTriple {
     pub value: EncodedValue,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct IncrementalQueryHandle {
-    id: IncrementalQueryId,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct IncrementalQueryId(u64);
+pub(crate) type IncrementalQueryHandle = u64;
 
 #[derive(Debug)]
 pub(crate) struct IncrementalQuerySubscription {
@@ -300,7 +294,7 @@ type ServiceResult<T> = std::result::Result<T, String>;
 struct IncrementalQueryServiceInner {
     next_query_id: u64,
     storage_root: PathBuf,
-    queries: HashMap<IncrementalQueryId, RegisteredQuery>,
+    queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
     runtime: Handle,
     cancel: CancellationToken,
 }
@@ -356,10 +350,8 @@ impl IncrementalQueryServiceInner {
     ) -> ServiceResult<IncrementalQuerySubscription> {
         self.cleanup_closed_subscriptions()?;
 
-        let handle = IncrementalQueryHandle {
-            id: self.allocate_query_id(),
-        };
-        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle.id))
+        let handle = self.allocate_query_id();
+        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
             .map_err(|err| format!("{:#}", err))?;
         circuit
             .prime(initial_triples)
@@ -367,7 +359,7 @@ impl IncrementalQueryServiceInner {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
 
         self.queries.insert(
-            handle.id,
+            handle,
             RegisteredQuery {
                 _plan: plan,
                 _circuit: circuit,
@@ -386,7 +378,7 @@ impl IncrementalQueryServiceInner {
 
     fn unregister(&mut self, handle: IncrementalQueryHandle) -> ServiceResult<()> {
         self.cleanup_closed_subscriptions()?;
-        self.remove_query(handle.id)
+        self.remove_query(handle)
     }
 
     fn apply_triples(
@@ -434,17 +426,17 @@ impl IncrementalQueryServiceInner {
         Ok(())
     }
 
-    fn allocate_query_id(&mut self) -> IncrementalQueryId {
-        let id = IncrementalQueryId(self.next_query_id);
+    fn allocate_query_id(&mut self) -> IncrementalQueryHandle {
+        let id = self.next_query_id;
         self.next_query_id += 1;
         id
     }
 
-    fn query_storage_path(&self, id: IncrementalQueryId) -> PathBuf {
-        self.storage_root.join(format!("query-{}", id.0))
+    fn query_storage_path(&self, id: IncrementalQueryHandle) -> PathBuf {
+        self.storage_root.join(format!("query-{}", id))
     }
 
-    fn remove_query(&mut self, id: IncrementalQueryId) -> ServiceResult<()> {
+    fn remove_query(&mut self, id: IncrementalQueryHandle) -> ServiceResult<()> {
         let query = self
             .queries
             .remove(&id)
@@ -453,7 +445,7 @@ impl IncrementalQueryServiceInner {
         self.remove_query_storage(id)
     }
 
-    fn remove_query_storage(&self, id: IncrementalQueryId) -> ServiceResult<()> {
+    fn remove_query_storage(&self, id: IncrementalQueryHandle) -> ServiceResult<()> {
         match std::fs::remove_dir_all(self.query_storage_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
@@ -641,7 +633,7 @@ mod tests {
         assert_eq!(
             service
                 .queries
-                .get(&old_subscription.handle.id)
+                .get(&old_subscription.handle)
                 .unwrap()
                 ._wal_cursor
                 .last_seq,
@@ -650,7 +642,7 @@ mod tests {
         assert_eq!(
             service
                 .queries
-                .get(&new_subscription.handle.id)
+                .get(&new_subscription.handle)
                 .unwrap()
                 ._wal_cursor
                 .last_seq,
