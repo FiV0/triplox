@@ -9,7 +9,6 @@ use tokio::runtime::Handle;
 use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
-use crate::inc_query::plan_query;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
@@ -335,18 +334,17 @@ impl<L: TxLog> Node<L> {
     ) -> Result<IncrementalQuerySubscription, Error> {
         let registration_gate = self.incremental.registration_gate();
         let _registration_guard = registration_gate.lock().await;
-        let (basis, plan) = {
+        let (basis, schema) = {
             let indexer = self.indexer.read().await;
             let basis = indexer.latest_tx_basis().ok_or_else(|| {
                 // TODO(#278, #134): make initialized nodes always expose a latest indexed basis.
                 anyhow::anyhow!("Indexer has no latest indexed transaction basis")
             })?;
-            let plan = plan_query(&query, &indexer.metadata().schema)?;
-            (basis, plan)
+            (basis, indexer.metadata().schema.clone())
         };
         let subscription = self
             .incremental
-            .register_query_snapshot(self.slate.db.as_ref(), plan, basis)
+            .register_query(self.slate.db.as_ref(), query, &schema, basis)
             .await?;
         self.incremental.start_cdc_once(self.indexer.clone());
         Ok(subscription)

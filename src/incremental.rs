@@ -17,11 +17,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxBasis;
 
-use crate::inc_query::IncrementalQueryPlan;
+use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::ops::DataType;
+use crate::schema::Schema;
 use crate::slate::cdc::CdcCursor;
+use edn::query::ParsedQuery;
 
 pub(crate) mod cdc;
 pub(crate) mod circuit;
@@ -123,12 +125,14 @@ impl IncrementalQueryService {
         self.registration_gate.clone()
     }
 
-    pub(crate) async fn register_query_snapshot(
+    pub(crate) async fn register_query(
         &self,
         db: &slatedb::Db,
-        plan: IncrementalQueryPlan,
+        query: ParsedQuery,
+        schema: &Schema,
         basis: TxBasis,
     ) -> Result<IncrementalQuerySubscription> {
+        let plan = plan_query(&query, schema)?;
         let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
         #[cfg(test)]
         self.pause_registration_after_snapshot_for_test().await;
@@ -136,7 +140,7 @@ impl IncrementalQueryService {
             wal_id: 0,
             last_seq: db.status().durable_seq,
         };
-        self.register(plan, basis, wal_cursor, initial_triples)
+        self.register_prepared_query(plan, basis, wal_cursor, initial_triples)
             .await
     }
 
@@ -168,7 +172,7 @@ impl IncrementalQueryService {
         }
     }
 
-    pub(crate) async fn register(
+    pub(crate) async fn register_prepared_query(
         &self,
         plan: IncrementalQueryPlan,
         basis: TxBasis,
