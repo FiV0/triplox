@@ -31,6 +31,28 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 pub(crate) type EncodedValue = Vec<u8>;
 pub(crate) type EncodedRow = Vec<EncodedValue>;
 
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+pub(crate) struct EncodedTriple {
+    pub entity: EncodedValue,
+    pub attribute: i64,
+    pub value: EncodedValue,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct IncrementalQueryHandle {
     id: IncrementalQueryId,
@@ -504,28 +526,6 @@ struct RegisteredQuery {
     sender: mpsc::Sender<IncrementalQueryDelta>,
     _basis: TxBasis,
     _wal_cursor: CdcCursor,
-}
-
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    size_of::SizeOf,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-    feldera_macros::IsNone,
-)]
-#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
-pub(crate) struct EncodedTriple {
-    pub entity: EncodedValue,
-    pub attribute: i64,
-    pub value: EncodedValue,
 }
 
 #[cfg(test)]
