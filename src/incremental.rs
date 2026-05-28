@@ -140,7 +140,7 @@ impl IncrementalQueryService {
 
     pub(crate) fn start_cdc_once<N>(&self, node: Arc<N>)
     where
-        N: crate::node::InternalNode,
+        N: crate::node::SchemaProvider,
     {
         if self
             .cdc_started

@@ -15,7 +15,7 @@ use crate::codec::Encode;
 use crate::inc_query::IncrementalQueryPlan;
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
 use crate::indexer::eav_key_to_parts;
-use crate::node::InternalNode;
+use crate::node::SchemaProvider;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::schema::Schema;
 use crate::slate::cdc::{CdcCursor, CdcStream};
@@ -62,7 +62,7 @@ pub(crate) fn spawn_cdc_loop<N>(
     cancel: CancellationToken,
 ) -> JoinHandle<()>
 where
-    N: InternalNode,
+    N: SchemaProvider,
 {
     tokio::spawn(async move {
         if let Err(err) = run_cdc_loop(
@@ -89,7 +89,7 @@ async fn run_cdc_loop<N>(
     cancel: CancellationToken,
 ) -> Result<()>
 where
-    N: InternalNode,
+    N: SchemaProvider,
 {
     let wal_reader = WalReader::new(object_path, object_store);
     let mut stream =

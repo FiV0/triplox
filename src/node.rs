@@ -137,19 +137,13 @@ pub struct Node<L: TxLog> {
     incremental: IncrementalQueryService,
 }
 
-pub(crate) trait InternalNode: Send + Sync + 'static {
+pub(crate) trait SchemaProvider: Send + Sync + 'static {
     fn schema(&self) -> impl Future<Output = Schema> + Send + '_;
 }
 
-impl InternalNode for tokio::sync::RwLock<Indexer> {
+impl SchemaProvider for tokio::sync::RwLock<Indexer> {
     async fn schema(&self) -> Schema {
         self.read().await.metadata().schema.clone()
-    }
-}
-
-impl<L: TxLog> InternalNode for Node<L> {
-    async fn schema(&self) -> Schema {
-        self.indexer.schema().await
     }
 }
 
