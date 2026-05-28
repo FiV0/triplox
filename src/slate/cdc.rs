@@ -850,7 +850,10 @@ mod tests {
             .await
             .unwrap();
 
-        let wal_reader = WalReader::new(node.slate.path.as_str(), node.slate.object_store.clone());
+        let wal_reader = WalReader::new(
+            node.slate.object_path.as_str(),
+            node.slate.object_store.clone(),
+        );
         let cancel = CancellationToken::new();
         cancel.cancel();
         let schema = load_schema_from_indices(&node.slate).await;

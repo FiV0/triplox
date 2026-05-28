@@ -54,7 +54,7 @@ pub(crate) fn datoms_to_tuples(
 }
 
 pub(crate) fn spawn_cdc_loop<N>(
-    path: String,
+    object_path: String,
     object_store: Arc<dyn ObjectStore>,
     node: Arc<N>,
     service: IncrementalQueryService,
@@ -65,8 +65,15 @@ where
     N: InternalNode,
 {
     tokio::spawn(async move {
-        if let Err(err) =
-            run_cdc_loop(path, object_store, node, service, registration_gate, cancel).await
+        if let Err(err) = run_cdc_loop(
+            object_path,
+            object_store,
+            node,
+            service,
+            registration_gate,
+            cancel,
+        )
+        .await
         {
             error!("Incremental query CDC loop stopped: {:#}", err);
         }
@@ -74,7 +81,7 @@ where
 }
 
 async fn run_cdc_loop<N>(
-    path: String,
+    object_path: String,
     object_store: Arc<dyn ObjectStore>,
     node: Arc<N>,
     service: IncrementalQueryService,
@@ -84,7 +91,7 @@ async fn run_cdc_loop<N>(
 where
     N: InternalNode,
 {
-    let wal_reader = WalReader::new(path, object_store);
+    let wal_reader = WalReader::new(object_path, object_store);
     let mut stream =
         CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
 
@@ -215,14 +222,14 @@ mod tests {
             tempfile::tempdir().unwrap().path().to_path_buf(),
             tokio::runtime::Handle::current(),
             CancellationToken::new(),
-            slate.path.clone(),
+            slate.object_path.clone(),
             slate.object_store.clone(),
         );
         let cancel = CancellationToken::new();
         cancel.cancel();
 
         let result = run_cdc_loop(
-            slate.path,
+            slate.object_path,
             slate.object_store,
             indexer,
             service,

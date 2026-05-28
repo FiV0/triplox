@@ -174,7 +174,7 @@ impl Node<MemoryLog> {
             )),
             Handle::current(),
             subscription.clone(),
-            slate.path.clone(),
+            slate.object_path.clone(),
             slate.object_store.clone(),
         );
 
@@ -236,7 +236,7 @@ impl Node<FileLog> {
             incremental_storage_path,
             Handle::current(),
             subscription.clone(),
-            slate.path.clone(),
+            slate.object_path.clone(),
             slate.object_store.clone(),
         );
 

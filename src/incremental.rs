@@ -78,7 +78,7 @@ pub(crate) struct IncrementalQueryDelta {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: std_mpsc::Sender<IncrementalCommand>,
-    cdc_path: String,
+    cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
     cancel: CancellationToken,
     cdc_started: Arc<AtomicBool>,
@@ -93,7 +93,7 @@ impl IncrementalQueryService {
         storage_root: PathBuf,
         runtime: Handle,
         cancel: CancellationToken,
-        cdc_path: String,
+        cdc_object_path: String,
         cdc_object_store: Arc<dyn ObjectStore>,
     ) -> Self {
         let cancel = cancel.child_token();
@@ -108,7 +108,7 @@ impl IncrementalQueryService {
 
         Self {
             commands: sender,
-            cdc_path,
+            cdc_object_path,
             cdc_object_store,
             cancel,
             cdc_started: Arc::new(AtomicBool::new(false)),
@@ -150,7 +150,7 @@ impl IncrementalQueryService {
             .is_ok()
         {
             let handle = spawn_cdc_loop(
-                self.cdc_path.clone(),
+                self.cdc_object_path.clone(),
                 self.cdc_object_store.clone(),
                 node,
                 self.clone(),
