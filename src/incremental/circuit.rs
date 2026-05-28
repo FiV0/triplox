@@ -17,11 +17,6 @@ use crate::ops::DataType;
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 
-pub(crate) struct PlannedWhereStream {
-    rows: Stream<RootCircuit, RowZSet>,
-    vars: Vec<Variable>,
-}
-
 // Checks whether a pattern slot accepts the encoded triple value.
 fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
     match slot {
@@ -142,6 +137,11 @@ pub(crate) fn pattern_stream(
     pattern: PatternPlan,
 ) -> Stream<RootCircuit, RowZSet> {
     input.flat_map(move |triple| pattern_row(&pattern, triple))
+}
+
+pub(crate) struct PlannedWhereStream {
+    rows: Stream<RootCircuit, RowZSet>,
+    vars: Vec<Variable>,
 }
 
 // Creates the DBSP stream of joined where rows for the whole incremental query plan.
