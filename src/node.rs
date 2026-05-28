@@ -326,22 +326,9 @@ impl<L: TxLog> Node<L> {
         &self,
         query: ParsedQuery,
     ) -> Result<IncrementalQuerySubscription, Error> {
-        let registration_gate = self.incremental.registration_gate();
-        let _registration_guard = registration_gate.lock().await;
-        let (basis, schema) = {
-            let indexer = self.indexer.read().await;
-            let basis = indexer.latest_tx_basis().ok_or_else(|| {
-                // TODO(#278, #134): make initialized nodes always expose a latest indexed basis.
-                anyhow::anyhow!("Indexer has no latest indexed transaction basis")
-            })?;
-            (basis, indexer.metadata().schema.clone())
-        };
-        let subscription = self
-            .incremental
-            .register_query(self.slate.db.as_ref(), query, &schema, basis)
-            .await?;
-        self.incremental.start_cdc_once(self.indexer.clone());
-        Ok(subscription)
+        self.incremental
+            .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
+            .await
     }
 
     pub(crate) async fn unregister_incremental_query(

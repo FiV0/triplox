@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxBasis;
@@ -20,8 +20,8 @@ use triplox_client::transaction::TxBasis;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
+use crate::indexer::Indexer;
 use crate::ops::DataType;
-use crate::schema::Schema;
 use crate::slate::cdc::CdcCursor;
 use edn::query::ParsedQuery;
 
@@ -115,18 +115,22 @@ impl IncrementalQueryService {
         }
     }
 
-    pub(crate) fn registration_gate(&self) -> Arc<Mutex<()>> {
-        self.registration_gate.clone()
-    }
-
     pub(crate) async fn register_query(
         &self,
         db: &slatedb::Db,
         query: ParsedQuery,
-        schema: &Schema,
-        basis: TxBasis,
+        indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
-        let plan = plan_query(&query, schema)?;
+        let _registration_guard = self.registration_gate.lock().await;
+        let (basis, schema) = {
+            let indexer = indexer.read().await;
+            let basis = indexer.latest_tx_basis().ok_or_else(|| {
+                // TODO(#278, #134): make initialized nodes always expose a latest indexed basis.
+                anyhow!("Indexer has no latest indexed transaction basis")
+            })?;
+            (basis, indexer.metadata().schema.clone())
+        };
+        let plan = plan_query(&query, &schema)?;
         let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
         #[cfg(test)]
         self.pause_registration_after_snapshot_for_test().await;
@@ -134,11 +138,14 @@ impl IncrementalQueryService {
             wal_id: 0,
             last_seq: db.status().durable_seq,
         };
-        self.register_prepared_query(plan, basis, wal_cursor, initial_triples)
-            .await
+        let subscription = self
+            .register_prepared_query(plan, basis, wal_cursor, initial_triples)
+            .await?;
+        self.start_cdc_once(indexer);
+        Ok(subscription)
     }
 
-    pub(crate) fn start_cdc_once<N>(&self, node: Arc<N>)
+    fn start_cdc_once<N>(&self, node: Arc<N>)
     where
         N: crate::node::SchemaProvider,
     {
