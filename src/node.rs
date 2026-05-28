@@ -356,18 +356,6 @@ impl<L: TxLog> Node<L> {
     ) -> Result<(), Error> {
         self.incremental.unregister(handle).await
     }
-
-    #[cfg(test)]
-    async fn pause_next_incremental_registration_after_snapshot_for_test(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        self.incremental
-            .pause_next_registration_after_snapshot_for_test()
-            .await
-    }
 }
 
 impl<L: TxLog> SubmitNode for Node<L> {
@@ -708,7 +696,8 @@ mod tests {
             .unwrap();
 
         let (registration_paused, release_registration) = node
-            .pause_next_incremental_registration_after_snapshot_for_test()
+            .incremental
+            .pause_next_registration_after_snapshot_for_test()
             .await;
         let registering_node = node.clone();
         let registration = tokio::spawn(async move {
