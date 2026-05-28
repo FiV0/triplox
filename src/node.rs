@@ -258,10 +258,7 @@ impl Node<FileLog> {
     pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(root_path.join("db"))?;
         let db_path = root_path.join("db");
-        let db_path_str = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("database path is not valid UTF-8: {:?}", db_path))?;
-        let slate = local_slate(db_path_str).await;
+        let slate = local_slate(&db_path).await;
         Self::from_slate_and_log(
             slate,
             &root_path.join("log"),

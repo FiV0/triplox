@@ -76,7 +76,7 @@ pub async fn in_memory_slate() -> SlateComponents {
     }
 }
 
-pub async fn local_slate(root_path: &str) -> SlateComponents {
+pub async fn local_slate(root_path: &Path) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
         Arc::new(LocalFileSystem::new_with_prefix(root_path).unwrap());
     let slate_path = "triplox".to_string();
