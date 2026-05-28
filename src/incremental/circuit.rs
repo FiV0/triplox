@@ -93,15 +93,6 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
         .collect()
 }
 
-// TODO: This filtering should happen at storage level. See #329
-// Creates the DBSP stream of rows matching one planned triple pattern.
-pub(crate) fn pattern_stream(
-    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
-    pattern: PatternPlan,
-) -> Stream<RootCircuit, RowZSet> {
-    input.flat_map(move |triple| pattern_row(&pattern, triple))
-}
-
 // Joins two row streams according to one planned join step.
 fn join_rows(
     left: Stream<RootCircuit, RowZSet>,
@@ -137,6 +128,15 @@ fn join_rows(
     left_indexed.join(&right_indexed, move |_key, left_row, right_row| {
         merge_rows(left_row, right_row, &output_sources)
     })
+}
+
+// TODO: This filtering should happen at storage level. See #329
+// Creates the DBSP stream of rows matching one planned triple pattern.
+pub(crate) fn pattern_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    pattern: PatternPlan,
+) -> Stream<RootCircuit, RowZSet> {
+    input.flat_map(move |triple| pattern_row(&pattern, triple))
 }
 
 // Creates the DBSP stream of joined rows for the whole incremental query plan.
