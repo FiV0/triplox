@@ -3,17 +3,22 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
+use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxBasis;
 
 use crate::inc_query::IncrementalQueryPlan;
+use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::ops::DataType;
 use crate::slate::cdc::CdcCursor;
@@ -51,6 +56,14 @@ pub(crate) struct IncrementalQueryDelta {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: std_mpsc::Sender<IncrementalCommand>,
+    cdc_path: String,
+    cdc_object_store: Arc<dyn ObjectStore>,
+    cancel: CancellationToken,
+    cdc_started: Arc<AtomicBool>,
+    cdc_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
+    registration_gate: Arc<Mutex<()>>,
+    #[cfg(test)]
+    registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
 }
 
 impl IncrementalQueryService {
@@ -58,16 +71,79 @@ impl IncrementalQueryService {
         storage_root: PathBuf,
         runtime: Handle,
         cancel: CancellationToken,
+        cdc_path: String,
+        cdc_object_store: Arc<dyn ObjectStore>,
     ) -> Self {
+        let cancel = cancel.child_token();
+        let inner_cancel = cancel.clone();
         let (sender, receiver) = std_mpsc::channel();
         thread::Builder::new()
             .name("triplox-incremental-query".to_string())
             .spawn(move || {
-                IncrementalQueryServiceInner::new(storage_root, runtime, cancel).run(receiver)
+                IncrementalQueryServiceInner::new(storage_root, runtime, inner_cancel).run(receiver)
             })
             .expect("incremental query service thread should start");
 
-        Self { commands: sender }
+        Self {
+            commands: sender,
+            cdc_path,
+            cdc_object_store,
+            cancel,
+            cdc_started: Arc::new(AtomicBool::new(false)),
+            cdc_task: Arc::new(StdMutex::new(None)),
+            registration_gate: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            registration_pause: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn registration_gate(&self) -> Arc<Mutex<()>> {
+        self.registration_gate.clone()
+    }
+
+    pub(crate) async fn register_query_snapshot(
+        &self,
+        db: &slatedb::Db,
+        plan: IncrementalQueryPlan,
+        basis: TxBasis,
+    ) -> Result<IncrementalQuerySubscription> {
+        let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
+        #[cfg(test)]
+        self.pause_registration_after_snapshot_for_test().await;
+        let wal_cursor = CdcCursor {
+            wal_id: 0,
+            last_seq: db.status().durable_seq,
+        };
+        self.register(plan, basis, wal_cursor, initial_triples)
+            .await
+    }
+
+    pub(crate) fn start_cdc_once<N>(&self, node: Arc<N>)
+    where
+        N: crate::node::InternalNode,
+    {
+        if self
+            .cdc_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let handle = spawn_cdc_loop(
+                self.cdc_path.clone(),
+                self.cdc_object_store.clone(),
+                node,
+                self.clone(),
+                self.registration_gate.clone(),
+                self.cancel.clone(),
+            );
+            *self.cdc_task.lock().unwrap() = Some(handle);
+        }
+    }
+
+    pub(crate) async fn await_cdc_task(&self) {
+        let handle = self.cdc_task.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle.await.unwrap();
+        }
     }
 
     pub(crate) async fn register(
@@ -126,6 +202,8 @@ impl IncrementalQueryService {
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
+        self.cancel.cancel();
+        self.await_cdc_task().await;
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Shutdown { response })
@@ -135,6 +213,37 @@ impl IncrementalQueryService {
             .map_err(|_| anyhow!("Incremental query service stopped"))?
             .map_err(|err| anyhow!("{}", err))
     }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_next_registration_after_snapshot_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached, reached_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *self.registration_pause.lock().await = Some(IncrementalRegistrationPause {
+            reached,
+            release: release_rx,
+        });
+        (reached_rx, release)
+    }
+
+    #[cfg(test)]
+    async fn pause_registration_after_snapshot_for_test(&self) {
+        let pause = self.registration_pause.lock().await.take();
+        if let Some(IncrementalRegistrationPause { reached, release }) = pause {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
+    }
+}
+
+#[cfg(test)]
+struct IncrementalRegistrationPause {
+    reached: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 enum IncrementalCommand {

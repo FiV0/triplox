@@ -1,19 +1,15 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 use crate::clock;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::inc_query::plan_query;
-use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
@@ -24,7 +20,6 @@ use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
 use crate::schema::{IdentMap, Schema};
-use crate::slate::cdc::CdcCursor;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -142,12 +137,6 @@ pub struct Node<L: TxLog> {
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
-    incremental_cdc_started: Arc<AtomicBool>,
-    incremental_cdc_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
-    incremental_registration_gate: Arc<Mutex<()>>,
-    // Test hook for deterministically exercising the registration snapshot race.
-    #[cfg(test)]
-    incremental_registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
 }
 
 pub(crate) trait InternalNode: Send + Sync + 'static {
@@ -166,12 +155,6 @@ impl<L: TxLog> InternalNode for Node<L> {
     }
 }
 
-#[cfg(test)]
-struct IncrementalRegistrationPause {
-    reached: tokio::sync::oneshot::Sender<()>,
-    release: tokio::sync::oneshot::Receiver<()>,
-}
-
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
@@ -188,8 +171,9 @@ impl Node<MemoryLog> {
             memory_incremental_storage_path(&slate),
             Handle::current(),
             subscription.clone(),
+            slate.path.clone(),
+            slate.object_store.clone(),
         );
-        let incremental_registration_gate = Arc::new(Mutex::new(()));
 
         Node {
             log,
@@ -197,11 +181,6 @@ impl Node<MemoryLog> {
             slate,
             subscription,
             incremental,
-            incremental_cdc_started: Arc::new(AtomicBool::new(false)),
-            incremental_cdc_task: Arc::new(StdMutex::new(None)),
-            incremental_registration_gate,
-            #[cfg(test)]
-            incremental_registration_pause: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -254,6 +233,8 @@ impl Node<FileLog> {
             incremental_storage_path,
             Handle::current(),
             subscription.clone(),
+            slate.path.clone(),
+            slate.object_store.clone(),
         );
 
         // Wait for catch-up to complete if there are un-indexed transactions
@@ -268,11 +249,6 @@ impl Node<FileLog> {
             slate,
             subscription,
             incremental,
-            incremental_cdc_started: Arc::new(AtomicBool::new(false)),
-            incremental_cdc_task: Arc::new(StdMutex::new(None)),
-            incremental_registration_gate: Arc::new(Mutex::new(())),
-            #[cfg(test)]
-            incremental_registration_pause: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -327,17 +303,9 @@ fn memory_incremental_storage_path(slate: &SlateComponents) -> PathBuf {
 
 impl<L: TxLog> Node<L> {
     pub async fn close(self) {
-        self.subscription.cancel();
-        self.await_incremental_cdc_task().await;
         self.incremental.shutdown().await.unwrap();
+        self.subscription.cancel();
         self.slate.db.close().await.unwrap();
-    }
-
-    async fn await_incremental_cdc_task(&self) {
-        let handle = self.incremental_cdc_task.lock().unwrap().take();
-        if let Some(handle) = handle {
-            handle.await.unwrap();
-        }
     }
 
     async fn db_as_of_with_timeout(&self, basis: TxBasis, timeout: Duration) -> Result<DB, Error> {
@@ -372,26 +340,18 @@ impl<L: TxLog> Node<L> {
         &self,
         query: ParsedQuery,
     ) -> Result<IncrementalQuerySubscription, Error> {
-        let _registration_guard = self.incremental_registration_gate.lock().await;
+        let registration_gate = self.incremental.registration_gate();
+        let _registration_guard = registration_gate.lock().await;
         let basis = latest_tx_basis_from_sdb(self.slate.db.as_ref()).await?;
         let plan = {
             let indexer = self.indexer.read().await;
             plan_query(&query, &indexer.metadata().schema)?
         };
-        let initial_triples =
-            scan_current_triples(self.slate.db.as_ref(), &plan, basis.tx_eid).await?;
-        #[cfg(test)]
-        self.pause_incremental_registration_after_snapshot_for_test()
-            .await;
-        let wal_cursor = CdcCursor {
-            wal_id: 0,
-            last_seq: self.slate.db.status().durable_seq,
-        };
         let subscription = self
             .incremental
-            .register(plan, basis, wal_cursor, initial_triples)
+            .register_query_snapshot(self.slate.db.as_ref(), plan, basis)
             .await?;
-        self.start_incremental_cdc_once();
+        self.incremental.start_cdc_once(self.indexer.clone());
         Ok(subscription)
     }
 
@@ -402,24 +362,6 @@ impl<L: TxLog> Node<L> {
         self.incremental.unregister(handle).await
     }
 
-    fn start_incremental_cdc_once(&self) {
-        if self
-            .incremental_cdc_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            let handle = spawn_cdc_loop(
-                self.slate.path.clone(),
-                self.slate.object_store.clone(),
-                self.indexer.clone(),
-                self.incremental.clone(),
-                self.incremental_registration_gate.clone(),
-                self.subscription.clone(),
-            );
-            *self.incremental_cdc_task.lock().unwrap() = Some(handle);
-        }
-    }
-
     #[cfg(test)]
     async fn pause_next_incremental_registration_after_snapshot_for_test(
         &self,
@@ -427,22 +369,9 @@ impl<L: TxLog> Node<L> {
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
     ) {
-        let (reached, reached_rx) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *self.incremental_registration_pause.lock().await = Some(IncrementalRegistrationPause {
-            reached,
-            release: release_rx,
-        });
-        (reached_rx, release)
-    }
-
-    #[cfg(test)]
-    async fn pause_incremental_registration_after_snapshot_for_test(&self) {
-        let pause = self.incremental_registration_pause.lock().await.take();
-        if let Some(IncrementalRegistrationPause { reached, release }) = pause {
-            let _ = reached.send(());
-            let _ = release.await;
-        }
+        self.incremental
+            .pause_next_registration_after_snapshot_for_test()
+            .await
     }
 }
 

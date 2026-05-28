@@ -215,6 +215,8 @@ mod tests {
             tempfile::tempdir().unwrap().path().to_path_buf(),
             tokio::runtime::Handle::current(),
             CancellationToken::new(),
+            slate.path.clone(),
+            slate.object_store.clone(),
         );
         let cancel = CancellationToken::new();
         cancel.cancel();
