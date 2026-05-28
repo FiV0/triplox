@@ -5,14 +5,16 @@ Version 0.1
 ## Overview
 
 Incremental queries let a caller register a query once and then receive result
-deltas as new transactions are indexed. The current implementation is the first
-writer-node version: it supports a small subset of Datomic-style queries,
-constructs one DBSP circuit per registered query, and drives those circuits from
-SlateDB WAL change data capture.
+deltas as new transactions are indexed. An incremental query does not return
+a static result set, but rather a stream of changes between two consecutive
+db values. The difference between these two db values is what affects the query
+(in case it affects the query at all).
 
-The feature is intentionally crate-internal for now. It is meant to establish
-the execution model and correctness boundaries before exposing incremental
-query subscriptions over the public client protocol.
+Every client should support some version of `subscribe(node, query)` which
+registers an incremental query on the server. `subscribe` returns a stateful
+object from which deltas can be retrieved and which can be closed. The closing
+is important because an incremental query binds resources on the server that
+otherwise won't get released.
 
 ---
 
@@ -330,3 +332,11 @@ WAL replay.
 After restart behavior is defined, the public API can expose incremental query
 subscriptions to clients. Until then, keeping the API crate-internal avoids
 locking in wire semantics before the lifecycle and recovery model are stable.
+
+
+### Cleanup
+
+Currently the cleanup of queries happens when the incremental query gets unregistered
+or the node shuts down. There is no cleaner process. I think we should consider
+a client heartbeat (which is also useful for other purposes) and close incremental
+queries if we have the impression the client is dead.
