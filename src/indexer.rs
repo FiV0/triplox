@@ -250,6 +250,10 @@ impl Indexer {
         &self.metadata
     }
 
+    pub(crate) fn latest_tx_basis(&self) -> Option<TxBasis> {
+        self.latest_indexed_tx
+    }
+
     /// Transact a set of operations, automatically retracting old values for
     /// cardinality:one attributes when a new value is asserted.
     ///

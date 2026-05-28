@@ -335,10 +335,14 @@ impl<L: TxLog> Node<L> {
     ) -> Result<IncrementalQuerySubscription, Error> {
         let registration_gate = self.incremental.registration_gate();
         let _registration_guard = registration_gate.lock().await;
-        let basis = latest_tx_basis_from_sdb(self.slate.db.as_ref()).await?;
-        let plan = {
+        let (basis, plan) = {
             let indexer = self.indexer.read().await;
-            plan_query(&query, &indexer.metadata().schema)?
+            let basis = indexer.latest_tx_basis().ok_or_else(|| {
+                // TODO(#278, #134): make initialized nodes always expose a latest indexed basis.
+                anyhow::anyhow!("Indexer has no latest indexed transaction basis")
+            })?;
+            let plan = plan_query(&query, &indexer.metadata().schema)?;
+            (basis, plan)
         };
         let subscription = self
             .incremental
@@ -561,6 +565,36 @@ mod tests {
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires bootstrap latest_tx_basis to be visible through the indexer"]
+    async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
+        let node = Node::memory_node().await;
+
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?ident :where [?e :db/ident ?ident]]"))
+            .await
+            .unwrap();
+        let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
+            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.basis, Some(basis));
+        let mut rows = delta.rows;
+        rows.sort_by_key(|row| format!("{:?}", row));
+        let mut expected = vec![
+            (vec![DataType::Keyword(kw!(:age))], 1),
+            (vec![DataType::Keyword(kw!(:email))], 1),
+            (vec![DataType::Keyword(kw!(:follows))], 1),
+            (vec![DataType::Keyword(kw!(:name))], 1),
+            (vec![DataType::Keyword(kw!(:tags))], 1),
+        ];
+        expected.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(rows, expected);
     }
 
     #[tokio::test]
