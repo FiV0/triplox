@@ -211,7 +211,7 @@ mod tests {
             Metadata::new(test_schema(), PartitionMap::new()),
             None,
         )));
-        let service = IncrementalQueryService::new_with_cancel(
+        let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
             tokio::runtime::Handle::current(),
             CancellationToken::new(),

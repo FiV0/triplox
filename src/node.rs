@@ -167,8 +167,11 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
         let subscription = subscribe(log.clone(), None, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new_with_cancel(
-            memory_incremental_storage_path(&slate),
+        let incremental = IncrementalQueryService::new(
+            std::env::temp_dir().join(format!(
+                "triplox-dbsp-incremental-{}",
+                crate::util::random_string(10)
+            )),
             Handle::current(),
             subscription.clone(),
             slate.path.clone(),
@@ -229,7 +232,7 @@ impl Node<FileLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new_with_cancel(
+        let incremental = IncrementalQueryService::new(
             incremental_storage_path,
             Handle::current(),
             subscription.clone(),
@@ -293,12 +296,6 @@ impl Node<FileLog> {
         )
         .await
     }
-}
-
-fn memory_incremental_storage_path(slate: &SlateComponents) -> PathBuf {
-    std::env::temp_dir()
-        .join(&slate.path)
-        .join("dbsp-incremental")
 }
 
 impl<L: TxLog> Node<L> {

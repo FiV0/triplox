@@ -89,7 +89,7 @@ pub(crate) struct IncrementalQueryService {
 }
 
 impl IncrementalQueryService {
-    pub(crate) fn new_with_cancel(
+    pub(crate) fn new(
         storage_root: PathBuf,
         runtime: Handle,
         cancel: CancellationToken,
