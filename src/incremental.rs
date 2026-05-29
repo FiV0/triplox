@@ -71,6 +71,7 @@ pub(crate) struct IncrementalQueryDelta {
 }
 
 type ServiceResult<T> = std::result::Result<T, String>;
+
 enum IncrementalCommand {
     Register {
         plan: IncrementalQueryPlan,
@@ -274,6 +275,40 @@ impl IncrementalQueryService {
     }
 }
 
+enum DeltaDelivery {
+    Delivered,
+    Closed,
+    Cancelled,
+}
+
+fn send_delta(
+    runtime: &Handle,
+    sender: &mpsc::Sender<IncrementalQueryDelta>,
+    delta: IncrementalQueryDelta,
+    cancel: &CancellationToken,
+) -> DeltaDelivery {
+    runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => DeltaDelivery::Cancelled,
+            result = sender.send(delta) => {
+                match result {
+                    Ok(()) => DeltaDelivery::Delivered,
+                    Err(_) => DeltaDelivery::Closed,
+                }
+            }
+        }
+    })
+}
+
+struct RegisteredQuery {
+    _plan: IncrementalQueryPlan,
+    _circuit: QueryCircuit,
+    sender: mpsc::Sender<IncrementalQueryDelta>,
+    _basis: TxBasis,
+    _wal_cursor: CdcCursor,
+}
+
 struct IncrementalQueryServiceInner {
     next_query_id: u64,
     storage_root: PathBuf,
@@ -471,40 +506,6 @@ impl Drop for IncrementalQueryServiceInner {
     fn drop(&mut self) {
         let _ = self.remove_all_queries();
     }
-}
-
-enum DeltaDelivery {
-    Delivered,
-    Closed,
-    Cancelled,
-}
-
-fn send_delta(
-    runtime: &Handle,
-    sender: &mpsc::Sender<IncrementalQueryDelta>,
-    delta: IncrementalQueryDelta,
-    cancel: &CancellationToken,
-) -> DeltaDelivery {
-    runtime.block_on(async {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => DeltaDelivery::Cancelled,
-            result = sender.send(delta) => {
-                match result {
-                    Ok(()) => DeltaDelivery::Delivered,
-                    Err(_) => DeltaDelivery::Closed,
-                }
-            }
-        }
-    })
-}
-
-struct RegisteredQuery {
-    _plan: IncrementalQueryPlan,
-    _circuit: QueryCircuit,
-    sender: mpsc::Sender<IncrementalQueryDelta>,
-    _basis: TxBasis,
-    _wal_cursor: CdcCursor,
 }
 
 #[cfg(test)]
