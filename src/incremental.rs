@@ -249,15 +249,28 @@ impl IncrementalQueryService {
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
         self.cancel.cancel();
-        self.await_cdc_task().await?;
+        let cdc_result = self.await_cdc_task().await;
         let (response, result) = oneshot::channel();
-        self.commands
+        let service_result = match self
+            .commands
             .send(IncrementalCommand::Shutdown { response })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        {
+            Ok(()) => result
+                .await
+                .map_err(|_| anyhow!("Incremental query service stopped"))
+                .and_then(|result| result.map_err(|err| anyhow!("{}", err))),
+            Err(_) => Err(anyhow!("Incremental query service stopped")),
+        };
+
+        match (cdc_result, service_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
+            (Err(cdc_err), Err(service_err)) => Err(anyhow!(
+                "Incremental query CDC shutdown failed: {:#}; incremental query service shutdown failed: {:#}",
+                cdc_err,
+                service_err
+            )),
+        }
     }
 }
 
@@ -711,6 +724,39 @@ mod tests {
         assert!(message.contains("Incremental query CDC task failed to join"));
 
         service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_removes_queries_after_cdc_task_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = IncrementalQueryService::new(
+            dir.path().to_path_buf(),
+            Handle::current(),
+            CancellationToken::new(),
+            "/test_incremental_shutdown_cdc_error".to_string(),
+            Arc::new(InMemory::new()),
+        );
+        let _subscription = service
+            .register_prepared_query(
+                single_pattern_plan(),
+                test_basis(),
+                test_cursor(),
+                initial_triples(),
+            )
+            .await
+            .unwrap();
+        let storage_path = dir.path().join("query-1");
+        assert!(path_has_entries(&storage_path));
+
+        let handle: JoinHandle<Result<()>> =
+            tokio::spawn(async { Err(anyhow!("cdc shutdown failed")) });
+        *service.cdc_task.lock().unwrap() = Some(handle);
+
+        let err = service.shutdown().await.unwrap_err();
+        let message = format!("{:#}", err);
+        assert!(message.contains("Incremental query CDC loop failed"));
+        assert!(message.contains("cdc shutdown failed"));
+        assert!(!storage_path.exists());
     }
 
     #[tokio::test]

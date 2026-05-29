@@ -289,10 +289,19 @@ impl Node<FileLog> {
 
 impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
-        self.incremental.shutdown().await?;
+        let incremental_result = self.incremental.shutdown().await;
         self.subscription.cancel();
-        self.slate.db.close().await?;
-        Ok(())
+        let db_result = self.slate.db.close().await.map_err(Error::from);
+
+        match (incremental_result, db_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
+            (Err(incremental_err), Err(db_err)) => Err(anyhow::anyhow!(
+                "Incremental query shutdown failed: {:#}; SlateDB close failed: {:#}",
+                incremental_err,
+                db_err
+            )),
+        }
     }
 
     async fn db_as_of_with_timeout(&self, basis: TxBasis, timeout: Duration) -> Result<DB, Error> {
