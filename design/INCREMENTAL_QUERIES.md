@@ -43,7 +43,7 @@ saying it is out of scope, it is just out of scope for now.
 
 The incremental query path has four main parts:
 
-1. **Planner** - This mostly currently sits in `inc-query.rs`. The planner validates the supported
+1. **Planner** - This mostly currently sits in `inc_query.rs`. The planner validates the supported
 query subset and lowers triple patterns into an incremental query plan.
 2. **DBSP circuit** - Sitting in `circuit.rs` owns the per-query dataflow graph and emits result deltas.
 Is build via the plan created by the planner.
