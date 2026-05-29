@@ -244,20 +244,9 @@ query's per-query DBSP storage directory.
 
 ---
 
-## 7. Threading and Tuning Knobs
+## Threading and Tuning Knobs
 
-The current implementation has one incremental service thread per
-`IncrementalQueryService`, not one thread per query. All registered queries are
-stored in one registry and are stepped sequentially on that thread when an
-`ApplyTriples` command arrives. Each registered query still owns a separate DBSP
-circuit and separate DBSP storage directory.
-
-The CDC reader is a Tokio task, not a dedicated OS thread. It parks on
-`CdcStream::next_transaction().await`, decodes one transaction at a time, and
-sends work to the service thread. Regular node APIs also run on Tokio runtime
-threads.
-
-Current tuning knobs are intentionally small and mostly hard-coded:
+The current tuning knobs:
 
 - `SUBSCRIPTION_CAPACITY` controls each result channel's bounded capacity.
   Raising it absorbs longer subscriber pauses at the cost of memory and lag;
@@ -269,24 +258,9 @@ Current tuning knobs are intentionally small and mostly hard-coded:
   ownership, storage layout, and whether one service thread should still drive
   all query steps.
 - The current service has one command loop for all queries. Future scaling
-  options include sharding registered queries across service threads, grouping
-  queries by database or workload, or introducing a worker pool for circuit
-  stepping.
-- Each query has its own circuit. Future sharing could reuse circuits,
-  arrangements, or pattern streams across equivalent or overlapping queries.
-- The initial scan currently scans EAV and filters needed attributes in memory.
-  Attribute-specific scans are a straightforward read-path optimization.
-- CDC currently applies one WAL transaction at a time. Future batching could
-  coalesce multiple WAL transactions, but that would change delta granularity
+  options include sharding registered queries across service threads
+  or introducing a worker pool for circuit stepping.
   and basis reporting semantics.
-- DBSP storage is file-backed per query. Cache sizing, storage roots,
-  compaction, and checkpoint/restore policy are future operational controls.
-
-The backpressure behavior is deliberate: result deltas are lossless state
-changes. If a subscriber cannot keep up, the service thread blocks while sending
-that query's delta instead of dropping it and corrupting the receiver's
-integrated view. During node shutdown, the node cancellation token interrupts
-that wait so a full subscriber channel cannot keep the CDC task alive forever.
 
 ---
 
@@ -315,6 +289,10 @@ save a lot of space in the incremental circuits.
 - Better planning for join order and disconnected groups.
 - Batching and scheduling policies for many active queries.
 - Storage cleanup and compaction policies for long-running query traces.
+- CDC currently applies one WAL transaction at a time. Future batching could
+  coalesce multiple WAL transactions, but that would change delta granularity
+- DBSP storage is file-backed per query. Cache sizing, storage roots,
+  compaction, and checkpoint/restore policy are future operational controls.
 
 ### Cleanup
 
