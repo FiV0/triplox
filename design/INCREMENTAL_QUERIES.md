@@ -260,7 +260,6 @@ The current tuning knobs:
 - The current service has one command loop for all queries. Future scaling
   options include sharding registered queries across service threads
   or introducing a worker pool for circuit stepping.
-  and basis reporting semantics.
 
 ---
 
@@ -291,6 +290,7 @@ save a lot of space in the incremental circuits.
 - Storage cleanup and compaction policies for long-running query traces.
 - CDC currently applies one WAL transaction at a time. Future batching could
   coalesce multiple WAL transactions, but that would change delta granularity
+  and basis reporting semantics.
 - DBSP storage is file-backed per query. Cache sizing, storage roots,
   compaction, and checkpoint/restore policy are future operational controls.
 
