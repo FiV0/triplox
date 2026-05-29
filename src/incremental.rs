@@ -150,6 +150,7 @@ impl IncrementalQueryService {
         let plan = plan_query(&query, &schema)?;
         let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
         let wal_cursor = CdcCursor {
+            // TODO: This should likely be initialized to manifest.replay_after_wal_id + 1. See #337
             wal_id: 0,
             last_seq: db.status().durable_seq,
         };
