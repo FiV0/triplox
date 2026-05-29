@@ -167,7 +167,7 @@ is too restrictive and we need to built something more multi-threaded.
 
 ---
 
-## 4. Registration Basis
+## Registration Basis
 
 Registration creates a cutover point:
 
