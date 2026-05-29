@@ -7,7 +7,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
@@ -100,7 +100,7 @@ pub(crate) struct IncrementalQueryService {
     cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
     cancel: CancellationToken,
-    cdc_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
+    cdc_task: Arc<StdMutex<Option<JoinHandle<Result<()>>>>>,
     registration_gate: Arc<Mutex<()>>,
 }
 
@@ -181,11 +181,15 @@ impl IncrementalQueryService {
         *cdc_task = Some(handle);
     }
 
-    pub(crate) async fn await_cdc_task(&self) {
+    pub(crate) async fn await_cdc_task(&self) -> Result<()> {
         let handle = self.cdc_task.lock().unwrap().take();
         if let Some(handle) = handle {
-            handle.await.unwrap();
+            let cdc_result = handle
+                .await
+                .context("Incremental query CDC task failed to join")?;
+            cdc_result.context("Incremental query CDC loop failed")?;
         }
+        Ok(())
     }
 
     pub(crate) async fn register_prepared_query(
@@ -245,7 +249,7 @@ impl IncrementalQueryService {
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
         self.cancel.cancel();
-        self.await_cdc_task().await;
+        self.await_cdc_task().await?;
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Shutdown { response })
@@ -662,6 +666,51 @@ mod tests {
             .expect("apply_triples should stop waiting after cancellation");
         assert!(result.is_ok());
         handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn await_cdc_task_returns_inner_loop_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = IncrementalQueryService::new(
+            dir.path().to_path_buf(),
+            Handle::current(),
+            CancellationToken::new(),
+            "/test_incremental_cdc_error".to_string(),
+            Arc::new(InMemory::new()),
+        );
+        let handle: JoinHandle<Result<()>> = tokio::spawn(async { Err(anyhow!("cdc failed")) });
+        *service.cdc_task.lock().unwrap() = Some(handle);
+
+        let err = service.await_cdc_task().await.unwrap_err();
+        let message = format!("{:#}", err);
+        assert!(message.contains("Incremental query CDC loop failed"));
+        assert!(message.contains("cdc failed"));
+
+        service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn await_cdc_task_returns_join_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = IncrementalQueryService::new(
+            dir.path().to_path_buf(),
+            Handle::current(),
+            CancellationToken::new(),
+            "/test_incremental_cdc_join_error".to_string(),
+            Arc::new(InMemory::new()),
+        );
+        let handle: JoinHandle<Result<()>> = tokio::spawn(async {
+            panic!("cdc task panic");
+            #[allow(unreachable_code)]
+            Ok(())
+        });
+        *service.cdc_task.lock().unwrap() = Some(handle);
+
+        let err = service.await_cdc_task().await.unwrap_err();
+        let message = format!("{:#}", err);
+        assert!(message.contains("Incremental query CDC task failed to join"));
+
+        service.shutdown().await.unwrap();
     }
 
     #[tokio::test]

@@ -288,10 +288,11 @@ impl Node<FileLog> {
 }
 
 impl<L: TxLog> Node<L> {
-    pub async fn close(self) {
-        self.incremental.shutdown().await.unwrap();
+    pub async fn close(self) -> Result<(), Error> {
+        self.incremental.shutdown().await?;
         self.subscription.cancel();
-        self.slate.db.close().await.unwrap();
+        self.slate.db.close().await?;
+        Ok(())
     }
 
     async fn db_as_of_with_timeout(&self, basis: TxBasis, timeout: Duration) -> Result<DB, Error> {
@@ -1162,7 +1163,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], vec![DataType::String("alice".to_string())]);
 
-        node.close().await;
+        node.close().await.unwrap();
 
         // Second node: reopen at same path, verify data persisted, add more
         let node = Node::local_node(&root_path).await.unwrap();
@@ -1194,7 +1195,7 @@ mod tests {
         assert!(results.contains(&vec![DataType::String("alice".to_string())]));
         assert!(results.contains(&vec![DataType::String("bob".to_string())]));
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1203,7 +1204,7 @@ mod tests {
         let root_path = dir.path().to_path_buf();
 
         let node = Node::local_node(&root_path).await.unwrap();
-        node.close().await;
+        node.close().await.unwrap();
 
         let node = Node::local_node(&root_path).await.unwrap();
         let result = tokio::time::timeout(
@@ -1225,7 +1226,7 @@ mod tests {
             .unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1235,7 +1236,7 @@ mod tests {
 
         let node = Node::local_node(&root_path).await.unwrap();
         define_test_schema(&node).await;
-        node.close().await;
+        node.close().await.unwrap();
 
         let node = Node::local_node(&root_path).await.unwrap();
         let db = node.db().await.unwrap();
@@ -1245,7 +1246,7 @@ mod tests {
             .unwrap();
         assert_eq!(txs.len(), 2);
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     // The indexer's `latest_indexed_tx` field must be restored on restart so that
@@ -1274,7 +1275,7 @@ mod tests {
             _ => panic!("expected commit"),
         };
 
-        node.close().await;
+        node.close().await.unwrap();
 
         // Second node: reopen — no new transactions
         let node = Node::local_node(&root_path).await.unwrap();
@@ -1294,7 +1295,7 @@ mod tests {
         );
         result.unwrap().expect("await_tx should succeed");
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1347,7 +1348,7 @@ mod tests {
             .unwrap();
         assert_eq!(results_latest.len(), 2);
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1396,7 +1397,7 @@ mod tests {
             vec![DataType::String("alice".to_string()), DataType::Long(31)]
         );
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1407,7 +1408,7 @@ mod tests {
         let tx_key = db.tx_key();
         assert_eq!(tx_key.tx_id, 0);
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1436,7 +1437,7 @@ mod tests {
         assert_eq!(result[0][2], DataType::Instant(st_from_unix_epoch(0)));
         assert_eq!(result[0][3], DataType::Keyword(kw!(:db.tx/committed)));
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1452,7 +1453,7 @@ mod tests {
 
         assert_eq!(result.len(), 2);
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     /// Insert 3 people: Ivan (age=30), Bob (age=40), Dominic (age=50) with auto-assigned IDs.
@@ -2564,7 +2565,7 @@ mod tests {
 
         assert!(storage_path.exists());
 
-        node.close().await;
+        node.close().await.unwrap();
 
         assert!(!storage_path.exists());
     }
@@ -3584,7 +3585,7 @@ mod tests {
         }])
         .await
         .unwrap();
-        node.close().await;
+        node.close().await.unwrap();
 
         // After restart, all partitions should be present with correct counters
         let node = Node::local_node(&root_path).await.unwrap();
@@ -3596,6 +3597,6 @@ mod tests {
             assert!(pm[&crate::partition::TX_PARTITION] > 0);
         }
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 }

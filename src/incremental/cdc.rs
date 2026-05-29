@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
-use log::{error, info};
+use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
 use tokio::sync::Mutex;
@@ -60,24 +60,18 @@ pub(crate) fn spawn_cdc_loop<N>(
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
-) -> JoinHandle<()>
+) -> JoinHandle<Result<()>>
 where
     N: SchemaProvider,
 {
-    tokio::spawn(async move {
-        if let Err(err) = run_cdc_loop(
-            object_path,
-            object_store,
-            node,
-            service,
-            registration_gate,
-            cancel,
-        )
-        .await
-        {
-            error!("Incremental query CDC loop stopped: {:#}", err);
-        }
-    })
+    tokio::spawn(run_cdc_loop(
+        object_path,
+        object_store,
+        node,
+        service,
+        registration_gate,
+        cancel,
+    ))
 }
 
 async fn run_cdc_loop<N>(

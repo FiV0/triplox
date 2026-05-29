@@ -103,5 +103,5 @@ async fn test_remote_node_with_s3_storage() {
         vec![DataType::String("alice".to_string()), DataType::Long(30),]
     );
 
-    node.close().await;
+    node.close().await.unwrap();
 }
