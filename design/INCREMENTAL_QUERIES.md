@@ -79,11 +79,11 @@ Future work should consider query restart and DBSP checkpointing.
 
 ---
 
-## 3. Runtime Flow
+## Runtime Flow
 
 The main runtime boundary from a node to incremental queries is `IncrementalQueryService`.
-Instead, it sends `IncrementalCommand`s to one dedicated service thread. That
-thread owns the registry of active queries and every query's DBSP circuit.
+The node holds an `IncrementalQueryService`. It is the coordination boundary between the
+node and the threads/runtime/executor dealing with the state and the execution of incremental queries.
 
 Registration flows through the system as follows:
 
@@ -109,17 +109,15 @@ triplox-incremental-query thread
 Node should stay relative clean and should not know anything about internal circuit maintenance and
 initialization logic. The `IncrementalQueryService` should deal with the lifecycle of incremental
 queries and their state. The dedicated service thread is where things get executed. This is currently
-single threaded which won't scale we add incremental queries to the service.
-
-`IncrementalQueryService` should be the coordination boundary for the async node methods and the executor
-service dealing with the evaluation of circuits. Currently this is a single thread, but it will likely
-become multi-threaded in the future.
+single threaded which won't scale we add incremental queries to the service and we should pass to some
+executor service in the future. The `IncrementalQueryService`
+sends `IncrementalCommand`s to the one dedicated service thread. That thread owns the registry
+of active queries and every query's DBSP circuit.
 
 Live WAL application reaches the dedicated service thread through the same
 command channel, but it enters from the internal side rather than the node side.
-The spawned CDC task forwards triples as they arrive
-The trigger is not a node API call: the CDC task is a Tokio task the service
-spawns, and it drives circuits by calling `apply_triples` on a clone of the same
+A spawned CDC task forwards triples as they arrive through WAL decoding.
+It drives circuits by calling `apply_triples` on a clone of the same
 `IncrementalQueryService` handle, which forwards an `ApplyTriples` command over
 the same channel:
 
@@ -146,19 +144,26 @@ There are two channel directions:
   applies backpressure instead of losing deltas; node cancellation breaks that
   wait during shutdown.
 
-`IncrementalQueryDelta` is therefore not the command protocol. It is the
-subscriber-facing result batch emitted after a circuit step. The command
-protocol exists to serialize mutations to the query registry and DBSP circuits.
+In the future the server should drain these subscribers eagerly server side and send
+the appropriate deltas to the corresponding clients. The clients then need to deal
+with the backpressure themselves, depending on the client implementation.
+
+`IncrementalQueryDelta` is a subscriber-facing result batch emitted
+after a circuit step. The command protocol exists to serialize
+mutations to the query registry and DBSP circuits onto the single
+service thread.
 
 Registration is serialized against CDC application by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
-body (basis capture, initial snapshot, and the `Register` round-trip), and the
+body (basis capture, initial db capture, and the `Register` round-trip), and the
 CDC loop holds the same gate around each `apply_triples`. This makes the
 snapshot/register cutover atomic with respect to CDC application: a transaction
 after the registration basis cannot be consumed by the global CDC loop before the
 new query is present in the service registry. The cutover boundary itself is the
 registration `TxBasis` — the global CDC loop reads the WAL from the beginning and
-each query skips transactions at or before its own `tx_id`.
+each query skips transactions at or before its own `tx_id`. I think in the future
+this serialization across WAL application, basis capture and circuit initialization
+is too restrictive and we need to built something more multi-threaded.
 
 ---
 
