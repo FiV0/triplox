@@ -238,11 +238,6 @@ Each registration returns:
 - the registration `TxBasis`, and
 - a bounded Tokio channel of result deltas.
 
-The channel capacity is 128. Deltas are ordered and lossless from the receiver's
-point of view: dropping a delta would make the integrated result wrong. The
-bounded channel therefore applies backpressure instead of silently discarding
-updates.
-
 Queries can be explicitly unregistered. They are also cleaned up when their
 receiver is dropped. Cleanup removes the in-memory query state and deletes the
 query's per-query DBSP storage directory.
