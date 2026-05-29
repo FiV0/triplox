@@ -16,6 +16,9 @@ object from which deltas can be retrieved and which can be closed. The closing
 is important because an incremental query binds resources on the server that
 otherwise won't get released.
 
+Whenever the term query by itself appears in the following, it most likely means a incremental
+query unless explicitly stated otherwise.
+
 ---
 
 ## Current Scope
@@ -78,8 +81,7 @@ Future work should consider query restart and DBSP checkpointing.
 
 ## 3. Runtime Flow
 
-The main runtime boundary is `IncrementalQueryService`. It is a cloneable handle
-used by async code, but it does not own the mutable query state directly.
+The main runtime boundary from a node to incremental queries is `IncrementalQueryService`.
 Instead, it sends `IncrementalCommand`s to one dedicated service thread. That
 thread owns the registry of active queries and every query's DBSP circuit.
 
@@ -87,24 +89,39 @@ Registration flows through the system as follows:
 
 ```text
 Node::register_incremental_query
-    captures a TxBasis and WAL cursor
-    plans the query with inc_query.rs
-    scans initial triples with incremental/cdc.rs
-    sends Register to IncrementalQueryService
+    delegates to IncrementalQueryService::register_query
+
+IncrementalQueryService::register_query
+    captures the latest indexed TxBasis and schema from the indexer
+    plans the query
+    scans the initial triples
+    captures the WAL cursor
+    sends Register to the dedicated service thread
+    starts the CDC loop after Register returns, if not already running
 
 triplox-incremental-query thread
     builds one QueryCircuit for the plan
     primes it with the initial triples
-    stores the circuit, basis, WAL cursor, and subscription sender
+    stores the plan, circuit, basis, WAL cursor, and subscription sender
     returns an IncrementalQuerySubscription
 ```
 
-The split exists because DBSP circuit handles are mutable state that should be
-stepped serially. The service thread gives the async node and CDC tasks a small
-message-passing API while keeping circuit mutation, query registration, and
-query cleanup in one place.
+Node should stay relative clean and should not know anything about internal circuit maintenance and
+initialization logic. The `IncrementalQueryService` should deal with the lifecycle of incremental
+queries and their state. The dedicated service thread is where things get executed. This is currently
+single threaded which won't scale we add incremental queries to the service.
 
-Live WAL application follows the same boundary:
+`IncrementalQueryService` should be the coordination boundary for the async node methods and the executor
+service dealing with the evaluation of circuits. Currently this is a single thread, but it will likely
+become multi-threaded in the future.
+
+Live WAL application reaches the dedicated service thread through the same
+command channel, but it enters from the internal side rather than the node side.
+The spawned CDC task forwards triples as they arrive
+The trigger is not a node API call: the CDC task is a Tokio task the service
+spawns, and it drives circuits by calling `apply_triples` on a clone of the same
+`IncrementalQueryService` handle, which forwards an `ApplyTriples` command over
+the same channel:
 
 ```text
 Tokio CDC task
@@ -133,11 +150,15 @@ There are two channel directions:
 subscriber-facing result batch emitted after a circuit step. The command
 protocol exists to serialize mutations to the query registry and DBSP circuits.
 
-Registration is serialized against CDC application by a node-level registration
-gate. The gate covers the snapshot/register cutover on the registration path and
-the `apply_triples` call on the CDC path. This prevents a transaction after the
-registration basis from being consumed by the global CDC loop before the new
-query is present in the service registry.
+Registration is serialized against CDC application by a registration gate owned
+by `IncrementalQueryService`. `register_query` holds the gate across its whole
+body (basis capture, initial snapshot, and the `Register` round-trip), and the
+CDC loop holds the same gate around each `apply_triples`. This makes the
+snapshot/register cutover atomic with respect to CDC application: a transaction
+after the registration basis cannot be consumed by the global CDC loop before the
+new query is present in the service registry. The cutover boundary itself is the
+registration `TxBasis` — the global CDC loop reads the WAL from the beginning and
+each query skips transactions at or before its own `tx_id`.
 
 ---
 
@@ -274,43 +295,6 @@ that wait so a full subscriber channel cannot keep the CDC task alive forever.
 
 ---
 
-## 8. What Is Missing
-
-The current implementation is useful as the first execution path, but it is not
-the final incremental query system.
-
-Missing query features:
-
-- `or` and `or-join`.
-- `not` and `not-join`.
-- Predicates and function expressions.
-- Aggregates.
-- `:in` bindings and query arguments.
-- Ordering, limits, pull expressions, and public protocol support.
-
-Missing operational features:
-
-- Persistent CDC cursor state.
-- Query checkpoint and restore.
-- Durable recovery after process restart.
-- Reader-node support.
-- Public subscription API over the wire protocol.
-- WAL retention coordination for incremental consumers.
-- Detection and reporting of missing WAL file ranges.
-- Restart or retry policy for CDC task errors.
-- Observability for CDC lag, per-query lag, channel backpressure, and trace
-  storage size.
-
-Missing performance work:
-
-- Attribute-specific initial scans instead of broad EAV scans.
-- Shared circuits or shared arrangements across equivalent queries.
-- Better planning for join order and disconnected groups.
-- Batching and scheduling policies for many active queries.
-- Storage cleanup and compaction policies for long-running query traces.
-
----
-
 ## Direction
 
 Currently the incremental query API is very bare bones. There is no way to
@@ -328,10 +312,14 @@ there is a need for this kind of algorithms.
 
 There are quite a few optimizations that can be done for incremental queries.
 These should be tracked in the issue Tracker. In no particular order, they are:
-- Filter relevant triples for circuit initialization. Use the AVE index.
+- Filter relevant triples via fixed attributes and other constants for circuit initialization. Use the AVE index.
 - Initialize the circuits in batches. At scale the current approach won't work.
 - Make use of Triplox temporal indexes in base triple patterns. This will avoid
 save a lot of space in the incremental circuits.
+- Shared circuits or shared arrangements across equivalent queries.
+- Better planning for join order and disconnected groups.
+- Batching and scheduling policies for many active queries.
+- Storage cleanup and compaction policies for long-running query traces.
 
 ### Cleanup
 
