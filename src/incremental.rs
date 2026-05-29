@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
@@ -77,11 +76,8 @@ pub(crate) struct IncrementalQueryService {
     cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
     cancel: CancellationToken,
-    cdc_started: Arc<AtomicBool>,
     cdc_task: Arc<StdMutex<Option<JoinHandle<()>>>>,
     registration_gate: Arc<Mutex<()>>,
-    #[cfg(test)]
-    registration_pause: Arc<Mutex<Option<IncrementalRegistrationPause>>>,
 }
 
 impl IncrementalQueryService {
@@ -107,11 +103,8 @@ impl IncrementalQueryService {
             cdc_object_path,
             cdc_object_store,
             cancel,
-            cdc_started: Arc::new(AtomicBool::new(false)),
             cdc_task: Arc::new(StdMutex::new(None)),
             registration_gate: Arc::new(Mutex::new(())),
-            #[cfg(test)]
-            registration_pause: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -132,8 +125,6 @@ impl IncrementalQueryService {
         };
         let plan = plan_query(&query, &schema)?;
         let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
-        #[cfg(test)]
-        self.pause_registration_after_snapshot_for_test().await;
         let wal_cursor = CdcCursor {
             wal_id: 0,
             last_seq: db.status().durable_seq,
@@ -149,21 +140,20 @@ impl IncrementalQueryService {
     where
         N: crate::node::SchemaProvider,
     {
-        if self
-            .cdc_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            let handle = spawn_cdc_loop(
-                self.cdc_object_path.clone(),
-                self.cdc_object_store.clone(),
-                node,
-                self.clone(),
-                self.registration_gate.clone(),
-                self.cancel.clone(),
-            );
-            *self.cdc_task.lock().unwrap() = Some(handle);
+        let mut cdc_task = self.cdc_task.lock().unwrap();
+        if cdc_task.is_some() {
+            return;
         }
+
+        let handle = spawn_cdc_loop(
+            self.cdc_object_path.clone(),
+            self.cdc_object_store.clone(),
+            node,
+            self.clone(),
+            self.registration_gate.clone(),
+            self.cancel.clone(),
+        );
+        *cdc_task = Some(handle);
     }
 
     pub(crate) async fn await_cdc_task(&self) {
@@ -240,37 +230,6 @@ impl IncrementalQueryService {
             .map_err(|_| anyhow!("Incremental query service stopped"))?
             .map_err(|err| anyhow!("{}", err))
     }
-
-    #[cfg(test)]
-    pub(crate) async fn pause_next_registration_after_snapshot_for_test(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (reached, reached_rx) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *self.registration_pause.lock().await = Some(IncrementalRegistrationPause {
-            reached,
-            release: release_rx,
-        });
-        (reached_rx, release)
-    }
-
-    #[cfg(test)]
-    async fn pause_registration_after_snapshot_for_test(&self) {
-        let pause = self.registration_pause.lock().await.take();
-        if let Some(IncrementalRegistrationPause { reached, release }) = pause {
-            let _ = reached.send(());
-            let _ = release.await;
-        }
-    }
-}
-
-#[cfg(test)]
-struct IncrementalRegistrationPause {
-    reached: tokio::sync::oneshot::Sender<()>,
-    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 enum IncrementalCommand {
@@ -534,12 +493,13 @@ struct RegisteredQuery {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc as std_mpsc;
+    use std::sync::{mpsc as std_mpsc, Arc};
     use std::time::Duration;
 
     use chrono::Utc;
     use dbsp::utils::Tup2;
     use edn::query::ToVariable;
+    use slatedb::object_store::memory::InMemory;
     use triplox_client::transaction::TxKey;
 
     use super::*;
@@ -702,6 +662,73 @@ mod tests {
             .expect("apply_triples should stop waiting after cancellation");
         assert!(result.is_ok());
         handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = IncrementalQueryService::new(
+            dir.path().to_path_buf(),
+            Handle::current(),
+            CancellationToken::new(),
+            "/test_incremental_registration_gate".to_string(),
+            Arc::new(InMemory::new()),
+        );
+        let query_basis = test_basis_with_tx_id(1);
+        let tx_basis = test_basis_with_tx_id(2);
+        let mut first_subscription = service
+            .register_prepared_query(
+                single_pattern_plan(),
+                query_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .await
+            .unwrap();
+
+        let registration_guard = service.registration_gate.lock().await;
+        let applying_service = service.clone();
+        let apply = tokio::spawn(async move {
+            let _registration_guard = applying_service.registration_gate.lock().await;
+            applying_service
+                .apply_triples(Some(tx_basis), 2, vec![name_triple(43, "Bob")])
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(first_subscription.deltas.try_recv().is_err());
+
+        let mut second_subscription = service
+            .register_prepared_query(
+                single_pattern_plan(),
+                query_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .await
+            .unwrap();
+        assert!(second_subscription.deltas.try_recv().is_err());
+
+        drop(registration_guard);
+        apply.await.unwrap().unwrap();
+
+        assert_eq!(
+            first_subscription.deltas.recv().await.unwrap(),
+            IncrementalQueryDelta {
+                basis: Some(tx_basis),
+                wal_seq: 2,
+                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
+            }
+        );
+        assert_eq!(
+            second_subscription.deltas.recv().await.unwrap(),
+            IncrementalQueryDelta {
+                basis: Some(tx_basis),
+                wal_seq: 2,
+                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
+            }
+        );
+
+        service.shutdown().await.unwrap();
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {

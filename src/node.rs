@@ -394,7 +394,6 @@ impl<L: TxLog> QueryNode for Node<L> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
@@ -2006,65 +2005,6 @@ mod tests {
             delta.rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
         );
-    }
-
-    #[tokio::test]
-    async fn test_incremental_registration_does_not_miss_tx_between_basis_and_insert() {
-        let node = Arc::new(Node::memory_node().await);
-        define_test_schema(node.as_ref()).await;
-        flush_wal(node.as_ref()).await;
-        let mut first_subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        let (registration_paused, release_registration) = node
-            .incremental
-            .pause_next_registration_after_snapshot_for_test()
-            .await;
-        let registering_node = node.clone();
-        let registration = tokio::spawn(async move {
-            registering_node
-                .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-                .await
-                .unwrap()
-        });
-        tokio::time::timeout(Duration::from_secs(5), registration_paused)
-            .await
-            .expect("timed out waiting for registration pause")
-            .expect("registration pause sender dropped");
-
-        let basis = match node
-            .execute_tx(vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:name),
-                value: DataType::String("Alice".to_string()),
-            }])
-            .await
-            .unwrap()
-        {
-            TransactionResult::TxCommited(basis) => basis,
-            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
-        };
-        flush_wal(node.as_ref()).await;
-        assert!(try_recv_incremental_delta(&mut first_subscription)
-            .await
-            .is_none());
-
-        release_registration
-            .send(())
-            .expect("registration release receiver should be waiting");
-        let mut second_subscription = registration.await.unwrap();
-
-        let first_delta = recv_incremental_delta(&mut first_subscription).await;
-        let second_delta = recv_incremental_delta(&mut second_subscription).await;
-        assert_eq!(first_delta.basis, Some(basis));
-        assert_eq!(second_delta.basis, Some(basis));
-        assert_eq!(
-            first_delta.rows,
-            vec![(vec![DataType::String("Alice".to_string())], 1)]
-        );
-        assert_eq!(second_delta.rows, first_delta.rows);
     }
 
     #[tokio::test]
