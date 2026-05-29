@@ -70,6 +70,30 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
+type ServiceResult<T> = std::result::Result<T, String>;
+enum IncrementalCommand {
+    Register {
+        plan: IncrementalQueryPlan,
+        basis: TxBasis,
+        wal_cursor: CdcCursor,
+        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
+    },
+    Unregister {
+        handle: IncrementalQueryHandle,
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+    ApplyTriples {
+        basis: Option<TxBasis>,
+        wal_seq: u64,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+    Shutdown {
+        response: oneshot::Sender<ServiceResult<()>>,
+    },
+}
+
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: std_mpsc::Sender<IncrementalCommand>,
@@ -231,31 +255,6 @@ impl IncrementalQueryService {
             .map_err(|err| anyhow!("{}", err))
     }
 }
-
-enum IncrementalCommand {
-    Register {
-        plan: IncrementalQueryPlan,
-        basis: TxBasis,
-        wal_cursor: CdcCursor,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-        response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
-    },
-    Unregister {
-        handle: IncrementalQueryHandle,
-        response: oneshot::Sender<ServiceResult<()>>,
-    },
-    ApplyTriples {
-        basis: Option<TxBasis>,
-        wal_seq: u64,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-        response: oneshot::Sender<ServiceResult<()>>,
-    },
-    Shutdown {
-        response: oneshot::Sender<ServiceResult<()>>,
-    },
-}
-
-type ServiceResult<T> = std::result::Result<T, String>;
 
 struct IncrementalQueryServiceInner {
     next_query_id: u64,
