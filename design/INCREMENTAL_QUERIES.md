@@ -69,11 +69,10 @@ need ordering, and `DataType` contains values such as floats, maps, and vectors
 that do not form a simple total order. After pattern filtering, operators pass
 rows of encoded values between patterns and joins.
 
-The DBSP state is trace-backed and configured with file-backed storage. Triplox
-does not keep full accumulated relation Z-sets in ordinary Rust memory as the
-query state. Per-query trace files are derived state: they can be deleted when a
-query is unregistered, and future restart support should be able to rebuild them
-from a snapshot plus WAL replay or restore them from DBSP checkpoints.
+The DBSP state is trace-backed and configured with file-backed storage.
+Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
+query state. The trace files get currently deleted when a query gets unregistered.
+Future work should consider query restart and DBSP checkpointing.
 
 ---
 
