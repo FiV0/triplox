@@ -38,7 +38,7 @@ pub fn default_db_cache() -> Arc<dyn DbCache> {
 
 pub struct SlateComponents {
     pub db: Arc<Db>,
-    pub path: String,
+    pub object_path: String,
     pub object_store: Arc<dyn ObjectStore>,
     pub range_stats: Arc<slatedb_estimates::RangeStats>,
 }
@@ -46,7 +46,7 @@ pub struct SlateComponents {
 impl std::fmt::Debug for SlateComponents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SlateComponents")
-            .field("path", &self.path)
+            .field("object_path", &self.object_path)
             .finish_non_exhaustive()
     }
 }
@@ -70,15 +70,15 @@ pub async fn in_memory_slate() -> SlateComponents {
     ));
     SlateComponents {
         db,
-        path,
+        object_path: path,
         object_store,
         range_stats,
     }
 }
 
-pub async fn local_slate(path: &str) -> SlateComponents {
+pub async fn local_slate(root_path: &Path) -> SlateComponents {
     let object_store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
+        Arc::new(LocalFileSystem::new_with_prefix(root_path).unwrap());
     let slate_path = "triplox".to_string();
     let db = Arc::new(
         Db::builder(slate_path.clone(), object_store.clone())
@@ -96,7 +96,7 @@ pub async fn local_slate(path: &str) -> SlateComponents {
     ));
     SlateComponents {
         db,
-        path: slate_path,
+        object_path: slate_path,
         object_store,
         range_stats,
     }
@@ -153,7 +153,7 @@ pub async fn remote_slate(
     ));
     Ok(SlateComponents {
         db,
-        path,
+        object_path: path,
         object_store,
         range_stats,
     })

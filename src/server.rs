@@ -373,7 +373,12 @@ impl DevServer {
                     let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
                         panic!("dev node Arc should have refcount 1 after connection close")
                     });
-                    node.close().await;
+                    if let Err(err) = node.close().await {
+                        warn!(
+                            "Dev HTTP connection {} failed to close node: {:#}",
+                            conn_id, err
+                        );
+                    }
                     info!("Dev HTTP connection {} closed", conn_id);
                 });
             },

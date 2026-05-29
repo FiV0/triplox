@@ -6,6 +6,8 @@ mod codec;
 mod error;
 mod expr;
 mod file_log;
+mod inc_query;
+mod incremental;
 mod index;
 mod indexer;
 mod iterator;

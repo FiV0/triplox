@@ -145,11 +145,10 @@ fn value_place_to_datatype(place: &PatternValuePlace) -> Option<DataType> {
 }
 
 /// Convert a NonIntegerConstant to a DataType.
-fn non_integer_constant_to_datatype(c: &NonIntegerConstant) -> Option<DataType> {
+pub(crate) fn non_integer_constant_to_datatype(c: &NonIntegerConstant) -> Option<DataType> {
     match c {
         NonIntegerConstant::Boolean(b) => Some(DataType::Boolean(*b)),
         NonIntegerConstant::BigInteger(ref bi) => {
-            // Try to convert to i128
             let val: i128 = bi.clone().try_into().ok()?;
             Some(DataType::BigInt(val))
         }

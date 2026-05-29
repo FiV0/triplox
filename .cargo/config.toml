@@ -1,2 +1,6 @@
 [alias]
 dev = "watch -x 'run -- config/triplox.toml'"
+
+[env]
+# DBSP's mimalloc-rust-sys dependency needs a pre-C23 C default.
+CFLAGS = { value = "-std=gnu11", force = false }

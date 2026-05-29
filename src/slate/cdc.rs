@@ -850,7 +850,10 @@ mod tests {
             .await
             .unwrap();
 
-        let wal_reader = WalReader::new(node.slate.path.as_str(), node.slate.object_store.clone());
+        let wal_reader = WalReader::new(
+            node.slate.object_path.as_str(),
+            node.slate.object_store.clone(),
+        );
         let cancel = CancellationToken::new();
         cancel.cancel();
         let schema = load_schema_from_indices(&node.slate).await;
@@ -911,7 +914,7 @@ mod tests {
             && d.value == DataType::Long(30)
             && d.op == DatomOp::Assert));
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -977,7 +980,7 @@ mod tests {
             datom.value == DataType::String("bob".to_string()) && datom.op == DatomOp::Assert
         }));
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1012,6 +1015,6 @@ mod tests {
         assert_eq!(entity_100.len(), 1); // name only
         assert_eq!(entity_200.len(), 2); // name + age
 
-        node.close().await;
+        node.close().await.unwrap();
     }
 }
