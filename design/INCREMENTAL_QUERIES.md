@@ -18,49 +18,39 @@ otherwise won't get released.
 
 ---
 
-## 1. Current Scope
+## Current Scope
 
-The current engine supports conjunctive triple-pattern queries on writer nodes.
-Queries are registered through `Node<L: TxLog>` and return a subscription that
-emits future deltas only. The registration basis is returned so a caller can
-combine a separately obtained snapshot at that basis with the stream of later
-deltas.
+The incremental query engine will lag behind the one-shot query engine in most
+cases. The idea is use the same validation logic for one-shot queries also for
+incremental queries and a further more retraining check for incremental queries
+that at some point should get removed when parity between the two query paths
+is reached.
 
-Currently supported:
+Any approach for incremental query compilation should be first tested in hooray
+(https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
+in Triplox.
 
-- Triple patterns in `:where`.
-- Constant attributes, written as idents or entids.
-- Variables and constants in entity and value positions.
-- Joins through shared variables across patterns.
-- Disconnected pattern groups, using Cartesian-product semantics like the
-  standard query engine.
-- `register_incremental_query` and `unregister_incremental_query` on writer
-  nodes.
-
-Currently rejected:
-
-- Variable or placeholder attributes.
-- Placeholders in entity and value positions.
-- Repeated variables inside one triple pattern.
-- `or`, `not`, predicates, functions, aggregates, rules, pull expressions,
-  `:in`, `:order`, and `:limit`.
-- Public client or JVM subscription APIs.
-
-The one-shot query engine remains the semantic reference for the supported
-subset. Incremental query planning lives separately from `query.rs`.
+Initially we are focusing on queries that are started at the newest (as in most recently visible)
+DB value. In theory nothing prevents us from replaying transactions from an arbitrary DB
+value in the past as all the old data sits in the covering indexes,
+but this requires a different approach of piping the old transactions through
+the circuits compared to just tailing the WAL files of SlateDB. I am not
+saying it is out of scope, it is just out of scope for now.
 
 ---
 
-## 2. Architecture
+## Architecture
 
 The incremental query path has four main parts:
 
-1. **Planner** - validates the supported query subset and lowers triple patterns
-   into an incremental query plan.
-2. **DBSP circuit** - owns the per-query dataflow graph and emits result deltas.
-3. **Incremental query service** - owns registered query handles, channels, and
-   per-query circuit instances.
-4. **CDC loop** - reads SlateDB WAL files, decodes transactions into datoms, and
+1. **Planner** - This mostly currently sits in `inc-query.rs`. The planner validates the supported
+query subset and lowers triple patterns into an incremental query plan.
+2. **DBSP circuit** - Sitting in `circuit.rs` owns the per-query dataflow graph and emits result deltas.
+Is build via the plan created by the planner.
+3. **Incremental query service** - Living in `incremental.rs`. It owns registered query handles, channels, and
+   per-query circuit instances. This service coordinates between the node and the actual feeding of data into
+   the circuits. It's the "ugly" glue. There are also some coordination problems solved by this service.
+4. **CDC loop** - It also sits in `incremental.rs` reads SlateDB WAL files, decodes transactions into datoms, and
    applies weighted triple updates to all registered circuits.
 
 Each registered query owns a DBSP circuit. The circuit input is a weighted set
@@ -322,17 +312,27 @@ Missing performance work:
 
 ---
 
-## 9. Direction
+## Direction
 
-The next major step is to make incremental queries robust across restarts. That
-requires a durable CDC cursor, a clear WAL-retention contract, and either DBSP
-checkpoint restore or deterministic rebuild from a registration snapshot plus
-WAL replay.
+Currently the incremental query API is very bare bones. There is no way to
+specify the `TxBasis` that a query should start at. There is now way
+to stop and restart a query without reinitializing the circuit. All these
+things are possible, but need more thought and careful analysis for the
+state management.
 
-After restart behavior is defined, the public API can expose incremental query
-subscriptions to clients. Until then, keeping the API crate-internal avoids
-locking in wire semantics before the lifecycle and recovery model are stable.
+I have also been exploring an incremental join algorithm incorporating aspects
+of WCOJ in Hooray. I want to bring these ideas to Triplox to see if
+the incremental join on graph patterns could be improved at scale and if
+there is a need for this kind of algorithms.
 
+### Further optimizations
+
+There are quite a few optimizations that can be done for incremental queries.
+These should be tracked in the issue Tracker. In no particular order, they are:
+- Filter relevant triples for circuit initialization. Use the AVE index.
+- Initialize the circuits in batches. At scale the current approach won't work.
+- Make use of Triplox temporal indexes in base triple patterns. This will avoid
+save a lot of space in the incremental circuits.
 
 ### Cleanup
 
