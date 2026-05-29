@@ -759,6 +759,20 @@ mod tests {
         assert!(!storage_path.exists());
     }
 
+    // NOTE(coverage): this exercises the `registration_gate` mutual-exclusion
+    // contract at the service layer only — it feeds `basis`/triples to
+    // `register_prepared_query` directly and never drives the real
+    // indexer -> WAL -> CDC -> register pipeline. The full no-missed-transaction
+    // guarantee for a query registered against a *live* CDC loop also depends on
+    // invariants outside this file: the indexer publishes `latest_indexed_tx`
+    // only after issuing the slatedb write, both under the write lock (the write
+    // is not awaited for durability), and `register_query` reads the basis under
+    // the indexer read lock. Since CDC only ever reads transactions that were
+    // already written, the basis observed under the read lock always covers the
+    // CDC loop's position regardless of when the WAL flush happens. A
+    // regression in that lock ordering would NOT be caught here; it needs a
+    // node-level integration test that registers a second query after CDC has
+    // advanced.
     #[tokio::test]
     async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
         let dir = tempfile::tempdir().unwrap();
