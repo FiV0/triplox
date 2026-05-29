@@ -194,12 +194,13 @@ registration basis and applies later ones.
 
 ---
 
-## 5. CDC Flow
+## CDC Flow
 
-The writer node has one CDC loop for all incremental queries. It uses SlateDB
+The node has one CDC loop for all incremental queries. It uses SlateDB
 `WalReader` through Triplox's `CdcStream` helper. The loop decodes WAL entries
 into transaction-sized batches, extracts EAV datoms using the current node
-schema, and then applies the weighted triple delta to the incremental query
+schema (future optimizations should apply decoding more fine-grained per query),
+and then applies the weighted triple delta to the incremental query
 service. It does not wait on the writer indexer before applying a WAL entry;
 in the current writer-node path, a WAL entry observed here has already passed
 through the write/indexing path that produced it. The schema still comes through
@@ -213,11 +214,8 @@ implementation this cursor is in-memory state owned by the live `CdcStream`;
 it lets the stream park on `next_transaction().await`, reopen the current WAL
 file when needed, and continue without rereading earlier rows.
 
-This cursor is not yet a durable query checkpoint. Future crash recovery needs
-a durable applied watermark that advances only after a WAL transaction has been
-decoded, indexed, applied to DBSP, and delivered to subscriptions. That
-watermark can then be used to restart without replay gaps; duplicate replay
-handling also needs to be defined at that point.
+This CDC cursor is currently not saved anywhere persistently. If a node
+crashes the query needs to be registered anew and populated anew.
 
 For each transaction:
 
@@ -230,12 +228,9 @@ For each transaction:
 6. Non-empty result deltas are sent on each subscription channel.
 7. The live stream cursor advances as rows are read.
 
-The current CDC state is in memory. This is sufficient for the writer-node-only
-prototype, but it is not enough for crash recovery or reader nodes.
-
 ---
 
-## 6. Subscription Lifecycle
+## Subscription Lifecycle
 
 Each registration returns:
 
