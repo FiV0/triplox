@@ -369,6 +369,11 @@ fn round_trip_nested_expr_in_predicate() {
 }
 
 #[test]
+fn round_trip_if_in_where_fn() {
+    assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(if (= ?y 1) 10 0) ?result]]");
+}
+
+#[test]
 fn round_trip_simple_pattern() {
     assert_round_trip("[:find ?x ?y :where [?x :foo/bar ?y]]");
 }
