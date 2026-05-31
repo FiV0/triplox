@@ -64,6 +64,11 @@ public final class Subscription implements AutoCloseable {
         return basis;
     }
 
+    /** True once the stream has ended and the consumer has observed the end. */
+    public boolean isDone() {
+        return drained;
+    }
+
     /** Block for the next delta. Returns {@code null} when the stream ends. */
     public Delta take() throws InterruptedException {
         if (drained) {

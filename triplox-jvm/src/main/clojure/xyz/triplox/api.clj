@@ -2,7 +2,8 @@
   "Clojure client API for Triplox."
   (:require [xyz.triplox.types :as types]
             [xyz.triplox.tx :as tx])
-  (:import [xyz.triplox.client TriploxNode Db TxBasis TxKey TxResult QueryArg QueryArg$Scalar QueryArg$Collection]))
+  (:import [xyz.triplox.client TriploxNode Db TxBasis TxKey TxResult QueryArg QueryArg$Scalar QueryArg$Collection Subscription Delta Row]
+           [java.util.concurrent TimeUnit]))
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
@@ -49,3 +50,46 @@
         ^TxKey result (.submitTx ^TriploxNode conn ops)]
     {:tx-id (.txId result)
      :system-time (.systemTime result)}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Incremental subscriptions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- delta->clj [^Delta delta]
+  (when delta
+    (mapv (fn [^Row row]
+            [(mapv types/wire->clj (.values row)) (.weight row)])
+          (.rows delta))))
+
+(defn subscribe
+  "Register an incremental query and stream its result deltas. Returns a
+  Subscription (Closeable); use with `with-open`. Closing unsubscribes."
+  ^Subscription [conn query & args]
+  (if (seq args)
+    (let [query-args (mapv (fn [a]
+                             (if (sequential? a)
+                               (QueryArg$Collection. (vec a))
+                               (QueryArg$Scalar. a)))
+                           args)]
+      (.subscribe ^TriploxNode conn (pr-str query) query-args))
+    (.subscribe ^TriploxNode conn (pr-str query))))
+
+(defn take!
+  "Block for the next delta. Returns a vector of `[row-values weight]` pairs
+  (values via `types/wire->clj`), or nil when the stream is closed. The 2-arity
+  bounds the wait, returning `::timeout` on expiry."
+  ([sub] (delta->clj (.take ^Subscription sub)))
+  ([sub timeout-ms]
+   (let [delta (.poll ^Subscription sub (long timeout-ms) TimeUnit/MILLISECONDS)]
+     (cond
+       (some? delta) (delta->clj delta)
+       (.isDone ^Subscription sub) nil
+       :else ::timeout))))
+
+(defn basis
+  "The registration basis of a subscription, as a map."
+  [^Subscription sub]
+  (let [b (.basis ^Subscription sub)]
+    {:tx-id (.txId b)
+     :system-time (.systemTime b)
+     :tx-eid (.txEid b)}))
