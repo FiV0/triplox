@@ -5479,6 +5479,7 @@ dependencies = [
  "feldera-macros",
  "feldera-size-of",
  "futures",
+ "http-body-util",
  "hyper 1.9.0",
  "hyper-util",
  "indexmap 2.14.0",

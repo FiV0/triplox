@@ -8,18 +8,24 @@
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Error, Result};
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::StatusCode;
+use axum::http::header::{CONNECTION, UPGRADE};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
+use futures::future::BoxFuture;
+use hyper::body::Incoming;
+use hyper::service::Service;
+use hyper::Request;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -458,9 +464,9 @@ async fn serve_connection(
     name: &'static str,
 ) {
     let io = TokioIo::new(stream);
-    let service = TowerToHyperService::new(router);
+    let service = h2c_upgrade_service(router, conn_id, name);
     let builder = Builder::new(TokioExecutor::new());
-    let conn = builder.serve_connection(io, service);
+    let conn = builder.serve_connection_with_upgrades(io, service);
     tokio::pin!(conn);
 
     tokio::select! {
@@ -475,4 +481,83 @@ async fn serve_connection(
             let _ = conn.await;
         }
     }
+}
+
+fn h2c_upgrade_service(router: Router, conn_id: u64, name: &'static str) -> H2cUpgradeService {
+    H2cUpgradeService {
+        router,
+        conn_id,
+        name,
+    }
+}
+
+#[derive(Clone)]
+struct H2cUpgradeService {
+    router: Router,
+    conn_id: u64,
+    name: &'static str,
+}
+
+impl Service<Request<Incoming>> for H2cUpgradeService {
+    type Response = Response;
+    type Error = Infallible;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let router = self.router.clone();
+        let conn_id = self.conn_id;
+        let name = self.name;
+        Box::pin(async move {
+            if is_h2c_upgrade_request(req.headers()) {
+                let on_upgrade = hyper::upgrade::on(req);
+                tokio::spawn(async move {
+                    match on_upgrade.await {
+                        Ok(upgraded) => {
+                            let service = TowerToHyperService::new(router);
+                            let builder = Builder::new(TokioExecutor::new()).http2_only();
+                            if let Err(err) = builder.serve_connection(upgraded, service).await {
+                                warn!(
+                                    "{} h2c upgraded connection {} error: {}",
+                                    name, conn_id, err
+                                );
+                            }
+                        }
+                        Err(err) => warn!(
+                            "{} h2c upgrade for connection {} failed: {}",
+                            name, conn_id, err
+                        ),
+                    }
+                });
+
+                let response = Response::builder()
+                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                    .header(CONNECTION, "Upgrade")
+                    .header(UPGRADE, "h2c")
+                    .body(Body::empty())
+                    .expect("h2c upgrade response is valid");
+                Ok(response)
+            } else {
+                TowerToHyperService::new(router).call(req).await
+            }
+        })
+    }
+}
+
+fn is_h2c_upgrade_request(headers: &HeaderMap) -> bool {
+    header_contains_token(headers, CONNECTION, "upgrade")
+        && header_contains_token(headers, UPGRADE, "h2c")
+        && headers.contains_key("http2-settings")
+}
+
+fn header_contains_token(
+    headers: &HeaderMap,
+    name: axum::http::header::HeaderName,
+    token: &str,
+) -> bool {
+    headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|value| value.trim().eq_ignore_ascii_case(token))
 }

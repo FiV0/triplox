@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::Request;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -7,6 +12,7 @@ use chrono::TimeZone;
 use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
+use triplox::msgpack_codec::{decode_db_opened_response, encode_open_db_request, OpenDbRequest};
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
@@ -41,6 +47,78 @@ async fn start_test_server() -> (String, CancellationToken) {
 async fn test_client_connect() {
     let (addr, token) = start_test_server().await;
     let _client = ClientNode::connect(&addr).await.unwrap();
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_h2c_upgrade_then_http2_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let node = Arc::new(Node::memory_node().await);
+    let server = Server::new(node);
+
+    let token = CancellationToken::new();
+    let server_token = token.clone();
+    tokio::spawn(async move {
+        let _ = server.listen_on(listener, server_token).await;
+    });
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(
+            concat!(
+                "OPTIONS * HTTP/1.1\r\n",
+                "Host: localhost\r\n",
+                "Connection: Upgrade, HTTP2-Settings\r\n",
+                "Upgrade: h2c\r\n",
+                "HTTP2-Settings: AAMAAABkAAQAAP__\r\n",
+                "\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+
+    let mut response = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        let n = stream.read(&mut byte).await.unwrap();
+        assert!(n > 0, "server closed before sending h2c upgrade response");
+        response.push(byte[0]);
+        if response.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let response = String::from_utf8(response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols"));
+    assert!(response.to_ascii_lowercase().contains("upgrade: h2c"));
+
+    let io = TokioIo::new(stream);
+    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .unwrap();
+    tokio::spawn(connection);
+
+    let body = encode_open_db_request(&OpenDbRequest {
+        tx_id: None,
+        system_time: None,
+        tx_eid: None,
+    })
+    .unwrap();
+    let request = Request::post("/db/open")
+        .header("Content-Type", "application/vnd.triplox+msgpack")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap();
+
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let opened = decode_db_opened_response(&body).unwrap();
+    assert_eq!(opened.tx_id, 0);
+
     token.cancel();
 }
 
