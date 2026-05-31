@@ -1,19 +1,12 @@
 use anyhow::{bail, Context, Result};
-use std::sync::LazyLock;
 
-use crate::clock::st_from_unix_epoch;
 use crate::codec;
-use crate::indexer::{build_tx_entity_datoms, write_index_entries};
 use crate::metadata::{Metadata, PartitionMap};
 use crate::partition::{
-    extract_counter, partition_entity_prefix, COUNTER_BITS, DB_PARTITION, TX_PARTITION,
-    USER_PARTITION,
+    extract_counter, partition_entity_prefix, DB_PARTITION, TX_PARTITION, USER_PARTITION,
 };
-use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
-use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
-use crate::tempids;
-use crate::transaction::TxKey;
-use crate::tx;
+use crate::schema::load_schema_from_indices;
+use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS};
 use crate::util::concat_bytes;
 use slatedb::{Db, WriteBatch};
 
@@ -23,18 +16,6 @@ const META_KEY_VERSION: &[u8] = b"version";
 /// New user-defined schema attributes start at this counter value,
 /// leaving room below for future bootstrap entities.
 const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
-
-/// Entity ID for the bootstrap transaction (TX_PARTITION, counter 0).
-/// Matches `make_entity_id(TX_PARTITION, 0)`; expressed as a const so
-/// `node::from_slate_and_log` can compare without recomputing.
-pub(crate) const BOOTSTRAP_TX_EID: i64 = (TX_PARTITION as i64) << COUNTER_BITS;
-
-/// TxKey written for the bootstrap transaction. `tx_id=0` and `system_time=epoch`
-/// collide with the first FileLog tx today; see TODO(#97).
-pub(crate) static BOOTSTRAP_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
-    tx_id: 0,
-    system_time: st_from_unix_epoch(0),
-});
 
 pub(crate) fn version_key() -> Vec<u8> {
     concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION])
@@ -98,81 +79,37 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> Result<PartitionMap
     Ok(pm)
 }
 
-/// Initialize the database and return ready `Metadata`.
-///
-/// - **Fresh DB**: processes the bootstrap schema transaction, writes index entries
-///   including a transaction entity directly to SlateDB, writes the version, and
-///   returns populated metadata.
-/// - **Existing DB**: loads the schema from indices via the Datalog query engine,
-///   derives counters by scanning the EAV index.
-pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
-    match is_initialized(slate).await? {
-        true => load_existing_metadata(slate).await,
-        false => {
-            // Fresh DB — build schema from constants, then bootstrap
-            let bootstrap_schema = bootstrap_schema();
-            let tx_ops = bootstrap_schema_tx();
-            let tx_key = *BOOTSTRAP_TX_KEY;
-            let tx_eid = BOOTSTRAP_TX_EID;
-            let mut boot_pm = PartitionMap::new();
-
-            // Same normalization and tempid-resolution stages as the indexer.
-            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
-            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
-                .await
-                .unwrap();
-            let mut datoms =
-                tempids::resolve_tempids(with_tempids, &bootstrap_schema, &slate.db, &mut boot_pm)
-                    .await
-                    .unwrap();
-            datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
-
-            // Validate against pre-built schema, then derive the bootstrap schema delta.
-            let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();
-            assert!(validation.schema_changes_detected);
-            let update = Schema::default().prepare_schema_update(&datoms).unwrap();
-
-            // Verify: tx-derived schema changes must match pre-built schema
-            let mut schema_from_tx = Schema::default();
-            schema_from_tx.apply_schema_update(update);
-            assert_eq!(
-                schema_from_tx.ident_map, bootstrap_schema.ident_map,
-                "bootstrap ident_map mismatch"
-            );
-            assert_eq!(
-                schema_from_tx.attribute_map, bootstrap_schema.attribute_map,
-                "bootstrap attribute_map mismatch"
-            );
-
-            let mut batch = WriteBatch::new();
-            write_index_entries(&mut batch, &datoms, &bootstrap_schema, tx_eid).unwrap();
-            write_version_marker(&mut batch);
-            slate
-                .db
-                .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
-                .await
-                .unwrap();
-
-            // Derive counters from the just-written index
-            let pm = scan_partition_counters(&slate.db).await?;
-            Ok(Metadata::new(bootstrap_schema, pm))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::st_from_unix_epoch;
+    use crate::indexer::Indexer;
     use crate::partition::{DB_PARTITION, TX_PARTITION, USER_PARTITION};
+    use crate::schema::bootstrap_schema_tx;
     use crate::slate::in_memory_slate;
+    use crate::transaction::TxKey;
     use edn::kw;
+
+    async fn index_bootstrap(slate: &SlateComponents) {
+        let mut indexer = Indexer::new_bootstrapping(slate.db.clone());
+        indexer
+            .transact_bootstrap_tx(
+                TxKey {
+                    tx_id: 0,
+                    system_time: st_from_unix_epoch(0),
+                },
+                bootstrap_schema_tx(),
+            )
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn test_is_initialized_tracks_version_marker() {
         let slate = in_memory_slate().await;
         assert!(!is_initialized(&slate).await.unwrap());
 
-        init_db(&slate).await.unwrap();
+        index_bootstrap(&slate).await;
 
         assert!(is_initialized(&slate).await.unwrap());
     }
@@ -180,76 +117,40 @@ mod tests {
     #[tokio::test]
     async fn test_load_existing_metadata_reads_indices() {
         let slate = in_memory_slate().await;
-        let initialized = init_db(&slate).await.unwrap();
+        index_bootstrap(&slate).await;
         let loaded = load_existing_metadata(&slate).await.unwrap();
 
-        assert_eq!(initialized.schema.len(), loaded.schema.len());
-        assert_eq!(initialized.partition_map, loaded.partition_map);
-    }
-
-    #[tokio::test]
-    async fn test_init_db_fresh() {
-        let slate = in_memory_slate().await;
-        let metadata = init_db(&slate).await.unwrap();
         // Bootstrap defines 8 schema attributes (4 core + 4 tx)
-        assert_eq!(metadata.schema.len(), 8);
-        assert!(metadata.schema.get_attribute(&kw!(:db/ident)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/valueType)).is_some());
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db/cardinality))
-            .is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/unique)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/txInstant)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/txId)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/txResult)).is_some());
-        assert!(metadata.schema.get_attribute(&kw!(:db/txError)).is_some());
+        assert_eq!(loaded.schema.len(), 8);
+        assert!(loaded.schema.get_attribute(&kw!(:db/ident)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/valueType)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/cardinality)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/unique)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/txInstant)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/txId)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/txResult)).is_some());
+        assert!(loaded.schema.get_attribute(&kw!(:db/txError)).is_some());
         // Counter is clamped to DB_PARTITION_COUNTER_FLOOR (room for future bootstrap entities)
         assert_eq!(
-            metadata.partition_map[&DB_PARTITION],
+            loaded.partition_map[&DB_PARTITION],
             DB_PARTITION_COUNTER_FLOOR
         );
-        assert_eq!(metadata.partition_map[&TX_PARTITION], 1);
-        assert_eq!(metadata.partition_map[&USER_PARTITION], 0);
+        assert_eq!(loaded.partition_map[&TX_PARTITION], 1);
+        assert_eq!(loaded.partition_map[&USER_PARTITION], 0);
         // Enum entities are in ident_map but not attribute_map
-        assert!(metadata
-            .schema
-            .ident_map
-            .contains_key(&kw!(:db.type/string)));
-        assert!(metadata
-            .schema
-            .get_attribute(&kw!(:db.type/string))
-            .is_none());
+        assert!(loaded.schema.ident_map.contains_key(&kw!(:db.type/string)));
+        assert!(loaded.schema.get_attribute(&kw!(:db.type/string)).is_none());
     }
 
     #[tokio::test]
-    async fn test_init_db_existing() {
-        let slate = in_memory_slate().await;
-        let metadata1 = init_db(&slate).await.unwrap();
-        // Second call takes the existing-DB path (scan EAV for counters)
-        let metadata2 = init_db(&slate).await.unwrap();
-        assert_eq!(metadata1.schema.len(), metadata2.schema.len());
-        assert_eq!(metadata1.schema.len(), 8);
-        assert_eq!(
-            metadata1.partition_map[&DB_PARTITION],
-            metadata2.partition_map[&DB_PARTITION]
-        );
-        assert_eq!(
-            metadata1.partition_map[&TX_PARTITION],
-            metadata2.partition_map[&TX_PARTITION]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_init_db_preserves_old_version() {
+    async fn test_load_existing_metadata_preserves_old_version() {
         let slate = in_memory_slate().await;
 
         // Write an older version directly (simulates existing DB without bootstrap indices)
         let key = version_key();
         slate.db.put(&key, b"0.0.1").await.unwrap();
 
-        // init_db takes the existing-DB path — loads from indices (empty, since no bootstrap ran)
-        let metadata = init_db(&slate).await.unwrap();
+        let metadata = load_existing_metadata(&slate).await.unwrap();
         assert_eq!(metadata.schema.len(), 0);
         // No EAV entries → partition counters initialized to 0 (DB clamped to floor)
         assert_eq!(

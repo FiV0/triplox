@@ -910,17 +910,23 @@ mod tests {
     use edn::query::ParsedQuery;
 
     /// Create an indexer with bootstrap schema and test attributes already transacted.
-    /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
-        let metadata = crate::bootstrap::init_db(slate).await.unwrap();
-        let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
+        let mut indexer = Indexer::new_bootstrapping(slate.db.clone());
         let tx_key_0 = TxKey {
             tx_id: 0,
+            system_time: st_from_unix_epoch(0),
+        };
+        indexer
+            .transact_bootstrap_tx(tx_key_0, bootstrap_schema_tx())
+            .await
+            .unwrap();
+        let tx_key_1 = TxKey {
+            tx_id: 1,
             system_time: st_from_unix_epoch(1),
         };
         indexer
-            .transact_tx(tx_key_0, test_schema_tx())
+            .transact_tx(tx_key_1, test_schema_tx())
             .await
             .unwrap();
         indexer
