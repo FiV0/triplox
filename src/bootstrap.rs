@@ -22,7 +22,7 @@ pub(crate) fn version_key() -> Vec<u8> {
 }
 
 pub(crate) fn write_version_marker(batch: &mut WriteBatch) {
-    batch.put(&version_key(), env!("CARGO_PKG_VERSION").as_bytes());
+    batch.put(version_key(), env!("CARGO_PKG_VERSION").as_bytes());
 }
 
 pub(crate) async fn is_initialized(slate: &SlateComponents) -> Result<bool> {

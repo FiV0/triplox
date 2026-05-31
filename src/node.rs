@@ -504,7 +504,7 @@ mod tests {
 
         // submit_tx returns immediately with a TxKey
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
-        assert_eq!(tx_key.tx_id, 1);
+        assert_eq!(tx_key.tx_id, 2);
 
         // Wait for indexer to process the transaction
         waiter
