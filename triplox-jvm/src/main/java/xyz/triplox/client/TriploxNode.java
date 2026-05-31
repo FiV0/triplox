@@ -98,17 +98,53 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Stub — subscription not yet supported.
+     * Register an incremental query and stream its result deltas.
+     *
+     * <p>Subscribes at the latest indexed basis. The returned {@link Subscription}
+     * is an {@link AutoCloseable}; closing it cancels the stream and unsubscribes.</p>
      */
-    public void subscribe(Db db, String edn) {
-        throw new UnsupportedOperationException("subscribe is not yet supported");
+    public Subscription subscribe(String edn) throws IOException {
+        return subscribe(edn, List.of());
     }
 
     /**
-     * Stub — subscription not yet supported.
+     * Register an incremental query with {@code :in} bindings.
      */
-    public void unsubscribe() {
-        throw new UnsupportedOperationException("unsubscribe is not yet supported");
+    public Subscription subscribe(String edn, List<QueryArg> args) throws IOException {
+        byte[] body = WireCodec.encodeSubscribeBody(null, edn, args);
+        var request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/db/subscribe"))
+                .header("Content-Type", CONTENT_TYPE)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .build();
+
+        HttpResponse<InputStream> response;
+        try {
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("subscribe request interrupted", e);
+        }
+
+        int status = response.statusCode();
+        if (status < 200 || status >= 300) {
+            // Pre-stream error: decode the unary ErrorResponse body.
+            byte[] errorBody = response.body().readAllBytes();
+            if (errorBody.length > 0) {
+                try {
+                    var err = WireCodec.decodeErrorResponse(errorBody);
+                    throw new TriploxException(err.severity(), err.code(),
+                            err.message(), err.detail(), err.hint());
+                } catch (TriploxException e) {
+                    throw e;
+                } catch (Exception ignored) {
+                    // Fall through to a generic error.
+                }
+            }
+            throw new IOException("HTTP error " + status);
+        }
+
+        return Subscription.open(response.body());
     }
 
     /**
