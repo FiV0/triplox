@@ -47,7 +47,7 @@ pub(crate) struct JoinPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    reject_incremental_query_parity_gaps(query)?;
+    reject_unsupported_query_shape(query)?;
     validate_query(query, &[])?;
 
     let find_vars = find_vars(&query.find_spec);
@@ -85,7 +85,7 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 }
 
 // TODO: Delete this when incremental queries reach one-shot query parity.
-fn reject_incremental_query_parity_gaps(query: &ParsedQuery) -> Result<()> {
+pub(crate) fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if !query.with.is_empty() {
         bail!("Incremental queries do not support :with");
     }

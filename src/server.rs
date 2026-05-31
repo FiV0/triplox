@@ -8,19 +8,21 @@
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Error, Result};
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -30,13 +32,15 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
+use crate::inc_query::reject_unsupported_query_shape;
+use crate::incremental::IncrementalQueryDelta;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
-    decode_execute_request, decode_open_db_request, decode_query_request,
-    encode_db_opened_response, encode_error_body, encode_query_response, encode_tx_key_response,
-    encode_tx_result_response, DbOpenedResponse, ErrorResponseBody, QueryResponse, TxKeyResponse,
-    TxResultResponse,
+    decode_execute_request, decode_open_db_request, decode_query_request, decode_subscribe_request,
+    encode_db_opened_response, encode_error_body, encode_query_response, encode_subscription_frame,
+    encode_tx_key_response, encode_tx_result_response, DbOpenedResponse, ErrorResponseBody,
+    QueryResponse, SubscriptionFrame, TxKeyResponse, TxResultResponse,
 };
 use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
@@ -60,6 +64,7 @@ fn ok_response(body: Vec<u8>) -> Response {
         .into_response()
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     code: ErrorCode,
@@ -285,6 +290,130 @@ async fn execute_tx<L: TxLog + 'static>(
     Ok(ok_response(body))
 }
 
+async fn subscribe<L: TxLog + 'static>(
+    State(state): State<Arc<Server<L>>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request = decode_subscribe_request(&body).map_err(|e| {
+        ApiError::bad_request(
+            ErrorCode::ParseError,
+            format!("Invalid subscribe request: {}", e),
+        )
+    })?;
+
+    // v0.2 subscriptions start at the latest indexed basis only.
+    if request.db.is_some() {
+        return Err(ApiError::bad_request(
+            ErrorCode::InvalidQuery,
+            "Subscriptions must start at the latest indexed basis; `db` must be nil",
+        ));
+    }
+
+    let parsed = request
+        .query
+        .into_query()
+        .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, e.to_string()))?;
+
+    reject_unsupported_query_shape(&parsed)
+        .map_err(|e| ApiError::bad_request(ErrorCode::IncrementalUnsupported, e.to_string()))?;
+
+    let columns: Vec<ColumnDescription> = match &parsed.find_spec {
+        edn::query::FindSpec::FindRel(elements) => elements
+            .iter()
+            .map(|e| ColumnDescription {
+                name: e.to_string(),
+                data_type: TAG_UNKNOWN,
+                members: None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+
+    let subscription = state
+        .node
+        .register_incremental_query(parsed)
+        .await
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+
+    let open_frame = encode_subscription_frame(&SubscriptionFrame::Open {
+        basis: subscription.basis,
+        columns,
+    })
+    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+        subscription_body(open_frame, subscription.deltas),
+    )
+        .into_response())
+}
+
+/// Stream state for a subscription response body.
+enum SubscribeBody {
+    Open {
+        open_frame: Vec<u8>,
+        deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    },
+    Streaming(mpsc::Receiver<IncrementalQueryDelta>),
+    Closed,
+}
+
+/// Build the subscription response body: the `open` frame, then one `delta` frame
+/// per received delta (write-one/recv-one, so HTTP/2 flow control backpressures the
+/// engine instead of buffering unboundedly). The receiver lives in the stream, so a
+/// dropped response drops it and the engine tears the query down.
+fn subscription_body(open_frame: Vec<u8>, deltas: mpsc::Receiver<IncrementalQueryDelta>) -> Body {
+    let stream = futures::stream::unfold(
+        SubscribeBody::Open { open_frame, deltas },
+        |state| async move {
+            match state {
+                SubscribeBody::Open { open_frame, deltas } => Some((
+                    Ok::<Bytes, Infallible>(Bytes::from(open_frame)),
+                    SubscribeBody::Streaming(deltas),
+                )),
+                SubscribeBody::Streaming(mut deltas) => match deltas.recv().await {
+                    Some(delta) => {
+                        let frame = SubscriptionFrame::Delta {
+                            basis: delta.basis,
+                            wal_seq: delta.wal_seq,
+                            rows: delta
+                                .rows
+                                .into_iter()
+                                .map(|(values, weight)| (values, weight as i64))
+                                .collect(),
+                        };
+                        match encode_subscription_frame(&frame) {
+                            Ok(bytes) => {
+                                Some((Ok(Bytes::from(bytes)), SubscribeBody::Streaming(deltas)))
+                            }
+                            Err(err) => Some((
+                                Ok(Bytes::from(internal_error_frame(&err))),
+                                SubscribeBody::Closed,
+                            )),
+                        }
+                    }
+                    None => None,
+                },
+                SubscribeBody::Closed => None,
+            }
+        },
+    );
+    Body::from_stream(stream)
+}
+
+/// Encode a terminal `error` frame for a failure that occurs mid-stream.
+fn internal_error_frame(err: &Error) -> Vec<u8> {
+    let frame = SubscriptionFrame::Error(ErrorResponseBody {
+        severity: SEVERITY_ERROR,
+        code: ErrorCode::InternalError.as_u16(),
+        message: err.to_string(),
+        detail: None,
+        hint: None,
+    });
+    encode_subscription_frame(&frame).unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
@@ -293,6 +422,7 @@ fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
     Router::new()
         .route("/db/open", post(open_db::<L>))
         .route("/db/query", post(query::<L>))
+        .route("/db/subscribe", post(subscribe::<L>))
         .route("/tx/submit", post(submit_tx::<L>))
         .route("/tx/execute", post(execute_tx::<L>))
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_MESSAGE_SIZE as usize))
@@ -473,6 +603,109 @@ async fn serve_connection(
             info!("Shutdown: closing {} connection {}", name, conn_id);
             conn.as_mut().graceful_shutdown();
             let _ = conn.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use triplox_client::msgpack_codec::{
+        decode_subscription_frame, encode_subscribe_request, SubscribeRequest,
+    };
+
+    fn subscribe_body(query: &str, db: Option<TxBasis>) -> Bytes {
+        Bytes::from(
+            encode_subscribe_request(&SubscribeRequest {
+                db,
+                query: query.to_string(),
+                args: vec![],
+            })
+            .expect("encode subscribe request"),
+        )
+    }
+
+    #[tokio::test]
+    async fn subscribe_rejects_non_nil_db() {
+        let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
+        let basis = TxBasis {
+            tx_key: TxKey {
+                tx_id: 0,
+                system_time: chrono::Utc::now(),
+            },
+            tx_eid: 0,
+        };
+        let err = subscribe(
+            State(server),
+            subscribe_body("[:find ?n :where [?e :name ?n]]", Some(basis)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, ErrorCode::InvalidQuery);
+    }
+
+    #[tokio::test]
+    async fn subscribe_rejects_parse_error() {
+        let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
+        let err = subscribe(State(server), subscribe_body("not a query (", None))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, ErrorCode::ParseError);
+    }
+
+    #[tokio::test]
+    async fn subscribe_rejects_unsupported_query() {
+        let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
+        // `:in` parses as a one-shot query but is unsupported by the incremental engine.
+        let err = subscribe(
+            State(server),
+            subscribe_body("[:find ?n :in ?x :where [?e :name ?n]]", None),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, ErrorCode::IncrementalUnsupported);
+    }
+
+    #[tokio::test]
+    async fn subscribe_streams_open_frame_first() {
+        let node = Arc::new(Node::memory_node().await);
+        node.execute_tx(crate::schema::test_schema_tx())
+            .await
+            .expect("schema tx");
+        let expected_basis = *node.db().await.unwrap().tx_basis();
+        let server = Arc::new(Server::new(node));
+
+        let resp = subscribe(
+            State(server),
+            subscribe_body("[:find ?name :where [?e :name ?name]]", None),
+        )
+        .await
+        .expect("subscribe should return a stream");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            CONTENT_TYPE
+        );
+
+        let mut stream = resp.into_body().into_data_stream();
+        let chunk = stream
+            .next()
+            .await
+            .expect("open frame chunk")
+            .expect("chunk should be ok");
+        match decode_subscription_frame(&chunk).expect("decode open frame") {
+            SubscriptionFrame::Open { basis, columns } => {
+                assert_eq!(basis, expected_basis);
+                assert_eq!(columns.len(), 1);
+            }
+            other => panic!("expected open frame, got {other:?}"),
         }
     }
 }
