@@ -36,6 +36,29 @@ pub(crate) static BOOTSTRAP_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
     system_time: st_from_unix_epoch(0),
 });
 
+pub(crate) fn version_key() -> Vec<u8> {
+    concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION])
+}
+
+pub(crate) fn write_version_marker(batch: &mut WriteBatch) {
+    batch.put(&version_key(), env!("CARGO_PKG_VERSION").as_bytes());
+}
+
+pub(crate) async fn is_initialized(slate: &SlateComponents) -> Result<bool> {
+    Ok(slate
+        .db
+        .get(&version_key())
+        .await
+        .context("Failed to read version from META_INDEX")?
+        .is_some())
+}
+
+pub(crate) async fn load_existing_metadata(slate: &SlateComponents) -> Result<Metadata> {
+    let schema = load_schema_from_indices(slate).await;
+    let pm = scan_partition_counters(&slate.db).await?;
+    Ok(Metadata::new(schema, pm))
+}
+
 /// Scan each partition's EAV prefix and return per-partition counters (max counter + 1).
 /// With descending encoding, the first entity per partition has the highest counter.
 /// The DB_PARTITION counter is clamped to at least DB_PARTITION_COUNTER_FLOOR.
@@ -83,21 +106,9 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> Result<PartitionMap
 /// - **Existing DB**: loads the schema from indices via the Datalog query engine,
 ///   derives counters by scanning the EAV index.
 pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
-    let version_key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
-
-    match slate
-        .db
-        .get(&version_key)
-        .await
-        .context("Failed to read version from META_INDEX")?
-    {
-        Some(_bytes) => {
-            // Existing DB — load schema from indices, derive counters from EAV scan
-            let schema = load_schema_from_indices(slate).await;
-            let pm = scan_partition_counters(&slate.db).await?;
-            Ok(Metadata::new(schema, pm))
-        }
-        None => {
+    match is_initialized(slate).await? {
+        true => load_existing_metadata(slate).await,
+        false => {
             // Fresh DB — build schema from constants, then bootstrap
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
@@ -135,9 +146,7 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
 
             let mut batch = WriteBatch::new();
             write_index_entries(&mut batch, &datoms, &bootstrap_schema, tx_eid).unwrap();
-            // Write version
-            let version = env!("CARGO_PKG_VERSION");
-            batch.put(&version_key, version.as_bytes());
+            write_version_marker(&mut batch);
             slate
                 .db
                 .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
@@ -157,6 +166,26 @@ mod tests {
     use crate::partition::{DB_PARTITION, TX_PARTITION, USER_PARTITION};
     use crate::slate::in_memory_slate;
     use edn::kw;
+
+    #[tokio::test]
+    async fn test_is_initialized_tracks_version_marker() {
+        let slate = in_memory_slate().await;
+        assert!(!is_initialized(&slate).await.unwrap());
+
+        init_db(&slate).await.unwrap();
+
+        assert!(is_initialized(&slate).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_load_existing_metadata_reads_indices() {
+        let slate = in_memory_slate().await;
+        let initialized = init_db(&slate).await.unwrap();
+        let loaded = load_existing_metadata(&slate).await.unwrap();
+
+        assert_eq!(initialized.schema.len(), loaded.schema.len());
+        assert_eq!(initialized.partition_map, loaded.partition_map);
+    }
 
     #[tokio::test]
     async fn test_init_db_fresh() {
@@ -216,7 +245,7 @@ mod tests {
         let slate = in_memory_slate().await;
 
         // Write an older version directly (simulates existing DB without bootstrap indices)
-        let key = concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION]);
+        let key = version_key();
         slate.db.put(&key, b"0.0.1").await.unwrap();
 
         // init_db takes the existing-DB path — loads from indices (empty, since no bootstrap ran)
