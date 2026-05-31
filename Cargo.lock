@@ -5516,11 +5516,13 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "futures",
  "reqwest",
  "rmp",
  "rmpv",
  "serde",
  "thiserror 2.0.12",
+ "tokio-util",
  "triplox-edn",
  "uuid",
 ]

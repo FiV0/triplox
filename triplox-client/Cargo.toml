@@ -15,11 +15,13 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 edn = { workspace = true }
-reqwest = { workspace = true }
+futures = "0.3"
+reqwest = { workspace = true, features = ["stream"] }
 rmp = { workspace = true }
 rmpv = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+tokio-util = { version = "0.7", features = ["io", "codec"] }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
