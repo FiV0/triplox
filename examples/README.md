@@ -35,21 +35,27 @@ From the `examples/rust/` directory:
 
 ```bash
 cargo run --bin simple-example
+cargo run --bin streaming-example
 ```
 
 ### Clojure
 
-See `examples/clojure/src/simple_example.clj` for a simple REPL session of how to interact
-with the server.
+See `examples/clojure/src/simple_example.clj` and `streaming_example.clj` for REPL sessions
+showing how to interact with the server.
 
 ### Java
 
 From the `examples/java/` directory:
 
 ```bash
-../../triplox-jvm/gradlew run
+../../triplox-jvm/gradlew run                              # SimpleExample
+../../triplox-jvm/gradlew run -PmainClass=StreamingExample # StreamingExample
 ```
 
 ### simple-example
 
 Connects to the running server, defines `:name` and `:age` schema attributes, inserts two documents (alice and bob), queries them back, and prints the results.
+
+### streaming-example
+
+Defines a `:name` attribute, subscribes to `[:find ?name :where [?e :name ?name]]`, transacts a few names, and prints the result delta (`[values weight]`) the subscription emits for each transaction. Run against the default in-memory server (one shared node), so the subscription and the transactions share state.

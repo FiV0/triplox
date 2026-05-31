@@ -11,5 +11,6 @@ dependencies {
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
 
 application {
-    mainClass.set("SimpleExample")
+    // Override with -PmainClass=StreamingExample to run the streaming example.
+    mainClass.set(providers.gradleProperty("mainClass").orElse("SimpleExample"))
 }

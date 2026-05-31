@@ -19,8 +19,14 @@ use triplox::ops::{DataType, TxOp};
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
     TxOp::put(vec![
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
-        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
-        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
+        (
+            kw!(:db/valueType),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        ),
+        (
+            kw!(:db/cardinality),
+            DataType::Keyword(kw!(:db.cardinality/one)),
+        ),
     ])
 }
 
@@ -38,8 +44,8 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
-            println!("Schema defined (tx_id={}).", tx_key.tx_id);
+        TransactionResult::TxCommited(basis) => {
+            println!("Schema defined (tx_id={}).", basis.tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
             anyhow::bail!("Schema transaction aborted: {err}");
@@ -52,15 +58,12 @@ async fn main() -> Result<()> {
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ]),
-        TxOp::put(vec![
-            (kw!(:name), "bob".into()),
-            (kw!(:age), 25_i64.into()),
-        ]),
+        TxOp::put(vec![(kw!(:name), "bob".into()), (kw!(:age), 25_i64.into())]),
     ];
     let result = node.execute_tx(data_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
-            println!("Data inserted (tx_id={}).", tx_key.tx_id);
+        TransactionResult::TxCommited(basis) => {
+            println!("Data inserted (tx_id={}).", basis.tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
             anyhow::bail!("Data transaction aborted: {err}");
