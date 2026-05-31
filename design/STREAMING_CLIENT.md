@@ -72,7 +72,8 @@ These were settled with the maintainer before writing the spec.
    INCREMENTAL_QUERIES.md "Registration Basis").
 2. **One delta per transaction.** `take` yields exactly one transaction's worth
    of changes.
-3. The **column schema** is sent once, in the `open` frame, then deltas carry
+3. The **column schema** is sent once, in the `open` frame, as **internal
+   protocol state** (clients consume it but do not expose it); deltas carry
    positional rows. As today, `ColumnDescription.type` is `255` (Unknown) until
    the engine does type analysis.
 4. Delta rows are **z-set pairs** `(values, weight)`: `weight > 0` added,
@@ -91,10 +92,14 @@ spec is implemented (see Tasks, Phase 3).
 
 | Endpoint        | Method | Request Body | Success Body                                  |
 |-----------------|--------|--------------|-----------------------------------------------|
-| `/db/subscribe` | `POST` | Subscribe    | **Frame stream** (`Content-Type: application/vnd.triplox+msgpack-stream`) |
+| `/db/subscribe` | `POST` | Subscribe    | **Frame stream** (`Content-Type: application/vnd.triplox+msgpack`) |
 
-Request `Content-Type` stays `application/vnd.triplox+msgpack`. Only the
-**response** is a frame stream.
+Request and response both use `application/vnd.triplox+msgpack` — the same type
+as the unary endpoints. MessagePack self-delimits, so the response body is just
+a sequence of msgpack values where the unary endpoints return one (the same
+relationship CBOR Sequences, `application/cbor-seq`, have to a single CBOR
+value). The `/db/subscribe` endpoint disambiguates the streaming intent; no
+distinct content type is introduced.
 
 ### 3.2 Subscribe Request
 
@@ -109,17 +114,38 @@ Request `Content-Type` stays `application/vnd.triplox+msgpack`. Only the
 
 ### 3.3 Frame Stream Format
 
-The response body is a sequence of **length-delimited frames**:
+The response body is a sequence of **bare, self-delimiting msgpack frames** —
+concatenated msgpack maps with no length prefix:
 
 ```
-frame := <u32 length, big-endian> <msgpack map of exactly `length` bytes>
+frames := <msgpack map> <msgpack map> ...
 ```
 
-The length prefix gives every client an unambiguous frame boundary without a
-streaming msgpack parser, and bounds each frame against the existing 64 MB
-`DEFAULT_MAX_MESSAGE_SIZE` guard (a prefix exceeding it → client aborts with
-`MessageTooLarge`). Each frame map carries a `kind` discriminator, consistent
-with the existing tagged-union convention (§2.3 of PROTOCOL.md).
+MessagePack is self-describing, so each value carries its own length and a
+decoder knows exactly where one frame ends and the next begins. Every frame is,
+on the wire, the same kind of bare msgpack map as a one-shot `/db/query` body —
+there is just a sequence of them rather than one.
+
+HTTP/2 DATA chunks do not align to frame boundaries (a chunk may hold a partial
+map or several maps), so a client **accumulates bytes across chunks and decodes
+one value at a time**:
+
+- The transport delivers bytes in order with no gaps and blocks until more
+  arrive, so a client only ever sees a *prefix* of the remaining stream — never
+  out-of-order or missing-middle bytes.
+- Detecting "complete vs. needs-more" is a trial decode: an unexpected-EOF means
+  "wait for more bytes"; any other decode failure is a protocol error. A
+  blocking `InputStream` + msgpack unpacker handles this implicitly; an async
+  `FramedRead` + custom `Decoder` handles it explicitly.
+- **Truncation:** leftover undecoded bytes at end-of-stream are an incomplete
+  final frame and a client-side error, not silently ignored.
+- **Oversize:** a long-lived stream has no HTTP body limit, so a client bounds an
+  individual frame via its msgpack decoder's max-value-size limit (defaulting to
+  `DEFAULT_MAX_MESSAGE_SIZE`, 64 MB) and aborts with `MessageTooLarge` if
+  exceeded.
+
+Each frame map carries a `kind` discriminator, consistent with the existing
+tagged-union convention (§2.3 of PROTOCOL.md).
 
 #### `open` frame — always first, exactly once
 
@@ -130,7 +156,10 @@ with the existing tagged-union convention (§2.3 of PROTOCOL.md).
 ```
 
 `basis` is the registration basis; deltas describe transactions **strictly
-after** it. `columns` mirrors `QueryResponse.columns`.
+after** it. `columns` mirrors `QueryResponse.columns` and is **internal protocol
+state**: a client consumes the `open` frame for `basis` but does not surface
+columns in its public API (delta rows are positional and `DataType` values are
+self-describing).
 
 #### `delta` frame — zero or more, one per affecting transaction
 
@@ -142,10 +171,15 @@ after** it. `columns` mirrors `QueryResponse.columns`.
 ```
 
 Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
-`DataType` per column (positional, per the `open` frame), `weight` is a signed
-int. This is the wire form of the server's
+`DataType` per column (positional, per the `open` frame), `weight` is a **raw
+signed** int — clients expose it as-is and must not assume `±1` (projection can
+yield `|weight| > 1`). This is the wire form of the server's
 `IncrementalQueryDelta { basis, wal_seq, rows: Vec<(Vec<DataType>, isize)> }`.
 `basis` is `nil` when the engine could not derive a `TxBasis` for that WAL entry.
+
+A `delta` frame is emitted **only** for a transaction that produces a non-empty
+change; `rows` is never empty. The server sends no empty-delta or keep-alive
+frames (a future heartbeat frame, if added, would be a distinct `kind`).
 
 #### `error` frame — terminal, optional
 
@@ -190,12 +224,20 @@ one-shot path and applies an extra restriction check).
    dropped → the `IncrementalQuerySubscription` (and its `mpsc::Receiver`) is
    dropped → the existing teardown runs (unregister, delete per-query DBSP
    storage), exactly as the engine already handles a dropped receiver.
-3. **Backpressure:** if the client stops reading, HTTP/2 flow control stalls the
-   server's body writes, which stops draining the bounded receiver
-   (`SUBSCRIPTION_CAPACITY`), applying backpressure into the circuit — the
-   server-side behavior INCREMENTAL_QUERIES.md already describes.
+3. **Backpressure (slow but *connected* client):** if the client reads slowly,
+   HTTP/2 per-stream flow control stalls the server's frame writes, so the handler
+   stops calling `recv()` and the bounded channel (`SUBSCRIPTION_CAPACITY`) fills;
+   the engine then blocks on bounded sends rather than dropping deltas — the
+   server-side behavior INCREMENTAL_QUERIES.md already describes. This requires the
+   handler to write one frame per `recv()` (not eagerly drain into an unbounded
+   buffer). Distinct from a *disconnected* client (item 2), which tears the
+   subscription down.
 4. **Server shutdown:** emit an `error` frame (`ServerShuttingDown`, 4004) then
    close, or close the stream directly.
+5. **Concurrency:** each subscription is its own HTTP/2 stream; many multiplex
+   over a single connection. v0.2 imposes **no server-side cap** on concurrent
+   subscriptions — it relies on HTTP/2 multiplexing. A per-connection/server cap
+   and liveness reaping are deferred to the future heartbeat work.
 
 ---
 
@@ -220,11 +262,10 @@ impl ClientNode {
 }
 
 /// Live result stream. Dropping it unsubscribes (cancels the HTTP/2 stream).
-pub struct Subscription { /* basis, columns, framed byte stream */ }
+pub struct Subscription { /* basis + framed byte stream; columns kept internal */ }
 
 impl Subscription {
     pub fn basis(&self) -> TxBasis;
-    pub fn columns(&self) -> &[ColumnDescription];
 }
 
 /// `futures::Stream<Item = Result<Delta>>` — use `.next().await` + combinators.
@@ -239,8 +280,10 @@ pub struct Delta {
 
 Implementation notes:
 - `reqwest::Response::bytes_stream()` → `tokio_util::io::StreamReader` (AsyncRead)
-  → `FramedRead<_, LengthDelimitedCodec>` yields one frame's bytes per poll;
-  decode each with the shared msgpack frame decoder.
+  → `FramedRead<_, MsgpackFrameDecoder>`, a small custom `tokio_util` `Decoder`
+  that attempts a msgpack decode and returns `Ok(None)` on unexpected-EOF (need
+  more bytes), `Ok(Some(frame))` on a complete value, `Err` on corruption.
+  `FramedRead` owns buffering across DATA chunks; no wire length prefix.
 - An `error` frame maps to `Some(Err(..))` then stream end; a clean server close
   maps to `None`.
 - Keep `Delta` minimal — no `added()/retracted()` convenience wrappers (those
@@ -257,7 +300,6 @@ public Subscription subscribe(String edn, List<QueryArg> args) throws IOExceptio
 
 public final class Subscription implements AutoCloseable {
     public TxBasis basis();
-    public List<ColumnDesc> columns();
     public Delta take() throws InterruptedException;                 // blocks; null at end
     public Delta poll(long timeout, TimeUnit unit) throws InterruptedException; // null on timeout
     @Override public void close();                                   // unsubscribe
@@ -268,8 +310,10 @@ public record Row(List<Object> values, long weight) {}
 ```
 
 Implementation notes:
-- `HttpClient.send(req, BodyHandlers.ofInputStream())` → read the 4-byte length +
-  frame bytes, decode with `org.msgpack:msgpack-core`'s `MessageUnpacker`.
+- `HttpClient.send(req, BodyHandlers.ofInputStream())`, wrap the blocking
+  `InputStream` in `org.msgpack:msgpack-core`'s `MessageUnpacker`, and loop
+  `unpackValue()` — it blocks until each self-delimiting frame is complete, so
+  no length prefix or manual accumulation is needed.
 - `subscribe(...)` reads the `open` frame synchronously, so `basis()`/`columns()`
   are populated on return; a daemon reader thread then pushes decoded `delta`
   frames into a bounded `BlockingQueue<Delta>` that backs `take()`/`poll()`.
@@ -386,7 +430,7 @@ One-line comments where possible (AGENTS.md). No trivial field-wrapper methods.
 
 | Level | Where | Covers |
 |-------|-------|--------|
-| Wire codec | `triplox-client` unit tests | Frame round-trips (open/delta/error), length framing, unknown-`kind` skip, oversize-frame rejection. |
+| Wire codec | `triplox-client` unit tests | Frame round-trips (open/delta/error); decoding successive self-delimiting frames split arbitrarily across read boundaries; truncation-at-EOF rejection; unknown-`kind` skip; oversize-frame rejection. |
 | Server handler | `src/server.rs` / `tests/` | 200 stream happy path; pre-stream 400 (bad query, non-nil `db`, `IncrementalUnsupported`); mid-stream `error` frame; client-disconnect → engine teardown (assert per-query storage removed). |
 | Rust client e2e | `triplox-client` integration | `subscribe` → transact → `take`/`Stream::next` yields expected `(rows, weight)`; `drop` unsubscribes; backpressure (slow consumer) loses no deltas. |
 | JVM client e2e | `triplox-jvm` (gradle) | `take()`/`poll(timeout)` semantics, `close()` teardown, terminal `error` → `TriploxException`. |
@@ -405,9 +449,8 @@ clean; `cargo fmt --check` clean (AGENTS.md).
   change in the same PR; preserve decoder tolerance to key order and unknown
   `kind` frames.
 - **Ask first:** adding the `reqwest` `stream` feature and `tokio-util`/`futures`
-  deps to `triplox-client`; the new `2004 IncrementalUnsupported` error code and
-  the `application/vnd.triplox+msgpack-stream` content type; any change to the
-  frame format or `delta` row shape; touching `src/incremental.rs`.
+  deps to `triplox-client`; the new `2004 IncrementalUnsupported` error code; any
+  change to the frame format or `delta` row shape; touching `src/incremental.rs`.
 - **Never:** expose historical-replay/basis-pinned subscriptions in v0.2 (engine
   can't honor them); silently drop deltas to keep up (backpressure, don't lose);
   leak a registered query when a client disconnects; commit secrets or edit
@@ -435,19 +478,16 @@ clean; `cargo fmt --check` clean (AGENTS.md).
 
 ## 12. Open Questions
 
-1. **Content type for the stream** — `application/vnd.triplox+msgpack-stream`, or
-   reuse `application/vnd.triplox+msgpack` and let framing be implicit? (Spec
-   assumes a distinct type.)
-2. **`take!` timeout sentinel in Clojure** — `::timeout` keyword vs `nil`. Using
-   `nil` collides with "stream closed". Spec assumes a distinct `::timeout`.
-3. **Empty-delta frames** — the engine sends only non-empty deltas today. Do we
-   ever want explicit "still alive, no change" frames, or is that the future
-   heartbeat? (Spec defers to heartbeat.)
-4. **Multiple subscriptions per connection** — fine over HTTP/2 multiplexing, but
-   do we cap concurrent subscriptions per connection/server? (Out of scope;
-   relates to the future liveness/heartbeat work.)
-5. **Weight semantics surfaced to users** — expose raw signed weight (current
-   plan) vs pre-split added/retracted collections? (Spec keeps raw weight.)
+None outstanding for v0.2.
+
+Resolved: `delta.basis` stays **optional/nullable** in this plan, faithful to the
+engine, which emits `basis: None` for CDC batches lacking tx-metadata datoms
+(`wal_seq` is the always-present fallback ordering key; `src/incremental.rs:413`);
+guaranteeing a derivable basis server-side is tracked separately, outside this
+spec. Stream content type reuses `application/vnd.triplox+msgpack` (§3.1); `take!`
+returns `::timeout` on timeout (§4.3); the server emits no empty-delta frames
+(§3.3); raw signed weights are exposed to users (§3.3, assumption 4); multiple
+subscriptions multiplex over one HTTP/2 connection, no v0.2 cap (§3.5).
 
 ---
 
