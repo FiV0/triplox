@@ -359,6 +359,11 @@ fn rejects_literal_top_level_where_fn() {
 }
 
 #[test]
+fn rejects_vector_fn_arg() {
+    assert!(parse_query(r#"[:find ?x :where [?x _ ?y] [(contains? [?y] ?y)]]"#).is_err());
+}
+
+#[test]
 fn round_trip_nested_expr_in_where_fn() {
     assert_round_trip("[:find ?x ?result :where [?x _ ?y] [(+ (* ?y 2) 1) ?result]]");
 }

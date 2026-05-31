@@ -218,9 +218,6 @@ pub enum FnArg {
     EntidOrInteger(i64),
     IdentOrKeyword(Keyword),
     Constant(NonIntegerConstant),
-    // The collection values representable in EDN.  There's no advantage to destructuring up front,
-    // since consumers will need to handle arbitrarily nested EDN themselves anyway.
-    Vector(Vec<FnArg>),
     /// A nested s-expression function call, e.g. `(= ?x 10)` or `(+ (* ?x 2) 1)`.
     SExpr(PlainSymbol, Vec<FnArg>),
 }
@@ -273,16 +270,6 @@ impl std::fmt::Display for FnArg {
             &FnArg::EntidOrInteger(entid) => write!(f, "{}", entid),
             FnArg::IdentOrKeyword(kw) => write!(f, "{}", kw),
             FnArg::Constant(constant) => write!(f, "{}", constant),
-            FnArg::Vector(args) => {
-                write!(f, "[")?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, "]")
-            }
             FnArg::SExpr(ref func, ref args) => {
                 write!(f, "({}", func)?;
                 for arg in args {
@@ -1205,7 +1192,7 @@ impl ContainsVariables for NotJoin {
 fn accumulate_fn_arg_variables(arg: &FnArg, acc: &mut BTreeSet<Variable>) {
     match arg {
         FnArg::Variable(v) => acc_ref(acc, v),
-        FnArg::SExpr(_, args) | FnArg::Vector(args) => {
+        FnArg::SExpr(_, args) => {
             for a in args {
                 accumulate_fn_arg_variables(a, acc);
             }

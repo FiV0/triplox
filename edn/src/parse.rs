@@ -299,7 +299,6 @@ peg::parser! {
         rule fn_arg() -> query::FnArg
             = sexpr()
             / v:value() {? query::FnArg::from_value(&v).ok_or("expected query function argument") }
-            / __() "[" args:fn_arg()+ "]" __() { query::FnArg::Vector(args) }
 
         rule find_elem() -> query::Element
             = __() v:variable() __() { query::Element::Variable(v) }
