@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Error;
+use anyhow::{bail, Error};
 use tokio::runtime::Handle;
 
 use crate::clock;
@@ -18,7 +18,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
-use crate::schema::{IdentMap, Schema};
+use crate::schema::{bootstrap_schema_tx, IdentMap, Schema};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -150,15 +150,15 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
-        let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new_bootstrapping(
             slate.db.clone(),
-            metadata,
-            None,
         )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
 
-        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let subscription = bootstrap_from_log_start(log.clone(), indexer.clone())
+            .await
+            .unwrap();
+
         let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
@@ -188,63 +188,71 @@ impl Node<FileLog> {
         log_file: &Path,
         incremental_storage_path: PathBuf,
     ) -> Result<Self, Error> {
-        let metadata = crate::bootstrap::init_db(&slate).await?;
-
-        // Determine the latest already-indexed tx_id so we skip replaying it
-        // and restore the indexer's in-memory state for TxWaiter fast-path.
-        let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
-        // Bootstrap and the first FileLog transaction both currently use tx_id=0,
-        // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
-        // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
-        // has been indexed; otherwise replay the log from the start so the first
-        // user tx isn't skipped.
-        let latest_indexed_tx = if latest_indexed.tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
-            Some(latest_indexed)
-        } else {
-            None
-        };
-
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slate.db.clone(),
-            metadata,
-            latest_indexed_tx,
-        )));
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
 
-        let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
+        if crate::bootstrap::is_initialized(&slate).await? {
+            let metadata = crate::bootstrap::load_existing_metadata(&slate).await?;
+            let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
+            let after_tx_id = Some(latest_indexed.tx_key.tx_id);
+            let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+                slate.db.clone(),
+                metadata,
+                Some(latest_indexed),
+            )));
 
-        // Read the last tx_key from the log before subscribing (for catch-up awaiting)
-        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
-        let last_tx_key = records.last().map(|r| r.tx_key);
+            // Read the last tx_key from the log before subscribing (for catch-up awaiting)
+            let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
+            let last_tx_key = records.last().map(|r| r.tx_key);
 
-        // Create a waiter for catch-up completion
-        let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
-            None => None,
-        };
+            // Create a waiter for catch-up completion
+            let waiter = match last_tx_key {
+                Some(_) => Some(indexer.read().await.tx_waiter()),
+                None => None,
+            };
 
-        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(
-            incremental_storage_path,
-            Handle::current(),
-            subscription.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
-        );
+            let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+            let incremental = IncrementalQueryService::new(
+                incremental_storage_path,
+                Handle::current(),
+                subscription.clone(),
+                slate.object_path.clone(),
+                slate.object_store.clone(),
+            );
 
-        // Wait for catch-up to complete if there are un-indexed transactions
-        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            let completion = waiter.await_tx(tx_key).await?;
-            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+            // Wait for catch-up to complete if there are un-indexed transactions
+            if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+                let completion = waiter.await_tx(tx_key).await?;
+                completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+            }
+
+            Ok(Node {
+                log,
+                indexer,
+                slate,
+                subscription,
+                incremental,
+            })
+        } else {
+            let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new_bootstrapping(
+                slate.db.clone(),
+            )));
+            let subscription = bootstrap_from_log_start(log.clone(), indexer.clone()).await?;
+            let incremental = IncrementalQueryService::new(
+                incremental_storage_path,
+                Handle::current(),
+                subscription.clone(),
+                slate.object_path.clone(),
+                slate.object_store.clone(),
+            );
+
+            Ok(Node {
+                log,
+                indexer,
+                slate,
+                subscription,
+                incremental,
+            })
         }
-
-        Ok(Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-            incremental,
-        })
     }
 
     pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
@@ -285,6 +293,48 @@ impl Node<FileLog> {
         )
         .await
     }
+}
+
+fn serialize_bootstrap_schema_tx() -> Result<Vec<u8>, Error> {
+    Ok(bincode::serialize(&bootstrap_schema_tx())?)
+}
+
+fn deserialize_tx_ops(record: &[u8]) -> Result<Vec<TxOp>, Error> {
+    Ok(bincode::deserialize(record)?)
+}
+
+async fn bootstrap_from_log_start<L>(
+    log: Arc<L>,
+    indexer: Arc<tokio::sync::RwLock<Indexer>>,
+) -> Result<CancellationToken, Error>
+where
+    L: TxLog,
+{
+    let records = log.read_txs_after(None, 1).await?;
+    let waiter = indexer.read().await.tx_waiter();
+
+    let (subscription, bootstrap_tx_key) = if let Some(first) = records.first() {
+        let first_tx_ops = deserialize_tx_ops(&first.record)?;
+        if first_tx_ops != bootstrap_schema_tx() {
+            bail!("Uninitialized store has a non-bootstrap first log record");
+        }
+        (
+            subscribe(log.clone(), None, indexer.clone()).await,
+            first.tx_key,
+        )
+    } else {
+        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let tx_key = log.append_tx(serialize_bootstrap_schema_tx()?).await;
+        (subscription, tx_key)
+    };
+
+    let completion = waiter.await_tx(bootstrap_tx_key).await?;
+    if let Err(e) = completion.result {
+        subscription.cancel();
+        return Err(anyhow::anyhow!("{:#}", e));
+    }
+
+    Ok(subscription)
 }
 
 impl<L: TxLog> Node<L> {
@@ -407,7 +457,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::clock::st_from_unix_epoch;
+    use crate::clock::{st_from_unix_epoch, MockClock};
     use crate::error::TriploxError;
     use crate::ops::{DataType, EntityRef, TxOp};
     use crate::partition::{extract_partition, TX_PARTITION};
@@ -1250,7 +1300,7 @@ mod tests {
         let node = Node::local_node(&root_path).await.unwrap();
         let db = node.db().await.unwrap();
         let txs = db
-            .query("[:find ?tx :where [?tx :db/txId 0]]")
+            .query("[:find ?tx_id :where [?tx :db/txId ?tx_id]]")
             .await
             .unwrap();
         assert_eq!(txs.len(), 2);
@@ -1443,14 +1493,14 @@ mod tests {
         };
         assert_eq!(extract_partition(tx_eid), TX_PARTITION);
         assert_eq!(result[0][1], DataType::Long(0));
-        assert_eq!(result[0][2], DataType::Instant(st_from_unix_epoch(0)));
+        assert!(matches!(result[0][2], DataType::Instant(_)));
         assert_eq!(result[0][3], DataType::Keyword(kw!(:db.tx/committed)));
 
         node.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_first_submitted_tx_temporarily_shares_bootstrap_tx_id() {
+    async fn test_first_submitted_tx_has_distinct_tx_id() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -1460,9 +1510,63 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 1);
 
         node.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_node_replays_bootstrap_when_version_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+        let log_path = root_path.join("log");
+        let log = FileLog::new(
+            &log_path,
+            Box::new(MockClock::new(vec![st_from_unix_epoch(10)])),
+        )
+        .unwrap();
+        log.append_tx(bincode::serialize(&crate::schema::bootstrap_schema_tx()).unwrap())
+            .await;
+        drop(log);
+
+        let node = Node::local_node(&root_path).await.unwrap();
+
+        assert!(crate::bootstrap::is_initialized(&node.slate).await.unwrap());
+        let db = node.db().await.unwrap();
+        let txs = db
+            .query("[:find ?tx :where [?tx :db/txId 0]]")
+            .await
+            .unwrap();
+        assert_eq!(txs.len(), 1);
+
+        node.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_node_rejects_uninitialized_non_bootstrap_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+        let log_path = root_path.join("log");
+        let log = FileLog::new(
+            &log_path,
+            Box::new(MockClock::new(vec![st_from_unix_epoch(10)])),
+        )
+        .unwrap();
+        log.append_tx(bincode::serialize(&test_schema_tx()).unwrap())
+            .await;
+        drop(log);
+
+        let err = match Node::local_node(&root_path).await {
+            Ok(node) => {
+                node.close().await.unwrap();
+                panic!("expected local node startup to fail")
+            }
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("non-bootstrap first log record"),
+            "unexpected error: {err:#}"
+        );
     }
 
     /// Insert 3 people: Ivan (age=30), Bob (age=40), Dominic (age=50) with auto-assigned IDs.

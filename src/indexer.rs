@@ -31,6 +31,7 @@ pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
     latest_indexed_tx: Option<TxBasis>,
+    bootstrap_pending: bool,
     tx_completion_sender: broadcast::Sender<TxCompletionMessage>,
 }
 
@@ -242,6 +243,18 @@ impl Indexer {
             slatedb,
             metadata,
             latest_indexed_tx,
+            bootstrap_pending: false,
+            tx_completion_sender,
+        }
+    }
+
+    pub(crate) fn new_bootstrapping(slatedb: Arc<Db>) -> Self {
+        let (tx_completion_sender, _) = broadcast::channel(1024);
+        Indexer {
+            slatedb,
+            metadata: Metadata::new(Schema::default(), PartitionMap::new()),
+            latest_indexed_tx: None,
+            bootstrap_pending: true,
             tx_completion_sender,
         }
     }
@@ -777,8 +790,16 @@ impl Subscriber for Indexer {
                 return;
             }
         };
+        let result = if self.bootstrap_pending {
+            self.transact_bootstrap_tx(record.tx_key, tx_ops).await
+        } else {
+            self.transact_tx(record.tx_key, tx_ops).await
+        };
+        if result.is_ok() {
+            self.bootstrap_pending = false;
+        }
         // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
-        if let Err(e) = self.transact_tx(record.tx_key, tx_ops).await {
+        if let Err(e) = result {
             error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
             // TODO: an error in tx_transact_inner is currently always being treated as an aborted transaction.
             // There should likely be some seperation via types of semantic vs non-recoverable errors to
