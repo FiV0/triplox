@@ -82,9 +82,9 @@ Afterwards you connect with your favorite client.
 
 ### Clients
 
-- Rust
-- Clojure
-- Java
+- [Rust](https://triplox.xyz/apis/rust/)
+- [Clojure](https://triplox.xyz/apis/clojure/)
+- [Java](https://triplox.xyz/apis/java/)
 - Go (TODO)
 - Python (TODO)
 - TS/Cljs (TODO)
