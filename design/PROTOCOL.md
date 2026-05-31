@@ -1,6 +1,6 @@
 # Triplox Protocol Specification
 
-Version 0.1
+Version 0.2
 
 ## Overview
 
@@ -16,8 +16,10 @@ The Content-Type for every request and response body is:
 application/vnd.triplox+msgpack
 ```
 
-Subscriptions (live query streaming) are **not yet implemented** in this version
-and are reserved for a future revision.
+Live query subscriptions stream result deltas over a single long-lived HTTP/2
+response (`POST /db/subscribe`); the response body is a frame stream rather than
+a single value. See [§4.11](#411-subscribe-request--post-dbsubscribe) and
+[§4.12](#412-subscription-frame-stream).
 
 ---
 
@@ -27,6 +29,7 @@ and are reserved for a future revision.
 |---------------------------|----------|---------------------------|-----------------------------|
 | `/db/open`                | `POST`   | OpenDb                    | DbOpened                    |
 | `/db/query`               | `POST`   | Query                     | QueryResponse               |
+| `/db/subscribe`           | `POST`   | Subscribe                 | Frame stream (§4.12)        |
 | `/tx/submit`              | `POST`   | Execute                   | TxKey                       |
 | `/tx/execute`             | `POST`   | Execute                   | TxResult                    |
 
@@ -280,6 +283,76 @@ the caller inspects `status`.
 `severity` is `"E"` for non-fatal errors and `"F"` for fatal ones. `code` is
 a numeric error code (see §5).
 
+### 4.11 Subscribe Request — `POST /db/subscribe`
+
+```
+{"db": <DbBasis>|nil, "query": <str>, "args": [<QueryArg>, ...]}
+```
+
+Registers an incremental query and streams its result deltas. `db` is reserved
+for future historical replay and **MUST be `nil`/omitted** in this version (a
+non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `query` and `args` are
+as in [§4.4](#44-query-request--post-dbquery); queries the incremental engine
+does not yet support are rejected with HTTP 400 / `IncrementalUnsupported`
+(code 2004).
+
+On success the response is **HTTP 200** with `Content-Type:
+application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
+not a single value. The subscription starts at the latest indexed basis; it does
+not replay existing rows, only deltas for transactions after the returned basis.
+Closing the HTTP/2 stream unsubscribes and releases server-side resources.
+
+### 4.12 Subscription Frame Stream
+
+The `/db/subscribe` response body is a sequence of **bare, self-delimiting
+msgpack frames** — concatenated msgpack maps with no length prefix. MessagePack
+is self-describing, so a decoder reads one frame at a time; each frame is the
+same kind of bare map as a unary body, just repeated. HTTP/2 DATA chunks do not
+align to frame boundaries, so a client accumulates bytes and decodes one value
+at a time; leftover undecoded bytes at end-of-stream are a protocol error.
+
+Each frame is a map with a `kind` discriminator. Decoders **MUST ignore unknown
+`kind` values** for forward compatibility.
+
+#### `open` frame — always first, exactly once
+
+```
+{"kind": "open",
+ "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "columns": [<ColumnDescription>, ...]}
+```
+
+`basis` is the registration basis; deltas describe transactions strictly after
+it. `columns` matches [QueryResponse](#46-queryresponse).
+
+#### `delta` frame — zero or more, one per affecting transaction
+
+```
+{"kind": "delta",
+ "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>}|nil,
+ "wal_seq": <int>,
+ "rows":    [[[<DataType>, ...], <int weight>], ...]}
+```
+
+Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
+`DataType` per column (positional, per the `open` frame), `weight` is a **raw
+signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
+`delta` frame is emitted only for a transaction that produces a non-empty change
+(`rows` is never empty). `basis` is `nil` when no `TxBasis` could be derived for
+the WAL entry; `wal_seq` is always present and is the fallback ordering key.
+
+#### `error` frame — terminal
+
+```
+{"kind": "error", "severity": "E"|"F", "code": <int>,
+ "message": <str>, "detail": <str>|nil, "hint": <str>|nil}
+```
+
+Errors that occur **after** the 200 response headers (engine failure, server
+shutdown) arrive as an `error` frame, after which the server closes the stream.
+Errors detected **before** streaming begins are ordinary non-200 responses with
+an [ErrorResponse](#410-errorresponse--non-200-body) body.
+
 ---
 
 ## 5. Error Codes
@@ -287,7 +360,7 @@ a numeric error code (see §5).
 | Range | Category              | Codes                                                              |
 |-------|-----------------------|--------------------------------------------------------------------|
 | 1xxx  | Connection errors     | 1000 ProtocolVersionMismatch, 1001 InvalidStartup                  |
-| 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery |
+| 2xxx  | Query errors          | 2000 ParseError, 2001 QueryError, 2002 InvalidQuery, 2003 EmptyQuery, 2004 IncrementalUnsupported |
 | 3xxx  | Transaction errors    | 3000 TxError, 3001 TxAborted, 3002 TxNotIndexed                    |
 | 4xxx  | Internal/protocol     | 4000 InternalError, 4001 MessageTooLarge, 4002 InvalidMessageType, 4003 QueryCancelled, 4004 ServerShuttingDown |
 
@@ -297,8 +370,6 @@ a numeric error code (see §5).
 
 The following features are deliberately deferred to a later protocol version:
 
-- **Live subscriptions**: Streaming query result deltas via HTTP/2 server-push
-  or SSE-over-HTTP/2.
 - **TLS**: Currently HTTP/2 cleartext. TLS termination will be handled at the
   HTTP/2 layer.
 - **Authentication**: Currently no authentication. To be layered onto HTTP
