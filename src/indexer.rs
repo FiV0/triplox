@@ -14,7 +14,7 @@ use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
 use crate::log::{Record, Subscriber};
-use crate::metadata::Metadata;
+use crate::metadata::{Metadata, PartitionMap};
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
 use crate::partition::{partition_entity_prefix, TX_PARTITION};
@@ -294,6 +294,92 @@ impl Indexer {
         }
     }
 
+    pub(crate) async fn transact_bootstrap_tx(
+        &mut self,
+        tx_key: TxKey,
+        tx_ops: Vec<TxOp>,
+    ) -> Result<TxBasis, Error> {
+        match self.transact_bootstrap_tx_inner(tx_key, tx_ops).await {
+            Ok(basis) => Ok(basis),
+            Err(e) => {
+                let err = Arc::new(e);
+                let _ = self
+                    .tx_completion_sender
+                    .send((tx_key, None, Err(err.clone())));
+                Err(anyhow::anyhow!("{:#}", err))
+            }
+        }
+    }
+
+    async fn transact_bootstrap_tx_inner(
+        &mut self,
+        tx_key: TxKey,
+        tx_ops: Vec<TxOp>,
+    ) -> Result<TxBasis, Error> {
+        let processing_schema = crate::schema::bootstrap_schema();
+        let mut pending_pm = PartitionMap::new();
+        let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
+
+        let expanded = tx::expand_tx_ops(&tx_ops, &processing_schema)?;
+        let with_tempids =
+            tx::resolve_lookup_refs(expanded, &processing_schema, &self.slatedb).await?;
+        let mut datoms = tempids::resolve_tempids(
+            with_tempids,
+            &processing_schema,
+            &self.slatedb,
+            &mut pending_pm,
+        )
+        .await?;
+        datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
+
+        let datoms = self
+            .finalize_datoms_for_commit_with_schema(datoms, &processing_schema)
+            .await?;
+        self.validate_unique_constraints_with_schema(&datoms, &processing_schema)
+            .await?;
+        let validation = processing_schema.validate_datoms(&datoms)?;
+        if !validation.schema_changes_detected {
+            bail!("Bootstrap transaction did not install schema");
+        }
+
+        let update = Schema::default().prepare_schema_update(&datoms)?;
+        let mut schema_from_tx = Schema::default();
+        schema_from_tx.apply_schema_update(update);
+        if schema_from_tx.ident_map != processing_schema.ident_map
+            || schema_from_tx.entid_map != processing_schema.entid_map
+            || schema_from_tx.attribute_map != processing_schema.attribute_map
+        {
+            bail!("Initial bootstrap transaction did not produce expected bootstrap schema");
+        }
+
+        let mut batch = WriteBatch::new();
+        write_index_entries(&mut batch, &datoms, &processing_schema, tx_eid)?;
+        crate::bootstrap::write_version_marker(&mut batch);
+        self.slatedb
+            .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await?;
+
+        self.metadata = Metadata::new(
+            schema_from_tx,
+            crate::bootstrap::scan_partition_counters(self.slatedb.as_ref()).await?,
+        );
+        let basis = TxBasis { tx_key, tx_eid };
+        self.latest_indexed_tx = Some(basis);
+
+        if let Err(e) = self
+            .tx_completion_sender
+            .send((tx_key, Some(basis), Ok(())))
+        {
+            trace!(
+                "No receivers for indexed bootstrap transaction {}: {}",
+                tx_key.tx_id,
+                e
+            );
+        }
+
+        Ok(basis)
+    }
+
     async fn transact_tx_inner(
         &mut self,
         tx_key: TxKey,
@@ -363,6 +449,15 @@ impl Indexer {
     }
 
     async fn finalize_datoms_for_commit(&self, datoms: Vec<Datom>) -> Result<Vec<Datom>, Error> {
+        self.finalize_datoms_for_commit_with_schema(datoms, &self.metadata.schema)
+            .await
+    }
+
+    async fn finalize_datoms_for_commit_with_schema(
+        &self,
+        datoms: Vec<Datom>,
+        schema: &Schema,
+    ) -> Result<Vec<Datom>, Error> {
         // Batch resolve all cardinality one assertion old values via an EAV scan
         // If the old value equals the new value, drop the datom (no-op).
         // If the old value differs, add a Retract datom for the old value.
@@ -374,9 +469,7 @@ impl Indexer {
             }
 
             // TODO: this attribute lookup is done twice. Here and in the final loop. Refactor
-            let (attribute_id, attr) = self
-                .metadata
-                .schema
+            let (attribute_id, attr) = schema
                 .get_attribute(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
 
@@ -436,9 +529,7 @@ impl Indexer {
                 continue;
             }
 
-            let (attribute_id, attr) = self
-                .metadata
-                .schema
+            let (attribute_id, attr) = schema
                 .get_attribute(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
 
@@ -465,13 +556,21 @@ impl Indexer {
     }
 
     async fn validate_unique_constraints(&self, datoms: &[Datom]) -> Result<(), Error> {
+        self.validate_unique_constraints_with_schema(datoms, &self.metadata.schema)
+            .await
+    }
+
+    async fn validate_unique_constraints_with_schema(
+        &self,
+        datoms: &[Datom],
+        schema: &Schema,
+    ) -> Result<(), Error> {
         let mut retractions: HashSet<(Entid, Entid, DataType)> = HashSet::new();
         for datom in datoms {
             if datom.op != DatomOp::Retract {
                 continue;
             }
-            let Some((attr_eid, attr)) = self.metadata.schema.get_attribute(&datom.attribute)
-            else {
+            let Some((attr_eid, attr)) = schema.get_attribute(&datom.attribute) else {
                 continue;
             };
             if attr.unique.is_some() {
@@ -485,9 +584,7 @@ impl Indexer {
             if datom.op != DatomOp::Assert {
                 continue;
             }
-            let (attr_eid, attr) = self
-                .metadata
-                .schema
+            let (attr_eid, attr) = schema
                 .get_attribute(&datom.attribute)
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
             if attr.unique.is_none() {
@@ -782,9 +879,12 @@ mod tests {
 
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
+    use crate::metadata::PartitionMap;
     use crate::ops::{DataType, EntityRef};
     use crate::query::execute_query;
-    use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
+    use crate::schema::{
+        bootstrap_schema, bootstrap_schema_tx, test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG,
+    };
     use crate::slate::{in_memory_slate, SlateComponents};
     use edn::query::ParsedQuery;
 
@@ -803,6 +903,37 @@ mod tests {
             .await
             .unwrap();
         indexer
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_transaction_installs_expected_schema_and_version() -> Result<(), Error>
+    {
+        let components = in_memory_slate().await;
+        let metadata = Metadata::new(Schema::default(), PartitionMap::new());
+        let mut indexer = Indexer::new(components.db.clone(), metadata, None);
+        let tx_key = TxKey {
+            tx_id: 0,
+            system_time: st_from_unix_epoch(0),
+        };
+
+        let basis = indexer
+            .transact_bootstrap_tx(tx_key, bootstrap_schema_tx())
+            .await?;
+
+        assert_eq!(basis.tx_key, tx_key);
+        assert!(crate::bootstrap::is_initialized(&components).await?);
+        let expected = bootstrap_schema();
+        assert_eq!(indexer.metadata().schema.ident_map, expected.ident_map);
+        assert_eq!(
+            indexer.metadata().schema.attribute_map,
+            expected.attribute_map
+        );
+        assert_eq!(
+            latest_tx_basis_from_sdb(components.db.as_ref()).await?,
+            basis
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
