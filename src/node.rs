@@ -43,7 +43,6 @@ where
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 }
 
-#[allow(unused)]
 impl<D, M> DB<D, M>
 where
     D: slatedb::DbReadOps + Send + Sync + 'static,
