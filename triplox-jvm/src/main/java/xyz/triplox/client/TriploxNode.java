@@ -4,6 +4,7 @@ import java.io.*;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -20,22 +21,23 @@ import okhttp3.Response;
  */
 public class TriploxNode implements AutoCloseable {
     private final OkHttpClient httpClient;
-    private final OkHttpClient subscriptionHttpClient;
     private final String baseUrl;
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
     private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
+    private static final String SUBSCRIBE_PATH = "/db/subscribe";
 
     private TriploxNode(OkHttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
-        this.subscriptionHttpClient = subscriptionClientFor(httpClient);
         this.baseUrl = baseUrl;
     }
 
-    static OkHttpClient subscriptionClientFor(OkHttpClient httpClient) {
-        return httpClient.newBuilder()
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .build();
+    static Response disableReadTimeoutForSubscriptions(Interceptor.Chain chain) throws IOException {
+        Request request = chain.request();
+        if (SUBSCRIBE_PATH.equals(request.url().encodedPath())) {
+            return chain.withReadTimeout(0, TimeUnit.MILLISECONDS).proceed(request);
+        }
+        return chain.proceed(request);
     }
 
     /**
@@ -44,6 +46,7 @@ public class TriploxNode implements AutoCloseable {
     public static TriploxNode connect(String host, int port) throws IOException {
         var client = new OkHttpClient.Builder()
                 .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
+                .addInterceptor(TriploxNode::disableReadTimeoutForSubscriptions)
                 .build();
         return new TriploxNode(client, "http://" + host + ":" + port);
     }
@@ -127,7 +130,7 @@ public class TriploxNode implements AutoCloseable {
                 .post(RequestBody.create(body, CONTENT_MEDIA_TYPE))
                 .build();
 
-        Response response = subscriptionHttpClient.newCall(request).execute();
+        Response response = httpClient.newCall(request).execute();
 
         int status = response.code();
         if (status < 200 || status >= 300) {
