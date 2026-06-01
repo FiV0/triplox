@@ -12,13 +12,14 @@ use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
-use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
+use crate::indexer::{latest_tx_basis_from_sdb, maybe_latest_tx_basis_from_sdb, Indexer};
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
+use crate::metadata::{Metadata, PartitionMap};
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
-use crate::schema::{bootstrap_schema_tx, IdentMap, Schema};
+use crate::schema::{bootstrap_schema, bootstrap_schema_tx, IdentMap, Schema};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -150,14 +151,16 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new_bootstrapping(
-            slate.db.clone(),
-        )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
-
-        let subscription = bootstrap_from_log_start(log.clone(), indexer.clone())
+        let (indexer, bootstrap_basis) = bootstrap_indexer_from_log(&slate, log.clone())
             .await
             .unwrap();
+        let subscription = subscribe(
+            log.clone(),
+            Some(bootstrap_basis.tx_key.tx_id),
+            indexer.clone(),
+        )
+        .await;
 
         let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
@@ -190,9 +193,8 @@ impl Node<FileLog> {
     ) -> Result<Self, Error> {
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
 
-        if crate::bootstrap::is_initialized(&slate).await? {
+        if let Some(latest_indexed) = maybe_latest_tx_basis_from_sdb(slate.db.as_ref()).await? {
             let metadata = crate::bootstrap::load_existing_metadata(&slate).await?;
-            let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
             let after_tx_id = Some(latest_indexed.tx_key.tx_id);
             let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
                 slate.db.clone(),
@@ -233,10 +235,16 @@ impl Node<FileLog> {
                 incremental,
             })
         } else {
-            let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new_bootstrapping(
-                slate.db.clone(),
-            )));
-            let subscription = bootstrap_from_log_start(log.clone(), indexer.clone()).await?;
+            let (indexer, bootstrap_basis) =
+                bootstrap_indexer_from_log(&slate, log.clone()).await?;
+            let after_tx_id = Some(bootstrap_basis.tx_key.tx_id);
+            let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
+            let last_tx_key = records.last().map(|r| r.tx_key);
+            let waiter = match last_tx_key {
+                Some(_) => Some(indexer.read().await.tx_waiter()),
+                None => None,
+            };
+            let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
             let incremental = IncrementalQueryService::new(
                 incremental_storage_path,
                 Handle::current(),
@@ -244,6 +252,11 @@ impl Node<FileLog> {
                 slate.object_path.clone(),
                 slate.object_store.clone(),
             );
+
+            if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+                let completion = waiter.await_tx(tx_key).await?;
+                completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+            }
 
             Ok(Node {
                 log,
@@ -303,38 +316,34 @@ fn deserialize_tx_ops(record: &[u8]) -> Result<Vec<TxOp>, Error> {
     Ok(bincode::deserialize(record)?)
 }
 
-async fn bootstrap_from_log_start<L>(
+async fn bootstrap_indexer_from_log<L>(
+    slate: &SlateComponents,
     log: Arc<L>,
-    indexer: Arc<tokio::sync::RwLock<Indexer>>,
-) -> Result<CancellationToken, Error>
+) -> Result<(Arc<tokio::sync::RwLock<Indexer>>, TxBasis), Error>
 where
     L: TxLog,
 {
     let records = log.read_txs_after(None, 1).await?;
-    let waiter = indexer.read().await.tx_waiter();
 
-    let (subscription, bootstrap_tx_key) = if let Some(first) = records.first() {
+    let (bootstrap_tx_key, tx_ops) = if let Some(first) = records.first() {
         let first_tx_ops = deserialize_tx_ops(&first.record)?;
         if first_tx_ops != bootstrap_schema_tx() {
             bail!("Uninitialized store has a non-bootstrap first log record");
         }
-        (
-            subscribe(log.clone(), None, indexer.clone()).await,
-            first.tx_key,
-        )
+        (first.tx_key, first_tx_ops)
     } else {
-        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let tx_ops = bootstrap_schema_tx();
         let tx_key = log.append_tx(serialize_bootstrap_schema_tx()?).await;
-        (subscription, tx_key)
+        (tx_key, tx_ops)
     };
 
-    let completion = waiter.await_tx(bootstrap_tx_key).await?;
-    if let Err(e) = completion.result {
-        subscription.cancel();
-        return Err(anyhow::anyhow!("{:#}", e));
-    }
+    let metadata = Metadata::new(bootstrap_schema(), PartitionMap::new());
+    let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
+    let basis = indexer
+        .transact_bootstrap_tx(bootstrap_tx_key, tx_ops)
+        .await?;
 
-    Ok(subscription)
+    Ok((Arc::new(tokio::sync::RwLock::new(indexer)), basis))
 }
 
 impl<L: TxLog> Node<L> {
@@ -1531,7 +1540,10 @@ mod tests {
 
         let node = Node::local_node(&root_path).await.unwrap();
 
-        assert!(crate::bootstrap::is_initialized(&node.slate).await.unwrap());
+        assert!(maybe_latest_tx_basis_from_sdb(node.slate.db.as_ref())
+            .await
+            .unwrap()
+            .is_some());
         let db = node.db().await.unwrap();
         let txs = db
             .query("[:find ?tx :where [?tx :db/txId 0]]")
@@ -2032,7 +2044,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires bootstrap latest_tx_basis to be visible through the indexer"]
     async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
         let node = Node::memory_node().await;
 

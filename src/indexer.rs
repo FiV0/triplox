@@ -31,8 +31,13 @@ pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
     latest_indexed_tx: Option<TxBasis>,
-    bootstrap_pending: bool,
     tx_completion_sender: broadcast::Sender<TxCompletionMessage>,
+}
+
+#[derive(Clone, Copy)]
+enum TransactionMode {
+    Normal,
+    Bootstrap,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -140,10 +145,10 @@ pub(crate) fn write_index_entries(
 /// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
 /// system_time from `db/txInstant` value.
 ///
-/// Errors if no TX_PARTITION entity exists (an initialized DB always has the
-/// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
-/// `:db/txInstant`.
-pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
+/// Returns `Ok(None)` if no TX_PARTITION entity exists, which startup treats as
+/// an uninitialized store. Errors if the latest tx entity is missing `:db/txId`
+/// or `:db/txInstant`.
+pub async fn maybe_latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<Option<TxBasis>>
 where
     D: DbReadOps + Sync,
 {
@@ -177,18 +182,27 @@ where
         }
     }
     match (first_eid, tx_id, system_time) {
-        (Some(eid), Some(tid), Some(st)) => Ok(TxBasis {
+        (Some(eid), Some(tid), Some(st)) => Ok(Some(TxBasis {
             tx_key: TxKey {
                 tx_id: tid,
                 system_time: st,
             },
             tx_eid: eid,
-        }),
-        (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
+        })),
+        (None, _, _) => Ok(None),
         (Some(eid), tid, st) => {
             bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
         }
     }
+}
+
+pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
+where
+    D: DbReadOps + Sync,
+{
+    maybe_latest_tx_basis_from_sdb(sdb)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("TX_PARTITION is empty; database not initialized"))
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
@@ -243,18 +257,6 @@ impl Indexer {
             slatedb,
             metadata,
             latest_indexed_tx,
-            bootstrap_pending: false,
-            tx_completion_sender,
-        }
-    }
-
-    pub(crate) fn new_bootstrapping(slatedb: Arc<Db>) -> Self {
-        let (tx_completion_sender, _) = broadcast::channel(1024);
-        Indexer {
-            slatedb,
-            metadata: Metadata::new(Schema::default(), PartitionMap::new()),
-            latest_indexed_tx: None,
-            bootstrap_pending: true,
             tx_completion_sender,
         }
     }
@@ -329,13 +331,45 @@ impl Indexer {
         tx_key: TxKey,
         tx_ops: Vec<TxOp>,
     ) -> Result<TxBasis, Error> {
-        let processing_schema = crate::schema::bootstrap_schema();
-        let mut pending_pm = PartitionMap::new();
+        self.transact_tx_with_mode(tx_key, tx_ops, TransactionMode::Bootstrap)
+            .await
+    }
+
+    async fn transact_tx_inner(
+        &mut self,
+        tx_key: TxKey,
+        tx_ops: Vec<TxOp>,
+    ) -> Result<TxBasis, Error> {
+        self.transact_tx_with_mode(tx_key, tx_ops, TransactionMode::Normal)
+            .await
+    }
+
+    async fn transact_tx_with_mode(
+        &mut self,
+        tx_key: TxKey,
+        tx_ops: Vec<TxOp>,
+        mode: TransactionMode,
+    ) -> Result<TxBasis, Error> {
+        let processing_schema = match mode {
+            TransactionMode::Normal => self.metadata.schema.clone(),
+            TransactionMode::Bootstrap => crate::schema::bootstrap_schema(),
+        };
+
+        // 1. Clone PartitionMap + allocate tx entity
+        let mut pending_pm = match mode {
+            TransactionMode::Normal => self.metadata.partition_map.clone(),
+            TransactionMode::Bootstrap => PartitionMap::new(),
+        };
         let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
 
+        // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
         let expanded = tx::expand_tx_ops(&tx_ops, &processing_schema)?;
+
+        // 3. Resolve lookup refs via AVE index → DatomWithTempids
         let with_tempids =
             tx::resolve_lookup_refs(expanded, &processing_schema, &self.slatedb).await?;
+
+        // 4. Resolve tempids, including identity upserts, then build tx entity datoms
         let mut datoms = tempids::resolve_tempids(
             with_tempids,
             &processing_schema,
@@ -345,100 +379,68 @@ impl Indexer {
         .await?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
+        // 5. Finalize datoms (card-one rewrite) against current storage state
         let datoms = self
             .finalize_datoms_for_commit_with_schema(datoms, &processing_schema)
             .await?;
+
+        // 6. Unique + general validation
         self.validate_unique_constraints_with_schema(&datoms, &processing_schema)
             .await?;
         let validation = processing_schema.validate_datoms(&datoms)?;
-        if !validation.schema_changes_detected {
-            bail!("Bootstrap transaction did not install schema");
+
+        let schema_after_tx = if validation.schema_changes_detected {
+            let mut schema_update_base = match mode {
+                TransactionMode::Normal => self.metadata.schema.clone(),
+                TransactionMode::Bootstrap => Schema::default(),
+            };
+            let schema_update = schema_update_base.prepare_schema_update(&datoms)?;
+            if !schema_update.is_empty() {
+                schema_update_base.apply_schema_update(schema_update);
+            }
+            Some(schema_update_base)
+        } else {
+            None
+        };
+
+        if matches!(mode, TransactionMode::Bootstrap) {
+            let Some(schema_from_tx) = &schema_after_tx else {
+                bail!("Bootstrap transaction did not install schema");
+            };
+            if schema_from_tx.ident_map != processing_schema.ident_map
+                || schema_from_tx.entid_map != processing_schema.entid_map
+                || schema_from_tx.attribute_map != processing_schema.attribute_map
+            {
+                bail!("Initial bootstrap transaction did not produce expected bootstrap schema");
+            }
         }
-
-        let update = Schema::default().prepare_schema_update(&datoms)?;
-        let mut schema_from_tx = Schema::default();
-        schema_from_tx.apply_schema_update(update);
-        if schema_from_tx.ident_map != processing_schema.ident_map
-            || schema_from_tx.entid_map != processing_schema.entid_map
-            || schema_from_tx.attribute_map != processing_schema.attribute_map
-        {
-            bail!("Initial bootstrap transaction did not produce expected bootstrap schema");
-        }
-
-        let mut batch = WriteBatch::new();
-        write_index_entries(&mut batch, &datoms, &processing_schema, tx_eid)?;
-        crate::bootstrap::write_version_marker(&mut batch);
-        self.slatedb
-            .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
-            .await?;
-
-        self.metadata = Metadata::new(
-            schema_from_tx,
-            crate::bootstrap::scan_partition_counters(self.slatedb.as_ref()).await?,
-        );
-        let basis = TxBasis { tx_key, tx_eid };
-        self.latest_indexed_tx = Some(basis);
-
-        if let Err(e) = self
-            .tx_completion_sender
-            .send((tx_key, Some(basis), Ok(())))
-        {
-            trace!(
-                "No receivers for indexed bootstrap transaction {}: {}",
-                tx_key.tx_id,
-                e
-            );
-        }
-
-        Ok(basis)
-    }
-
-    async fn transact_tx_inner(
-        &mut self,
-        tx_key: TxKey,
-        tx_ops: Vec<TxOp>,
-    ) -> Result<TxBasis, Error> {
-        // 1. Clone PartitionMap + allocate tx entity
-        let mut pending_pm = self.metadata.partition_map.clone();
-        let tx_eid = pending_pm.allocate_entid(TX_PARTITION);
-
-        // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
-        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
-
-        // 3. Resolve lookup refs via AVE index → DatomWithTempids
-        let with_tempids =
-            tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
-
-        // 4. Resolve tempids, including identity upserts, then build tx entity datoms
-        let mut datoms = tempids::resolve_tempids(
-            with_tempids,
-            &self.metadata.schema,
-            &self.slatedb,
-            &mut pending_pm,
-        )
-        .await?;
-        datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
-
-        // 5. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self.finalize_datoms_for_commit(datoms).await?;
-
-        // 6. Unique + general validation
-        self.validate_unique_constraints(&datoms).await?;
-        let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Write indices + commit
         let mut batch = WriteBatch::new();
-        write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
+        write_index_entries(&mut batch, &datoms, &processing_schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
         // 8. Apply on success only
-        self.metadata.partition_map = pending_pm;
-        if validation.schema_changes_detected {
-            let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
-            if !schema_update.is_empty() {
-                self.metadata.schema.apply_schema_update(schema_update);
+        match mode {
+            TransactionMode::Normal => {
+                self.metadata.partition_map = pending_pm;
+                if let Some(schema_after_tx) = schema_after_tx {
+                    if self.metadata.schema.ident_map != schema_after_tx.ident_map
+                        || self.metadata.schema.entid_map != schema_after_tx.entid_map
+                        || self.metadata.schema.attribute_map != schema_after_tx.attribute_map
+                    {
+                        self.metadata.schema = schema_after_tx;
+                        self.metadata.advance_generation();
+                    }
+                }
+            }
+            TransactionMode::Bootstrap => {
+                self.metadata = Metadata::new(
+                    schema_after_tx.expect("bootstrap schema checked before commit"),
+                    crate::bootstrap::scan_partition_counters(self.slatedb.as_ref()).await?,
+                );
                 self.metadata.advance_generation();
             }
         }
@@ -790,14 +792,7 @@ impl Subscriber for Indexer {
                 return;
             }
         };
-        let result = if self.bootstrap_pending {
-            self.transact_bootstrap_tx(record.tx_key, tx_ops).await
-        } else {
-            self.transact_tx(record.tx_key, tx_ops).await
-        };
-        if result.is_ok() {
-            self.bootstrap_pending = false;
-        }
+        let result = self.transact_tx(record.tx_key, tx_ops).await;
         // TODO: Deal with proper error typing and escalation in case of non-recoverable errors. See #118.
         if let Err(e) = result {
             error!("Transaction {} failed: {}", record.tx_key.tx_id, e);
@@ -912,7 +907,8 @@ mod tests {
     /// Create an indexer with bootstrap schema and test attributes already transacted.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
-        let mut indexer = Indexer::new_bootstrapping(slate.db.clone());
+        let metadata = Metadata::new(bootstrap_schema(), PartitionMap::new());
+        let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
         let tx_key_0 = TxKey {
             tx_id: 0,
             system_time: st_from_unix_epoch(0),
@@ -933,10 +929,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bootstrap_transaction_installs_expected_schema_and_version() -> Result<(), Error>
-    {
+    async fn test_empty_db_has_no_latest_tx_basis() -> Result<(), Error> {
         let components = in_memory_slate().await;
-        let metadata = Metadata::new(Schema::default(), PartitionMap::new());
+
+        assert_eq!(
+            maybe_latest_tx_basis_from_sdb(components.db.as_ref()).await?,
+            None
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_transaction_installs_expected_schema() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let metadata = Metadata::new(bootstrap_schema(), PartitionMap::new());
         let mut indexer = Indexer::new(components.db.clone(), metadata, None);
         let tx_key = TxKey {
             tx_id: 0,
@@ -948,7 +955,6 @@ mod tests {
             .await?;
 
         assert_eq!(basis.tx_key, tx_key);
-        assert!(crate::bootstrap::is_initialized(&components).await?);
         let expected = bootstrap_schema();
         assert_eq!(indexer.metadata().schema.ident_map, expected.ident_map);
         assert_eq!(
@@ -958,6 +964,10 @@ mod tests {
         assert_eq!(
             latest_tx_basis_from_sdb(components.db.as_ref()).await?,
             basis
+        );
+        assert_eq!(
+            maybe_latest_tx_basis_from_sdb(components.db.as_ref()).await?,
+            Some(basis)
         );
 
         Ok(())

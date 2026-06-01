@@ -8,31 +8,12 @@ use crate::partition::{
 use crate::schema::load_schema_from_indices;
 use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS};
 use crate::util::concat_bytes;
-use slatedb::{Db, WriteBatch};
-
-const META_KEY_VERSION: &[u8] = b"version";
+use slatedb::Db;
 
 /// Reserved counter space for bootstrap entities in DB_PARTITION.
 /// New user-defined schema attributes start at this counter value,
 /// leaving room below for future bootstrap entities.
 const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
-
-pub(crate) fn version_key() -> Vec<u8> {
-    concat_bytes(&[&[codec::META_INDEX], META_KEY_VERSION])
-}
-
-pub(crate) fn write_version_marker(batch: &mut WriteBatch) {
-    batch.put(version_key(), env!("CARGO_PKG_VERSION").as_bytes());
-}
-
-pub(crate) async fn is_initialized(slate: &SlateComponents) -> Result<bool> {
-    Ok(slate
-        .db
-        .get(&version_key())
-        .await
-        .context("Failed to read version from META_INDEX")?
-        .is_some())
-}
 
 pub(crate) async fn load_existing_metadata(slate: &SlateComponents) -> Result<Metadata> {
     let schema = load_schema_from_indices(slate).await;
@@ -84,14 +65,16 @@ mod tests {
     use super::*;
     use crate::clock::st_from_unix_epoch;
     use crate::indexer::Indexer;
+    use crate::metadata::Metadata;
     use crate::partition::{DB_PARTITION, TX_PARTITION, USER_PARTITION};
-    use crate::schema::bootstrap_schema_tx;
+    use crate::schema::{bootstrap_schema, bootstrap_schema_tx};
     use crate::slate::in_memory_slate;
     use crate::transaction::TxKey;
     use edn::kw;
 
     async fn index_bootstrap(slate: &SlateComponents) {
-        let mut indexer = Indexer::new_bootstrapping(slate.db.clone());
+        let metadata = Metadata::new(bootstrap_schema(), PartitionMap::new());
+        let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
         indexer
             .transact_bootstrap_tx(
                 TxKey {
@@ -105,13 +88,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_is_initialized_tracks_version_marker() {
+    async fn test_scan_partition_counters_empty_db() {
         let slate = in_memory_slate().await;
-        assert!(!is_initialized(&slate).await.unwrap());
-
-        index_bootstrap(&slate).await;
-
-        assert!(is_initialized(&slate).await.unwrap());
+        let pm = scan_partition_counters(&slate.db).await.unwrap();
+        assert_eq!(pm[&DB_PARTITION], DB_PARTITION_COUNTER_FLOOR);
+        assert_eq!(pm[&TX_PARTITION], 0);
+        assert_eq!(pm[&USER_PARTITION], 0);
     }
 
     #[tokio::test]
@@ -143,12 +125,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_existing_metadata_preserves_old_version() {
+    async fn test_load_existing_metadata_from_empty_db() {
         let slate = in_memory_slate().await;
-
-        // Write an older version directly (simulates existing DB without bootstrap indices)
-        let key = version_key();
-        slate.db.put(&key, b"0.0.1").await.unwrap();
 
         let metadata = load_existing_metadata(&slate).await.unwrap();
         assert_eq!(metadata.schema.len(), 0);
