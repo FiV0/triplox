@@ -102,7 +102,7 @@ static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword, Option<Keyword>)>
             (
                 kw!(:db/ident),
                 kw!(:db.type/keyword),
-                kw!(:db.cardinality/one),
+                kw!(:db.cardinality/many),
                 Some(kw!(:db.unique/identity)),
             ),
             (
@@ -441,6 +441,10 @@ fn is_schema_attribute(attribute: &Keyword) -> bool {
     )
 }
 
+fn is_db_ident(ident: &Keyword) -> bool {
+    ident.components().0 == "db"
+}
+
 /// The schema: bidirectional ident/entid maps + attribute definitions.
 #[derive(Debug, Clone, Default)]
 pub struct Schema {
@@ -465,6 +469,14 @@ impl Schema {
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
     pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
+    }
+
+    fn has_db_ident(&self, entity_id: Entid) -> bool {
+        self.entid_map.get(&entity_id).is_some_and(is_db_ident)
+            || self
+                .ident_map
+                .iter()
+                .any(|(ident, eid)| *eid == entity_id && is_db_ident(ident))
     }
 
     /// Validate finalized transaction datoms against the current schema.
@@ -529,6 +541,21 @@ impl Schema {
             }
 
             if self.is_schema_entity(datom.entity) {
+                if datom.attribute == kw!(:db/ident) && datom.op == DatomOp::Assert {
+                    let ident = match &datom.value {
+                        DataType::Keyword(kw) => kw.clone(),
+                        _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
+                    };
+                    if self.has_db_ident(datom.entity) {
+                        return Err(anyhow::anyhow!(
+                            "Cannot add db/ident alias to db-prefixed schema entity {}",
+                            datom.entity
+                        ));
+                    }
+                    ident_updates.push((datom.entity, ident));
+                    continue;
+                }
+
                 let ident = self
                     .entid_map
                     .get(&datom.entity)
@@ -719,7 +746,7 @@ impl Schema {
     pub fn apply_schema_update(&mut self, update: SchemaUpdate) {
         for (eid, ident) in update.idents {
             self.ident_map.insert(ident.clone(), eid);
-            self.entid_map.insert(eid, ident);
+            self.entid_map.entry(eid).or_insert(ident);
         }
         for (eid, attr) in update.attributes {
             self.attribute_map.insert(eid, attr);
@@ -899,7 +926,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             other => panic!("Expected Keyword for ident, got {:?}", other),
         };
         schema.ident_map.insert(ident.clone(), entity_id);
-        schema.entid_map.insert(entity_id, ident);
+        schema.entid_map.entry(entity_id).or_insert(ident);
     }
 
     let mut unique_map = HashMap::new();
@@ -1095,6 +1122,7 @@ mod tests {
         let (eid, attr) = schema.get_attribute(&kw!(:db/ident)).unwrap();
         assert_eq!(eid, DB_IDENT);
         assert_eq!(attr.value_type, ValueType::Keyword);
+        assert!(attr.multival);
 
         let (eid, attr) = schema.get_attribute(&kw!(:db/valueType)).unwrap();
         assert_eq!(eid, DB_VALUE_TYPE);
@@ -1123,6 +1151,27 @@ mod tests {
 
         let (_eid, attr) = schema.get_attribute(&kw!(:name)).unwrap();
         assert_eq!(attr.value_type, ValueType::String);
+    }
+
+    #[test]
+    fn test_apply_schema_update_adds_alias_to_user_attribute() {
+        let mut schema = bootstrapped_schema_with_person_name();
+        let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
+
+        let ops = [TxOp::Add {
+            entity: EntityRef::Id(name_id),
+            attribute: kw!(:db/ident),
+            value: DataType::Keyword(kw!(:person/name)),
+        }];
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+
+        assert_eq!(schema.ident_map[&kw!(:name)], name_id);
+        assert_eq!(schema.ident_map[&kw!(:person/name)], name_id);
+        assert_eq!(schema.entid_map[&name_id], kw!(:name));
     }
 
     #[test]
@@ -1197,6 +1246,42 @@ mod tests {
         assert!(validation.schema_changes_detected);
         let err = schema.prepare_schema_update(&datoms).unwrap_err();
         assert!(err.to_string().contains("Cannot modify schema entity"));
+    }
+
+    #[test]
+    fn test_prepare_schema_update_rejects_alias_for_db_attribute() {
+        let schema = bootstrapped_schema();
+        let ops = [TxOp::Add {
+            entity: EntityRef::Id(DB_TX_ERROR),
+            attribute: kw!(:db/ident),
+            value: DataType::Keyword(kw!(:triplox/tx-error)),
+        }];
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let err = schema.prepare_schema_update(&datoms).unwrap_err();
+        assert!(err.to_string().contains("Cannot add db/ident alias"));
+    }
+
+    #[test]
+    fn test_prepare_schema_update_rejects_alias_for_user_defined_db_namespace_attribute() {
+        let mut schema = bootstrapped_schema();
+        let ops = [schema_attribute(kw!(:db/custom), "string")];
+        let datoms = to_datoms(&ops, &schema);
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+        let (custom_id, _) = schema.get_attribute(&kw!(:db/custom)).unwrap();
+
+        let ops = [TxOp::Add {
+            entity: EntityRef::Id(custom_id),
+            attribute: kw!(:db/ident),
+            value: DataType::Keyword(kw!(:custom)),
+        }];
+        let datoms = to_datoms(&ops, &schema);
+        let validation = schema.validate_datoms(&datoms).unwrap();
+        assert!(validation.schema_changes_detected);
+        let err = schema.prepare_schema_update(&datoms).unwrap_err();
+        assert!(err.to_string().contains("Cannot add db/ident alias"));
     }
 
     #[test]
