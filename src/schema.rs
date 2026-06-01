@@ -6,6 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
+use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
@@ -441,8 +442,23 @@ fn is_schema_attribute(attribute: &Keyword) -> bool {
     )
 }
 
-fn is_db_ident(ident: &Keyword) -> bool {
-    ident.components().0 == "db"
+fn set_canonical_ident(entid_map: &mut EntidMap, eid: Entid, ident: Keyword) {
+    match entid_map.get_mut(&eid) {
+        Some(current) if ident.to_string() < current.to_string() => {
+            *current = ident;
+        }
+        Some(_) => {}
+        None => {
+            entid_map.insert(eid, ident);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityAllocationStatus {
+    Existing,
+    AllocatedInTx,
+    Unallocated,
 }
 
 /// The schema: bidirectional ident/entid maps + attribute definitions.
@@ -469,14 +485,6 @@ impl Schema {
     /// Check if an entity ID is a schema attribute (has an entry in attribute_map).
     pub fn is_schema_entity(&self, entity_id: Entid) -> bool {
         self.attribute_map.contains_key(&entity_id)
-    }
-
-    fn has_db_ident(&self, entity_id: Entid) -> bool {
-        self.entid_map.get(&entity_id).is_some_and(is_db_ident)
-            || self
-                .ident_map
-                .iter()
-                .any(|(ident, eid)| *eid == entity_id && is_db_ident(ident))
     }
 
     /// Validate finalized transaction datoms against the current schema.
@@ -532,6 +540,23 @@ impl Schema {
     /// This step is responsible only for schema-related assertions and mutation
     /// rules. It assumes general datom validation has already succeeded.
     pub fn prepare_schema_update(&self, datoms: &[Datom]) -> Result<SchemaUpdate> {
+        self.prepare_schema_update_inner(datoms, None)
+    }
+
+    pub(crate) fn prepare_schema_update_with_partition_maps(
+        &self,
+        datoms: &[Datom],
+        committed_pm: &PartitionMap,
+        pending_pm: &PartitionMap,
+    ) -> Result<SchemaUpdate> {
+        self.prepare_schema_update_inner(datoms, Some((committed_pm, pending_pm)))
+    }
+
+    fn prepare_schema_update_inner(
+        &self,
+        datoms: &[Datom],
+        partition_maps: Option<(&PartitionMap, &PartitionMap)>,
+    ) -> Result<SchemaUpdate> {
         let mut ident_updates: Vec<(Entid, Keyword)> = Vec::new();
         let mut builders: HashMap<Entid, AttributeBuilder> = HashMap::new();
 
@@ -540,18 +565,33 @@ impl Schema {
                 continue;
             }
 
-            if self.is_schema_entity(datom.entity) {
+            let allocation_status = partition_maps.map(|(committed_pm, pending_pm)| {
+                if committed_pm.contains_entid(datom.entity) {
+                    EntityAllocationStatus::Existing
+                } else if pending_pm.contains_entid(datom.entity) {
+                    EntityAllocationStatus::AllocatedInTx
+                } else {
+                    EntityAllocationStatus::Unallocated
+                }
+            });
+
+            if allocation_status == Some(EntityAllocationStatus::Unallocated) {
+                return Err(anyhow::anyhow!(
+                    "Cannot apply schema datom {} to unallocated schema entity {}",
+                    datom.attribute,
+                    datom.entity
+                ));
+            }
+
+            let existing_entity = allocation_status == Some(EntityAllocationStatus::Existing)
+                || (allocation_status.is_none() && self.is_schema_entity(datom.entity));
+
+            if existing_entity {
                 if datom.attribute == kw!(:db/ident) && datom.op == DatomOp::Assert {
                     let ident = match &datom.value {
                         DataType::Keyword(kw) => kw.clone(),
                         _ => return Err(anyhow::anyhow!("db/ident must be a Keyword")),
                     };
-                    if self.has_db_ident(datom.entity) {
-                        return Err(anyhow::anyhow!(
-                            "Cannot add db/ident alias to db-prefixed schema entity {}",
-                            datom.entity
-                        ));
-                    }
                     ident_updates.push((datom.entity, ident));
                     continue;
                 }
@@ -746,7 +786,7 @@ impl Schema {
     pub fn apply_schema_update(&mut self, update: SchemaUpdate) {
         for (eid, ident) in update.idents {
             self.ident_map.insert(ident.clone(), eid);
-            self.entid_map.entry(eid).or_insert(ident);
+            set_canonical_ident(&mut self.entid_map, eid, ident);
         }
         for (eid, attr) in update.attributes {
             self.attribute_map.insert(eid, attr);
@@ -926,7 +966,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             other => panic!("Expected Keyword for ident, got {:?}", other),
         };
         schema.ident_map.insert(ident.clone(), entity_id);
-        schema.entid_map.entry(entity_id).or_insert(ident);
+        set_canonical_ident(&mut schema.entid_map, entity_id, ident);
     }
 
     let mut unique_map = HashMap::new();
@@ -1161,7 +1201,7 @@ mod tests {
         let ops = [TxOp::Add {
             entity: EntityRef::Id(name_id),
             attribute: kw!(:db/ident),
-            value: DataType::Keyword(kw!(:person/name)),
+            value: DataType::Keyword(kw!(:aaa/name)),
         }];
         let datoms = to_datoms(&ops, &schema);
         let validation = schema.validate_datoms(&datoms).unwrap();
@@ -1170,8 +1210,8 @@ mod tests {
         schema.apply_schema_update(update);
 
         assert_eq!(schema.ident_map[&kw!(:name)], name_id);
-        assert_eq!(schema.ident_map[&kw!(:person/name)], name_id);
-        assert_eq!(schema.entid_map[&name_id], kw!(:name));
+        assert_eq!(schema.ident_map[&kw!(:aaa/name)], name_id);
+        assert_eq!(schema.entid_map[&name_id], kw!(:aaa/name));
     }
 
     #[test]
@@ -1249,8 +1289,8 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_schema_update_rejects_alias_for_db_attribute() {
-        let schema = bootstrapped_schema();
+    fn test_prepare_schema_update_allows_alias_for_db_attribute() {
+        let mut schema = bootstrapped_schema();
         let ops = [TxOp::Add {
             entity: EntityRef::Id(DB_TX_ERROR),
             attribute: kw!(:db/ident),
@@ -1259,12 +1299,16 @@ mod tests {
         let datoms = to_datoms(&ops, &schema);
         let validation = schema.validate_datoms(&datoms).unwrap();
         assert!(validation.schema_changes_detected);
-        let err = schema.prepare_schema_update(&datoms).unwrap_err();
-        assert!(err.to_string().contains("Cannot add db/ident alias"));
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+
+        assert_eq!(schema.ident_map[&kw!(:db/txError)], DB_TX_ERROR);
+        assert_eq!(schema.ident_map[&kw!(:triplox/tx-error)], DB_TX_ERROR);
+        assert_eq!(schema.entid_map[&DB_TX_ERROR], kw!(:db/txError));
     }
 
     #[test]
-    fn test_prepare_schema_update_rejects_alias_for_user_defined_db_namespace_attribute() {
+    fn test_prepare_schema_update_allows_alias_for_user_defined_db_namespace_attribute() {
         let mut schema = bootstrapped_schema();
         let ops = [schema_attribute(kw!(:db/custom), "string")];
         let datoms = to_datoms(&ops, &schema);
@@ -1280,8 +1324,12 @@ mod tests {
         let datoms = to_datoms(&ops, &schema);
         let validation = schema.validate_datoms(&datoms).unwrap();
         assert!(validation.schema_changes_detected);
-        let err = schema.prepare_schema_update(&datoms).unwrap_err();
-        assert!(err.to_string().contains("Cannot add db/ident alias"));
+        let update = schema.prepare_schema_update(&datoms).unwrap();
+        schema.apply_schema_update(update);
+
+        assert_eq!(schema.ident_map[&kw!(:db/custom)], custom_id);
+        assert_eq!(schema.ident_map[&kw!(:custom)], custom_id);
+        assert_eq!(schema.entid_map[&custom_id], kw!(:custom));
     }
 
     #[test]

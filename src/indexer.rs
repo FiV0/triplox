@@ -329,7 +329,15 @@ impl Indexer {
 
         // 7. Prepare schema update before writing to avoid leaking rejected datoms
         let schema_update = if validation.schema_changes_detected {
-            Some(self.metadata.schema.prepare_schema_update(&datoms)?)
+            Some(
+                self.metadata
+                    .schema
+                    .prepare_schema_update_with_partition_maps(
+                        &datoms,
+                        &self.metadata.partition_map,
+                        &pending_pm,
+                    )?,
+            )
         } else {
             None
         };
@@ -1474,6 +1482,47 @@ mod tests {
                 "rejected schema update must not be written to EAV"
             );
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_schema_install_with_unallocated_explicit_id_rejected_in_pipeline(
+    ) -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let explicit_id = crate::partition::make_entity_id(crate::partition::DB_PARTITION, 10_000);
+
+        let tx = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        let waiter = indexer.tx_waiter();
+        let basis = indexer
+            .transact_tx(
+                tx,
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), DataType::Long(explicit_id)),
+                    (kw!(:db/ident), DataType::Keyword(kw!(:explicit/schema))),
+                    (kw!(:db/valueType), DataType::Long(DB_TYPE_LONG)),
+                    (kw!(:db/cardinality), DataType::Long(DB_CARDINALITY_ONE)),
+                ])],
+            )
+            .await?;
+
+        assert_eq!(basis.tx_key, tx);
+        let completion = waiter.await_tx(tx).await?;
+        assert_eq!(completion.basis.map(|basis| basis.tx_key), Some(tx));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("unallocated schema entity"));
+        assert!(indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:explicit/schema))
+            .is_none());
 
         Ok(())
     }

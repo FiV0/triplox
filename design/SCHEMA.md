@@ -158,7 +158,7 @@ Schema attributes are **immutable** once installed. The following operations are
 | `Delete`   | entity ID belongs to a schema entity                          | "Cannot delete schema entity"        |
 | `Erase`    | entity ID belongs to a schema entity                          | "Cannot erase schema entity"         |
 
-Adding a new `db/ident` assertion to an existing non-`db/*` schema attribute is allowed as an alias. The existing ident remains valid, the new ident resolves to the same attribute entity, and schema constraints such as `db/valueType`, `db/cardinality`, and `db/unique` remain immutable. Schema attributes with any known ident in the `db` namespace cannot receive ident aliases.
+Adding a new `db/ident` assertion to an existing schema attribute is allowed as an alias. Existing idents remain valid, the new ident resolves to the same attribute entity, and schema constraints such as `db/valueType`, `db/cardinality`, and `db/unique` remain immutable. Runtime reverse lookups use the lexicographically smallest ident as the canonical display form until query support can choose the latest ident by transaction entity.
 
 In its final form we likely reject any modifications to bootstrap schema attributes, but allow changes to user defined attributes.
 We still strive for a deprecation guided schema evolution.
@@ -176,5 +176,5 @@ We still strive for a deprecation guided schema evolution.
 - `db/unique` is optional. If present, it must be either `:db.unique/value` or `:db.unique/identity`.
 - These attributes can be defined with `Put` or `Add` statements (or combinations thereof) as long as the
   final set of required attributes is met.
-- Updating or deleting a schema attribute is rejected, except for additive `db/ident` aliases on non-`db/*` schema attributes.
+- Updating or deleting a schema attribute is rejected, except for additive `db/ident` aliases.
 - Attribute id resolution always works against the head of the db (basis-t in Datomic slang).
