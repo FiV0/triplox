@@ -61,9 +61,6 @@ tasks.register<Test>("integrationTest") {
     include("**/integration/**", "**/Integration*")
     systemProperty("triplox.host", System.getenv("TRIPLOX_HOST") ?: "localhost")
     systemProperty("triplox.port", System.getenv("TRIPLOX_PORT") ?: "5490")
-    // Subscription delta tests need a shared-node server (storage = memory/local);
-    // the dev server isolates each connection. Set TRIPLOX_SHARED_NODE=true to enable.
-    systemProperty("triplox.shared.node", System.getenv("TRIPLOX_SHARED_NODE") ?: "false")
 }
 
 tasks.clojureRepl {

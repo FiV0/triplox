@@ -270,7 +270,7 @@ loop over a few deltas, close).
 | R1 Server streaming body + disconnect→teardown: does dropping the axum response future promptly drop the subscription receiver? | High | Hold the receiver **inside** the body stream (Task 3); Task 5 disconnect test asserts storage removal. Surfaced at Checkpoint B. |
 | R2 Backpressure: avoid unbounded buffering; the single shared service thread can stall across queries under a slow client. | Med | write-one/recv-one (Task 3); Task 5 slow-consumer test; shared-thread stall documented as a known, out-of-scope engine limitation (INCREMENTAL_QUERIES.md). |
 | R3 New client deps (reqwest `stream`, tokio-util io/codec, futures) | Low–Med | Isolated in Task 2 behind an Ask-First approval gate. |
-| R4 Java `HttpClient` streaming read over **h2c** (incremental `ofInputStream` over cleartext HTTP/2) | Med | Early manual check in Task 7; unary h2c already works, only the incremental read is unproven; fallback noted below. |
+| R4 OkHttp streaming read over **h2c** with `Protocol.H2_PRIOR_KNOWLEDGE` | Med | Task 7 integration tests cover subscribe + transact on the dev server over one multiplexed HTTP/2 connection. |
 | R5 `msgpack-core` blocking `unpackValue()` + interrupt-on-`close()` semantics | Low | Task 7 close/interrupt test. |
 | R6 Mapping query-validation errors to `2004` vs parse/internal | Low | Task 3 maps `plan_query`/validation failures; align with `src/query_validation.rs` + `src/inc_query.rs`. |
 | R7 Rust decoder distinguishing truncation (need-more) from corruption with `rmpv` | Med | Task 4 unit tests with chunked + truncated + corrupt inputs. |
@@ -280,9 +280,8 @@ loop over a few deltas, close).
 - Does `register_incremental_query` / `plan_query` already reject unsupported
   queries cleanly, or does the handler need to pre-run the one-shot validator?
   Resolve by reading `src/inc_query.rs` + `src/query_validation.rs` in Task 3.
-- If Java `ofInputStream` does **not** stream incrementally over h2c (R4), the
-  fallback is to consume the body via the reactive `BodyHandlers.ofPublisher`/
-  `Flow.Subscriber` and re-frame from `ByteBuffer`s — same self-delimiting decode,
+- If OkHttp does **not** stream incrementally over h2c (R4), the fallback is to
+  consume the body as an Okio source and re-frame from buffered chunks — same self-delimiting decode,
   different plumbing. Decide in Task 7 only if R4 materializes.
 
 ---

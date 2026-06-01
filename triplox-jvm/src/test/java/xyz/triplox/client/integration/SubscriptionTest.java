@@ -2,7 +2,6 @@ package xyz.triplox.client.integration;
 
 import xyz.triplox.client.*;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -31,8 +30,6 @@ class SubscriptionTest {
     }
 
     @Test
-    @EnabledIfSystemProperty(named = "triplox.shared.node", matches = "true",
-            disabledReason = "subscribe + transact must share a node; the dev server isolates per connection")
     void testSubscribeReceivesDelta() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);

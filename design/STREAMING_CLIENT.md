@@ -310,16 +310,16 @@ public record Row(List<Object> values, long weight) {}
 ```
 
 Implementation notes:
-- `HttpClient.send(req, BodyHandlers.ofInputStream())`, wrap the blocking
+- `OkHttpClient` uses `Protocol.H2_PRIOR_KNOWLEDGE`; wrap the response
   `InputStream` in `org.msgpack:msgpack-core`'s `MessageUnpacker`, and loop
   `unpackValue()` — it blocks until each self-delimiting frame is complete, so
   no length prefix or manual accumulation is needed.
 - `subscribe(...)` reads the `open` frame synchronously, so `basis()`/`columns()`
   are populated on return; a daemon reader thread then pushes decoded `delta`
   frames into a bounded `BlockingQueue<Delta>` that backs `take()`/`poll()`.
-- `close()` closes the `InputStream` (cancels the HTTP/2 stream) and interrupts
-  the reader; a terminal `error` frame surfaces as a `TriploxException` from the
-  next `take()`/`poll()`.
+- `close()` closes the streaming response (cancels the HTTP/2 stream) and
+  interrupts the reader; a terminal `error` frame surfaces as a
+  `TriploxException` from the next `take()`/`poll()`.
 
 ### 4.3 Clojure (`xyz.triplox.api`)
 
@@ -362,7 +362,8 @@ the verb:
 - **Rust client:** `triplox-client`, `reqwest` 0.12 (`http2`); **add** the
   `stream` feature plus `tokio-util` (`io`, `codec`) and `futures` — these are
   new client dependencies (Ask First).
-- **JVM client:** Java 17+, `java.net.http.HttpClient`, `org.msgpack:msgpack-core:0.9.8`;
+- **JVM client:** Java 17+, OkHttp with HTTP/2 prior knowledge,
+  `org.msgpack:msgpack-core:0.9.8`;
   Clojure wrapper in `xyz.triplox.api`.
 
 ---

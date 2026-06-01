@@ -1,5 +1,6 @@
 package xyz.triplox.client;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.BlockingQueue;
@@ -27,6 +28,7 @@ public final class Subscription implements AutoCloseable {
 
     private final TxBasis basis;
     private final InputStream stream;
+    private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
@@ -34,9 +36,11 @@ public final class Subscription implements AutoCloseable {
     private volatile boolean drained = false;
     private volatile TriploxException terminalError;
 
-    private Subscription(TxBasis basis, InputStream stream, MessageUnpacker unpacker) {
+    private Subscription(
+            TxBasis basis, InputStream stream, Closeable closeable, MessageUnpacker unpacker) {
         this.basis = basis;
         this.stream = stream;
+        this.closeable = closeable;
         this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
         this.reader.setDaemon(true);
         this.reader.start();
@@ -47,12 +51,16 @@ public final class Subscription implements AutoCloseable {
      * for {@link #basis()}, then start the reader thread.
      */
     static Subscription open(InputStream stream) throws IOException {
+        return open(stream, stream);
+    }
+
+    static Subscription open(InputStream stream, Closeable closeable) throws IOException {
         MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(stream);
         SubscriptionFrame first = WireCodec.decodeSubscriptionFrame(unpacker);
         if (first instanceof SubscriptionFrame.Open open) {
-            return new Subscription(open.basis(), stream, unpacker);
+            return new Subscription(open.basis(), stream, closeable, unpacker);
         }
-        stream.close();
+        closeable.close();
         if (first instanceof SubscriptionFrame.Error error) {
             throw toException(error.error());
         }
@@ -90,7 +98,7 @@ public final class Subscription implements AutoCloseable {
     public void close() {
         closed = true;
         try {
-            stream.close();
+            closeable.close();
         } catch (IOException ignored) {
             // Closing to unblock the reader; errors here are expected.
         }
@@ -132,6 +140,11 @@ public final class Subscription implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
+            try {
+                closeable.close();
+            } catch (IOException ignored) {
+                // The consumer may have already closed the subscription.
+            }
             try {
                 queue.put(END);
             } catch (InterruptedException e) {

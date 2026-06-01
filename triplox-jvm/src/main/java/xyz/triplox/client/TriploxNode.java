@@ -112,39 +112,45 @@ public class TriploxNode implements AutoCloseable {
      */
     public Subscription subscribe(String edn, List<QueryArg> args) throws IOException {
         byte[] body = WireCodec.encodeSubscribeBody(null, edn, args);
-        var request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/db/subscribe"))
+        var request = new Request.Builder()
+                .url(baseUrl + "/db/subscribe")
                 .header("Content-Type", CONTENT_TYPE)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .post(RequestBody.create(body, CONTENT_MEDIA_TYPE))
                 .build();
 
-        HttpResponse<InputStream> response;
-        try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("subscribe request interrupted", e);
-        }
+        Response response = httpClient.newCall(request).execute();
 
-        int status = response.statusCode();
+        int status = response.code();
         if (status < 200 || status >= 300) {
-            // Pre-stream error: decode the unary ErrorResponse body.
-            byte[] errorBody = response.body().readAllBytes();
-            if (errorBody.length > 0) {
-                try {
-                    var err = WireCodec.decodeErrorResponse(errorBody);
-                    throw new TriploxException(err.severity(), err.code(),
-                            err.message(), err.detail(), err.hint());
-                } catch (TriploxException e) {
-                    throw e;
-                } catch (Exception ignored) {
-                    // Fall through to a generic error.
+            try (response) {
+                // Pre-stream error: decode the unary ErrorResponse body.
+                byte[] errorBody = response.body() == null ? new byte[0] : response.body().bytes();
+                if (errorBody.length > 0) {
+                    try {
+                        var err = WireCodec.decodeErrorResponse(errorBody);
+                        throw new TriploxException(err.severity(), err.code(),
+                                err.message(), err.detail(), err.hint());
+                    } catch (TriploxException e) {
+                        throw e;
+                    } catch (Exception ignored) {
+                        // Fall through to a generic error.
+                    }
                 }
+                throw new IOException("HTTP error " + status);
             }
-            throw new IOException("HTTP error " + status);
         }
 
-        return Subscription.open(response.body());
+        if (response.body() == null) {
+            response.close();
+            throw new IOException("empty subscription response");
+        }
+
+        try {
+            return Subscription.open(response.body().byteStream(), response);
+        } catch (IOException | RuntimeException e) {
+            response.close();
+            throw e;
+        }
     }
 
     /**

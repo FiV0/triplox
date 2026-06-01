@@ -12,9 +12,6 @@
 
 (def names-query '{:find [?name] :where [[?e :name ?name]]})
 
-(defn- shared-node? []
-  (= "true" (System/getProperty "triplox.shared.node")))
-
 (deftest subscribe-returns-basis-and-times-out
   (with-open [conn (connect)]
     (api/transact conn name-schema)
@@ -24,11 +21,8 @@
       (is (= ::api/timeout (api/take! sub 200))))))
 
 (deftest subscribe-receives-delta
-  ;; subscribe + transact must share a node; the dev server isolates per
-  ;; connection. Set TRIPLOX_SHARED_NODE=true against a memory/local server.
-  (when (shared-node?)
-    (with-open [conn (connect)]
-      (api/transact conn name-schema)
-      (with-open [sub (api/subscribe conn names-query)]
-        (api/transact conn [{:name "Ivan"}])
-        (is (= [[["Ivan"] 1]] (api/take! sub 10000)))))))
+  (with-open [conn (connect)]
+    (api/transact conn name-schema)
+    (with-open [sub (api/subscribe conn names-query)]
+      (api/transact conn [{:name "Ivan"}])
+      (is (= [[["Ivan"] 1]] (api/take! sub 10000))))))
