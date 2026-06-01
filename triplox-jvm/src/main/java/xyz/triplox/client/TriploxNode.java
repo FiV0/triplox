@@ -20,7 +20,6 @@ import okhttp3.Response;
 public class TriploxNode implements AutoCloseable {
     private final OkHttpClient httpClient;
     private final String baseUrl;
-    private volatile Protocol lastProtocol;
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
     private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
@@ -34,11 +33,17 @@ public class TriploxNode implements AutoCloseable {
      * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        var client = new OkHttpClient.Builder()
-                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
-                .build();
+        return connect(host, port, httpClientBuilder().build());
+    }
+
+    static TriploxNode connect(String host, int port, OkHttpClient client) {
         String url = "http://" + host + ":" + port;
         return new TriploxNode(client, url);
+    }
+
+    static OkHttpClient.Builder httpClientBuilder() {
+        return new OkHttpClient.Builder()
+                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE));
     }
 
     /**
@@ -135,13 +140,8 @@ public class TriploxNode implements AutoCloseable {
         return sendAndCheck(request);
     }
 
-    Protocol lastProtocol() {
-        return lastProtocol;
-    }
-
     private byte[] sendAndCheck(Request request) throws IOException {
         try (Response response = httpClient.newCall(request).execute()) {
-            lastProtocol = response.protocol();
             int status = response.code();
             byte[] responseBody = response.body() == null ? new byte[0] : response.body().bytes();
             if (status >= 200 && status < 300) {
