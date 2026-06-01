@@ -1459,7 +1459,7 @@ mod tests {
     fn test_regexp_like_valid_query() {
         let parsed =
             parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "^B")]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_ok(), "expected ok, got {:?}", result);
     }
 
@@ -1467,7 +1467,7 @@ mod tests {
     fn test_regexp_like_invalid_pattern_rejected_at_plan_time() {
         let parsed =
             parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "[")]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1483,7 +1483,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name :where [?e :name ?name] [?e :pat ?pat] [(regexp_like ?name ?pat)]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("string literal"), "unexpected error: {}", msg);
@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn test_regexp_like_wrong_arity_rejected() {
         let parsed = parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expects 2 args"));
     }
@@ -1503,7 +1503,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name ?hit :where [?e :name ?name] [(regexp_like ?name "^B") ?hit]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1535,7 +1535,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name ?flag :where [?e :name ?name] [?e :age ?age] [(if (> ?age 30) ?age 0) ?flag]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_ok());
     }
 
@@ -1544,7 +1544,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e ?flag :where [?e :name "Alice"] [(if (> ?unbound 30) 1 0) ?flag]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }

@@ -268,9 +268,7 @@ fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<()
 /// Validate a query before execution.
 // TODO: Move query validation into the edn parsing crate so that invalid
 // queries are rejected at parse time rather than at execution time.
-pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
-    validate_in_bindings(&query.in_bindings, args)?;
-
+pub(crate) fn validate_query(query: &ParsedQuery) -> Result<(), Error> {
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no variables"));
@@ -291,6 +289,17 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
     if let Some(orders) = &query.order {
         resolve_order_columns(orders, &query.find_spec)?;
     }
+
+    Ok(())
+}
+
+/// Validate a one-shot query and its input arguments before execution.
+pub(crate) fn validate_query_with_args(
+    query: &ParsedQuery,
+    args: &[QueryArg],
+) -> Result<(), Error> {
+    validate_in_bindings(&query.in_bindings, args)?;
+    validate_query(query)?;
 
     // Variable limits must be bound in :in as a scalar non-negative Long.
     if let Limit::Variable(v) = &query.limit {
@@ -335,7 +344,7 @@ mod tests {
     #[test]
     fn test_validate_predicate_unbound_variable() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
@@ -343,7 +352,7 @@ mod tests {
     #[test]
     fn test_validate_predicate_no_variables() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -354,7 +363,19 @@ mod tests {
     #[test]
     fn test_validate_rejects_repeated_variable_in_single_pattern() {
         let parsed = parse_query("{:find [?x] :where [[?x :g/to ?x]]}");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Repeated variable ?x in a single pattern is not supported"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_query_with_args_rejects_repeated_variable_in_single_pattern() {
+        let parsed = parse_query("{:find [?x] :where [[?x :g/to ?x]]}");
+        let err = validate_query_with_args(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Repeated variable ?x in a single pattern is not supported"),
@@ -367,7 +388,7 @@ mod tests {
     fn test_validate_fn_unbound_input() {
         let parsed =
             parse_query(r#"[:find ?e :where [?e :name "Alice"] [(+ ?unbound 1) ?result]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
@@ -376,7 +397,7 @@ mod tests {
     fn test_validate_fn_input_must_precede_output() {
         // Output ?e is at level 0 (from Triple), input ?age is at level 1 — input doesn't precede output
         let parsed = parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]");
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must precede"));
     }
@@ -387,14 +408,14 @@ mod tests {
         // because query_variable_order reorders FnExpr clauses after Triples
         let parsed =
             parse_query("[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]");
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_order_var_not_in_find() {
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :order [?name :asc]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed).unwrap_err();
         assert!(
             err.to_string().contains("ORDER BY variable"),
             "unexpected error: {}",
@@ -406,7 +427,7 @@ mod tests {
     fn test_validate_limit_variable_requires_in_binding() {
         // Variable limit without :in binding should fail
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :limit ?limit]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query_with_args(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
                 .contains("not bound as a scalar in :in clause"),
@@ -419,7 +440,7 @@ mod tests {
     fn test_validate_limit_variable_with_in_binding() {
         let parsed = parse_query("[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]");
         // Providing a scalar Long arg should pass validation
-        assert!(validate_query(&parsed, &[QueryArg::Scalar(DataType::Long(10))]).is_ok());
+        assert!(validate_query_with_args(&parsed, &[QueryArg::Scalar(DataType::Long(10))]).is_ok());
     }
 
     #[test]
@@ -427,7 +448,8 @@ mod tests {
         let parsed =
             parse_query("[:find ?e :in [?limit ...] :where [?e :name ?name] :limit ?limit]");
         let err =
-            validate_query(&parsed, &[QueryArg::Collection(vec![DataType::Long(10)])]).unwrap_err();
+            validate_query_with_args(&parsed, &[QueryArg::Collection(vec![DataType::Long(10)])])
+                .unwrap_err();
         assert!(
             err.to_string()
                 .contains("not bound as a scalar in :in clause"),
@@ -439,7 +461,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_sexpr_in_aggregate() {
         let parsed = parse_query("[:find ?e (count (+ ?age 1)) :where [?e :age ?age]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Nested expressions are not supported"),
@@ -451,7 +473,7 @@ mod tests {
     #[test]
     fn test_validate_in_arg_count_mismatch() {
         let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query_with_args(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string().contains("1 binding(s) but 0 argument(s)"),
             "unexpected error: {}",
