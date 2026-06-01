@@ -1,26 +1,31 @@
 package xyz.triplox.client;
 
 import java.io.*;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.List;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 /**
  * HTTP/2 client for connecting to a Triplox server.
  *
- * <p>Thread-safe. The underlying {@link HttpClient} handles connection pooling
+ * <p>Thread-safe. The underlying {@link OkHttpClient} handles connection pooling
  * and HTTP/2 multiplexing, so a single {@code TriploxNode} can be shared
  * across threads.</p>
  */
 public class TriploxNode implements AutoCloseable {
-    private final HttpClient httpClient;
+    private final OkHttpClient httpClient;
     private final String baseUrl;
+    private volatile Protocol lastProtocol;
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
+    private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
 
-    private TriploxNode(HttpClient httpClient, String baseUrl) {
+    private TriploxNode(OkHttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
     }
@@ -29,8 +34,8 @@ public class TriploxNode implements AutoCloseable {
      * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        var client = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_2)
+        var client = new OkHttpClient.Builder()
+                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
                 .build();
         String url = "http://" + host + ":" + port;
         return new TriploxNode(client, url);
@@ -113,7 +118,8 @@ public class TriploxNode implements AutoCloseable {
      */
     @Override
     public void close() {
-        httpClient.close();
+        httpClient.dispatcher().executorService().shutdown();
+        httpClient.connectionPool().evictAll();
     }
 
     // ---------------------------------------------------------------
@@ -121,42 +127,41 @@ public class TriploxNode implements AutoCloseable {
     // ---------------------------------------------------------------
 
     private byte[] postBinary(String path, byte[] body) throws IOException {
-        var request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + path))
+        var request = new Request.Builder()
+                .url(baseUrl + path)
                 .header("Content-Type", CONTENT_TYPE)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .post(RequestBody.create(body, CONTENT_MEDIA_TYPE))
                 .build();
         return sendAndCheck(request);
     }
 
-    private byte[] sendAndCheck(HttpRequest request) throws IOException {
-        HttpResponse<byte[]> response;
-        try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("HTTP request interrupted", e);
-        }
+    Protocol lastProtocol() {
+        return lastProtocol;
+    }
 
-        int status = response.statusCode();
-        if (status >= 200 && status < 300) {
-            return response.body();
-        }
-
-        // Try to decode binary ErrorResponse from the body
-        byte[] responseBody = response.body();
-        if (responseBody != null && responseBody.length > 0) {
-            try {
-                var err = WireCodec.decodeErrorResponse(responseBody);
-                throw new TriploxException(err.severity(), err.code(),
-                        err.message(), err.detail(), err.hint());
-            } catch (TriploxException e) {
-                throw e;
-            } catch (Exception ignored) {
-                // Fall through to generic error
+    private byte[] sendAndCheck(Request request) throws IOException {
+        try (Response response = httpClient.newCall(request).execute()) {
+            lastProtocol = response.protocol();
+            int status = response.code();
+            byte[] responseBody = response.body() == null ? new byte[0] : response.body().bytes();
+            if (status >= 200 && status < 300) {
+                return responseBody;
             }
+
+            // Try to decode binary ErrorResponse from the body
+            if (responseBody.length > 0) {
+                try {
+                    var err = WireCodec.decodeErrorResponse(responseBody);
+                    throw new TriploxException(err.severity(), err.code(),
+                            err.message(), err.detail(), err.hint());
+                } catch (TriploxException e) {
+                    throw e;
+                } catch (Exception ignored) {
+                    // Fall through to generic error
+                }
+            }
+            throw new IOException("HTTP error " + status + ": " + new String(responseBody));
         }
-        throw new IOException("HTTP error " + status + ": " + new String(responseBody));
     }
 
 }
