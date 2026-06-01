@@ -2,6 +2,7 @@ package xyz.triplox.client;
 
 import java.io.*;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -19,6 +20,7 @@ import okhttp3.Response;
  */
 public class TriploxNode implements AutoCloseable {
     private final OkHttpClient httpClient;
+    private final OkHttpClient subscriptionHttpClient;
     private final String baseUrl;
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
@@ -26,7 +28,14 @@ public class TriploxNode implements AutoCloseable {
 
     private TriploxNode(OkHttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
+        this.subscriptionHttpClient = subscriptionClientFor(httpClient);
         this.baseUrl = baseUrl;
+    }
+
+    static OkHttpClient subscriptionClientFor(OkHttpClient httpClient) {
+        return httpClient.newBuilder()
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .build();
     }
 
     /**
@@ -118,7 +127,7 @@ public class TriploxNode implements AutoCloseable {
                 .post(RequestBody.create(body, CONTENT_MEDIA_TYPE))
                 .build();
 
-        Response response = httpClient.newCall(request).execute();
+        Response response = subscriptionHttpClient.newCall(request).execute();
 
         int status = response.code();
         if (status < 200 || status >= 300) {

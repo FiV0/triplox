@@ -25,9 +25,9 @@ import org.msgpack.core.MessageUnpacker;
 public final class Subscription implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 128;
     private static final Object END = new Object();
+    private static final short INTERNAL_ERROR = 4000;
 
     private final TxBasis basis;
-    private final InputStream stream;
     private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
@@ -36,10 +36,8 @@ public final class Subscription implements AutoCloseable {
     private volatile boolean drained = false;
     private volatile TriploxException terminalError;
 
-    private Subscription(
-            TxBasis basis, InputStream stream, Closeable closeable, MessageUnpacker unpacker) {
+    Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
         this.basis = basis;
-        this.stream = stream;
         this.closeable = closeable;
         this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
         this.reader.setDaemon(true);
@@ -58,7 +56,7 @@ public final class Subscription implements AutoCloseable {
         MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(stream);
         SubscriptionFrame first = WireCodec.decodeSubscriptionFrame(unpacker);
         if (first instanceof SubscriptionFrame.Open open) {
-            return new Subscription(open.basis(), stream, closeable, unpacker);
+            return new Subscription(open.basis(), closeable, unpacker);
         }
         closeable.close();
         if (first instanceof SubscriptionFrame.Error error) {
@@ -136,7 +134,15 @@ public final class Subscription implements AutoCloseable {
                 // Open (unexpected mid-stream) and Unknown frames are ignored.
             }
         } catch (IOException e) {
-            // Stream closed or ended; signal end below.
+            if (!closed) {
+                terminalError = new TriploxException(
+                        MessageTypes.SEVERITY_ERROR,
+                        INTERNAL_ERROR,
+                        "subscription stream failed: " + e.getMessage(),
+                        null,
+                        null,
+                        e);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
