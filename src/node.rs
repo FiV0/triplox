@@ -2416,7 +2416,7 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("placeholders in entity position"),
+            err.to_string().contains("Placeholders in entity position"),
             "unexpected error: {}",
             err
         );
@@ -2433,7 +2433,7 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            err.to_string().contains("placeholders in value position"),
+            err.to_string().contains("Placeholders in value position"),
             "unexpected error: {}",
             err
         );

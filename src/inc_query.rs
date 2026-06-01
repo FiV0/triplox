@@ -12,6 +12,7 @@ use crate::codec::Encode;
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
 use crate::query::non_integer_constant_to_datatype;
+use crate::query_validation::validate_query;
 use crate::schema::Schema;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,9 +47,10 @@ pub(crate) struct JoinPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    reject_unsupported_query_shape(query)?;
+    reject_incremental_query_parity_gaps(query)?;
+    validate_query(query, &[])?;
 
-    let find_vars = find_vars(&query.find_spec)?;
+    let find_vars = find_vars(&query.find_spec);
     let patterns = query
         .where_clauses
         .iter()
@@ -82,7 +84,8 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     })
 }
 
-fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
+// TODO: Delete this when incremental queries reach one-shot query parity.
+fn reject_incremental_query_parity_gaps(query: &ParsedQuery) -> Result<()> {
     if !query.with.is_empty() {
         bail!("Incremental queries do not support :with");
     }
@@ -95,50 +98,54 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if query.order.is_some() {
         bail!("Incremental queries do not support :order");
     }
+    match &query.find_spec {
+        FindSpec::FindRel(elements) => {
+            for element in elements {
+                if !matches!(element, Element::Variable(_)) {
+                    bail!("Incremental queries support only variables in :find");
+                }
+            }
+        }
+        _ => bail!("Incremental queries support only relational :find"),
+    }
     for clause in &query.where_clauses {
         match clause {
-            WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern)?,
+            WhereClause::Pattern(pattern) => {
+                if pattern.source.is_some() {
+                    bail!("Incremental query patterns do not support source variables");
+                }
+                if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
+                    bail!("Incremental query patterns do not support tx positions");
+                }
+                if !matches!(
+                    pattern.attribute,
+                    PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
+                ) {
+                    bail!("Incremental query pattern attributes must be constant idents or entids");
+                }
+            }
             _ => bail!("Incremental queries currently support only triple patterns in :where"),
         }
     }
     Ok(())
 }
 
-fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
-    if matches!(pattern.entity, PatternNonValuePlace::Placeholder) {
-        bail!("Incremental query patterns do not support placeholders in entity position");
-    }
-    if matches!(pattern.value, PatternValuePlace::Placeholder) {
-        bail!("Incremental query patterns do not support placeholders in value position");
-    }
-    Ok(())
-}
-
-fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
+fn find_vars(find_spec: &FindSpec) -> Vec<Variable> {
     let elements = match find_spec {
         FindSpec::FindRel(elements) => elements,
-        _ => bail!("Incremental queries support only relational :find"),
+        _ => unreachable!("non-relational :find is rejected before planning"),
     };
 
     elements
         .iter()
         .map(|element| match element {
-            Element::Variable(var) => Ok(var.clone()),
-            _ => Err(anyhow!(
-                "Incremental queries support only variables in :find"
-            )),
+            Element::Variable(var) => var.clone(),
+            _ => unreachable!("non-variable :find elements are rejected before planning"),
         })
         .collect()
 }
 
 fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
-    if pattern.source.is_some() {
-        bail!("Incremental query patterns do not support source variables");
-    }
-    if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
-        bail!("Incremental query patterns do not support tx positions");
-    }
-
     let attribute = match &pattern.attribute {
         PatternNonValuePlace::Ident(ident) => {
             schema
@@ -148,13 +155,13 @@ fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
         }
         PatternNonValuePlace::Entid(entid) => *entid,
         PatternNonValuePlace::Variable(_) | PatternNonValuePlace::Placeholder => {
-            bail!("Incremental query pattern attributes must be constant idents or entids")
+            unreachable!("variable and placeholder attributes are rejected before planning")
         }
     };
 
-    let entity = non_value_slot(&pattern.entity)?;
+    let entity = non_value_slot(&pattern.entity);
     let value = value_slot(&pattern.value)?;
-    let output_vars = pattern_output_vars(&entity, &value)?;
+    let output_vars = pattern_output_vars(&entity, &value);
 
     Ok(PatternPlan {
         attribute,
@@ -164,18 +171,18 @@ fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
     })
 }
 
-fn non_value_slot(place: &PatternNonValuePlace) -> Result<PatternSlot> {
+fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
     match place {
-        PatternNonValuePlace::Variable(var) => Ok(PatternSlot::Variable(var.clone())),
+        PatternNonValuePlace::Variable(var) => PatternSlot::Variable(var.clone()),
         PatternNonValuePlace::Entid(entid) => {
-            Ok(PatternSlot::Constant(DataType::Long(*entid).encode()))
+            PatternSlot::Constant(DataType::Long(*entid).encode())
         }
         // TODO This needs proper ident resolution for refs
-        PatternNonValuePlace::Ident(ident) => Ok(PatternSlot::Constant(
-            DataType::Keyword(ident.as_ref().clone()).encode(),
-        )),
+        PatternNonValuePlace::Ident(ident) => {
+            PatternSlot::Constant(DataType::Keyword(ident.as_ref().clone()).encode())
+        }
         PatternNonValuePlace::Placeholder => {
-            bail!("Incremental query patterns do not support placeholders in entity position")
+            unreachable!("entity placeholders are rejected before planning")
         }
     }
 }
@@ -196,27 +203,20 @@ fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
                 .encode(),
         )),
         PatternValuePlace::Placeholder => {
-            bail!("Incremental query patterns do not support placeholders in value position")
+            unreachable!("value placeholders are rejected before planning")
         }
     }
 }
 
-fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Result<Vec<Variable>> {
+fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Vec<Variable> {
     let mut vars = Vec::new();
     if let PatternSlot::Variable(var) = entity {
         vars.push(var.clone());
     }
     if let PatternSlot::Variable(var) = value {
-        if vars.contains(var) {
-            // TODO move this to some common validation step for one-shot + inc queries
-            bail!(
-                "Repeated variable {} inside one triple pattern is not supported",
-                var
-            );
-        }
         vars.push(var.clone());
     }
-    Ok(vars)
+    vars
 }
 
 fn collect_variables(patterns: &[PatternPlan]) -> Vec<Variable> {
@@ -447,7 +447,7 @@ mod tests {
     fn rejects_entity_placeholder() {
         assert_plan_err(
             "[:find ?name :where [_ :name ?name]]",
-            "placeholders in entity position",
+            "Placeholders in entity position",
         );
     }
 
@@ -455,7 +455,7 @@ mod tests {
     fn rejects_value_placeholder() {
         assert_plan_err(
             "[:find ?e :where [?e :name _]]",
-            "placeholders in value position",
+            "Placeholders in value position",
         );
     }
 
@@ -463,14 +463,14 @@ mod tests {
     fn rejects_repeated_variable_pattern() {
         assert_plan_err(
             "{:find [?x] :where [[?x :follows ?x]]}",
-            "Repeated variable ?x",
+            "Repeated variable ?x in a single pattern is not supported",
         );
     }
 
     #[test]
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
+            r#"[:find ?e :where [?e :name "Alice"] [(< ?e 2)]]"#,
             "only triple patterns",
         );
         assert_plan_err(
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn rejects_order_limit_and_in() {
         assert_plan_err(
-            "[:find ?e :where [?e :name ?name] :order [?name :asc]]",
+            "[:find ?name :where [?e :name ?name] :order [?name :asc]]",
             ":order",
         );
         assert_plan_err("[:find ?e :where [?e :name ?name] :limit 10]", ":limit");
