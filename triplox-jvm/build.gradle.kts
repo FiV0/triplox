@@ -34,6 +34,7 @@ dependencies {
 
     // MessagePack wire codec
     implementation("org.msgpack:msgpack-core:0.9.8")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // logging
     implementation("org.clojure", "tools.logging", "1.3.0")
