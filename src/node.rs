@@ -1722,6 +1722,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_schema_attribute_ident_alias_can_be_used_for_transactions_and_queries() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let name_id = node
+            .indexer
+            .read()
+            .await
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        let alias_result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(name_id),
+                attribute: kw!(:db/ident),
+                value: DataType::Keyword(kw!(:person/name)),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(alias_result, TransactionResult::TxCommited(_)));
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:person/name),
+            value: "Alice".into(),
+        }])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let alias_result = db
+            .query("[:find ?name :where [?e :person/name ?name]]")
+            .await
+            .unwrap();
+        assert_eq!(alias_result, vec![vec![DataType::String("Alice".into())]]);
+
+        let canonical_result = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
+        assert_eq!(
+            canonical_result,
+            vec![vec![DataType::String("Alice".into())]]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_keyword_value_comparison_name_first() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
