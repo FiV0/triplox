@@ -33,17 +33,10 @@ public class TriploxNode implements AutoCloseable {
      * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        return connect(host, port, httpClientBuilder().build());
-    }
-
-    static TriploxNode connect(String host, int port, OkHttpClient client) {
-        String url = "http://" + host + ":" + port;
-        return new TriploxNode(client, url);
-    }
-
-    static OkHttpClient.Builder httpClientBuilder() {
-        return new OkHttpClient.Builder()
-                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE));
+        var client = new OkHttpClient.Builder()
+                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
+                .build();
+        return new TriploxNode(client, "http://" + host + ":" + port);
     }
 
     /**
