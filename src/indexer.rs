@@ -327,21 +327,25 @@ impl Indexer {
         self.validate_unique_constraints(&datoms).await?;
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 7. Write indices + commit
+        // 7. Prepare schema update before writing to avoid leaking rejected datoms
+        let schema_update = if validation.schema_changes_detected {
+            Some(self.metadata.schema.prepare_schema_update(&datoms)?)
+        } else {
+            None
+        };
+
+        // 8. Write indices + commit
         let mut batch = WriteBatch::new();
         write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
-        // 8. Apply on success only
+        // 9. Apply on success only
         self.metadata.partition_map = pending_pm;
-        if validation.schema_changes_detected {
-            let schema_update = self.metadata.schema.prepare_schema_update(&datoms)?;
-            if !schema_update.is_empty() {
-                self.metadata.schema.apply_schema_update(schema_update);
-                self.metadata.advance_generation();
-            }
+        if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
+            self.metadata.schema.apply_schema_update(schema_update);
+            self.metadata.advance_generation();
         }
 
         // Update latest indexed tx and broadcast completion
@@ -1414,6 +1418,12 @@ mod tests {
             .schema
             .get_attribute(&kw!(:name))
             .unwrap();
+        let value_type_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:db/valueType))
+            .unwrap()
+            .0;
         assert_eq!(attr.value_type, crate::schema::ValueType::String);
 
         let tx = TxKey {
@@ -1447,6 +1457,23 @@ mod tests {
             .get_attribute(&kw!(:name))
             .unwrap();
         assert_eq!(attr.value_type, crate::schema::ValueType::String);
+
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (entity, attribute, value, _tx, op) = eav_key_to_parts(kv.key)?;
+            assert_ne!(
+                (entity, attribute, value, op),
+                (
+                    DataType::Long(name_id),
+                    value_type_id,
+                    DataType::Long(DB_TYPE_LONG),
+                    codec::ADD,
+                ),
+                "rejected schema update must not be written to EAV"
+            );
+        }
 
         Ok(())
     }
