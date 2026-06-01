@@ -17,7 +17,7 @@ use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::query::{execute_query, QueryResult};
-use crate::query_validation::validate_query_with_args;
+use crate::query_validation::validate_query;
 use crate::schema::{IdentMap, Schema};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
@@ -111,7 +111,7 @@ where
         query: &ParsedQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
-        validate_query_with_args(query, args)?;
+        validate_query(query, args)?;
 
         let sdb = self.sdb.clone();
         let handle = self.handle.clone();

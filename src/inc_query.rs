@@ -47,8 +47,8 @@ pub(crate) struct JoinPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    validate_query(query)?;
     reject_incremental_query_parity_gaps(query)?;
+    validate_query(query, &[])?;
 
     let find_vars = find_vars(&query.find_spec);
     let patterns = query
