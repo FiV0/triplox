@@ -300,7 +300,7 @@ async fn subscribe<L: TxLog + 'static>(
         )
     })?;
 
-    // v0.2 subscriptions start at the latest indexed basis only.
+    // subscriptions start at the latest indexed basis only (for now).
     if request.db.is_some() {
         return Err(ApiError::bad_request(
             ErrorCode::InvalidQuery,
