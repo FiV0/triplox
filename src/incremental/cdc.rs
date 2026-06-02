@@ -212,7 +212,7 @@ mod tests {
         let indexer = Arc::new(RwLock::new(Indexer::new(
             slate.db.clone(),
             Metadata::new(test_schema(), PartitionMap::new()),
-            None,
+            *crate::bootstrap::BOOTSTRAP_TX_BASIS,
         )));
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),

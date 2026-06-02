@@ -155,7 +155,7 @@ impl Node<MemoryLog> {
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
-            Some(bootstrap_basis),
+            bootstrap_basis,
         )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();
@@ -202,12 +202,10 @@ impl Node<FileLog> {
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
             log.ensure_bootstrap_record().await?;
         }
-        let latest_indexed_tx = Some(latest_indexed);
-
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
-            latest_indexed_tx,
+            latest_indexed,
         )));
 
         let after_tx_id = Some(latest_indexed.tx_key.tx_id);

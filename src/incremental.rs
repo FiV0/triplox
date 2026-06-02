@@ -142,11 +142,7 @@ impl IncrementalQueryService {
         let _registration_guard = self.registration_gate.lock().await;
         let (basis, schema) = {
             let indexer = indexer.read().await;
-            let basis = indexer.latest_tx_basis().ok_or_else(|| {
-                // TODO(#278, #134): make initialized nodes always expose a latest indexed basis.
-                anyhow!("Indexer has no latest indexed transaction basis")
-            })?;
-            (basis, indexer.metadata().schema.clone())
+            (indexer.latest_tx_basis(), indexer.metadata().schema.clone())
         };
         let plan = plan_query(&query, &schema)?;
         let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;

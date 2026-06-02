@@ -30,7 +30,7 @@ type TxCompletionMessage = (TxKey, Option<TxBasis>, Result<(), Arc<Error>>);
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
-    latest_indexed_tx: Option<TxBasis>,
+    latest_indexed_tx: TxBasis,
     tx_completion_sender: broadcast::Sender<TxCompletionMessage>,
 }
 
@@ -247,7 +247,7 @@ pub(crate) fn build_tx_entity_datoms(
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: Option<TxBasis>) -> Self {
+    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: TxBasis) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(1024);
         Indexer {
             slatedb,
@@ -261,7 +261,7 @@ impl Indexer {
         &self.metadata
     }
 
-    pub(crate) fn latest_tx_basis(&self) -> Option<TxBasis> {
+    pub(crate) fn latest_tx_basis(&self) -> TxBasis {
         self.latest_indexed_tx
     }
 
@@ -361,7 +361,7 @@ impl Indexer {
 
         // Update latest indexed tx and broadcast completion
         let basis = TxBasis { tx_key, tx_eid };
-        self.latest_indexed_tx = Some(basis);
+        self.latest_indexed_tx = basis;
 
         if let Err(e) = self
             .tx_completion_sender
@@ -581,7 +581,7 @@ impl Indexer {
         // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
         let basis = TxBasis { tx_key, tx_eid };
-        self.latest_indexed_tx = Some(basis);
+        self.latest_indexed_tx = basis;
         Ok(basis)
     }
 }
@@ -591,7 +591,7 @@ impl Indexer {
 /// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
-    latest_tx: Option<TxBasis>,
+    latest_tx: TxBasis,
     rx: broadcast::Receiver<TxCompletionMessage>,
 }
 
@@ -605,20 +605,18 @@ impl TxWaiter {
     /// `Err` on abort or if the indexer shuts down.
     pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
         // Fast path: already indexed at subscription time
-        if let Some(latest_basis) = self.latest_tx {
-            if tx_key == latest_basis.tx_key {
-                return Ok(TxCompletion {
-                    basis: Some(latest_basis),
-                    // TODO: We are not filling in the error here if there was a semantic error.
-                    result: Ok(()),
-                });
-            }
-            if tx_key < latest_basis.tx_key {
-                return Ok(TxCompletion {
-                    basis: None,
-                    result: Ok(()),
-                });
-            }
+        if tx_key == self.latest_tx.tx_key {
+            return Ok(TxCompletion {
+                basis: Some(self.latest_tx),
+                // TODO: We are not filling in the error here if there was a semantic error.
+                result: Ok(()),
+            });
+        }
+        if tx_key < self.latest_tx.tx_key {
+            return Ok(TxCompletion {
+                basis: None,
+                result: Ok(()),
+            });
         }
 
         // TODO: The >= check can return a different tx's result if the
@@ -654,10 +652,8 @@ impl TxWaiter {
     /// Wait until indexing has reached `tx_key`, regardless of whether that
     /// transaction committed or aborted.
     pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
-        if let Some(latest_basis) = self.latest_tx {
-            if tx_key.tx_id <= latest_basis.tx_key.tx_id {
-                return Ok(());
-            }
+        if tx_key.tx_id <= self.latest_tx.tx_key.tx_id {
+            return Ok(());
         }
 
         loop {
@@ -808,7 +804,11 @@ mod tests {
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
         let metadata = crate::bootstrap::init_db(slate).await.unwrap();
-        let mut indexer = Indexer::new(slate.db.clone(), metadata, None);
+        let mut indexer = Indexer::new(
+            slate.db.clone(),
+            metadata,
+            *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+        );
         let tx_key_0 = TxKey {
             tx_id: 0,
             system_time: st_from_unix_epoch(1),
@@ -1053,7 +1053,7 @@ mod tests {
         let indexer = Indexer::new(
             slate.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
-            None,
+            *crate::bootstrap::BOOTSTRAP_TX_BASIS,
         );
 
         let tx_key = TxKey {
@@ -1142,7 +1142,7 @@ mod tests {
         let mut indexer = Indexer::new(
             components.db.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
-            None,
+            *crate::bootstrap::BOOTSTRAP_TX_BASIS,
         );
         let tx_key = TxKey {
             tx_id: 1,
