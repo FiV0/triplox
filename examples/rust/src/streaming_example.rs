@@ -19,14 +19,8 @@ use triplox::ops::{DataType, TxOp};
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
     TxOp::put(vec![
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
-        (
-            kw!(:db/valueType),
-            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
-        ),
-        (
-            kw!(:db/cardinality),
-            DataType::Keyword(kw!(:db.cardinality/one)),
-        ),
+        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
+        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
     ])
 }
 
