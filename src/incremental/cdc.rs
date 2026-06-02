@@ -93,9 +93,10 @@ where
         let seq = tx.seq;
         let schema = node.schema().await;
         let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
-        let Some(basis) = tx_basis_from_datoms(&datoms) else {
+        if datoms.is_empty() {
             continue;
-        };
+        }
+        let basis = tx_basis_from_datoms(&datoms)?;
         let tuples = datoms_to_tuples(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
         service.apply_triples(Some(basis), seq, tuples).await?;
@@ -106,7 +107,7 @@ where
     Ok(())
 }
 
-pub(crate) fn tx_basis_from_datoms(datoms: &[Datom]) -> Option<TxBasis> {
+pub(crate) fn tx_basis_from_datoms(datoms: &[Datom]) -> Result<TxBasis> {
     let mut by_entity: HashMap<i64, (Option<i64>, Option<crate::clock::Instant>)> = HashMap::new();
     for datom in datoms {
         let entry = by_entity.entry(datom.entity).or_default();
@@ -123,15 +124,17 @@ pub(crate) fn tx_basis_from_datoms(datoms: &[Datom]) -> Option<TxBasis> {
 
     by_entity
         .into_iter()
-        .find_map(|(tx_eid, (tx_id, instant))| {
-            Some(TxBasis {
+        .find_map(|(tx_eid, (tx_id, instant))| match (tx_id, instant) {
+            (Some(tx_id), Some(instant)) => Some(TxBasis {
                 tx_key: TxKey {
-                    tx_id: tx_id?,
-                    system_time: instant?,
+                    tx_id,
+                    system_time: instant,
                 },
                 tx_eid,
-            })
+            }),
+            _ => None,
         })
+        .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction basis"))
 }
 
 pub(crate) async fn scan_current_triples<D>(
@@ -202,6 +205,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::clock::st_from_unix_epoch;
     use crate::indexer::Indexer;
     use crate::metadata::{Metadata, PartitionMap};
     use crate::schema::{Attribute, Schema, ValueType};
@@ -271,6 +275,54 @@ mod tests {
             ident_map,
             attribute_map,
         }
+    }
+
+    #[test]
+    fn tx_basis_from_datoms_extracts_transaction_basis() {
+        let instant = st_from_unix_epoch(123);
+        let datoms = [
+            Datom {
+                entity: 99,
+                attribute: kw!(:db/txId),
+                value: DataType::Long(42),
+                op: DatomOp::Assert,
+            },
+            Datom {
+                entity: 99,
+                attribute: kw!(:db/txInstant),
+                value: DataType::Instant(instant),
+                op: DatomOp::Assert,
+            },
+        ];
+
+        let basis = tx_basis_from_datoms(&datoms).unwrap();
+
+        assert_eq!(
+            basis,
+            TxBasis {
+                tx_key: TxKey {
+                    tx_id: 42,
+                    system_time: instant,
+                },
+                tx_eid: 99,
+            }
+        );
+    }
+
+    #[test]
+    fn tx_basis_from_datoms_errors_without_transaction_basis() {
+        let datoms = [Datom {
+            entity: 42,
+            attribute: kw!(:name),
+            value: DataType::String("Alice".to_string()),
+            op: DatomOp::Assert,
+        }];
+
+        let err = tx_basis_from_datoms(&datoms).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("CDC transaction datoms missing transaction basis"));
     }
 
     #[test]
