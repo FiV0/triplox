@@ -1,5 +1,5 @@
 use crate::clock::SystemTimeSource;
-use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 use anyhow::Result;
 use log::warn;
@@ -37,6 +37,34 @@ impl FileLog {
             }),
             tx_sender: broadcast::channel(1024).0,
         })
+    }
+}
+
+impl TxLog for FileLog {
+    async fn ensure_bootstrap_record(&self) -> Result<()> {
+        let bootstrap_record = BOOTSTRAP_RECORD.clone();
+
+        match self.read_txs_after(None, 1).await?.first() {
+            Some(record) if record == &bootstrap_record => return Ok(()),
+            Some(record) => {
+                return Err(anyhow::anyhow!(
+                    "file log starts with non-bootstrap record {:?}",
+                    record.tx_key
+                ));
+            }
+            None => {}
+        }
+
+        let mut state = self.state.lock().await;
+        if state.file.stream_position()? != 0 {
+            return Err(anyhow::anyhow!(
+                "file log has bytes but no readable bootstrap record"
+            ));
+        }
+        bincode::serialize_into(&mut state.file, &bootstrap_record)?;
+        state.file.flush()?;
+        state.file.get_ref().sync_data()?;
+        Ok(())
     }
 }
 
@@ -101,8 +129,6 @@ impl TxLogWriter for FileLog {
         record.tx_key
     }
 }
-
-impl TxLog for FileLog {}
 
 #[cfg(test)]
 mod tests {

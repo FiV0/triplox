@@ -5,7 +5,7 @@ use std::cmp::min;
 use crate::clock::SystemTimeSource;
 use crate::error::TriploxError;
 use crate::log::TxId;
-use crate::log::{Record, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{Record, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::logging::init;
 use crate::transaction::TxKey;
 use anyhow::Result;
@@ -27,6 +27,24 @@ impl MemoryLog {
         MemoryLog {
             state: RwLock::new(MemoryLogState { txs: vec![], clock }),
             tx_sender: broadcast::channel(1024).0,
+        }
+    }
+}
+
+impl TxLog for MemoryLog {
+    async fn ensure_bootstrap_record(&self) -> Result<()> {
+        let bootstrap_record = BOOTSTRAP_RECORD.clone();
+        let mut state = self.state.write().await;
+        match state.txs.first() {
+            Some(record) if record == &bootstrap_record => Ok(()),
+            Some(record) => Err(anyhow::anyhow!(
+                "memory log starts with non-bootstrap record {:?}",
+                record.tx_key
+            )),
+            None => {
+                state.txs.push(bootstrap_record);
+                Ok(())
+            }
         }
     }
 }
@@ -73,8 +91,6 @@ impl TxLogWriter for MemoryLog {
         tx_key
     }
 }
-
-impl TxLog for MemoryLog {}
 
 #[cfg(test)]
 mod tests {

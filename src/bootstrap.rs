@@ -12,7 +12,7 @@ use crate::partition::{
 use crate::schema::{bootstrap_schema, bootstrap_schema_tx, load_schema_from_indices, Schema};
 use crate::slate::{SlateComponents, DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
-use crate::transaction::TxKey;
+use crate::transaction::{TxBasis, TxKey};
 use crate::tx;
 use crate::util::concat_bytes;
 use slatedb::{Db, WriteBatch};
@@ -25,15 +25,18 @@ const META_KEY_VERSION: &[u8] = b"version";
 const DB_PARTITION_COUNTER_FLOOR: i64 = 1000;
 
 /// Entity ID for the bootstrap transaction (TX_PARTITION, counter 0).
-/// Matches `make_entity_id(TX_PARTITION, 0)`; expressed as a const so
-/// `node::from_slate_and_log` can compare without recomputing.
+/// Matches `make_entity_id(TX_PARTITION, 0)`.
 pub(crate) const BOOTSTRAP_TX_EID: i64 = (TX_PARTITION as i64) << COUNTER_BITS;
 
-/// TxKey written for the bootstrap transaction. `tx_id=0` and `system_time=epoch`
-/// collide with the first FileLog tx today; see TODO(#97).
+/// TxKey reserved for the bootstrap transaction and the initial empty log record.
 pub(crate) static BOOTSTRAP_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
     tx_id: 0,
     system_time: st_from_unix_epoch(0),
+});
+
+pub(crate) static BOOTSTRAP_TX_BASIS: LazyLock<TxBasis> = LazyLock::new(|| TxBasis {
+    tx_key: *BOOTSTRAP_TX_KEY,
+    tx_eid: BOOTSTRAP_TX_EID,
 });
 
 /// Scan each partition's EAV prefix and return per-partition counters (max counter + 1).
@@ -101,8 +104,7 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             // Fresh DB — build schema from constants, then bootstrap
             let bootstrap_schema = bootstrap_schema();
             let tx_ops = bootstrap_schema_tx();
-            let tx_key = *BOOTSTRAP_TX_KEY;
-            let tx_eid = BOOTSTRAP_TX_EID;
+            let basis = *BOOTSTRAP_TX_BASIS;
             let mut boot_pm = PartitionMap::new();
 
             // Same normalization and tempid-resolution stages as the indexer.
@@ -114,7 +116,12 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
                 tempids::resolve_tempids(with_tempids, &bootstrap_schema, &slate.db, &mut boot_pm)
                     .await
                     .unwrap();
-            datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
+            datoms.extend(build_tx_entity_datoms(
+                basis.tx_eid,
+                basis.tx_key,
+                true,
+                None,
+            ));
 
             // Validate against pre-built schema, then derive the bootstrap schema delta.
             let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();
@@ -134,7 +141,7 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             );
 
             let mut batch = WriteBatch::new();
-            write_index_entries(&mut batch, &datoms, &bootstrap_schema, tx_eid).unwrap();
+            write_index_entries(&mut batch, &datoms, &bootstrap_schema, basis.tx_eid).unwrap();
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             batch.put(&version_key, version.as_bytes());

@@ -151,14 +151,21 @@ impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
+        let bootstrap_basis = *crate::bootstrap::BOOTSTRAP_TX_BASIS;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
-            None,
+            bootstrap_basis,
         )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
+        log.ensure_bootstrap_record().await.unwrap();
 
-        let subscription = subscribe(log.clone(), None, indexer.clone()).await;
+        let subscription = subscribe(
+            log.clone(),
+            Some(bootstrap_basis.tx_key.tx_id),
+            indexer.clone(),
+        )
+        .await;
         let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
@@ -190,28 +197,18 @@ impl Node<FileLog> {
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
-        // Determine the latest already-indexed tx_id so we skip replaying it
-        // and restore the indexer's in-memory state for TxWaiter fast-path.
         let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
-        // Bootstrap and the first FileLog transaction both currently use tx_id=0,
-        // so we can't disambiguate them by tx_id alone. Use the entity ID instead:
-        // only advance the log cursor past tx_id=0 once a tx entity beyond bootstrap
-        // has been indexed; otherwise replay the log from the start so the first
-        // user tx isn't skipped.
-        let latest_indexed_tx = if latest_indexed.tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
-            Some(latest_indexed)
-        } else {
-            None
-        };
-
+        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
+        if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
+            log.ensure_bootstrap_record().await?;
+        }
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
-            latest_indexed_tx,
+            latest_indexed,
         )));
-        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
 
-        let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
+        let after_tx_id = Some(latest_indexed.tx_key.tx_id);
 
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
@@ -454,7 +451,7 @@ mod tests {
 
         // submit_tx returns immediately with a TxKey
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
-        assert_eq!(tx_key.tx_id, 1);
+        assert_eq!(tx_key.tx_id, 2);
 
         // Wait for indexer to process the transaction
         waiter
@@ -1253,7 +1250,7 @@ mod tests {
             .query("[:find ?tx :where [?tx :db/txId 0]]")
             .await
             .unwrap();
-        assert_eq!(txs.len(), 2);
+        assert_eq!(txs.len(), 1);
 
         node.close().await.unwrap();
     }
@@ -1450,7 +1447,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_first_submitted_tx_temporarily_shares_bootstrap_tx_id() {
+    async fn test_first_submitted_tx_does_not_share_bootstrap_tx_id() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -1460,7 +1457,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 1);
 
         node.close().await.unwrap();
     }
@@ -1928,7 +1925,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires bootstrap latest_tx_basis to be visible through the indexer"]
     async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
         let node = Node::memory_node().await;
 

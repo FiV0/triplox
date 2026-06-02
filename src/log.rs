@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use log::{error, info, trace, warn};
@@ -16,6 +16,11 @@ pub struct Record {
     pub tx_key: TxKey,
     pub record: Vec<u8>,
 }
+
+pub(crate) static BOOTSTRAP_RECORD: LazyLock<Record> = LazyLock::new(|| Record {
+    tx_key: crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key,
+    record: Vec::new(),
+});
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait Subscriber: Send + Sync {
@@ -152,7 +157,9 @@ pub trait TxLogWriter: Send + Sync + 'static {
     fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = TxKey> + Send;
 }
 
-pub trait TxLog: TxLogReader + TxLogWriter {}
+pub trait TxLog: TxLogReader + TxLogWriter {
+    fn ensure_bootstrap_record(&self) -> impl Future<Output = Result<()>> + Send;
+}
 
 // Mock subscriber for testing
 #[allow(unused)]
