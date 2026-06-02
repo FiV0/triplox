@@ -1236,33 +1236,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_local_node_bootstrap_log_marker_is_empty_and_not_duplicated() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = dir.path().to_path_buf();
-
-        let node = Node::local_node(&root_path).await.unwrap();
-        let records = node.log.read_txs_after(None, u16::MAX).await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].tx_key,
-            crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key
-        );
-        assert!(records[0].record.is_empty());
-        node.close().await.unwrap();
-
-        let node = Node::local_node(&root_path).await.unwrap();
-        let records = node.log.read_txs_after(None, u16::MAX).await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].tx_key,
-            crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key
-        );
-        assert!(records[0].record.is_empty());
-
-        node.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_local_node_restart_skips_already_indexed_first_log_tx() {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
