@@ -16,10 +16,10 @@
                          :where [[?e :name ?name]]}))
 
 (tc/basis sub)
-;; => {:tx-id 2,
+;; => {:tx-id 1,
 ;;     :system-time
-;;     #object[java.time.Instant 0x3d4ffb91 "2026-06-02T13:26:00.271003Z"],
-;;     :tx-eid 4398046511106}
+;;     #object[java.time.Instant 0x64cae1b "2026-06-02T13:52:43.058559Z"],
+;;     :tx-eid 4398046511105}
 
 
 ;; Transact a name; the subscription receives a delta.

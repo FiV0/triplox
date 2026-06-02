@@ -340,7 +340,7 @@ async fn subscribe<L: TxLog + 'static>(
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
-        subscription_body(open_frame, subscription.deltas),
+        subscription_body(open_frame, subscription.deltas, state.shutdown.clone()),
     )
         .into_response())
 }
@@ -350,8 +350,12 @@ enum SubscribeBody {
     Open {
         open_frame: Vec<u8>,
         deltas: mpsc::Receiver<IncrementalQueryDelta>,
+        shutdown: CancellationToken,
     },
-    Streaming(mpsc::Receiver<IncrementalQueryDelta>),
+    Streaming {
+        deltas: mpsc::Receiver<IncrementalQueryDelta>,
+        shutdown: CancellationToken,
+    },
     Closed,
 }
 
@@ -359,37 +363,58 @@ enum SubscribeBody {
 /// per received delta (write-one/recv-one, so HTTP/2 flow control backpressures the
 /// engine instead of buffering unboundedly). The receiver lives in the stream, so a
 /// dropped response drops it and the engine tears the query down.
-fn subscription_body(open_frame: Vec<u8>, deltas: mpsc::Receiver<IncrementalQueryDelta>) -> Body {
+fn subscription_body(
+    open_frame: Vec<u8>,
+    deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    shutdown: CancellationToken,
+) -> Body {
     let stream = futures::stream::unfold(
-        SubscribeBody::Open { open_frame, deltas },
+        SubscribeBody::Open {
+            open_frame,
+            deltas,
+            shutdown,
+        },
         |state| async move {
             match state {
-                SubscribeBody::Open { open_frame, deltas } => Some((
+                SubscribeBody::Open {
+                    open_frame,
+                    deltas,
+                    shutdown,
+                } => Some((
                     Ok::<Bytes, Infallible>(Bytes::from(open_frame)),
-                    SubscribeBody::Streaming(deltas),
+                    SubscribeBody::Streaming { deltas, shutdown },
                 )),
-                SubscribeBody::Streaming(mut deltas) => match deltas.recv().await {
-                    Some(delta) => {
-                        let frame = SubscriptionFrame::Delta {
-                            basis: delta.basis,
-                            rows: delta
-                                .rows
-                                .into_iter()
-                                .map(|(values, weight)| (values, weight as i64))
-                                .collect(),
-                        };
-                        match encode_subscription_frame(&frame) {
-                            Ok(bytes) => {
-                                Some((Ok(Bytes::from(bytes)), SubscribeBody::Streaming(deltas)))
+                SubscribeBody::Streaming {
+                    mut deltas,
+                    shutdown,
+                } => {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => None,
+                        delta = deltas.recv() => match delta {
+                            Some(delta) => {
+                                let frame = SubscriptionFrame::Delta {
+                                    basis: delta.basis,
+                                    rows: delta
+                                        .rows
+                                        .into_iter()
+                                        .map(|(values, weight)| (values, weight as i64))
+                                        .collect(),
+                                };
+                                match encode_subscription_frame(&frame) {
+                                    Ok(bytes) => Some((
+                                        Ok(Bytes::from(bytes)),
+                                        SubscribeBody::Streaming { deltas, shutdown },
+                                    )),
+                                    Err(err) => Some((
+                                        Ok(Bytes::from(internal_error_frame(&err))),
+                                        SubscribeBody::Closed,
+                                    )),
+                                }
                             }
-                            Err(err) => Some((
-                                Ok(Bytes::from(internal_error_frame(&err))),
-                                SubscribeBody::Closed,
-                            )),
+                            None => None,
                         }
                     }
-                    None => None,
-                },
+                }
                 SubscribeBody::Closed => None,
             }
         },
@@ -426,11 +451,15 @@ fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
 
 pub struct Server<L: TxLog> {
     node: Arc<Node<L>>,
+    shutdown: CancellationToken,
 }
 
 impl<L: TxLog + 'static> Server<L> {
     pub fn new(node: Arc<Node<L>>) -> Self {
-        Server { node }
+        Server {
+            node,
+            shutdown: CancellationToken::new(),
+        }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -441,6 +470,7 @@ impl<L: TxLog + 'static> Server<L> {
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
         let app_state = Arc::new(Server {
             node: self.node.clone(),
+            shutdown: token.clone(),
         });
 
         accept_loop(
@@ -490,7 +520,10 @@ impl DevServer {
                 join_set.spawn(async move {
                     let node = Arc::new(Node::memory_node().await);
 
-                    let app_state = Arc::new(Server { node: node.clone() });
+                    let app_state = Arc::new(Server {
+                        node: node.clone(),
+                        shutdown: conn_token.clone(),
+                    });
                     let router = build_router(app_state);
 
                     serve_connection(stream, router, conn_id, conn_token, "Dev HTTP").await;
