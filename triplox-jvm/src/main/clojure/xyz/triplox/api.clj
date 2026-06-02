@@ -55,11 +55,6 @@
 ;; Incremental subscriptions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- delta->clj [^Delta delta]
-  (when delta
-    (mapv (fn [^Row row]
-            [(mapv types/wire->clj (.values row)) (.weight row)])
-          (.rows delta))))
 
 (defn subscribe
   "Register an incremental query and stream its result deltas. Returns a
@@ -78,11 +73,11 @@
   "Block for the next delta. Returns a vector of `[row-values weight]` pairs
   (values via `types/wire->clj`), or nil when the stream is closed. The 2-arity
   bounds the wait, returning `::timeout` on expiry."
-  ([sub] (delta->clj (.take ^Subscription sub)))
+  ([sub] (types/delta->clj (.take ^Subscription sub)))
   ([sub timeout-ms]
    (let [delta (.poll ^Subscription sub (long timeout-ms) TimeUnit/MILLISECONDS)]
      (cond
-       (some? delta) (delta->clj delta)
+       (some? delta) (types/delta->clj delta)
        (.isDone ^Subscription sub) nil
        :else ::timeout))))
 
