@@ -355,6 +355,18 @@ enum SubscribeBody {
     Closed,
 }
 
+/// Encode a terminal `error` frame for a failure that occurs mid-stream.
+fn internal_error_frame(err: &Error) -> Vec<u8> {
+    let frame = SubscriptionFrame::Error(ErrorResponseBody {
+        severity: SEVERITY_ERROR,
+        code: ErrorCode::InternalError.as_u16(),
+        message: err.to_string(),
+        detail: None,
+        hint: None,
+    });
+    encode_subscription_frame(&frame).unwrap_or_default()
+}
+
 /// Build the subscription response body: the `open` frame, then one `delta` frame
 /// per received delta (write-one/recv-one, so HTTP/2 flow control backpressures the
 /// engine instead of buffering unboundedly). The receiver lives in the stream, so a
@@ -406,18 +418,6 @@ fn subscription_body(
         },
     );
     Body::from_stream(open.chain(deltas))
-}
-
-/// Encode a terminal `error` frame for a failure that occurs mid-stream.
-fn internal_error_frame(err: &Error) -> Vec<u8> {
-    let frame = SubscriptionFrame::Error(ErrorResponseBody {
-        severity: SEVERITY_ERROR,
-        code: ErrorCode::InternalError.as_u16(),
-        message: err.to_string(),
-        detail: None,
-        hint: None,
-    });
-    encode_subscription_frame(&frame).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
