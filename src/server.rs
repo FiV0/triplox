@@ -5,6 +5,7 @@
 //!
 //! - `POST /db/open`           — Open a DB read basis
 //! - `POST /db/query`          — Execute a Datalog query
+//! - `POST /db/subscribe`      — Stream incremental query deltas
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
