@@ -311,8 +311,8 @@ same kind of bare map as a unary body, just repeated. HTTP/2 DATA chunks do not
 align to frame boundaries, so a client accumulates bytes and decodes one value
 at a time; leftover undecoded bytes at end-of-stream are a protocol error.
 
-Each frame is a map with a `kind` discriminator. Decoders **MUST ignore unknown
-`kind` values** for forward compatibility.
+Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
+`kind` values** as protocol errors.
 
 #### `open` frame — always first, exactly once
 

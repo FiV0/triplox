@@ -354,7 +354,8 @@ class WireCodecTest {
             packer.packString("kind"); packer.packString("heartbeat");
             body = packer.toByteArray();
         }
-        assertInstanceOf(SubscriptionFrame.Unknown.class, decodeFrame(body));
+        var ex = assertThrows(IOException.class, () -> decodeFrame(body));
+        assertTrue(ex.getMessage().contains("unknown subscription frame kind: heartbeat"));
     }
 
     @Test

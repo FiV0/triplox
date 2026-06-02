@@ -1030,8 +1030,7 @@ pub struct SubscribeRequest {
 }
 
 /// One frame in a subscription response stream. Frames are bare, self-delimiting
-/// msgpack maps tagged by a `kind` discriminator; unknown kinds decode to
-/// `Unknown` so clients can ignore future frame types.
+/// msgpack maps tagged by a `kind` discriminator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SubscriptionFrame {
     /// First frame: registration basis and (internal) column schema.
@@ -1046,8 +1045,6 @@ pub enum SubscriptionFrame {
     },
     /// Terminal error raised after the stream has started.
     Error(ErrorResponseBody),
-    /// A frame with an unrecognized `kind`; clients ignore it.
-    Unknown,
 }
 
 fn write_optional_tx_basis<W: Write>(w: &mut W, basis: &Option<TxBasis>) -> Result<()> {
@@ -1127,7 +1124,7 @@ pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
     Ok(SubscribeRequest { db, query, args })
 }
 
-/// Encode one subscription frame as a bare msgpack map. `Unknown` cannot be encoded.
+/// Encode one subscription frame as a bare msgpack map.
 pub fn encode_subscription_frame(frame: &SubscriptionFrame) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     match frame {
@@ -1177,7 +1174,6 @@ pub fn encode_subscription_frame(frame: &SubscriptionFrame) -> Result<Vec<u8>> {
             rmp::encode::write_str(&mut buf, "hint")?;
             write_optional_string(&mut buf, &err.hint)?;
         }
-        SubscriptionFrame::Unknown => bail!("cannot encode an Unknown subscription frame"),
     }
     Ok(buf)
 }
@@ -1188,7 +1184,7 @@ pub fn decode_subscription_frame(data: &[u8]) -> Result<SubscriptionFrame> {
 }
 
 /// Build a subscription frame from an already-parsed msgpack value (used by the
-/// streaming decoder). Unrecognized `kind`s map to `SubscriptionFrame::Unknown`.
+/// streaming decoder).
 pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
     let mut map = map_from_value(v)?;
     let kind = take_string(&mut map, "kind")?;
@@ -1239,7 +1235,7 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
                 hint,
             }))
         }
-        _ => Ok(SubscriptionFrame::Unknown),
+        other => bail!("unknown subscription frame kind: {other}"),
     }
 }
 
@@ -1314,14 +1310,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kind_decodes_to_unknown() {
+    fn unknown_subscription_frame_kind_errors() {
         let mut buf = Vec::new();
         rmp::encode::write_map_len(&mut buf, 1).unwrap();
         write_str_field(&mut buf, "kind", "heartbeat").unwrap();
-        assert_eq!(
-            decode_subscription_frame(&buf).expect("decode"),
-            SubscriptionFrame::Unknown
-        );
+        let err = decode_subscription_frame(&buf).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unknown subscription frame kind: heartbeat"));
     }
 
     #[test]

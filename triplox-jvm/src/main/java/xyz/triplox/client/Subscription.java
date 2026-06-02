@@ -131,7 +131,7 @@ public final class Subscription implements AutoCloseable {
                     terminalError = toException(error.error());
                     break;
                 }
-                // Open (unexpected mid-stream) and Unknown frames are ignored.
+                // Open frames are only valid as the first frame and are ignored mid-stream.
             }
         } catch (IOException e) {
             if (!closed) {

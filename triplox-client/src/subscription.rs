@@ -86,30 +86,26 @@ impl Stream for Subscription {
         if this.done {
             return Poll::Ready(None);
         }
-        loop {
-            return match Pin::new(&mut this.frames).poll_next(cx) {
-                Poll::Ready(Some(Ok(frame))) => match frame {
-                    SubscriptionFrame::Delta { basis, rows } => {
-                        Poll::Ready(Some(Ok(Delta { basis, rows })))
-                    }
-                    SubscriptionFrame::Error(err) => {
-                        this.done = true;
-                        Poll::Ready(Some(Err(error_frame_to_error(err))))
-                    }
-                    SubscriptionFrame::Open { .. } => {
-                        this.done = true;
-                        Poll::Ready(Some(Err(anyhow!("unexpected open frame mid-stream"))))
-                    }
-                    // Forward-compatible: ignore unrecognized frame kinds.
-                    SubscriptionFrame::Unknown => continue,
-                },
-                Poll::Ready(Some(Err(err))) => {
-                    this.done = true;
-                    Poll::Ready(Some(Err(err)))
+        match Pin::new(&mut this.frames).poll_next(cx) {
+            Poll::Ready(Some(Ok(frame))) => match frame {
+                SubscriptionFrame::Delta { basis, rows } => {
+                    Poll::Ready(Some(Ok(Delta { basis, rows })))
                 }
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
-            };
+                SubscriptionFrame::Error(err) => {
+                    this.done = true;
+                    Poll::Ready(Some(Err(error_frame_to_error(err))))
+                }
+                SubscriptionFrame::Open { .. } => {
+                    this.done = true;
+                    Poll::Ready(Some(Err(anyhow!("unexpected open frame mid-stream"))))
+                }
+            },
+            Poll::Ready(Some(Err(err))) => {
+                this.done = true;
+                Poll::Ready(Some(Err(err)))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -205,16 +201,8 @@ mod tests {
         .unwrap()
     }
 
-    fn delta_bytes(name: &str, weight: i64) -> Vec<u8> {
-        encode_subscription_frame(&SubscriptionFrame::Delta {
-            basis: sample_basis(),
-            rows: vec![(vec![DataType::String(name.to_string())], weight)],
-        })
-        .unwrap()
-    }
-
     fn unknown_bytes() -> Vec<u8> {
-        // {"kind": "heartbeat"} — a future frame kind the client must skip.
+        // {"kind": "heartbeat"} — an unsupported frame kind the client must reject.
         let mut buf = Vec::new();
         rmp::encode::write_map_len(&mut buf, 1).unwrap();
         rmp::encode::write_str(&mut buf, "kind").unwrap();
@@ -252,25 +240,22 @@ mod tests {
     }
 
     #[test]
-    fn subscription_reads_basis_yields_delta_skips_unknown() {
+    fn subscription_surfaces_unknown_frame_kind_error() {
         futures::executor::block_on(async {
             let mut payload = Vec::new();
             payload.extend(open_bytes());
             payload.extend(unknown_bytes());
-            payload.extend(delta_bytes("Ivan", 1));
             let stream =
                 futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
             let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
             assert_eq!(sub.basis(), sample_basis());
 
-            let delta = sub.next().await.expect("a delta").expect("ok");
-            assert_eq!(delta.basis, sample_basis());
-            assert_eq!(
-                delta.rows,
-                vec![(vec![DataType::String("Ivan".to_string())], 1)]
-            );
-            assert!(sub.next().await.is_none(), "stream ended");
+            let err = sub.next().await.expect("an item").unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("unknown subscription frame kind: heartbeat"));
+            assert!(sub.next().await.is_none(), "done after error");
         });
     }
 

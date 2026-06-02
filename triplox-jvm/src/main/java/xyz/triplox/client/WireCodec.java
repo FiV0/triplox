@@ -203,7 +203,6 @@ public final class WireCodec {
 
     /**
      * Decode one subscription frame (a bare msgpack map) from the stream.
-     * Unrecognized {@code kind}s decode to {@link SubscriptionFrame.Unknown}.
      */
     public static SubscriptionFrame decodeSubscriptionFrame(MessageUnpacker unpacker) throws IOException {
         int n = unpacker.unpackMapHeader();
@@ -247,7 +246,7 @@ public final class WireCodec {
                 yield new SubscriptionFrame.Error(
                         new BackendMessage.ErrorResponse(sev, toU16(code, "code"), message, detail, hint));
             }
-            default -> new SubscriptionFrame.Unknown();
+            default -> throw new IOException("unknown subscription frame kind: " + kind);
         };
     }
 
