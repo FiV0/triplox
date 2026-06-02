@@ -21,6 +21,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
+use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -345,13 +346,8 @@ async fn subscribe<L: TxLog + 'static>(
         .into_response())
 }
 
-/// Stream state for a subscription response body.
+/// Stream state for subscription deltas after the leading `open` frame.
 enum SubscribeBody {
-    Open {
-        open_frame: Vec<u8>,
-        deltas: mpsc::Receiver<IncrementalQueryDelta>,
-        shutdown: CancellationToken,
-    },
     Streaming {
         deltas: mpsc::Receiver<IncrementalQueryDelta>,
         shutdown: CancellationToken,
@@ -368,22 +364,12 @@ fn subscription_body(
     deltas: mpsc::Receiver<IncrementalQueryDelta>,
     shutdown: CancellationToken,
 ) -> Body {
-    let stream = futures::stream::unfold(
-        SubscribeBody::Open {
-            open_frame,
-            deltas,
-            shutdown,
-        },
+    let open =
+        futures::stream::once(async move { Ok::<Bytes, Infallible>(Bytes::from(open_frame)) });
+    let deltas = futures::stream::unfold(
+        SubscribeBody::Streaming { deltas, shutdown },
         |state| async move {
             match state {
-                SubscribeBody::Open {
-                    open_frame,
-                    deltas,
-                    shutdown,
-                } => Some((
-                    Ok::<Bytes, Infallible>(Bytes::from(open_frame)),
-                    SubscribeBody::Streaming { deltas, shutdown },
-                )),
                 SubscribeBody::Streaming {
                     mut deltas,
                     shutdown,
@@ -419,7 +405,7 @@ fn subscription_body(
             }
         },
     );
-    Body::from_stream(stream)
+    Body::from_stream(open.chain(deltas))
 }
 
 /// Encode a terminal `error` frame for a failure that occurs mid-stream.
