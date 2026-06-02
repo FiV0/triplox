@@ -76,7 +76,6 @@ pub enum ErrorCode {
     QueryError = 2001,
     InvalidQuery = 2002,
     EmptyQuery = 2003,
-    IncrementalUnsupported = 2004,
     // Transaction errors (3xxx)
     TxError = 3000,
     TxAborted = 3001,
@@ -98,7 +97,6 @@ impl ErrorCode {
             2001 => Ok(ErrorCode::QueryError),
             2002 => Ok(ErrorCode::InvalidQuery),
             2003 => Ok(ErrorCode::EmptyQuery),
-            2004 => Ok(ErrorCode::IncrementalUnsupported),
             3000 => Ok(ErrorCode::TxError),
             3001 => Ok(ErrorCode::TxAborted),
             3002 => Ok(ErrorCode::TxNotIndexed),
