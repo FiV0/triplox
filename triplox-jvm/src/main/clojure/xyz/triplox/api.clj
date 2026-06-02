@@ -55,7 +55,6 @@
 ;; Incremental subscriptions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-
 (defn subscribe
   "Register an incremental query and stream its result deltas. Returns a
   Subscription (Closeable); use with `with-open`. Closing unsubscribes."
