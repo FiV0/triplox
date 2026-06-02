@@ -139,8 +139,10 @@ pub(crate) fn write_index_entries(
 /// Collects tx_eid from the entity position, tx_id from `db/txId` value, and
 /// system_time from `db/txInstant` value.
 ///
-/// Returns `Ok(None)` if no transaction entity has been indexed yet.
-pub async fn maybe_latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<Option<TxBasis>>
+/// Errors if no TX_PARTITION entity exists (an initialized DB always has the
+/// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
+/// `:db/txInstant`.
+pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
 where
     D: DbReadOps + Sync,
 {
@@ -174,31 +176,18 @@ where
         }
     }
     match (first_eid, tx_id, system_time) {
-        (Some(eid), Some(tid), Some(st)) => Ok(Some(TxBasis {
+        (Some(eid), Some(tid), Some(st)) => Ok(TxBasis {
             tx_key: TxKey {
                 tx_id: tid,
                 system_time: st,
             },
             tx_eid: eid,
-        })),
-        (None, _, _) => Ok(None),
+        }),
+        (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
         (Some(eid), tid, st) => {
             bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
         }
     }
-}
-
-/// Scan EAV entries for TX_PARTITION entities and return (tx_eid, TxKey) for the latest tx.
-///
-/// Errors if no TX_PARTITION entity exists or if the latest tx entity is
-/// missing `:db/txId` or `:db/txInstant`.
-pub async fn latest_tx_basis_from_sdb<D>(sdb: &D) -> Result<TxBasis>
-where
-    D: DbReadOps + Sync,
-{
-    maybe_latest_tx_basis_from_sdb(sdb)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("TX_PARTITION is empty; database not initialized"))
 }
 
 /// Build datoms for a first-class transaction entity in TX_PARTITION.
