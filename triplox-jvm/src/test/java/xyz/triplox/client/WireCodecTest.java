@@ -313,6 +313,21 @@ class WireCodecTest {
     }
 
     @Test
+    void testDecodeDeltaFrameRejectsNilBasis() throws IOException {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("kind"); packer.packString("delta");
+            packer.packString("basis"); packer.packNil();
+            packer.packString("rows");
+            packer.packArrayHeader(0);
+            body = packer.toByteArray();
+        }
+        var err = assertThrows(IOException.class, () -> decodeFrame(body));
+        assertTrue(err.getMessage().contains("basis cannot be nil"));
+    }
+
+    @Test
     void testDecodeErrorFrame() throws IOException {
         byte[] body;
         try (var packer = MessagePack.newDefaultBufferPacker()) {

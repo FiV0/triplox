@@ -217,7 +217,7 @@ public final class WireCodec {
             String key = unpacker.unpackString();
             switch (key) {
                 case "kind" -> kind = unpacker.unpackString();
-                case "basis" -> basis = unpackOptionalTxBasis(unpacker);
+                case "basis" -> basis = unpackTxBasis(unpacker, "basis");
                 case "columns" -> columns = decodeColumns(unpacker);
                 case "rows" -> rows = decodeDeltaRows(unpacker);
                 case "severity" -> severity = unpacker.unpackString();
@@ -251,8 +251,12 @@ public final class WireCodec {
         };
     }
 
-    private static TxBasis unpackOptionalTxBasis(MessageUnpacker unpacker) throws IOException {
-        if (unpacker.tryUnpackNil()) return null;
+    private static TxBasis unpackTxBasis(MessageUnpacker unpacker, String field) throws IOException {
+        if (unpacker.tryUnpackNil()) throw new IOException(field + " cannot be nil");
+        return unpackTxBasisMap(unpacker);
+    }
+
+    private static TxBasis unpackTxBasisMap(MessageUnpacker unpacker) throws IOException {
         int n = unpacker.unpackMapHeader();
         long txId = 0;
         long txEid = 0;
