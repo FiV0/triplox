@@ -29,6 +29,25 @@ impl MemoryLog {
             tx_sender: broadcast::channel(1024).0,
         }
     }
+
+    pub(crate) async fn ensure_bootstrap_record(&self) -> Result<()> {
+        let bootstrap_record = Record {
+            tx_key: crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key,
+            record: Vec::new(),
+        };
+        let mut state = self.state.write().await;
+        match state.txs.first() {
+            Some(record) if record == &bootstrap_record => Ok(()),
+            Some(record) => Err(anyhow::anyhow!(
+                "memory log starts with non-bootstrap record {:?}",
+                record.tx_key
+            )),
+            None => {
+                state.txs.push(bootstrap_record);
+                Ok(())
+            }
+        }
+    }
 }
 
 impl TxLogReader for MemoryLog {
