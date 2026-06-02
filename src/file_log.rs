@@ -1,5 +1,5 @@
 use crate::clock::SystemTimeSource;
-use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 use anyhow::Result;
 use log::warn;
@@ -38,12 +38,11 @@ impl FileLog {
             tx_sender: broadcast::channel(1024).0,
         })
     }
+}
 
-    pub(crate) async fn ensure_bootstrap_record(&self) -> Result<()> {
-        let bootstrap_record = Record {
-            tx_key: crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key,
-            record: Vec::new(),
-        };
+impl TxLog for FileLog {
+    async fn ensure_bootstrap_record(&self) -> Result<()> {
+        let bootstrap_record = BOOTSTRAP_RECORD.clone();
 
         match self.read_txs_after(None, 1).await?.first() {
             Some(record) if record == &bootstrap_record => return Ok(()),
@@ -130,8 +129,6 @@ impl TxLogWriter for FileLog {
         record.tx_key
     }
 }
-
-impl TxLog for FileLog {}
 
 #[cfg(test)]
 mod tests {
