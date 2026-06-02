@@ -85,7 +85,7 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 }
 
 // TODO: Delete this when incremental queries reach one-shot query parity.
-pub(crate) fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
+fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if !query.with.is_empty() {
         bail!("Incremental queries do not support :with");
     }

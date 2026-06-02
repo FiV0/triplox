@@ -32,7 +32,6 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
-use crate::inc_query::reject_unsupported_query_shape;
 use crate::incremental::IncrementalQueryDelta;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
@@ -314,9 +313,6 @@ async fn subscribe<L: TxLog + 'static>(
         .into_query()
         .map_err(|e| ApiError::bad_request(ErrorCode::ParseError, e.to_string()))?;
 
-    reject_unsupported_query_shape(&parsed)
-        .map_err(|e| ApiError::bad_request(ErrorCode::IncrementalUnsupported, e.to_string()))?;
-
     let columns: Vec<ColumnDescription> = match &parsed.find_spec {
         edn::query::FindSpec::FindRel(elements) => elements
             .iter()
@@ -333,7 +329,7 @@ async fn subscribe<L: TxLog + 'static>(
         .node
         .register_incremental_query(parsed)
         .await
-        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+        .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
     let open_frame = encode_subscription_frame(&SubscriptionFrame::Open {
         basis: subscription.basis,
@@ -657,7 +653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_rejects_unsupported_query() {
+    async fn subscribe_registration_error_matches_query_error_mapping() {
         let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
         // `:in` parses as a one-shot query but is unsupported by the incremental engine.
         let err = subscribe(
@@ -666,8 +662,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(err.code, ErrorCode::IncrementalUnsupported);
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.code, ErrorCode::QueryError);
     }
 
     #[tokio::test]
