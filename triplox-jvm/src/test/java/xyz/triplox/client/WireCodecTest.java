@@ -292,11 +292,11 @@ class WireCodecTest {
     @Test
     void testDecodeDeltaFrameWithSignedWeights() throws IOException {
         byte[] body;
+        var now = Instant.now();
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(4);
+            packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packer.packNil();
-            packer.packString("wal_seq"); packer.packLong(7);
+            packer.packString("basis"); packBasis(packer, 7L, now, 42L);
             packer.packString("rows");
             packer.packArrayHeader(2);
             packDeltaRow(packer, "Ivan", 1);
@@ -304,8 +304,7 @@ class WireCodecTest {
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertNull(delta.basis());
-        assertEquals(7L, delta.walSeq());
+        assertEquals(new TxBasis(7L, now, 42L), delta.basis());
         assertEquals(2, delta.rows().size());
         assertEquals(List.of("Ivan"), delta.rows().get(0).values());
         assertEquals(1L, delta.rows().get(0).weight());
@@ -346,18 +345,18 @@ class WireCodecTest {
     @Test
     void testDecodeDeltaFrameKeyOrderIndependent() throws IOException {
         byte[] body;
+        var now = Instant.now();
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(4);
+            packer.packMapHeader(3);
             packer.packString("rows");
             packer.packArrayHeader(1);
             packDeltaRow(packer, "Ann", 1);
-            packer.packString("wal_seq"); packer.packLong(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packer.packNil();
+            packer.packString("basis"); packBasis(packer, 3L, now, 42L);
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertEquals(3L, delta.walSeq());
+        assertEquals(new TxBasis(3L, now, 42L), delta.basis());
         assertEquals(List.of("Ann"), delta.rows().get(0).values());
     }
 

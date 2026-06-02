@@ -1041,8 +1041,7 @@ pub enum SubscriptionFrame {
     },
     /// One transaction's z-set changes as `(values, weight)` rows.
     Delta {
-        basis: Option<TxBasis>,
-        wal_seq: u64,
+        basis: TxBasis,
         rows: Vec<(Vec<DataType>, i64)>,
     },
     /// Terminal error raised after the stream has started.
@@ -1066,15 +1065,6 @@ fn take_optional_tx_basis(
     match map.remove(name) {
         None | Some(Value::Nil) => Ok(None),
         Some(v) => Ok(Some(tx_basis_from_value(v)?)),
-    }
-}
-
-fn take_u64(map: &mut BTreeMap<String, Value>, name: &str) -> Result<u64> {
-    match take_field(map, name)? {
-        Value::Integer(n) => n
-            .as_u64()
-            .ok_or_else(|| anyhow!("field {name:?} integer out of u64 range")),
-        other => bail!("field {name:?} expected unsigned integer, got {other:?}"),
     }
 }
 
@@ -1152,17 +1142,11 @@ pub fn encode_subscription_frame(frame: &SubscriptionFrame) -> Result<Vec<u8>> {
                 write_column_description(&mut buf, col)?;
             }
         }
-        SubscriptionFrame::Delta {
-            basis,
-            wal_seq,
-            rows,
-        } => {
-            rmp::encode::write_map_len(&mut buf, 4)?;
+        SubscriptionFrame::Delta { basis, rows } => {
+            rmp::encode::write_map_len(&mut buf, 3)?;
             write_str_field(&mut buf, "kind", "delta")?;
             rmp::encode::write_str(&mut buf, "basis")?;
-            write_optional_tx_basis(&mut buf, basis)?;
-            rmp::encode::write_str(&mut buf, "wal_seq")?;
-            rmp::encode::write_uint(&mut buf, *wal_seq)?;
+            write_tx_basis(&mut buf, basis)?;
             rmp::encode::write_str(&mut buf, "rows")?;
             rmp::encode::write_array_len(&mut buf, rows.len() as u32)?;
             for (values, weight) in rows {
@@ -1222,8 +1206,7 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
             Ok(SubscriptionFrame::Open { basis, columns })
         }
         "delta" => {
-            let basis = take_optional_tx_basis(&mut map, "basis")?;
-            let wal_seq = take_u64(&mut map, "wal_seq")?;
+            let basis = tx_basis_from_value(take_field(&mut map, "basis")?)?;
             let rows_arr = match take_field(&mut map, "rows")? {
                 Value::Array(arr) => arr,
                 other => bail!("field \"rows\" expected array, got {other:?}"),
@@ -1232,11 +1215,7 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
             for entry in rows_arr {
                 rows.push(delta_row_from_value(entry)?);
             }
-            Ok(SubscriptionFrame::Delta {
-                basis,
-                wal_seq,
-                rows,
-            })
+            Ok(SubscriptionFrame::Delta { basis, rows })
         }
         "error" => {
             let severity_str = take_string(&mut map, "severity")?;
@@ -1310,18 +1289,15 @@ mod tests {
     #[test]
     fn delta_frame_round_trip() {
         // Includes a |weight| > 1 row to assert raw signed weights round-trip.
-        for basis in [None, Some(sample_basis())] {
-            let frame = SubscriptionFrame::Delta {
-                basis,
-                wal_seq: 99,
-                rows: vec![
-                    (vec![DataType::String("Ivan".to_string())], 1),
-                    (vec![DataType::String("Petr".to_string())], -2),
-                ],
-            };
-            let bytes = encode_subscription_frame(&frame).expect("encode");
-            assert_eq!(decode_subscription_frame(&bytes).expect("decode"), frame);
-        }
+        let frame = SubscriptionFrame::Delta {
+            basis: sample_basis(),
+            rows: vec![
+                (vec![DataType::String("Ivan".to_string())], 1),
+                (vec![DataType::String("Petr".to_string())], -2),
+            ],
+        };
+        let bytes = encode_subscription_frame(&frame).expect("encode");
+        assert_eq!(decode_subscription_frame(&bytes).expect("decode"), frame);
     }
 
     #[test]
@@ -1351,23 +1327,20 @@ mod tests {
     #[test]
     fn delta_frame_decodes_regardless_of_key_order() {
         let mut buf = Vec::new();
-        rmp::encode::write_map_len(&mut buf, 4).unwrap();
+        rmp::encode::write_map_len(&mut buf, 3).unwrap();
         rmp::encode::write_str(&mut buf, "rows").unwrap();
         rmp::encode::write_array_len(&mut buf, 1).unwrap();
         rmp::encode::write_array_len(&mut buf, 2).unwrap();
         rmp::encode::write_array_len(&mut buf, 1).unwrap();
         write_data_type(&mut buf, &DataType::Long(5)).unwrap();
         rmp::encode::write_sint(&mut buf, 1).unwrap();
-        rmp::encode::write_str(&mut buf, "wal_seq").unwrap();
-        rmp::encode::write_uint(&mut buf, 3).unwrap();
         write_str_field(&mut buf, "kind", "delta").unwrap();
         rmp::encode::write_str(&mut buf, "basis").unwrap();
-        rmp::encode::write_nil(&mut buf).unwrap();
+        write_tx_basis(&mut buf, &sample_basis()).unwrap();
         assert_eq!(
             decode_subscription_frame(&buf).expect("decode"),
             SubscriptionFrame::Delta {
-                basis: None,
-                wal_seq: 3,
+                basis: sample_basis(),
                 rows: vec![(vec![DataType::Long(5)], 1)],
             }
         );

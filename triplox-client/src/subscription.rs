@@ -26,10 +26,8 @@ type FrameStream = FramedRead<StreamReader<ByteStream, Bytes>, MsgpackFrameDecod
 /// A single transaction's z-set changes for a subscribed query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Delta {
-    /// The transaction basis, or `None` when the engine could not derive one.
-    pub basis: Option<TxBasis>,
-    /// The WAL sequence — always present, the fallback ordering key.
-    pub wal_seq: u64,
+    /// The transaction basis that produced this delta.
+    pub basis: TxBasis,
     /// `(values, weight)` rows; `weight` is the raw signed multiplicity.
     pub rows: Vec<(Vec<DataType>, i64)>,
 }
@@ -91,15 +89,9 @@ impl Stream for Subscription {
         loop {
             return match Pin::new(&mut this.frames).poll_next(cx) {
                 Poll::Ready(Some(Ok(frame))) => match frame {
-                    SubscriptionFrame::Delta {
-                        basis,
-                        wal_seq,
-                        rows,
-                    } => Poll::Ready(Some(Ok(Delta {
-                        basis,
-                        wal_seq,
-                        rows,
-                    }))),
+                    SubscriptionFrame::Delta { basis, rows } => {
+                        Poll::Ready(Some(Ok(Delta { basis, rows })))
+                    }
                     SubscriptionFrame::Error(err) => {
                         this.done = true;
                         Poll::Ready(Some(Err(error_frame_to_error(err))))
@@ -215,8 +207,7 @@ mod tests {
 
     fn delta_bytes(name: &str, weight: i64) -> Vec<u8> {
         encode_subscription_frame(&SubscriptionFrame::Delta {
-            basis: Some(sample_basis()),
-            wal_seq: 7,
+            basis: sample_basis(),
             rows: vec![(vec![DataType::String(name.to_string())], weight)],
         })
         .unwrap()
@@ -274,7 +265,7 @@ mod tests {
             assert_eq!(sub.basis(), sample_basis());
 
             let delta = sub.next().await.expect("a delta").expect("ok");
-            assert_eq!(delta.wal_seq, 7);
+            assert_eq!(delta.basis, sample_basis());
             assert_eq!(
                 delta.rows,
                 vec![(vec![DataType::String("Ivan".to_string())], 1)]

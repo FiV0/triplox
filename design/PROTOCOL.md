@@ -293,8 +293,8 @@ Registers an incremental query and streams its result deltas. `db` is reserved
 for future historical replay and **MUST be `nil`/omitted** in this version (a
 non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `query` and `args` are
 as in [§4.4](#44-query-request--post-dbquery); queries the incremental engine
-does not yet support are rejected with HTTP 400 / `IncrementalUnsupported`
-(code 2004).
+does not yet support currently mirror one-shot query failures and are rejected
+with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
@@ -329,8 +329,7 @@ it. `columns` matches [QueryResponse](#46-queryresponse).
 
 ```
 {"kind": "delta",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>}|nil,
- "wal_seq": <int>,
+ "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
@@ -338,8 +337,8 @@ Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
 `DataType` per column (positional, per the `open` frame), `weight` is a **raw
 signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
 `delta` frame is emitted only for a transaction that produces a non-empty change
-(`rows` is never empty). `basis` is `nil` when no `TxBasis` could be derived for
-the WAL entry; `wal_seq` is always present and is the fallback ordering key.
+(`rows` is never empty). `basis` is the transaction basis that produced the
+delta.
 
 #### `error` frame — terminal
 

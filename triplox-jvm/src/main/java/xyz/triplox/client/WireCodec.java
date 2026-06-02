@@ -210,7 +210,6 @@ public final class WireCodec {
         String kind = null;
         TxBasis basis = null;
         List<ColumnDesc> columns = null;
-        long walSeq = 0;
         List<Row> rows = null;
         String severity = null, message = null, detail = null, hint = null;
         long code = 0;
@@ -220,7 +219,6 @@ public final class WireCodec {
                 case "kind" -> kind = unpacker.unpackString();
                 case "basis" -> basis = unpackOptionalTxBasis(unpacker);
                 case "columns" -> columns = decodeColumns(unpacker);
-                case "wal_seq" -> walSeq = unpacker.unpackLong();
                 case "rows" -> rows = decodeDeltaRows(unpacker);
                 case "severity" -> severity = unpacker.unpackString();
                 case "code" -> code = unpacker.unpackLong();
@@ -236,7 +234,10 @@ public final class WireCodec {
                 if (basis == null) throw new IOException("open frame missing \"basis\"");
                 yield new SubscriptionFrame.Open(basis, columns == null ? List.of() : columns);
             }
-            case "delta" -> new Delta(basis, walSeq, rows == null ? List.of() : rows);
+            case "delta" -> {
+                if (basis == null) throw new IOException("delta frame missing \"basis\"");
+                yield new Delta(basis, rows == null ? List.of() : rows);
+            }
             case "error" -> {
                 byte sev = switch (severity == null ? "" : severity) {
                     case "E" -> MessageTypes.SEVERITY_ERROR;

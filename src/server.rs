@@ -372,7 +372,6 @@ fn subscription_body(open_frame: Vec<u8>, deltas: mpsc::Receiver<IncrementalQuer
                     Some(delta) => {
                         let frame = SubscriptionFrame::Delta {
                             basis: delta.basis,
-                            wal_seq: delta.wal_seq,
                             rows: delta
                                 .rows
                                 .into_iter()
