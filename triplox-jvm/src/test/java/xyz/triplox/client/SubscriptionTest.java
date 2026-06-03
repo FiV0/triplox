@@ -13,6 +13,7 @@ import org.msgpack.core.MessagePacker;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
@@ -58,6 +59,17 @@ class SubscriptionTest {
         try (Subscription sub = new Subscription(first.basis(), () -> {}, unpacker)) {
             var ex = assertThrows(IllegalStateException.class, () -> sub.poll(5, TimeUnit.SECONDS));
             assertTrue(ex.getMessage().contains("unexpected open frame mid-stream"));
+        }
+    }
+
+    @Test
+    void takeReturnsNullOnStreamEof() throws Exception {
+        var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(new byte[0]));
+        try (Subscription sub = new Subscription(sampleBasis(), () -> {}, unpacker)) {
+            var delta = assertTimeoutPreemptively(Duration.ofSeconds(5), sub::take);
+
+            assertNull(delta);
+            assertTrue(sub.isDone());
         }
     }
 

@@ -29,7 +29,7 @@ public final class Subscription implements AutoCloseable {
     private final TxBasis basis;
     private final Closeable closeable;
     private final Thread reader;
-    private final BlockingQueue<Delta> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+    private final BlockingQueue<QueueEvent> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
     private volatile boolean closed = false;
     private volatile RuntimeException terminalError;
@@ -85,7 +85,7 @@ public final class Subscription implements AutoCloseable {
         if (closed) {
             return endResult();
         }
-        return queue.take();
+        return unwrap(queue.take());
     }
 
     /** Wait up to {@code timeout} for the next delta; {@code null} on timeout or end. */
@@ -93,13 +93,15 @@ public final class Subscription implements AutoCloseable {
         if (closed) {
             return endResult();
         }
-        return queue.poll(timeout, unit);
+        QueueEvent event = queue.poll(timeout, unit);
+        return event == null ? null : unwrap(event);
     }
 
     @Override
     public void close() {
         closed = true;
         queue.clear();
+        queue.offer(QueueEvent.End.INSTANCE);
         try {
             closeable.close();
         } catch (IOException ignored) {
@@ -108,35 +110,41 @@ public final class Subscription implements AutoCloseable {
         reader.interrupt();
     }
 
+    private Delta unwrap(QueueEvent event) {
+        if (event instanceof QueueEvent.DeltaEvent delta) {
+            return delta.delta();
+        }
+        closed = true;
+        return endResult();
+    }
 
     private void readLoop(MessageUnpacker unpacker) {
         try {
             while (!closed) {
                 if (!unpacker.hasNext()) {
+                    queue.put(QueueEvent.End.INSTANCE);
                     break;
                 }
                 SubscriptionFrame frame = WireCodec.decodeSubscriptionFrame(unpacker);
                 if (frame instanceof Delta delta) {
-                    queue.put(delta);
+                    queue.put(new QueueEvent.DeltaEvent(delta));
                 } else if (frame instanceof SubscriptionFrame.Error error) {
-                    closed = true;
-                    terminalError = toException(error.error());
+                    finishWithError(toException(error.error()));
                     break;
                 } else if (frame instanceof SubscriptionFrame.Open) {
-                    closed = true;
-                    terminalError = new IllegalStateException("unexpected open frame mid-stream");
+                    finishWithError(new IllegalStateException("unexpected open frame mid-stream"));
                     break;
                 }
             }
         } catch (IOException e) {
             if (!closed) {
-                terminalError = new TriploxException(
+                finishWithError(new TriploxException(
                         MessageTypes.SEVERITY_ERROR,
                         INTERNAL_ERROR,
                         "subscription stream failed: " + e.getMessage(),
                         null,
                         null,
-                        e);
+                        e));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -146,13 +154,25 @@ public final class Subscription implements AutoCloseable {
             } catch (IOException ignored) {
                 // The consumer may have already closed the subscription.
             }
-            if (closed) {
-                queue.clear();
-            }
         }
+    }
+
+    private void finishWithError(RuntimeException error) {
+        terminalError = error;
+        closed = true;
+        queue.clear();
+        queue.offer(QueueEvent.End.INSTANCE);
     }
 
     private static TriploxException toException(BackendMessage.ErrorResponse e) {
         return new TriploxException(e.severity(), e.code(), e.message(), e.detail(), e.hint());
+    }
+
+    private sealed interface QueueEvent permits QueueEvent.DeltaEvent, QueueEvent.End {
+        record DeltaEvent(Delta delta) implements QueueEvent {}
+
+        enum End implements QueueEvent {
+            INSTANCE
+        }
     }
 }
