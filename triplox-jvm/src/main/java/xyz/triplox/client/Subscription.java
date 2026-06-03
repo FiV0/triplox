@@ -24,13 +24,12 @@ import org.msgpack.core.MessageUnpacker;
  */
 public final class Subscription implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 128;
-    private static final Object END = new Object();
     private static final short INTERNAL_ERROR = 4000;
 
     private final TxBasis basis;
     private final Closeable closeable;
     private final Thread reader;
-    private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+    private final BlockingQueue<Delta> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
     private volatile boolean closed = false;
     private volatile RuntimeException terminalError;
@@ -74,12 +73,19 @@ public final class Subscription implements AutoCloseable {
         return closed;
     }
 
+    private Delta endResult() {
+        if (terminalError != null) {
+            throw terminalError;
+        }
+        return null;
+    }
+
     /** Block for the next delta. Returns {@code null} when the stream ends. */
     public Delta take() throws InterruptedException {
         if (closed) {
             return endResult();
         }
-        return unwrap(queue.take());
+        return queue.take();
     }
 
     /** Wait up to {@code timeout} for the next delta; {@code null} on timeout or end. */
@@ -87,8 +93,7 @@ public final class Subscription implements AutoCloseable {
         if (closed) {
             return endResult();
         }
-        Object item = queue.poll(timeout, unit);
-        return item == null ? null : unwrap(item);
+        return queue.poll(timeout, unit);
     }
 
     @Override
@@ -103,23 +108,6 @@ public final class Subscription implements AutoCloseable {
         reader.interrupt();
     }
 
-    private Delta unwrap(Object item) {
-        if (item == END) {
-            closed = true;
-            return endResult();
-        }
-        if (closed) {
-            return endResult();
-        }
-        return (Delta) item;
-    }
-
-    private Delta endResult() {
-        if (terminalError != null) {
-            throw terminalError;
-        }
-        return null;
-    }
 
     private void readLoop(MessageUnpacker unpacker) {
         try {
@@ -131,9 +119,11 @@ public final class Subscription implements AutoCloseable {
                 if (frame instanceof Delta delta) {
                     queue.put(delta);
                 } else if (frame instanceof SubscriptionFrame.Error error) {
+                    closed = true;
                     terminalError = toException(error.error());
                     break;
                 } else if (frame instanceof SubscriptionFrame.Open) {
+                    closed = true;
                     terminalError = new IllegalStateException("unexpected open frame mid-stream");
                     break;
                 }
@@ -158,12 +148,6 @@ public final class Subscription implements AutoCloseable {
             }
             if (closed) {
                 queue.clear();
-            } else {
-                try {
-                    queue.put(END);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
             }
         }
     }
