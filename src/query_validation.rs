@@ -220,6 +220,31 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
             ));
         }
     }
+
+    for branch in branches {
+        validate_or_branches_in_branch(branch)?;
+    }
+    Ok(())
+}
+
+fn validate_or_branches_in_branch(branch: &OrWhereClause) -> Result<(), Error> {
+    match branch {
+        OrWhereClause::Clause(clause) => validate_or_branches_in_clause(clause),
+        OrWhereClause::And(children) => validate_or_branches_in_clauses(children),
+    }
+}
+
+fn validate_or_branches_in_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
+    for clause in clauses {
+        validate_or_branches_in_clause(clause)?;
+    }
+    Ok(())
+}
+
+fn validate_or_branches_in_clause(clause: &WhereClause) -> Result<(), Error> {
+    if let WhereClause::OrJoin(oj) = clause {
+        validate_or_branches(&oj.clauses)?;
+    }
     Ok(())
 }
 
@@ -358,6 +383,20 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Repeated variable ?x in a single pattern is not supported"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_nested_or_mismatched_branch_variables() {
+        let parsed = parse_query(
+            r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
+        );
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("OR branch 1 has different free variables"),
             "unexpected error: {}",
             err
         );
