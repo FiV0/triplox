@@ -46,6 +46,27 @@ pub struct Subscription {
     reader: JoinHandle<()>,
 }
 
+fn error_frame_to_error(err: ErrorResponseBody) -> Error {
+    anyhow!("subscription error (code {}): {}", err.code, err.message)
+}
+
+async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>>) {
+    while let Some(frame) = frames.next().await {
+        let (item, terminal) = match frame {
+            Ok(SubscriptionFrame::Delta { basis, rows }) => (Ok(Delta { basis, rows }), false),
+            Ok(SubscriptionFrame::Error(err)) => (Err(error_frame_to_error(err)), true),
+            Ok(SubscriptionFrame::Open { .. }) => {
+                (Err(anyhow!("unexpected open frame mid-stream")), true)
+            }
+            Err(err) => (Err(err), true),
+        };
+
+        if sender.send(item).await.is_err() || terminal {
+            break;
+        }
+    }
+}
+
 impl Subscription {
     /// The registration basis. Deltas describe transactions strictly after it.
     pub fn basis(&self) -> TxBasis {
@@ -99,27 +120,6 @@ impl Drop for Subscription {
     }
 }
 
-fn error_frame_to_error(err: ErrorResponseBody) -> Error {
-    anyhow!("subscription error (code {}): {}", err.code, err.message)
-}
-
-async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>>) {
-    while let Some(frame) = frames.next().await {
-        let (item, terminal) = match frame {
-            Ok(SubscriptionFrame::Delta { basis, rows }) => (Ok(Delta { basis, rows }), false),
-            Ok(SubscriptionFrame::Error(err)) => (Err(error_frame_to_error(err)), true),
-            Ok(SubscriptionFrame::Open { .. }) => {
-                (Err(anyhow!("unexpected open frame mid-stream")), true)
-            }
-            Err(err) => (Err(err), true),
-        };
-
-        if sender.send(item).await.is_err() || terminal {
-            break;
-        }
-    }
-}
-
 /// Frames a byte stream of bare, self-delimiting msgpack values into
 /// [`SubscriptionFrame`]s. Returns `Ok(None)` for an incomplete frame (need more
 /// bytes); a corrupt or oversized frame is an error.
@@ -132,6 +132,17 @@ impl Default for MsgpackFrameDecoder {
         Self {
             max_frame_size: DEFAULT_MAX_MESSAGE_SIZE as usize,
         }
+    }
+}
+
+/// `true` when the decode error is a truncated value (need more bytes) rather
+/// than a corrupt one.
+fn needs_more_data(err: &rmpv::decode::Error) -> bool {
+    match err {
+        rmpv::decode::Error::InvalidMarkerRead(e) | rmpv::decode::Error::InvalidDataRead(e) => {
+            e.kind() == io::ErrorKind::UnexpectedEof
+        }
+        rmpv::decode::Error::DepthLimitExceeded => false,
     }
 }
 
@@ -163,17 +174,6 @@ impl Decoder for MsgpackFrameDecoder {
             }
             Err(err) => Err(anyhow!("msgpack frame decode error: {err}")),
         }
-    }
-}
-
-/// `true` when the decode error is a truncated value (need more bytes) rather
-/// than a corrupt one.
-fn needs_more_data(err: &rmpv::decode::Error) -> bool {
-    match err {
-        rmpv::decode::Error::InvalidMarkerRead(e) | rmpv::decode::Error::InvalidDataRead(e) => {
-            e.kind() == io::ErrorKind::UnexpectedEof
-        }
-        rmpv::decode::Error::DepthLimitExceeded => false,
     }
 }
 
