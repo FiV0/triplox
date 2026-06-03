@@ -34,6 +34,15 @@ public final class Subscription implements AutoCloseable {
     private volatile boolean closed = false;
     private volatile RuntimeException terminalError;
 
+    // The main reason we have this end sentinel is to unblock takes/polls when the stream ends or the subscription is closed
+    private sealed interface QueueEvent permits QueueEvent.DeltaEvent, QueueEvent.End {
+        record DeltaEvent(Delta delta) implements QueueEvent {}
+
+        enum End implements QueueEvent {
+            INSTANCE
+        }
+    }
+
     Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
         this.basis = basis;
         this.closeable = closeable;
@@ -80,6 +89,14 @@ public final class Subscription implements AutoCloseable {
         return null;
     }
 
+    private Delta unwrap(QueueEvent event) {
+        if (event instanceof QueueEvent.DeltaEvent delta) {
+            return delta.delta();
+        }
+        closed = true;
+        return endResult();
+    }
+
     /** Block for the next delta. Returns {@code null} when the stream ends. */
     public Delta take() throws InterruptedException {
         if (closed) {
@@ -110,13 +127,6 @@ public final class Subscription implements AutoCloseable {
         reader.interrupt();
     }
 
-    private Delta unwrap(QueueEvent event) {
-        if (event instanceof QueueEvent.DeltaEvent delta) {
-            return delta.delta();
-        }
-        closed = true;
-        return endResult();
-    }
 
     private void readLoop(MessageUnpacker unpacker) {
         try {
@@ -168,11 +178,4 @@ public final class Subscription implements AutoCloseable {
         return new TriploxException(e.severity(), e.code(), e.message(), e.detail(), e.hint());
     }
 
-    private sealed interface QueueEvent permits QueueEvent.DeltaEvent, QueueEvent.End {
-        record DeltaEvent(Delta delta) implements QueueEvent {}
-
-        enum End implements QueueEvent {
-            INSTANCE
-        }
-    }
 }
