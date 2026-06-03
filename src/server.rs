@@ -388,6 +388,7 @@ fn subscription_body(
                     shutdown,
                 } => {
                     tokio::select! {
+                        biased;
                         _ = shutdown.cancelled() => None,
                         delta = deltas.recv() => match delta {
                             Some(delta) => {
