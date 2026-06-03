@@ -12,6 +12,8 @@ use std::task::{Context, Poll};
 use anyhow::{anyhow, bail, Error, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_util::codec::{Decoder, FramedRead};
 use tokio_util::io::StreamReader;
 
@@ -22,6 +24,8 @@ use crate::transaction::TxBasis;
 
 type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
 type FrameStream = FramedRead<StreamReader<ByteStream, Bytes>, MsgpackFrameDecoder>;
+
+const SUBSCRIPTION_QUEUE_CAPACITY: usize = 128;
 
 /// A single transaction's z-set changes for a subscribed query.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,8 +42,8 @@ pub struct Delta {
 /// stream combinators. Dropping it cancels the HTTP/2 stream and unsubscribes.
 pub struct Subscription {
     basis: TxBasis,
-    frames: FrameStream,
-    done: bool,
+    deltas: mpsc::Receiver<Result<Delta>>,
+    reader: JoinHandle<()>,
 }
 
 impl Subscription {
@@ -70,10 +74,12 @@ impl Subscription {
             Some(Err(err)) => return Err(err),
             None => bail!("subscription stream closed before the open frame"),
         };
+        let (sender, deltas) = mpsc::channel(SUBSCRIPTION_QUEUE_CAPACITY);
+        let reader = tokio::spawn(read_deltas(frames, sender));
         Ok(Subscription {
             basis,
-            frames,
-            done: false,
+            deltas,
+            reader,
         })
     }
 }
@@ -83,35 +89,35 @@ impl Stream for Subscription {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if this.done {
-            return Poll::Ready(None);
-        }
-        match Pin::new(&mut this.frames).poll_next(cx) {
-            Poll::Ready(Some(Ok(frame))) => match frame {
-                SubscriptionFrame::Delta { basis, rows } => {
-                    Poll::Ready(Some(Ok(Delta { basis, rows })))
-                }
-                SubscriptionFrame::Error(err) => {
-                    this.done = true;
-                    Poll::Ready(Some(Err(error_frame_to_error(err))))
-                }
-                SubscriptionFrame::Open { .. } => {
-                    this.done = true;
-                    Poll::Ready(Some(Err(anyhow!("unexpected open frame mid-stream"))))
-                }
-            },
-            Poll::Ready(Some(Err(err))) => {
-                this.done = true;
-                Poll::Ready(Some(Err(err)))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
+        this.deltas.poll_recv(cx)
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.reader.abort();
     }
 }
 
 fn error_frame_to_error(err: ErrorResponseBody) -> Error {
     anyhow!("subscription error (code {}): {}", err.code, err.message)
+}
+
+async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>>) {
+    while let Some(frame) = frames.next().await {
+        let (item, terminal) = match frame {
+            Ok(SubscriptionFrame::Delta { basis, rows }) => (Ok(Delta { basis, rows }), false),
+            Ok(SubscriptionFrame::Error(err)) => (Err(error_frame_to_error(err)), true),
+            Ok(SubscriptionFrame::Open { .. }) => {
+                (Err(anyhow!("unexpected open frame mid-stream")), true)
+            }
+            Err(err) => (Err(err), true),
+        };
+
+        if sender.send(item).await.is_err() || terminal {
+            break;
+        }
+    }
 }
 
 /// Frames a byte stream of bare, self-delimiting msgpack values into
@@ -178,6 +184,10 @@ mod tests {
     use crate::protocol::ColumnDescription;
     use crate::transaction::TxKey;
     use chrono::{TimeZone, Utc};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::time::{sleep, timeout, Duration};
 
     fn sample_basis() -> TxBasis {
         TxBasis {
@@ -197,6 +207,14 @@ mod tests {
                 data_type: 255,
                 members: None,
             }],
+        })
+        .unwrap()
+    }
+
+    fn delta_bytes(name: &str) -> Vec<u8> {
+        encode_subscription_frame(&SubscriptionFrame::Delta {
+            basis: sample_basis(),
+            rows: vec![(vec![DataType::String(name.to_string())], 1)],
         })
         .unwrap()
     }
@@ -239,48 +257,166 @@ mod tests {
         assert!(decoder.decode(&mut buf).is_err());
     }
 
-    #[test]
-    fn subscription_surfaces_unknown_frame_kind_error() {
-        futures::executor::block_on(async {
-            let mut payload = Vec::new();
-            payload.extend(open_bytes());
-            payload.extend(unknown_bytes());
-            let stream =
-                futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
+    #[tokio::test]
+    async fn subscription_surfaces_unknown_frame_kind_error() {
+        let mut payload = Vec::new();
+        payload.extend(open_bytes());
+        payload.extend(unknown_bytes());
+        let stream =
+            futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
-            let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
-            assert_eq!(sub.basis(), sample_basis());
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        assert_eq!(sub.basis(), sample_basis());
 
-            let err = sub.next().await.expect("an item").unwrap_err();
-            assert!(err
-                .to_string()
-                .contains("unknown subscription frame kind: heartbeat"));
-            assert!(sub.next().await.is_none(), "done after error");
-        });
+        let err = sub.next().await.expect("an item").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unknown subscription frame kind: heartbeat"));
+        assert!(sub.next().await.is_none(), "done after error");
     }
 
-    #[test]
-    fn subscription_surfaces_error_frame() {
-        futures::executor::block_on(async {
-            let mut payload = Vec::new();
-            payload.extend(open_bytes());
-            payload.extend(
-                encode_subscription_frame(&SubscriptionFrame::Error(ErrorResponseBody {
-                    severity: b'F',
-                    code: 4000,
-                    message: "boom".to_string(),
-                    detail: None,
-                    hint: None,
-                }))
-                .unwrap(),
-            );
-            let stream =
-                futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
+    #[tokio::test]
+    async fn subscription_surfaces_error_frame() {
+        let mut payload = Vec::new();
+        payload.extend(open_bytes());
+        payload.extend(
+            encode_subscription_frame(&SubscriptionFrame::Error(ErrorResponseBody {
+                severity: b'F',
+                code: 4000,
+                message: "boom".to_string(),
+                detail: None,
+                hint: None,
+            }))
+            .unwrap(),
+        );
+        let stream =
+            futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
-            let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
-            let err = sub.next().await.expect("an item").unwrap_err();
-            assert!(err.to_string().contains("4000"));
-            assert!(sub.next().await.is_none(), "done after error");
-        });
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        let err = sub.next().await.expect("an item").unwrap_err();
+        assert!(err.to_string().contains("4000"));
+        assert!(sub.next().await.is_none(), "done after error");
+    }
+
+    struct CountingByteStream {
+        chunks: VecDeque<Bytes>,
+        yielded: Arc<AtomicUsize>,
+    }
+
+    impl Stream for CountingByteStream {
+        type Item = io::Result<Bytes>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            match self.chunks.pop_front() {
+                Some(chunk) => {
+                    self.yielded.fetch_add(1, Ordering::SeqCst);
+                    Poll::Ready(Some(Ok(chunk)))
+                }
+                None => Poll::Ready(None),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn subscription_reads_ahead_until_delta_queue_is_full() {
+        let yielded = Arc::new(AtomicUsize::new(0));
+        let mut chunks = VecDeque::new();
+        chunks.push_back(Bytes::from(open_bytes()));
+        for idx in 0..SUBSCRIPTION_QUEUE_CAPACITY + 3 {
+            chunks.push_back(Bytes::from(delta_bytes(&format!("Alice {idx}"))));
+        }
+        let stream = CountingByteStream {
+            chunks,
+            yielded: yielded.clone(),
+        };
+
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        let blocked_at = SUBSCRIPTION_QUEUE_CAPACITY + 2;
+
+        timeout(Duration::from_secs(1), async {
+            while yielded.load(Ordering::SeqCst) < blocked_at {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader should fill the bounded delta queue");
+
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(
+            yielded.load(Ordering::SeqCst),
+            blocked_at,
+            "reader should stop pulling once the delta queue is full"
+        );
+
+        let delta = sub.next().await.expect("buffered delta").unwrap();
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Alice 0".to_string())], 1)]
+        );
+        timeout(Duration::from_secs(1), async {
+            while yielded.load(Ordering::SeqCst) < blocked_at + 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("draining one delta should let the reader pull one more frame");
+    }
+
+    struct DropNotifyStream {
+        chunks: VecDeque<Bytes>,
+        polled_pending: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Stream for DropNotifyStream {
+        type Item = io::Result<Bytes>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            match self.chunks.pop_front() {
+                Some(chunk) => Poll::Ready(Some(Ok(chunk))),
+                None => {
+                    self.polled_pending.store(true, Ordering::SeqCst);
+                    Poll::Pending
+                }
+            }
+        }
+    }
+
+    impl Drop for DropNotifyStream {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_subscription_aborts_reader_and_drops_stream() {
+        let polled_pending = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut chunks = VecDeque::new();
+        chunks.push_back(Bytes::from(open_bytes()));
+        let stream = DropNotifyStream {
+            chunks,
+            polled_pending: polled_pending.clone(),
+            dropped: dropped.clone(),
+        };
+
+        let sub = Subscription::from_byte_stream(stream).await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while !polled_pending.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader should poll the upstream stream");
+
+        drop(sub);
+
+        timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropping subscription should abort the reader task");
     }
 }
