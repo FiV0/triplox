@@ -21,6 +21,9 @@ fn load_config() -> Result<Config> {
 
 async fn run_server(config: Config) -> Result<()> {
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+    let dbsp_storage_path = config.dbsp_storage_path();
+    let remote_local_disk_storage_path = config.remote_local_disk_storage_path();
+    let has_configured_local_disk_storage = config.local_disk_storage.path.is_some();
 
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
@@ -50,11 +53,15 @@ async fn run_server(config: Config) -> Result<()> {
 
     match config.storage {
         StorageConfig::Dev => {
-            let server = DevServer::new();
+            let server = if has_configured_local_disk_storage {
+                DevServer::with_dbsp_storage_path(dbsp_storage_path)
+            } else {
+                DevServer::new()
+            };
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
-            let node = Arc::new(Node::memory_node().await);
+            let node = Arc::new(Node::memory_node_with_dbsp_storage(dbsp_storage_path).await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -69,11 +76,14 @@ async fn run_server(config: Config) -> Result<()> {
             access_key,
             secret_key,
             region,
-            log_path,
+            file_log_path,
         } => {
+            let local_disk_storage_path = remote_local_disk_storage_path
+                .expect("remote storage should have a local disk storage path");
             let node = Arc::new(
                 Node::remote_node(
-                    &log_path,
+                    &file_log_path,
+                    &local_disk_storage_path,
                     &endpoint,
                     &bucket,
                     &access_key,

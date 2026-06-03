@@ -47,15 +47,17 @@ cargo run -- config/triplox-remote.toml              # debug build
 cargo run --release -- config/triplox-remote.toml    # release build
 ```
 
-Logs go to `/tmp/triplox-log/` (configured in `triplox-remote.toml`). The
-slatedb disk-backed object-store cache lives at `/tmp/triplox-log/cache/` and
-is capped at slatedb's default 16 GiB. It grows across restarts and must be
-wiped manually when you want a cold read path.
+The local transaction log is `/tmp/triplox-log/log` (configured as
+`storage.file_log_path` in `triplox-remote.toml`). SlateDB's disk-backed
+object-store cache lives at `/tmp/triplox-disk/cache/`, and DBSP incremental
+query storage lives at `/tmp/triplox-disk/dbsp/` (both derived from
+`local_disk_storage.path`). The SlateDB cache is capped at SlateDB's default
+16 GiB. It grows across restarts and must be wiped manually when you want a
+cold read path.
 
 ### 4. Reset
 
-Wipe MinIO contents and the local log (including the object-store cache)
-before the next run:
+Wipe MinIO contents, the local log, and local disk storage before the next run:
 
 ```bash
 ./config/scripts/reset-local-remote.sh
