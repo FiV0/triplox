@@ -8,9 +8,12 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.junit.jupiter.api.Test;
 import org.msgpack.core.MessagePack;
+import org.msgpack.core.MessagePacker;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,11 +44,48 @@ class SubscriptionTest {
         }
     }
 
+    @Test
+    void openFrameMidStreamSurfacesAsInvalidState() throws Exception {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packOpenFrame(packer);
+            packOpenFrame(packer);
+            body = packer.toByteArray();
+        }
+
+        var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(body));
+        var first = assertInstanceOf(SubscriptionFrame.Open.class, WireCodec.decodeSubscriptionFrame(unpacker));
+        try (Subscription sub = new Subscription(first.basis(), () -> {}, unpacker)) {
+            var ex = assertThrows(IllegalStateException.class, () -> sub.poll(5, TimeUnit.SECONDS));
+            assertTrue(ex.getMessage().contains("unexpected open frame mid-stream"));
+        }
+    }
+
     private static final class ThrowingInputStream extends InputStream {
         @Override
         public int read() throws IOException {
             throw new IOException("read failed");
         }
+    }
+
+    private static void packOpenFrame(MessagePacker packer) throws IOException {
+        packer.packMapHeader(3);
+        packer.packString("kind");
+        packer.packString("open");
+        packer.packString("basis");
+        packBasis(packer);
+        packer.packString("columns");
+        packer.packArrayHeader(0);
+    }
+
+    private static void packBasis(MessagePacker packer) throws IOException {
+        packer.packMapHeader(3);
+        packer.packString("tx_id");
+        packer.packLong(7L);
+        packer.packString("system_time");
+        packer.packTimestamp(Instant.ofEpochSecond(1_700_000_000L));
+        packer.packString("tx_eid");
+        packer.packLong(42L);
     }
 
     private static Request request(String path) {

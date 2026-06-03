@@ -17,8 +17,8 @@ import org.msgpack.core.MessageUnpacker;
  * wait. A background daemon thread decodes frames into a bounded queue, so a slow
  * consumer applies backpressure — the reader stops draining the socket when the
  * queue is full, which the server observes via HTTP/2 flow control. A terminal
- * {@code error} frame surfaces as a {@link TriploxException} from the next
- * {@code take}/{@code poll}. {@link #close()} cancels the stream and unsubscribes.</p>
+ * {@code error} frame or invalid stream state surfaces from the next {@code
+ * take}/{@code poll}. {@link #close()} cancels the stream and unsubscribes.</p>
  *
  * <p>Thread-safety: consume a single subscription from one thread.</p>
  */
@@ -34,7 +34,7 @@ public final class Subscription implements AutoCloseable {
 
     private volatile boolean closed = false;
     private volatile boolean drained = false;
-    private volatile TriploxException terminalError;
+    private volatile RuntimeException terminalError;
 
     Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
         this.basis = basis;
@@ -130,8 +130,10 @@ public final class Subscription implements AutoCloseable {
                 } else if (frame instanceof SubscriptionFrame.Error error) {
                     terminalError = toException(error.error());
                     break;
+                } else if (frame instanceof SubscriptionFrame.Open) {
+                    terminalError = new IllegalStateException("unexpected open frame mid-stream");
+                    break;
                 }
-                // Open frames are only valid as the first frame and are ignored mid-stream.
             }
         } catch (IOException e) {
             if (!closed) {
