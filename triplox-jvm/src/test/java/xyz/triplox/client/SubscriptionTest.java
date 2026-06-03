@@ -14,6 +14,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -61,6 +62,28 @@ class SubscriptionTest {
         }
     }
 
+    @Test
+    void closeDiscardsQueuedDeltas() throws Exception {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            for (int i = 0; i < 129; i++) {
+                packDeltaFrame(packer, "Alice " + i);
+            }
+            body = packer.toByteArray();
+        }
+
+        var allFramesRead = new CountDownLatch(1);
+        var unpacker = MessagePack.newDefaultUnpacker(new LatchingInputStream(body, allFramesRead));
+        try (Subscription sub = new Subscription(sampleBasis(), () -> {}, unpacker)) {
+            assertTrue(allFramesRead.await(5, TimeUnit.SECONDS), "reader should fill the queue");
+
+            sub.close();
+
+            assertTrue(sub.isDone());
+            assertNull(sub.poll(5, TimeUnit.SECONDS));
+        }
+    }
+
     private static final class ThrowingInputStream extends InputStream {
         @Override
         public int read() throws IOException {
@@ -78,6 +101,24 @@ class SubscriptionTest {
         packer.packArrayHeader(0);
     }
 
+    private static void packDeltaFrame(MessagePacker packer, String name) throws IOException {
+        packer.packMapHeader(3);
+        packer.packString("kind");
+        packer.packString("delta");
+        packer.packString("basis");
+        packBasis(packer);
+        packer.packString("rows");
+        packer.packArrayHeader(1);
+        packer.packArrayHeader(2);
+        packer.packArrayHeader(1);
+        packer.packString(name);
+        packer.packLong(1L);
+    }
+
+    private static TxBasis sampleBasis() {
+        return new TxBasis(7L, Instant.ofEpochSecond(1_700_000_000L), 42L);
+    }
+
     private static void packBasis(MessagePacker packer) throws IOException {
         packer.packMapHeader(3);
         packer.packString("tx_id");
@@ -86,6 +127,43 @@ class SubscriptionTest {
         packer.packTimestamp(Instant.ofEpochSecond(1_700_000_000L));
         packer.packString("tx_eid");
         packer.packLong(42L);
+    }
+
+    private static final class LatchingInputStream extends InputStream {
+        private final byte[] data;
+        private final CountDownLatch allBytesRead;
+        private int position;
+
+        private LatchingInputStream(byte[] data, CountDownLatch allBytesRead) {
+            this.data = data;
+            this.allBytesRead = allBytesRead;
+        }
+
+        @Override
+        public int read() {
+            if (position >= data.length) {
+                return -1;
+            }
+            int value = data[position++] & 0xff;
+            if (position >= data.length) {
+                allBytesRead.countDown();
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) {
+            if (position >= data.length) {
+                return -1;
+            }
+            int count = Math.min(len, data.length - position);
+            System.arraycopy(data, position, b, off, count);
+            position += count;
+            if (position >= data.length) {
+                allBytesRead.countDown();
+            }
+            return count;
+        }
     }
 
     private static Request request(String path) {

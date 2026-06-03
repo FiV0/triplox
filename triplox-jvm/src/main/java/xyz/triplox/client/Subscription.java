@@ -33,7 +33,6 @@ public final class Subscription implements AutoCloseable {
     private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
     private volatile boolean closed = false;
-    private volatile boolean drained = false;
     private volatile RuntimeException terminalError;
 
     Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
@@ -70,14 +69,14 @@ public final class Subscription implements AutoCloseable {
         return basis;
     }
 
-    /** True once the stream has ended and the consumer has observed the end. */
+    /** True once the stream has ended or the subscription has been closed. */
     public boolean isDone() {
-        return drained;
+        return closed;
     }
 
     /** Block for the next delta. Returns {@code null} when the stream ends. */
     public Delta take() throws InterruptedException {
-        if (drained) {
+        if (closed) {
             return endResult();
         }
         return unwrap(queue.take());
@@ -85,7 +84,7 @@ public final class Subscription implements AutoCloseable {
 
     /** Wait up to {@code timeout} for the next delta; {@code null} on timeout or end. */
     public Delta poll(long timeout, TimeUnit unit) throws InterruptedException {
-        if (drained) {
+        if (closed) {
             return endResult();
         }
         Object item = queue.poll(timeout, unit);
@@ -95,6 +94,7 @@ public final class Subscription implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        queue.clear();
         try {
             closeable.close();
         } catch (IOException ignored) {
@@ -105,7 +105,10 @@ public final class Subscription implements AutoCloseable {
 
     private Delta unwrap(Object item) {
         if (item == END) {
-            drained = true;
+            closed = true;
+            return endResult();
+        }
+        if (closed) {
             return endResult();
         }
         return (Delta) item;
@@ -153,10 +156,14 @@ public final class Subscription implements AutoCloseable {
             } catch (IOException ignored) {
                 // The consumer may have already closed the subscription.
             }
-            try {
-                queue.put(END);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            if (closed) {
+                queue.clear();
+            } else {
+                try {
+                    queue.put(END);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
         }
     }
