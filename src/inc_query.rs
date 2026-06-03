@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, bail, Result};
 use edn::query::{
-    Element, FindSpec, Limit, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
-    Variable, WhereClause,
+    Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
+    PatternValuePlace, UnifyVars, Variable, WhereClause,
 };
 
 use crate::codec::Encode;
@@ -19,8 +19,30 @@ use crate::schema::Schema;
 pub(crate) struct IncrementalQueryPlan {
     pub find_vars: Vec<Variable>,
     pub variables: Vec<Variable>,
+    pub where_terms: Vec<WhereTermPlan>,
     pub patterns: Vec<PatternPlan>,
     pub joins: Vec<JoinPlan>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WhereTermPlan {
+    Pattern(PatternPlan),
+    Or(OrPlan),
+}
+
+impl WhereTermPlan {
+    pub(crate) fn output_vars(&self) -> &[Variable] {
+        match self {
+            WhereTermPlan::Pattern(pattern) => &pattern.output_vars,
+            WhereTermPlan::Or(or) => &or.output_vars,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OrPlan {
+    pub branches: Vec<WhereTermPlan>,
+    pub output_vars: Vec<Variable>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +61,7 @@ pub(crate) enum PatternSlot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JoinPlan {
-    pub right_pattern_index: usize,
+    pub right_term_index: usize,
     pub left_vars: Vec<Variable>,
     pub right_vars: Vec<Variable>,
     pub key_vars: Vec<Variable>,
@@ -48,23 +70,23 @@ pub(crate) struct JoinPlan {
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
     reject_unsupported_query_shape(query)?;
+    let find_vars = find_vars(&query.find_spec)?;
     validate_query(query, &[])?;
 
-    let find_vars = find_vars(&query.find_spec);
-    let patterns = query
+    let where_terms = query
         .where_clauses
         .iter()
-        .map(|clause| match clause {
-            WhereClause::Pattern(pattern) => plan_pattern(pattern, schema),
-            _ => unreachable!("non-pattern clauses are rejected before planning"),
-        })
+        .map(|clause| plan_where_clause(clause, schema))
         .collect::<Result<Vec<_>>>()?;
 
-    if patterns.is_empty() {
+    if where_terms.is_empty() {
         bail!("Incremental queries require at least one triple pattern");
     }
 
-    let variables = collect_variables(&patterns);
+    let mut patterns = Vec::new();
+    collect_leaf_patterns(&where_terms, &mut patterns);
+
+    let variables = collect_variables(&where_terms);
     for var in &find_vars {
         if !variables.contains(var) {
             bail!(
@@ -74,11 +96,12 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
         }
     }
 
-    let joins = plan_joins(&patterns);
+    let joins = plan_joins(&where_terms);
 
     Ok(IncrementalQueryPlan {
         find_vars,
         variables,
+        where_terms,
         patterns,
         joins,
     })
@@ -98,51 +121,116 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if query.order.is_some() {
         bail!("Incremental queries do not support :order");
     }
-    match &query.find_spec {
-        FindSpec::FindRel(elements) => {
-            for element in elements {
-                if !matches!(element, Element::Variable(_)) {
-                    bail!("Incremental queries support only variables in :find");
-                }
-            }
-        }
-        _ => bail!("Incremental queries support only relational :find"),
-    }
     for clause in &query.where_clauses {
-        match clause {
-            WhereClause::Pattern(pattern) => {
-                if pattern.source.is_some() {
-                    bail!("Incremental query patterns do not support source variables");
-                }
-                if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
-                    bail!("Incremental query patterns do not support tx positions");
-                }
-                if !matches!(
-                    pattern.attribute,
-                    PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
-                ) {
-                    bail!("Incremental query pattern attributes must be constant idents or entids");
-                }
-            }
-            _ => bail!("Incremental queries currently support only triple patterns in :where"),
-        }
+        reject_unsupported_where_clause(clause)?;
     }
     Ok(())
 }
 
-fn find_vars(find_spec: &FindSpec) -> Vec<Variable> {
+fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
+    match clause {
+        WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
+        WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
+        _ => bail!(
+            "Incremental queries currently support only triple patterns and or clauses in :where"
+        ),
+    }
+}
+
+fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
+    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
+        bail!("Incremental queries do not support explicit or-join");
+    }
+    for branch in &or.clauses {
+        reject_unsupported_or_branch(branch)?;
+    }
+    Ok(())
+}
+
+fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
+    match branch {
+        OrWhereClause::Clause(WhereClause::Pattern(pattern)) => {
+            reject_unsupported_pattern_shape(pattern)
+        }
+        OrWhereClause::Clause(WhereClause::OrJoin(or)) => reject_unsupported_or_join(or),
+        OrWhereClause::Clause(_) | OrWhereClause::And(_) => {
+            bail!("Incremental query or branches currently support only triple patterns or nested or clauses")
+        }
+    }
+}
+
+fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
+    if pattern.source.is_some() {
+        bail!("Incremental query patterns do not support source variables");
+    }
+    if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
+        bail!("Incremental query patterns do not support tx positions");
+    }
+    if !matches!(
+        pattern.attribute,
+        PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
+    ) {
+        bail!("Incremental query pattern attributes must be constant idents or entids");
+    }
+    Ok(())
+}
+
+fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
     let elements = match find_spec {
         FindSpec::FindRel(elements) => elements,
-        _ => unreachable!("non-relational :find is rejected before planning"),
+        _ => bail!("Incremental queries support only relational :find"),
     };
 
     elements
         .iter()
         .map(|element| match element {
-            Element::Variable(var) => var.clone(),
-            _ => unreachable!("non-variable :find elements are rejected before planning"),
+            Element::Variable(var) => Ok(var.clone()),
+            _ => Err(anyhow!(
+                "Incremental queries support only variables in :find"
+            )),
         })
         .collect()
+}
+
+fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+    match clause {
+        WhereClause::Pattern(pattern) => Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?)),
+        WhereClause::OrJoin(or) => plan_or_join(or, schema),
+        _ => unreachable!("unsupported clauses are rejected before planning"),
+    }
+}
+
+fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
+    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
+        bail!("Incremental queries do not support explicit or-join");
+    }
+
+    let branches = or
+        .clauses
+        .iter()
+        .map(|branch| plan_or_branch(branch, schema))
+        .collect::<Result<Vec<_>>>()?;
+    let output_vars = branches
+        .first()
+        .map(|branch| branch.output_vars().to_vec())
+        .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
+
+    Ok(WhereTermPlan::Or(OrPlan {
+        branches,
+        output_vars,
+    }))
+}
+
+fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+    match branch {
+        OrWhereClause::Clause(WhereClause::Pattern(pattern)) => {
+            Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?))
+        }
+        OrWhereClause::Clause(WhereClause::OrJoin(or)) => plan_or_join(or, schema),
+        OrWhereClause::Clause(_) | OrWhereClause::And(_) => {
+            bail!("Incremental query or branches currently support only triple patterns or nested or clauses")
+        }
+    }
 }
 
 fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
@@ -219,10 +307,10 @@ fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Vec<Variabl
     vars
 }
 
-fn collect_variables(patterns: &[PatternPlan]) -> Vec<Variable> {
+fn collect_variables(terms: &[WhereTermPlan]) -> Vec<Variable> {
     let mut variables = Vec::new();
-    for pattern in patterns {
-        for var in &pattern.output_vars {
+    for term in terms {
+        for var in term.output_vars() {
             if !variables.contains(var) {
                 variables.push(var.clone());
             }
@@ -231,13 +319,22 @@ fn collect_variables(patterns: &[PatternPlan]) -> Vec<Variable> {
     variables
 }
 
-fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
+fn collect_leaf_patterns(terms: &[WhereTermPlan], patterns: &mut Vec<PatternPlan>) {
+    for term in terms {
+        match term {
+            WhereTermPlan::Pattern(pattern) => patterns.push(pattern.clone()),
+            WhereTermPlan::Or(or) => collect_leaf_patterns(&or.branches, patterns),
+        }
+    }
+}
+
+fn plan_joins(terms: &[WhereTermPlan]) -> Vec<JoinPlan> {
     let mut joins = Vec::new();
-    let mut left_vars = patterns[0].output_vars.clone();
+    let mut left_vars = terms[0].output_vars().to_vec();
     let mut bound: HashSet<Variable> = left_vars.iter().cloned().collect();
 
-    for (right_pattern_index, pattern) in patterns.iter().enumerate().skip(1) {
-        let right_vars = pattern.output_vars.clone();
+    for (right_term_index, term) in terms.iter().enumerate().skip(1) {
+        let right_vars = term.output_vars().to_vec();
         let right_set: HashSet<Variable> = right_vars.iter().cloned().collect();
         // Note: Not using intersection to preserve ordering from left_vars
         let key_vars = left_vars
@@ -254,7 +351,7 @@ fn plan_joins(patterns: &[PatternPlan]) -> Vec<JoinPlan> {
         }
 
         joins.push(JoinPlan {
-            right_pattern_index,
+            right_term_index,
             left_vars,
             right_vars,
             key_vars,
@@ -350,7 +447,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].right_pattern_index, 1);
+        assert_eq!(plan.joins[0].right_term_index, 1);
         assert_eq!(plan.joins[0].key_vars, vec!["?e".to_var()]);
         assert_eq!(
             plan.joins[0].output_vars,
@@ -369,7 +466,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins[0].right_pattern_index, 1);
+        assert_eq!(plan.joins[0].right_term_index, 1);
         assert_eq!(plan.joins[0].key_vars, vec!["?friend".to_var()]);
     }
 
@@ -415,8 +512,67 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].right_pattern_index, 1);
+        assert_eq!(plan.joins[0].right_term_index, 1);
         assert!(plan.joins[0].key_vars.is_empty());
+    }
+
+    #[test]
+    fn plans_flat_or_clause() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(r#"[:find ?e :where (or [?e :name "Alice"] [?e :name "Bob"])]"#),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(plan.find_vars, vec!["?e".to_var()]);
+        assert_eq!(plan.variables, vec!["?e".to_var()]);
+        assert_eq!(plan.patterns.len(), 2);
+        assert_eq!(plan.patterns[0].attribute, 10);
+        assert_eq!(plan.patterns[0].value, encoded_string("Alice"));
+        assert_eq!(plan.patterns[1].attribute, 10);
+        assert_eq!(plan.patterns[1].value, encoded_string("Bob"));
+    }
+
+    #[test]
+    fn plans_nested_or_clause() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?e :where (or [?e :name "Alice"] (or [?e :name "Bob"] [?e :name "Cara"]))]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(plan.variables, vec!["?e".to_var()]);
+        assert_eq!(plan.patterns.len(), 3);
+        assert!(plan.joins.is_empty());
+        assert!(matches!(plan.where_terms[0], WhereTermPlan::Or(_)));
+    }
+
+    #[test]
+    fn plans_or_clause_with_branch_specific_variable_order() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(r#"[:find ?e ?v :where (or [?e :name ?v] [?v :follows ?e])]"#),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(plan.variables, vec!["?e".to_var(), "?v".to_var()]);
+        let WhereTermPlan::Or(or) = &plan.where_terms[0] else {
+            panic!("expected or term");
+        };
+        assert_eq!(or.output_vars, vec!["?e".to_var(), "?v".to_var()]);
+        assert_eq!(
+            or.branches[0].output_vars(),
+            &["?e".to_var(), "?v".to_var()]
+        );
+        assert_eq!(
+            or.branches[1].output_vars(),
+            &["?v".to_var(), "?e".to_var()]
+        );
     }
 
     #[test]
@@ -470,16 +626,20 @@ mod tests {
     #[test]
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] [(< ?e 2)]]"#,
-            "only triple patterns",
-        );
-        assert_plan_err(
-            r#"[:find ?e :where (or [?e :name "Alice"] [?e :name "Bob"])]"#,
-            "only triple patterns",
+            r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
+            "only triple patterns and or clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] (not [?e :age 30])]"#,
-            "only triple patterns",
+            "only triple patterns and or clauses",
+        );
+        assert_plan_err(
+            r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
+            "or branches currently support only triple patterns or nested or clauses",
+        );
+        assert_plan_err(
+            r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
+            "explicit or-join",
         );
     }
 

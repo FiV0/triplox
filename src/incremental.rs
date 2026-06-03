@@ -510,7 +510,7 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
+    use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, WhereTermPlan};
 
     #[test]
     fn unregister_removes_query_storage() {
@@ -845,6 +845,7 @@ mod tests {
         IncrementalQueryPlan {
             find_vars: vec!["?name".to_var()],
             variables: vec!["?e".to_var(), "?name".to_var()],
+            where_terms: vec![WhereTermPlan::Pattern(pattern.clone())],
             joins: vec![],
             patterns: vec![pattern],
         }

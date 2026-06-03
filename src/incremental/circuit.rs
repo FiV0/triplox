@@ -11,7 +11,7 @@ use dbsp::{
 use edn::query::Variable;
 
 use crate::codec::Decode;
-use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternPlan, PatternSlot};
+use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternPlan, PatternSlot, WhereTermPlan};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 
@@ -144,17 +144,55 @@ pub(crate) struct PlannedWhereStream {
     vars: Vec<Variable>,
 }
 
+fn project_stream(
+    rows: Stream<RootCircuit, RowZSet>,
+    source_vars: &[Variable],
+    target_vars: &[Variable],
+) -> Stream<RootCircuit, RowZSet> {
+    let selected_positions = positions(source_vars, target_vars);
+    rows.map(move |row| select_row_positions(row, &selected_positions))
+}
+
+fn term_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    term: &WhereTermPlan,
+) -> PlannedWhereStream {
+    match term {
+        WhereTermPlan::Pattern(pattern) => PlannedWhereStream {
+            rows: pattern_stream(input, pattern.clone()),
+            vars: pattern.output_vars.clone(),
+        },
+        WhereTermPlan::Or(or) => {
+            let mut branches = or
+                .branches
+                .iter()
+                .map(|branch| {
+                    let branch = term_stream(input, branch);
+                    project_stream(branch.rows, &branch.vars, &or.output_vars)
+                })
+                .collect::<Vec<_>>();
+            let first = branches.remove(0);
+            let rows = first.sum(branches.iter()).distinct();
+            PlannedWhereStream {
+                rows,
+                vars: or.output_vars.clone(),
+            }
+        }
+    }
+}
+
 // Creates the DBSP stream of joined where rows for the whole incremental query plan.
 pub(crate) fn query_where_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: &IncrementalQueryPlan,
 ) -> PlannedWhereStream {
-    let mut rows = pattern_stream(input, plan.patterns[0].clone());
-    let mut vars = plan.patterns[0].output_vars.clone();
+    let first = term_stream(input, &plan.where_terms[0]);
+    let mut rows = first.rows;
+    let mut vars = first.vars;
 
     for join in &plan.joins {
-        let right = pattern_stream(input, plan.patterns[join.right_pattern_index].clone());
-        rows = join_rows(rows, right, join);
+        let right = term_stream(input, &plan.where_terms[join.right_term_index]);
+        rows = join_rows(rows, right.rows, join);
         vars = join.output_vars.clone();
     }
 
@@ -261,12 +299,13 @@ mod tests {
     use dbsp::{
         utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
     };
+    use edn::kw;
     use edn::query::ToVariable;
     use tempfile::TempDir;
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternSlot};
+    use crate::inc_query::{IncrementalQueryPlan, JoinPlan, OrPlan, PatternSlot, WhereTermPlan};
     use crate::ops::DataType;
 
     fn build_pattern_circuit(
@@ -356,6 +395,26 @@ mod tests {
         }
     }
 
+    fn plan_from_patterns(
+        find_vars: Vec<Variable>,
+        variables: Vec<Variable>,
+        patterns: Vec<PatternPlan>,
+        joins: Vec<JoinPlan>,
+    ) -> IncrementalQueryPlan {
+        let where_terms = patterns
+            .iter()
+            .cloned()
+            .map(WhereTermPlan::Pattern)
+            .collect();
+        IncrementalQueryPlan {
+            find_vars,
+            variables,
+            where_terms,
+            patterns,
+            joins,
+        }
+    }
+
     fn entity_join_plan() -> IncrementalQueryPlan {
         let patterns = vec![
             PatternPlan {
@@ -371,17 +430,101 @@ mod tests {
                 output_vars: vec!["?e".to_var(), "?age".to_var()],
             },
         ];
-        IncrementalQueryPlan {
-            find_vars: vec!["?name".to_var(), "?age".to_var()],
-            variables: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
+        plan_from_patterns(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            patterns.clone(),
+            vec![JoinPlan {
+                right_term_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec!["?e".to_var()],
                 output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
             }],
-            patterns,
+        )
+    }
+
+    fn flat_or_plan() -> IncrementalQueryPlan {
+        let alice = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let bob = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Bob".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_terms: vec![WhereTermPlan::Or(OrPlan {
+                branches: vec![
+                    WhereTermPlan::Pattern(alice.clone()),
+                    WhereTermPlan::Pattern(bob.clone()),
+                ],
+                output_vars: vec!["?e".to_var()],
+            })],
+            patterns: vec![alice, bob],
+            joins: vec![],
+        }
+    }
+
+    fn overlapping_or_plan() -> IncrementalQueryPlan {
+        let named = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let typed = PatternPlan {
+            attribute: 13,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::Keyword(kw!(:person)).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_terms: vec![WhereTermPlan::Or(OrPlan {
+                branches: vec![
+                    WhereTermPlan::Pattern(named.clone()),
+                    WhereTermPlan::Pattern(typed.clone()),
+                ],
+                output_vars: vec!["?e".to_var()],
+            })],
+            patterns: vec![named, typed],
+            joins: vec![],
+        }
+    }
+
+    fn reordered_branch_or_plan() -> IncrementalQueryPlan {
+        let name = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Variable("?v".to_var()),
+            output_vars: vec!["?e".to_var(), "?v".to_var()],
+        };
+        let follows = PatternPlan {
+            attribute: 12,
+            entity: PatternSlot::Variable("?v".to_var()),
+            value: PatternSlot::Variable("?e".to_var()),
+            output_vars: vec!["?v".to_var(), "?e".to_var()],
+        };
+        IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var(), "?v".to_var()],
+            variables: vec!["?e".to_var(), "?v".to_var()],
+            where_terms: vec![WhereTermPlan::Or(OrPlan {
+                branches: vec![
+                    WhereTermPlan::Pattern(name.clone()),
+                    WhereTermPlan::Pattern(follows.clone()),
+                ],
+                output_vars: vec!["?e".to_var(), "?v".to_var()],
+            })],
+            patterns: vec![name, follows],
+            joins: vec![],
         }
     }
 
@@ -406,24 +549,25 @@ mod tests {
                 output_vars: vec!["?e".to_var(), "?friend".to_var()],
             },
         ];
-        IncrementalQueryPlan {
-            find_vars: vec!["?friend".to_var(), "?age".to_var()],
-            variables: vec![
+        plan_from_patterns(
+            vec!["?friend".to_var(), "?age".to_var()],
+            vec![
                 "?e".to_var(),
                 "?name".to_var(),
                 "?age".to_var(),
                 "?friend".to_var(),
             ],
-            joins: vec![
+            patterns.clone(),
+            vec![
                 JoinPlan {
-                    right_pattern_index: 2,
+                    right_term_index: 2,
                     left_vars: patterns[0].output_vars.clone(),
                     right_vars: patterns[2].output_vars.clone(),
                     key_vars: vec!["?e".to_var()],
                     output_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
                 },
                 JoinPlan {
-                    right_pattern_index: 1,
+                    right_term_index: 1,
                     left_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
                     right_vars: patterns[1].output_vars.clone(),
                     key_vars: vec!["?e".to_var()],
@@ -435,8 +579,7 @@ mod tests {
                     ],
                 },
             ],
-            patterns,
-        }
+        )
     }
 
     #[test]
@@ -611,6 +754,95 @@ mod tests {
     }
 
     #[test]
+    fn or_stream_emits_disjoint_union() {
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, flat_or_plan()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(2, 10, DataType::String("Bob".to_string())), 1),
+                (triple(3, 10, DataType::String("Charlie".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(1)], 1), (vec![DataType::Long(2)], 1),]
+        );
+    }
+
+    #[test]
+    fn or_stream_collapses_overlapping_branches() {
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, overlapping_or_plan()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(1, 13, DataType::Keyword(kw!(:person))), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1)], 1)]
+        );
+
+        append(
+            &handle,
+            [(triple(1, 10, DataType::String("Alice".to_string())), -1)],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(
+            &handle,
+            [(triple(1, 13, DataType::Keyword(kw!(:person))), -1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1)], -1)]
+        );
+    }
+
+    #[test]
+    fn or_stream_normalizes_branch_row_order() {
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(|circuit| build_find_circuit(circuit, reordered_branch_or_plan()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(2, 12, DataType::Long(1)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![
+                (vec![DataType::Long(1), DataType::Long(2)], 1),
+                (
+                    vec![DataType::Long(1), DataType::String("Alice".to_string())],
+                    1,
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn joins_through_ref_value() {
         let patterns = vec![
             PatternPlan {
@@ -626,18 +858,18 @@ mod tests {
                 output_vars: vec!["?friend".to_var(), "?friend-name".to_var()],
             },
         ];
-        let plan = IncrementalQueryPlan {
-            find_vars: vec!["?friend-name".to_var()],
-            variables: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
+        let plan = plan_from_patterns(
+            vec!["?friend-name".to_var()],
+            vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
+            patterns.clone(),
+            vec![JoinPlan {
+                right_term_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec!["?friend".to_var()],
                 output_vars: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
             }],
-            patterns,
-        };
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
@@ -666,14 +898,17 @@ mod tests {
     #[test]
     fn joins_three_pattern_chain() {
         let mut plan = entity_join_plan();
-        plan.patterns.push(PatternPlan {
+        let follows_pattern = PatternPlan {
             attribute: 12,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?friend".to_var()),
             output_vars: vec!["?e".to_var(), "?friend".to_var()],
-        });
+        };
+        plan.patterns.push(follows_pattern.clone());
+        plan.where_terms
+            .push(WhereTermPlan::Pattern(follows_pattern));
         plan.joins.push(JoinPlan {
-            right_pattern_index: 2,
+            right_term_index: 2,
             left_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
             right_vars: vec!["?e".to_var(), "?friend".to_var()],
             key_vars: vec!["?e".to_var()],
@@ -728,16 +963,17 @@ mod tests {
                 output_vars: vec!["?other".to_var(), "?age".to_var()],
             },
         ];
-        let plan = IncrementalQueryPlan {
-            find_vars: vec!["?name".to_var(), "?age".to_var()],
-            variables: vec![
+        let plan = plan_from_patterns(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec![
                 "?e".to_var(),
                 "?name".to_var(),
                 "?other".to_var(),
                 "?age".to_var(),
             ],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
+            patterns.clone(),
+            vec![JoinPlan {
+                right_term_index: 1,
                 left_vars: patterns[0].output_vars.clone(),
                 right_vars: patterns[1].output_vars.clone(),
                 key_vars: vec![],
@@ -748,8 +984,7 @@ mod tests {
                     "?age".to_var(),
                 ],
             }],
-            patterns,
-        };
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
