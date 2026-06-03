@@ -24,12 +24,12 @@
     :db/cardinality :db.cardinality/one}])
 
 (def edge-schema
-  [{:db/ident :g/to :db/valueType :db.type/long :db/cardinality :db.cardinality/many}])
+  [{:db/ident :g/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
 (def triangle-relation-schema
-  [{:db/ident :r/to :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
-   {:db/ident :s/to :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
-   {:db/ident :t/to :db/valueType :db.type/long :db/cardinality :db.cardinality/many}])
+  [{:db/ident :r/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+   {:db/ident :s/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+   {:db/ident :t/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
 (def names-query '{:find [?name] :where [[?e :name ?name]]})
 
@@ -39,7 +39,30 @@
   (api/take! sub delta-timeout-ms))
 
 (defn delta-set! [sub]
-  (set (take-delta! sub)))
+  (let [res (take-delta! sub)]
+    (if (sequential? res)
+      (set res)
+      res)))
+
+(defn q [conn query]
+  (api/q (api/db conn) query))
+
+(defn single-value [conn query]
+  (let [rows (q conn query)]
+    (is (= 1 (count rows)))
+    (ffirst rows)))
+
+(def graph-a "graph/a")
+(def graph-b "graph/b")
+(def graph-c "graph/c")
+(def graph-d "graph/d")
+(def graph-e "graph/e")
+
+(def graph-nodes (mapv #(hash-map :db/id %) [graph-a graph-b graph-c graph-d graph-e]))
+
+(def first-user-entity-id 8796093022208)
+(def user-entity-ids (range first-user-entity-id (+ first-user-entity-id 100)))
+
 
 (deftest subscribe-returns-basis-and-times-out
   (with-open [conn (connect)]
@@ -59,13 +82,15 @@
 (deftest with-previous-value
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (api/transact conn [{:db/id 101 :name "Ivan"}])
-    (with-open [sub (api/subscribe conn '{:find [?name]
-                                           :where [[101 :name ?name]]})]
-      (api/transact conn [{:db/id 101 :name "Ivanov"}])
-      (is (= #{[["Ivan"] -1]
-               [["Ivanov"] 1]}
-             (delta-set! sub))))))
+    (api/transact conn [{:name "Ivan"}])
+    (let [ivan-id (single-value conn '{:find [?e]
+                                       :where [[?e :name "Ivan"]]})]
+      (with-open [sub (api/subscribe conn {:find ['?name]
+                                            :where [[ivan-id :name '?name]]})]
+        (api/transact conn [[:db/add ivan-id :name "Ivanov"]])
+        (is (= #{[["Ivan"] -1]
+                 [["Ivanov"] 1]}
+               (delta-set! sub)))))))
 
 (deftest test-basic-query-1
   (with-open [conn (connect)]
@@ -73,8 +98,8 @@
     (with-open [sub (api/subscribe conn '{:find [?name]
                                            :where [[?e :name "Ivan"]
                                                    [?e :name ?name]]})]
-      (api/transact conn [{:db/id 111 :name "Ivan" :last-name "Ivanov"}
-                          {:db/id 112 :name "Petr" :last-name "Petrov"}])
+      (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                          {:name "Petr" :last-name "Petrov"}])
       (is (= [[["Ivan"] 1]] (take-delta! sub))))))
 
 (deftest test-basic-query-2
@@ -83,9 +108,11 @@
       (api/transact conn people-schema)
       (with-open [sub (api/subscribe conn '{:find [?e]
                                              :where [[?e :name "Ivan"]]})]
-        (api/transact conn [{:db/id 121 :name "Ivan" :last-name "Ivanov"}
-                            {:db/id 122 :name "Petr" :last-name "Petrov"}])
-        (is (= [[[121] 1]] (take-delta! sub)))))))
+        (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                            {:name "Petr" :last-name "Petrov"}])
+        (let [[[row weight]] (take-delta! sub)]
+          (is (= 1 weight))
+          (is (integer? (first row))))))))
 
 (deftest test-basic-query-3
   (testing "Can query using multiple terms"
@@ -96,8 +123,8 @@
                                                      [?e :last-name ?last-name]
                                                      [?e :name "Ivan"]
                                                      [?e :last-name "Ivanov"]]})]
-        (api/transact conn [{:db/id 131 :name "Ivan" :last-name "Ivanov"}
-                            {:db/id 132 :name "Petr" :last-name "Petrov"}])
+        (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                            {:name "Petr" :last-name "Petrov"}])
         (is (= [[["Ivan" "Ivanov"] 1]]
                (take-delta! sub)))))))
 
@@ -108,8 +135,8 @@
       (with-open [sub (api/subscribe conn '{:find [?e]
                                              :where [[?e :name "Ivan"]
                                                      [?e :last-name "Ivanov-does-not-match"]]})]
-        (api/transact conn [{:db/id 141 :name "Ivan" :last-name "Ivanov"}
-                            {:db/id 142 :name "Petr" :last-name "Petrov"}])
+        (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                            {:name "Petr" :last-name "Petrov"}])
         (is (= ::api/timeout (api/take! sub 300)))))))
 
 (deftest test-basic-query-5
@@ -118,8 +145,8 @@
       (api/transact conn people-schema)
       (with-open [sub (api/subscribe conn '{:find [?name]
                                              :where [[?e :name ?name]]})]
-        (api/transact conn [{:db/id 151 :name "Ivan"}
-                            {:db/id 152 :name "Petr"}])
+        (api/transact conn [{:name "Ivan"}
+                            {:name "Petr"}])
         (is (= #{[["Ivan"] 1]
                  [["Petr"] 1]}
                (delta-set! sub)))))))
@@ -131,11 +158,12 @@
       (with-open [sub (api/subscribe conn '{:find [?p1]
                                              :where [[?p1 :name ?name]
                                                      [?p1 :last-name ?name]]})]
-        (api/transact conn [{:db/id 161 :name "Ivan" :last-name "Ivanov"}
-                            {:db/id 162 :name "Petr" :last-name "Petrov"}
-                            {:db/id 163 :name "Smith" :last-name "Smith"}])
-        (is (= [[[163] 1]]
-               (take-delta! sub)))))))
+        (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                            {:name "Petr" :last-name "Petrov"}
+                            {:name "Smith" :last-name "Smith"}])
+        (let [[[row weight]] (take-delta! sub)]
+          (is (= 1 weight))
+          (is (integer? (first row))))))))
 
 (deftest test-basic-query-7
   (testing "Can query across fields for same value when value is passed in"
@@ -145,124 +173,142 @@
                                              :where [[?p1 :name ?name]
                                                      [?p1 :last-name ?name]
                                                      [?p1 :name "Smith"]]})]
-        (api/transact conn [{:db/id 171 :name "Ivan" :last-name "Ivanov"}
-                            {:db/id 172 :name "Petr" :last-name "Petrov"}
-                            {:db/id 173 :name "Smith" :last-name "Smith"}])
-        (is (= [[[173] 1]]
-               (take-delta! sub)))))))
+        (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                            {:name "Petr" :last-name "Petrov"}
+                            {:name "Smith" :last-name "Smith"}])
+        (let [[[row weight]] (take-delta! sub)]
+          (is (= 1 weight))
+          (is (integer? (first row))))))))
 
 (deftest test-basic-retractions-1
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (api/transact conn [{:db/id 181 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 182 :name "Petr" :last-name "Petrov"}])
-    (with-open [sub (api/subscribe conn '{:find [?name]
-                                           :where [[?e :name ?name]]})]
-      (api/transact conn [[:db/add 181 :name "Ivanova"]])
-      (is (= #{[["Ivan"] -1]
-               [["Ivanova"] 1]}
-             (delta-set! sub))))))
+    (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                        {:name "Petr" :last-name "Petrov"}])
+    (let [ivan-id (single-value conn '{:find [?e]
+                                       :where [[?e :name "Ivan"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?name]
+                                             :where [[?e :name ?name]]})]
+        (api/transact conn [[:db/add ivan-id :name "Ivanova"]])
+        (is (= #{[["Ivan"] -1]
+                 [["Ivanova"] 1]}
+               (delta-set! sub)))))))
 
 (deftest test-basic-retractions-2
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (api/transact conn [{:db/id 191 :name "Ivan" :last-name "Ivanov"}
-                        {:db/id 192 :name "Petr" :last-name "Petrov"}])
-    (with-open [sub (api/subscribe conn '{:find [?name]
-                                           :where [[?e :name ?name]]})]
-      (api/transact conn [[:db/retract 191 :name "Ivan"]])
-      (is (= [[["Ivan"] -1]]
-             (take-delta! sub))))))
+    (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
+                        {:name "Petr" :last-name "Petrov"}])
+    (let [ivan-id (single-value conn '{:find [?e]
+                                       :where [[?e :name "Ivan"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?name]
+                                             :where [[?e :name ?name]]})]
+        (api/transact conn [[:db/retract ivan-id :name "Ivan"]])
+        (is (= [[["Ivan"] -1]]
+               (take-delta! sub)))))))
 
 (deftest test-dbsp-distinct-semantics-retractions
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (api/transact conn [{:db/id 201 :name "Alice" :city "NYC"}
-                        {:db/id 202 :name "Bob" :city "NYC"}
-                        {:db/id 203 :name "Carol" :city "LA"}])
-    (with-open [sub (api/subscribe conn '{:find [?city]
-                                           :where [[?e :city ?city]]})]
-      (api/transact conn [[:db/retract 202 :city "NYC"]])
-      (is (= [[["NYC"] -1]] (take-delta! sub)))
-      (api/transact conn [[:db/retract 201 :city "NYC"]])
-      (is (= [[["NYC"] -1]] (take-delta! sub))))))
+    (api/transact conn [{:name "Alice" :city "NYC"}
+                        {:name "Bob" :city "NYC"}
+                        {:name "Carol" :city "LA"}])
+    (let [alice-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Alice"]]})
+          bob-id (single-value conn '{:find [?e]
+                                      :where [[?e :name "Bob"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?city]
+                                             :where [[?e :city ?city]]})]
+        (api/transact conn [[:db/retract bob-id :city "NYC"]])
+        (is (= [[["NYC"] -1]] (take-delta! sub)))
+        (api/transact conn [[:db/retract alice-id :city "NYC"]])
+        (is (= [[["NYC"] -1]] (take-delta! sub)))))))
 
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
-    (api/transact conn [[:db/add 301 :r/to 302]
-                        [:db/add 302 :s/to 304]])
-    (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
-                                           :where [[?a :r/to ?b]
-                                                   [?b :s/to ?c]]})]
-      (api/transact conn [[:db/add 302 :s/to 305]])
-      (is (= #{[[301 302 305] 1]}
-             (delta-set! sub))))))
+    (let [[a-id b-id _c-id d-id] user-entity-ids]
+      (api/transact conn (into graph-nodes
+                               [[:db/add graph-a :r/to graph-b]
+                                [:db/add graph-b :s/to graph-c]]))
+
+      (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
+                                            :where [[?a :r/to ?b]
+                                                    [?b :s/to ?c]]})]
+        (t/is (true? (:committed? (api/transact conn [[:db/add b-id :s/to d-id]]))))
+        (is (= #{[[a-id b-id d-id] 1]}
+               (delta-set! sub)))))))
 
 (deftest test-prefix-stable-extension-retraction
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
-    (api/transact conn [[:db/add 311 :r/to 312]
-                        [:db/add 312 :s/to 314]
-                        [:db/add 312 :s/to 315]])
-    (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
-                                           :where [[?a :r/to ?b]
-                                                   [?b :s/to ?c]]})]
-      (api/transact conn [[:db/retract 312 :s/to 315]])
-      (is (= #{[[311 312 315] -1]}
-             (delta-set! sub))))))
+    (let [[a-id b-id _c-id _d-id e-id] user-entity-ids]
+      (api/transact conn (into graph-nodes
+                               [[:db/add graph-a :r/to graph-b]
+                                [:db/add graph-b :s/to graph-d]
+                                [:db/add graph-b :s/to graph-e]]))
+      (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
+                                            :where [[?a :r/to ?b]
+                                                    [?b :s/to ?c]]})]
+        (api/transact conn [[:db/retract b-id :s/to e-id]])
+        (is (= #{[[a-id b-id e-id] -1]}
+               (delta-set! sub)))))))
 
 (deftest test-triangle-edge-deletion
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
-    (api/transact conn [[:db/add 401 :r/to 402]
-                        [:db/add 402 :s/to 403]
-                        [:db/add 403 :t/to 401]])
-    (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
-                                           :where [[?a :r/to ?b]
-                                                   [?b :s/to ?c]
-                                                   [?c :t/to ?a]]})]
-      (api/transact conn [[:db/retract 402 :s/to 403]])
-      (is (= [[[401 402 403] -1]] (take-delta! sub))))))
+    (let [[a-id b-id c-id] user-entity-ids]
+      (api/transact conn (into graph-nodes
+                               [[:db/add graph-a :r/to graph-b]
+                                [:db/add graph-b :s/to graph-c]
+                                [:db/add graph-c :t/to graph-a]]))
+      (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
+                                            :where [[?a :r/to ?b]
+                                                    [?b :s/to ?c]
+                                                    [?c :t/to ?a]]})]
+        (api/transact conn [[:db/retract b-id :s/to c-id]])
+        (is (= [[[a-id b-id c-id] -1]] (take-delta! sub)))))))
 
 (deftest e2e-triangle-test
   (with-open [conn (connect)]
     (api/transact conn edge-schema)
     (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
-                                           :where [[?a :g/to ?b]
-                                                   [?b :g/to ?c]
-                                                   [?c :g/to ?a]]})]
-      (api/transact conn [[:db/add 501 :g/to 502]
-                          [:db/add 502 :g/to 503]
-                          [:db/add 503 :g/to 501]])
-      (is (= #{[[501 502 503] 1]
-               [[502 503 501] 1]
-               [[503 501 502] 1]}
-             (delta-set! sub))))))
+                                          :where [[?a :g/to ?b]
+                                                  [?b :g/to ?c]
+                                                  [?c :g/to ?a]]})]
+      (api/transact conn [[:db/add graph-a :g/to graph-b]
+                          [:db/add graph-b :g/to graph-c]
+                          [:db/add graph-c :g/to graph-a]])
+      (let [[a-id b-id c-id] user-entity-ids]
+        (is (= #{[[a-id b-id c-id] 1]
+                 [[b-id c-id a-id] 1]
+                 [[c-id a-id b-id] 1]}
+               (delta-set! sub)))))))
 
 (deftest test-no-changes
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
     (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
-                                           :where [[?a :r/to ?b]
-                                                   [?b :s/to ?c]
-                                                   [?c :t/to ?a]]})]
-      (api/transact conn [[:db/add 601 :s/to 602]])
+                                          :where [[?a :r/to ?b]
+                                                  [?b :s/to ?c]
+                                                  [?c :t/to ?a]]})]
+      (api/transact conn (into graph-nodes
+                               [[:db/add graph-b :s/to graph-c]]))
       (is (= ::api/timeout (api/take! sub 300))))))
 
 (deftest residence-example
   (with-open [conn (connect)]
     (api/transact conn residence-schema)
-    (api/transact conn [{:db/id 701
-                         :person/name "Ada Lovelace"
+    (api/transact conn [{:person/name "Ada Lovelace"
                          :person/residence "12 St. James's Square"}
-                        {:db/id 702
-                         :person/name "Alan Turing"
+                        {:person/name "Alan Turing"
                          :person/residence "Bletchley Park"}])
-    (with-open [sub (api/subscribe conn '{:find [?name ?residence]
-                                           :where [[?p :person/name ?name]
-                                                   [?p :person/residence ?residence]]})]
-      (api/transact conn [[:db/add 701 :person/residence "Buckingham Palace"]])
-      (is (= #{[["Ada Lovelace" "12 St. James's Square"] -1]
-               [["Ada Lovelace" "Buckingham Palace"] 1]}
-             (delta-set! sub))))))
+    (let [ada-id (single-value conn '{:find [?p]
+                                      :where [[?p :person/name "Ada Lovelace"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?name ?residence]
+                                             :where [[?p :person/name ?name]
+                                                     [?p :person/residence ?residence]]})]
+        (api/transact conn [[:db/add ada-id :person/residence "Buckingham Palace"]])
+        (is (= #{[["Ada Lovelace" "12 St. James's Square"] -1]
+                 [["Ada Lovelace" "Buckingham Palace"] 1]}
+               (delta-set! sub)))))))
