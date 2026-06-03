@@ -27,7 +27,8 @@
   [{:db/ident :g/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
 (def triangle-relation-schema
-  [{:db/ident :r/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+  [{:db/ident :node/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :r/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
    {:db/ident :s/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
    {:db/ident :t/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
@@ -58,7 +59,7 @@
 (def graph-d "graph/d")
 (def graph-e "graph/e")
 
-(def graph-nodes (mapv #(hash-map :db/id %) [graph-a graph-b graph-c graph-d graph-e]))
+(def graph-nodes (mapv #(hash-map :db/id % :node/label %) [graph-a graph-b graph-c graph-d graph-e]))
 
 (def first-user-entity-id 8796093022208)
 (def user-entity-ids (range first-user-entity-id (+ first-user-entity-id 100)))
@@ -224,36 +225,34 @@
         (api/transact conn [[:db/retract alice-id :city "NYC"]])
         (is (= [[["NYC"] -1]] (take-delta! sub)))))))
 
-#_
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
     (let [[a-id b-id _c-id d-id] user-entity-ids]
-      (api/transact conn (into (take 3 graph-nodes)
+      (api/transact conn (into graph-nodes
                                [[:db/add graph-a :r/to graph-b]
                                 [:db/add graph-b :s/to graph-c]]))
 
       (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
                                             :where [[?a :r/to ?b]
                                                     [?b :s/to ?c]]})]
-        (t/is (= nil (api/transact conn (into (drop 3 graph-nodes)
-                                              [[:db/add b-id :s/to graph-d]]))))
-        #_(is (= #{[[a-id b-id d-id] 1]}
-                 (delta-set! sub)))))))
-#_
+        (t/is (true? (:committed? (api/transact conn [[:db/add b-id :s/to d-id]]))))
+        (is (= #{[[a-id b-id d-id] 1]}
+               (delta-set! sub)))))))
+
 (deftest test-prefix-stable-extension-retraction
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
-    (let [[a-id b-id _c-id _d-id e-id] user-entity-ids]
+    (let [[a-id b-id _c-id d-id] user-entity-ids]
       (api/transact conn (into graph-nodes
                                [[:db/add graph-a :r/to graph-b]
-                                [:db/add graph-b :s/to graph-d]
-                                [:db/add graph-b :s/to graph-e]]))
+                                [:db/add graph-b :s/to graph-c]
+                                [:db/add graph-b :s/to graph-d]]))
       (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
                                             :where [[?a :r/to ?b]
                                                     [?b :s/to ?c]]})]
-        (api/transact conn [[:db/retract b-id :s/to e-id]])
-        (is (= #{[[a-id b-id e-id] -1]}
+        (api/transact conn [[:db/retract b-id :s/to d-id]])
+        (is (= #{[[a-id b-id d-id] -1]}
                (delta-set! sub)))))))
 
 (deftest test-triangle-edge-deletion
