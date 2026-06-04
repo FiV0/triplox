@@ -296,10 +296,10 @@ the server remains healthy.
 
 Registers an incremental query and streams its result deltas. `db` is reserved
 for future historical replay and **MUST be `nil`/omitted** in this version (a
-non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `query` and `args` are
-as in [§4.4](#44-query-request--post-dbquery); queries the incremental engine
-does not yet support currently mirror one-shot query failures and are rejected
-with HTTP 500 / `QueryError` (code 2001).
+non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `args` is reserved for
+future incremental `:in` bindings and **MUST be empty** in this version. Queries
+or args the incremental engine does not yet support currently mirror one-shot
+query failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
