@@ -280,8 +280,13 @@ the caller inspects `status`.
 }
 ```
 
-`severity` is `"E"` for non-fatal errors and `"F"` for fatal ones. `code` is
-a numeric error code (see §5).
+`severity` is `"E"` for errors scoped to a single request or subscription (the
+server remains healthy and keeps serving other connections) and `"F"` for errors
+the server did not expect or might not be able to recover from. Clients can not
+expect the connection to work after `"F"`. `code` is a numeric error code
+(see §5). It might be useful to add another serverity for streaming queries
+in the future that sits between `"E"` and `"F"`. The IQ stream is unrecoverable, but
+the server remains healthy.
 
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
