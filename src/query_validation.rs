@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Error;
 use edn::query::{
-    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Variable, WhereClause,
+    Binding, Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern,
+    PatternNonValuePlace, PatternValuePlace, Variable, WhereClause,
 };
 
 use crate::expr::expr_variables;
@@ -197,8 +197,38 @@ fn validate_aggregate_clauses(
     Ok(())
 }
 
+fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
+    for clause in clauses {
+        validate_or_clause(clause)?;
+    }
+    Ok(())
+}
+
+fn validate_or_clause(clause: &WhereClause) -> Result<(), Error> {
+    match clause {
+        WhereClause::OrJoin(oj) => validate_or_join(oj),
+        WhereClause::NotJoin(nj) => validate_or_clauses(&nj.clauses),
+        _ => Ok(()),
+    }
+}
+
+fn validate_or_join(oj: &OrJoin) -> Result<(), Error> {
+    validate_or_branch_variables(&oj.clauses)?;
+    for branch in &oj.clauses {
+        validate_or_branch(branch)?;
+    }
+    Ok(())
+}
+
+fn validate_or_branch(branch: &OrWhereClause) -> Result<(), Error> {
+    match branch {
+        OrWhereClause::Clause(clause) => validate_or_clause(clause),
+        OrWhereClause::And(children) => validate_or_clauses(children),
+    }
+}
+
 /// Validate that all OR branches have the same free variables.
-fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
+fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error> {
     if branches.is_empty() {
         return Err(anyhow::anyhow!("OR clause must have at least one branch"));
     }
@@ -219,31 +249,6 @@ fn validate_or_branches(branches: &[OrWhereClause]) -> Result<(), Error> {
                 first_vars
             ));
         }
-    }
-
-    for branch in branches {
-        validate_or_branches_in_branch(branch)?;
-    }
-    Ok(())
-}
-
-fn validate_or_branches_in_branch(branch: &OrWhereClause) -> Result<(), Error> {
-    match branch {
-        OrWhereClause::Clause(clause) => validate_or_branches_in_clause(clause),
-        OrWhereClause::And(children) => validate_or_branches_in_clauses(children),
-    }
-}
-
-fn validate_or_branches_in_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
-    for clause in clauses {
-        validate_or_branches_in_clause(clause)?;
-    }
-    Ok(())
-}
-
-fn validate_or_branches_in_clause(clause: &WhereClause) -> Result<(), Error> {
-    if let WhereClause::OrJoin(oj) = clause {
-        validate_or_branches(&oj.clauses)?;
     }
     Ok(())
 }
@@ -301,11 +306,7 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
         return Err(anyhow::anyhow!("Query has no variables"));
     }
     let var_index = build_var_index(&join_order);
-    for clause in &query.where_clauses {
-        if let WhereClause::OrJoin(oj) = clause {
-            validate_or_branches(&oj.clauses)?;
-        }
-    }
+    validate_or_clauses(&query.where_clauses)?;
     validate_pattern_variables(&query.where_clauses)?;
     validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
@@ -392,6 +393,20 @@ mod tests {
     fn test_validate_rejects_nested_or_mismatched_branch_variables() {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
+        );
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("OR branch 1 has different free variables"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_or_mismatched_branch_variables_inside_not() {
+        let parsed = parse_query(
+            r#"[:find ?e :where [?e :name "A"] (not (or [?e :name "B"] [?v :name "C"]))]"#,
         );
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
