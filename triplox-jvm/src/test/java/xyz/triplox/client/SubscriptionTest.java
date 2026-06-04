@@ -63,6 +63,29 @@ class SubscriptionTest {
     }
 
     @Test
+    void terminalErrorPreservesAlreadyQueuedDeltas() throws Exception {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packDeltaFrame(packer, "Alice");
+            packErrorFrame(packer);
+            body = packer.toByteArray();
+        }
+
+        var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(body));
+        try (Subscription sub = new Subscription(sampleBasis(), () -> {}, unpacker)) {
+            Thread.sleep(100);
+
+            var delta = sub.poll(5, TimeUnit.SECONDS);
+            assertNotNull(delta, "expected queued delta before terminal error");
+            assertEquals("Alice", delta.rows().getFirst().values().getFirst());
+
+            var ex = assertThrows(TriploxException.class, () -> sub.poll(5, TimeUnit.SECONDS));
+            assertEquals(4000, Short.toUnsignedInt(ex.code()));
+            assertTrue(ex.getMessage().contains("boom"));
+        }
+    }
+
+    @Test
     void takeReturnsNullOnStreamEof() throws Exception {
         var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(new byte[0]));
         try (Subscription sub = new Subscription(sampleBasis(), () -> {}, unpacker)) {
@@ -123,6 +146,22 @@ class SubscriptionTest {
         packer.packArrayHeader(1);
         packer.packString(name);
         packer.packLong(1L);
+    }
+
+    private static void packErrorFrame(MessagePacker packer) throws IOException {
+        packer.packMapHeader(6);
+        packer.packString("kind");
+        packer.packString("error");
+        packer.packString("severity");
+        packer.packString("E");
+        packer.packString("code");
+        packer.packLong(4000L);
+        packer.packString("message");
+        packer.packString("boom");
+        packer.packString("detail");
+        packer.packNil();
+        packer.packString("hint");
+        packer.packNil();
     }
 
     private static TxBasis sampleBasis() {

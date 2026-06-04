@@ -169,9 +169,11 @@ public final class Subscription implements AutoCloseable {
 
     private void finishWithError(RuntimeException error) {
         terminalError = error;
-        closed = true;
-        queue.clear();
-        queue.offer(QueueEvent.End.INSTANCE);
+        try {
+            queue.put(QueueEvent.End.INSTANCE);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static TriploxException toException(BackendMessage.ErrorResponse e) {

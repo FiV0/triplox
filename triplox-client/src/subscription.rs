@@ -219,6 +219,17 @@ mod tests {
         .unwrap()
     }
 
+    fn error_bytes() -> Vec<u8> {
+        encode_subscription_frame(&SubscriptionFrame::Error(ErrorResponseBody {
+            severity: b'F',
+            code: 4000,
+            message: "boom".to_string(),
+            detail: None,
+            hint: None,
+        }))
+        .unwrap()
+    }
+
     fn unknown_bytes() -> Vec<u8> {
         // {"kind": "heartbeat"} — an unsupported frame kind the client must reject.
         let mut buf = Vec::new();
@@ -279,21 +290,33 @@ mod tests {
     async fn subscription_surfaces_error_frame() {
         let mut payload = Vec::new();
         payload.extend(open_bytes());
-        payload.extend(
-            encode_subscription_frame(&SubscriptionFrame::Error(ErrorResponseBody {
-                severity: b'F',
-                code: 4000,
-                message: "boom".to_string(),
-                detail: None,
-                hint: None,
-            }))
-            .unwrap(),
-        );
+        payload.extend(error_bytes());
         let stream =
             futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
         let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
         let err = sub.next().await.expect("an item").unwrap_err();
+        assert!(err.to_string().contains("4000"));
+        assert!(sub.next().await.is_none(), "done after error");
+    }
+
+    #[tokio::test]
+    async fn subscription_preserves_queued_delta_before_error_frame() {
+        let mut payload = Vec::new();
+        payload.extend(open_bytes());
+        payload.extend(delta_bytes("Alice"));
+        payload.extend(error_bytes());
+        let stream =
+            futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
+
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        let delta = sub.next().await.expect("first item").unwrap();
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        let err = sub.next().await.expect("second item").unwrap_err();
         assert!(err.to_string().contains("4000"));
         assert!(sub.next().await.is_none(), "done after error");
     }
