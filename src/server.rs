@@ -324,7 +324,7 @@ async fn subscribe<L: TxLog + 'static>(
                 members: None,
             })
             .collect(),
-        _ => vec![],
+        _ => return Err(ApiError::bad_request(ErrorCode::ParseError, format!("Unsupported find spec: {:?}", parsed.find_spec))),
     };
 
     let subscription = state
