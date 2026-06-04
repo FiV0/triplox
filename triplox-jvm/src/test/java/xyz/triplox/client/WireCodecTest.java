@@ -236,6 +236,147 @@ class WireCodecTest {
     }
 
     // ---------------------------------------------------------------
+    // Subscription frames
+    // ---------------------------------------------------------------
+
+    @Test
+    void testEncodeSubscribeBodyNullDb() throws IOException {
+        byte[] body = WireCodec.encodeSubscribeBody(null, "[:find ?n :where [?e :name ?n]]", List.of());
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals("db", unpacker.unpackString());
+            unpacker.unpackNil();
+            assertEquals("query", unpacker.unpackString());
+            assertEquals("[:find ?n :where [?e :name ?n]]", unpacker.unpackString());
+            assertEquals("args", unpacker.unpackString());
+            assertEquals(0, unpacker.unpackArrayHeader());
+        }
+    }
+
+    @Test
+    void testEncodeSubscribeBodyWithDb() throws IOException {
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body = WireCodec.encodeSubscribeBody(new TxBasis(7L, now, 42L), "[:find ?n]", List.of());
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals("db", unpacker.unpackString());
+            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals("tx_id", unpacker.unpackString());
+            assertEquals(7L, unpacker.unpackLong());
+            assertEquals("system_time", unpacker.unpackString());
+            assertEquals(now, unpacker.unpackTimestamp());
+            assertEquals("tx_eid", unpacker.unpackString());
+            assertEquals(42L, unpacker.unpackLong());
+        }
+    }
+
+    @Test
+    void testDecodeOpenFrame() throws IOException {
+        Instant now = Instant.ofEpochSecond(1_700_000_000L);
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("kind"); packer.packString("open");
+            packer.packString("basis"); packBasis(packer, 7L, now, 42L);
+            packer.packString("columns");
+            packer.packArrayHeader(1);
+            packColumn(packer, "?name", (byte) 255);
+            body = packer.toByteArray();
+        }
+        var open = assertInstanceOf(SubscriptionFrame.Open.class, decodeFrame(body));
+        assertEquals(new TxBasis(7L, now, 42L), open.basis());
+        assertEquals(1, open.columns().size());
+        assertEquals("?name", open.columns().get(0).name());
+    }
+
+    @Test
+    void testDecodeDeltaFrameWithSignedWeights() throws IOException {
+        byte[] body;
+        var now = Instant.now();
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("kind"); packer.packString("delta");
+            packer.packString("basis"); packBasis(packer, 7L, now, 42L);
+            packer.packString("rows");
+            packer.packArrayHeader(2);
+            packDeltaRow(packer, "Ivan", 1);
+            packDeltaRow(packer, "Petr", -2);
+            body = packer.toByteArray();
+        }
+        var delta = assertInstanceOf(Delta.class, decodeFrame(body));
+        assertEquals(new TxBasis(7L, now, 42L), delta.basis());
+        assertEquals(2, delta.rows().size());
+        assertEquals(List.of("Ivan"), delta.rows().get(0).values());
+        assertEquals(1L, delta.rows().get(0).weight());
+        assertEquals(List.of("Petr"), delta.rows().get(1).values());
+        assertEquals(-2L, delta.rows().get(1).weight());
+    }
+
+    @Test
+    void testDecodeDeltaFrameRejectsNilBasis() throws IOException {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("kind"); packer.packString("delta");
+            packer.packString("basis"); packer.packNil();
+            packer.packString("rows");
+            packer.packArrayHeader(0);
+            body = packer.toByteArray();
+        }
+        var err = assertThrows(IOException.class, () -> decodeFrame(body));
+        assertTrue(err.getMessage().contains("basis cannot be nil"));
+    }
+
+    @Test
+    void testDecodeErrorFrame() throws IOException {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(6);
+            packer.packString("kind"); packer.packString("error");
+            packer.packString("severity"); packer.packString("F");
+            packer.packString("code"); packer.packLong(4000);
+            packer.packString("message"); packer.packString("boom");
+            packer.packString("detail"); packer.packNil();
+            packer.packString("hint"); packer.packNil();
+            body = packer.toByteArray();
+        }
+        var err = assertInstanceOf(SubscriptionFrame.Error.class, decodeFrame(body));
+        assertEquals(SEVERITY_FATAL, err.error().severity());
+        assertEquals((short) 4000, err.error().code());
+        assertEquals("boom", err.error().message());
+    }
+
+    @Test
+    void testDecodeUnknownFrame() throws IOException {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(1);
+            packer.packString("kind"); packer.packString("heartbeat");
+            body = packer.toByteArray();
+        }
+        var ex = assertThrows(IOException.class, () -> decodeFrame(body));
+        assertTrue(ex.getMessage().contains("unknown subscription frame kind: heartbeat"));
+    }
+
+    @Test
+    void testDecodeDeltaFrameKeyOrderIndependent() throws IOException {
+        byte[] body;
+        var now = Instant.now();
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("rows");
+            packer.packArrayHeader(1);
+            packDeltaRow(packer, "Ann", 1);
+            packer.packString("kind"); packer.packString("delta");
+            packer.packString("basis"); packBasis(packer, 3L, now, 42L);
+            body = packer.toByteArray();
+        }
+        var delta = assertInstanceOf(Delta.class, decodeFrame(body));
+        assertEquals(new TxBasis(3L, now, 42L), delta.basis());
+        assertEquals(List.of("Ann"), delta.rows().get(0).values());
+    }
+
+    // ---------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------
 
@@ -243,6 +384,25 @@ class WireCodecTest {
         packer.packMapHeader(2);
         packer.packString("name"); packer.packString(name);
         packer.packString("type"); packer.packLong(Byte.toUnsignedLong(type));
+    }
+
+    private static SubscriptionFrame decodeFrame(byte[] body) throws IOException {
+        try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
+            return WireCodec.decodeSubscriptionFrame(unpacker);
+        }
+    }
+
+    private static void packBasis(MessagePacker packer, long txId, Instant systemTime, long txEid) throws IOException {
+        packer.packMapHeader(3);
+        packer.packString("tx_id"); packer.packLong(txId);
+        packer.packString("system_time"); packer.packTimestamp(systemTime);
+        packer.packString("tx_eid"); packer.packLong(txEid);
+    }
+
+    private static void packDeltaRow(MessagePacker packer, String value, long weight) throws IOException {
+        packer.packArrayHeader(2);
+        packer.packArrayHeader(1); packer.packString(value);
+        packer.packLong(weight);
     }
 
 }

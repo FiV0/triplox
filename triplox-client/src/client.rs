@@ -9,11 +9,13 @@ use reqwest::Client;
 use crate::msgpack_codec::{
     decode_db_opened_response, decode_error_body, decode_query_response, decode_tx_key_response,
     decode_tx_result_response, encode_execute_request, encode_open_db_request,
-    encode_query_request, ExecuteRequest, OpenDbRequest, QueryRequest,
+    encode_query_request, encode_subscribe_request, ExecuteRequest, OpenDbRequest, QueryRequest,
+    SubscribeRequest,
 };
 use crate::node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
 use crate::ops::QueryArg;
 use crate::query::QueryResult;
+use crate::subscription::Subscription;
 use crate::transaction::{TransactionResult, TxBasis, TxKey};
 use edn::query::ParsedQuery;
 
@@ -61,6 +63,41 @@ impl ClientNode {
             client,
             base_url: url.trim_end_matches('/').to_string(),
         })
+    }
+
+    /// Register an incremental query and stream its result deltas.
+    ///
+    /// Subscribes at the latest indexed basis. The returned [`Subscription`] is a
+    /// `Stream` of [`Delta`](crate::Delta)s; dropping it unsubscribes.
+    pub async fn subscribe(
+        &self,
+        query: impl IntoQuery,
+        args: &[QueryArg],
+    ) -> Result<Subscription> {
+        let parsed = query.into_query()?;
+        let body = encode_subscribe_request(&SubscribeRequest {
+            db: None,
+            query: parsed.to_string(),
+            args: args.to_vec(),
+        })?;
+        let resp = self
+            .client
+            .post(format!("{}/db/subscribe", self.base_url))
+            .header("Content-Type", CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let data = resp.bytes().await?;
+            if let Ok(error) = decode_error_body(&data) {
+                bail!("Server error (code {}): {}", error.code, error.message);
+            }
+            bail!("HTTP error {}: {}", status, String::from_utf8_lossy(&data));
+        }
+
+        Subscription::connect(resp).await
     }
 
     async fn open_db(&self, basis: Option<TxBasis>) -> Result<ClientDb> {

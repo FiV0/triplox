@@ -99,7 +99,7 @@ where
         let basis = tx_basis_from_datoms(&datoms)?;
         let tuples = datoms_to_tuples(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
-        service.apply_triples(Some(basis), seq, tuples).await?;
+        service.apply_triples(basis, seq, tuples).await?;
         // The registration gate is released before polling the next WAL transaction.
     }
 

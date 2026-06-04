@@ -65,8 +65,7 @@ pub(crate) struct IncrementalQuerySubscription {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryDelta {
-    pub basis: Option<TxBasis>,
-    pub wal_seq: u64,
+    pub basis: TxBasis,
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
@@ -85,7 +84,7 @@ enum IncrementalCommand {
         response: oneshot::Sender<ServiceResult<()>>,
     },
     ApplyTriples {
-        basis: Option<TxBasis>,
+        basis: TxBasis,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<()>>,
@@ -225,7 +224,7 @@ impl IncrementalQueryService {
 
     pub(crate) async fn apply_triples(
         &self,
-        basis: Option<TxBasis>,
+        basis: TxBasis,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<()> {
@@ -397,7 +396,7 @@ impl IncrementalQueryServiceInner {
 
     fn apply_triples(
         &mut self,
-        basis: Option<TxBasis>,
+        basis: TxBasis,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<()> {
@@ -406,10 +405,7 @@ impl IncrementalQueryServiceInner {
         let cancel = self.cancel.clone();
 
         for (id, query) in &mut self.queries {
-            if basis.is_none() && wal_seq <= query._wal_cursor.last_seq {
-                continue;
-            }
-            if basis.is_some_and(|basis| basis.tx_key.tx_id <= query._basis.tx_key.tx_id) {
+            if basis.tx_key.tx_id <= query._basis.tx_key.tx_id {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
@@ -422,11 +418,7 @@ impl IncrementalQueryServiceInner {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let delta = IncrementalQueryDelta {
-                basis,
-                wal_seq,
-                rows,
-            };
+            let delta = IncrementalQueryDelta { basis, rows };
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
@@ -603,7 +595,7 @@ mod tests {
             .unwrap();
 
         service
-            .apply_triples(Some(new_basis), 2, vec![name_triple(43, "Bob")])
+            .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
             .unwrap();
 
         assert_eq!(
@@ -653,7 +645,11 @@ mod tests {
         for seq in 1..=SUBSCRIPTION_CAPACITY {
             let name = format!("Alice {seq}");
             service
-                .apply_triples(None, seq as u64, vec![name_triple(seq as i64, &name)])
+                .apply_triples(
+                    test_basis_with_tx_id(seq as i64 + 1),
+                    seq as u64,
+                    vec![name_triple(seq as i64, &name)],
+                )
                 .unwrap();
         }
 
@@ -661,7 +657,7 @@ mod tests {
         let handle = thread::spawn(move || {
             let name = format!("Alice {}", SUBSCRIPTION_CAPACITY + 1);
             let result = service.apply_triples(
-                None,
+                test_basis_with_tx_id(SUBSCRIPTION_CAPACITY as i64 + 2),
                 (SUBSCRIPTION_CAPACITY + 1) as u64,
                 vec![name_triple((SUBSCRIPTION_CAPACITY + 1) as i64, &name)],
             );
@@ -797,7 +793,7 @@ mod tests {
         let apply = tokio::spawn(async move {
             let _registration_guard = applying_service.registration_gate.lock().await;
             applying_service
-                .apply_triples(Some(tx_basis), 2, vec![name_triple(43, "Bob")])
+                .apply_triples(tx_basis, 2, vec![name_triple(43, "Bob")])
                 .await
         });
         tokio::task::yield_now().await;
@@ -820,16 +816,14 @@ mod tests {
         assert_eq!(
             first_subscription.deltas.recv().await.unwrap(),
             IncrementalQueryDelta {
-                basis: Some(tx_basis),
-                wal_seq: 2,
+                basis: tx_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );
         assert_eq!(
             second_subscription.deltas.recv().await.unwrap(),
             IncrementalQueryDelta {
-                basis: Some(tx_basis),
-                wal_seq: 2,
+                basis: tx_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );

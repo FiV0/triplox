@@ -80,6 +80,21 @@ public final class WireCodec {
         }
     }
 
+    /**
+     * {@code POST /db/subscribe} body: {@code {"db": TxBasis|nil, "query": str, "args": [QueryArg, ...]}}.
+     */
+    public static byte[] encodeSubscribeBody(TxBasis db, String query, List<QueryArg> args) throws IOException {
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packer.packMapHeader(3);
+            packer.packString("db");
+            if (db == null) packer.packNil();
+            else packTxBasis(packer, db);
+            packer.packString("query"); packer.packString(query);
+            packer.packString("args"); QueryArg.packAll(packer, args);
+            return packer.toByteArray();
+        }
+    }
+
     // ---------------------------------------------------------------
     // Response bodies (server → client)
     // ---------------------------------------------------------------
@@ -180,6 +195,100 @@ public final class WireCodec {
         String detail = optionalString(fields, "detail");
         String hint = optionalString(fields, "hint");
         return new BackendMessage.ErrorResponse(severity, code, message, detail, hint);
+    }
+
+    // ---------------------------------------------------------------
+    // Subscription frame decoding (POST /db/subscribe stream)
+    // ---------------------------------------------------------------
+
+    /**
+     * Decode one subscription frame (a bare msgpack map) from the stream.
+     */
+    public static SubscriptionFrame decodeSubscriptionFrame(MessageUnpacker unpacker) throws IOException {
+        int n = unpacker.unpackMapHeader();
+        String kind = null;
+        TxBasis basis = null;
+        List<ColumnDesc> columns = null;
+        List<Row> rows = null;
+        String severity = null, message = null, detail = null, hint = null;
+        long code = 0;
+        for (int i = 0; i < n; i++) {
+            String key = unpacker.unpackString();
+            switch (key) {
+                case "kind" -> kind = unpacker.unpackString();
+                case "basis" -> basis = unpackTxBasis(unpacker, "basis");
+                case "columns" -> columns = decodeColumns(unpacker);
+                case "rows" -> rows = decodeDeltaRows(unpacker);
+                case "severity" -> severity = unpacker.unpackString();
+                case "code" -> code = unpacker.unpackLong();
+                case "message" -> message = unpacker.unpackString();
+                case "detail" -> detail = unpackNullableString(unpacker);
+                case "hint" -> hint = unpackNullableString(unpacker);
+                default -> unpacker.skipValue();
+            }
+        }
+        if (kind == null) throw new IOException("subscription frame missing \"kind\"");
+        return switch (kind) {
+            case "open" -> {
+                if (basis == null) throw new IOException("open frame missing \"basis\"");
+                yield new SubscriptionFrame.Open(basis, columns == null ? List.of() : columns);
+            }
+            case "delta" -> {
+                if (basis == null) throw new IOException("delta frame missing \"basis\"");
+                yield new Delta(basis, rows == null ? List.of() : rows);
+            }
+            case "error" -> {
+                byte sev = switch (severity == null ? "" : severity) {
+                    case "E" -> MessageTypes.SEVERITY_ERROR;
+                    case "F" -> MessageTypes.SEVERITY_FATAL;
+                    default -> throw new IOException("invalid severity: " + severity);
+                };
+                yield new SubscriptionFrame.Error(
+                        new BackendMessage.ErrorResponse(sev, toU16(code, "code"), message, detail, hint));
+            }
+            default -> throw new IOException("unknown subscription frame kind: " + kind);
+        };
+    }
+
+    private static TxBasis unpackTxBasis(MessageUnpacker unpacker, String field) throws IOException {
+        if (unpacker.tryUnpackNil()) throw new IOException(field + " cannot be nil");
+        return unpackTxBasisMap(unpacker);
+    }
+
+    private static TxBasis unpackTxBasisMap(MessageUnpacker unpacker) throws IOException {
+        int n = unpacker.unpackMapHeader();
+        long txId = 0;
+        long txEid = 0;
+        Instant systemTime = null;
+        for (int i = 0; i < n; i++) {
+            String key = unpacker.unpackString();
+            switch (key) {
+                case "tx_id" -> txId = unpacker.unpackLong();
+                case "system_time" -> systemTime = unpacker.unpackTimestamp();
+                case "tx_eid" -> txEid = unpacker.unpackLong();
+                default -> unpacker.skipValue();
+            }
+        }
+        return new TxBasis(txId, systemTime, txEid);
+    }
+
+    private static String unpackNullableString(MessageUnpacker unpacker) throws IOException {
+        if (unpacker.tryUnpackNil()) return null;
+        return unpacker.unpackString();
+    }
+
+    private static List<Row> decodeDeltaRows(MessageUnpacker unpacker) throws IOException {
+        int n = unpacker.unpackArrayHeader();
+        var rows = new ArrayList<Row>(n);
+        for (int i = 0; i < n; i++) {
+            unpacker.unpackArrayHeader(); // [values, weight]
+            int valueLen = unpacker.unpackArrayHeader();
+            var values = new ArrayList<Object>(valueLen);
+            for (int j = 0; j < valueLen; j++) values.add(DataTypeCodec.unpack(unpacker));
+            long weight = unpacker.unpackLong();
+            rows.add(new Row(values, weight));
+        }
+        return rows;
     }
 
     // ---------------------------------------------------------------

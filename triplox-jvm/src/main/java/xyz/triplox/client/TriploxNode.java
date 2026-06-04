@@ -2,7 +2,9 @@ package xyz.triplox.client;
 
 import java.io.*;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
+import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -23,10 +25,19 @@ public class TriploxNode implements AutoCloseable {
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
     private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
+    private static final String SUBSCRIBE_PATH = "/db/subscribe";
 
     private TriploxNode(OkHttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
+    }
+
+    static Response disableReadTimeoutForSubscriptions(Interceptor.Chain chain) throws IOException {
+        Request request = chain.request();
+        if (SUBSCRIBE_PATH.equals(request.url().encodedPath())) {
+            return chain.withReadTimeout(0, TimeUnit.MILLISECONDS).proceed(request);
+        }
+        return chain.proceed(request);
     }
 
     /**
@@ -35,6 +46,7 @@ public class TriploxNode implements AutoCloseable {
     public static TriploxNode connect(String host, int port) throws IOException {
         var client = new OkHttpClient.Builder()
                 .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
+                .addInterceptor(TriploxNode::disableReadTimeoutForSubscriptions)
                 .build();
         return new TriploxNode(client, "http://" + host + ":" + port);
     }
@@ -98,17 +110,59 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Stub — subscription not yet supported.
+     * Register an incremental query and stream its result deltas.
+     *
+     * <p>Subscribes at the latest indexed basis. The returned {@link Subscription}
+     * is an {@link AutoCloseable}; closing it cancels the stream and unsubscribes.</p>
      */
-    public void subscribe(Db db, String edn) {
-        throw new UnsupportedOperationException("subscribe is not yet supported");
+    public Subscription subscribe(String edn) throws IOException {
+        return subscribe(edn, List.of());
     }
 
     /**
-     * Stub — subscription not yet supported.
+     * Register an incremental query with {@code :in} bindings.
      */
-    public void unsubscribe() {
-        throw new UnsupportedOperationException("unsubscribe is not yet supported");
+    public Subscription subscribe(String edn, List<QueryArg> args) throws IOException {
+        byte[] body = WireCodec.encodeSubscribeBody(null, edn, args);
+        var request = new Request.Builder()
+                .url(baseUrl + "/db/subscribe")
+                .header("Content-Type", CONTENT_TYPE)
+                .post(RequestBody.create(body, CONTENT_MEDIA_TYPE))
+                .build();
+
+        Response response = httpClient.newCall(request).execute();
+
+        int status = response.code();
+        if (status < 200 || status >= 300) {
+            try (response) {
+                // Pre-stream error: decode the unary ErrorResponse body.
+                byte[] errorBody = response.body() == null ? new byte[0] : response.body().bytes();
+                if (errorBody.length > 0) {
+                    try {
+                        var err = WireCodec.decodeErrorResponse(errorBody);
+                        throw new TriploxException(err.severity(), err.code(),
+                                err.message(), err.detail(), err.hint());
+                    } catch (TriploxException e) {
+                        throw e;
+                    } catch (Exception ignored) {
+                        // Fall through to a generic error.
+                    }
+                }
+                throw new IOException("HTTP error " + status);
+            }
+        }
+
+        if (response.body() == null) {
+            response.close();
+            throw new IOException("empty subscription response");
+        }
+
+        try {
+            return Subscription.open(response.body().byteStream(), response);
+        } catch (IOException | RuntimeException e) {
+            response.close();
+            throw e;
+        }
     }
 
     /**

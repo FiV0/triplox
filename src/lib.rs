@@ -38,4 +38,4 @@ pub mod server;
 pub use node::{
     Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult, TxBasis, TxKey, DB,
 };
-pub use triplox_client::{client, msgpack_codec, protocol, transaction};
+pub use triplox_client::{client, msgpack_codec, protocol, subscription, transaction};

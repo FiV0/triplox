@@ -17,6 +17,14 @@ public class TriploxException extends RuntimeException {
         this.hint = hint;
     }
 
+    public TriploxException(byte severity, short code, String message, String detail, String hint, Throwable cause) {
+        super(message, cause);
+        this.severity = severity;
+        this.code = code;
+        this.detail = detail;
+        this.hint = hint;
+    }
+
     public byte severity() { return severity; }
     public short code() { return code; }
     public String detail() { return detail; }

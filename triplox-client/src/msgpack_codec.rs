@@ -1018,11 +1018,329 @@ pub fn decode_error_body(data: &[u8]) -> Result<ErrorResponseBody> {
     })
 }
 
+// =============================================================================
+// Subscription streaming (POST /db/subscribe)
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubscribeRequest {
+    pub db: Option<TxBasis>,
+    pub query: String,
+    pub args: Vec<QueryArg>,
+}
+
+/// One frame in a subscription response stream. Frames are bare, self-delimiting
+/// msgpack maps tagged by a `kind` discriminator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubscriptionFrame {
+    /// First frame: registration basis and (internal) column schema.
+    Open {
+        basis: TxBasis,
+        columns: Vec<ColumnDescription>,
+    },
+    /// One transaction's z-set changes as `(values, weight)` rows.
+    Delta {
+        basis: TxBasis,
+        rows: Vec<(Vec<DataType>, i64)>,
+    },
+    /// Terminal error raised after the stream has started.
+    Error(ErrorResponseBody),
+}
+
+fn write_optional_tx_basis<W: Write>(w: &mut W, basis: &Option<TxBasis>) -> Result<()> {
+    match basis {
+        Some(b) => write_tx_basis(w, b)?,
+        None => rmp::encode::write_nil(w)?,
+    }
+    Ok(())
+}
+
+fn take_optional_tx_basis(
+    map: &mut BTreeMap<String, Value>,
+    name: &str,
+) -> Result<Option<TxBasis>> {
+    match map.remove(name) {
+        None | Some(Value::Nil) => Ok(None),
+        Some(v) => Ok(Some(tx_basis_from_value(v)?)),
+    }
+}
+
+fn delta_row_from_value(v: Value) -> Result<(Vec<DataType>, i64)> {
+    let entry = match v {
+        Value::Array(arr) => arr,
+        other => bail!("delta row expected [values, weight] array, got {other:?}"),
+    };
+    if entry.len() != 2 {
+        bail!("delta row expected 2 elements, got {}", entry.len());
+    }
+    let mut it = entry.into_iter();
+    let values = match it.next().unwrap() {
+        Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(data_type_from_value(v)?);
+            }
+            out
+        }
+        other => bail!("delta row values expected array, got {other:?}"),
+    };
+    let weight = match it.next().unwrap() {
+        Value::Integer(n) => n
+            .as_i64()
+            .ok_or_else(|| anyhow!("delta row weight out of i64 range"))?,
+        other => bail!("delta row weight expected integer, got {other:?}"),
+    };
+    Ok((values, weight))
+}
+
+/// Encode a Subscribe request: `{"db": TxBasis|nil, "query": str, "args": [QueryArg, ...]}`.
+pub fn encode_subscribe_request(req: &SubscribeRequest) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    rmp::encode::write_map_len(&mut buf, 3)?;
+    rmp::encode::write_str(&mut buf, "db")?;
+    write_optional_tx_basis(&mut buf, &req.db)?;
+    rmp::encode::write_str(&mut buf, "query")?;
+    rmp::encode::write_str(&mut buf, &req.query)?;
+    rmp::encode::write_str(&mut buf, "args")?;
+    rmp::encode::write_array_len(&mut buf, req.args.len() as u32)?;
+    for arg in &req.args {
+        write_query_arg(&mut buf, arg)?;
+    }
+    Ok(buf)
+}
+
+pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
+    let mut map = map_from_value(read_body_value(data)?)?;
+    let db = take_optional_tx_basis(&mut map, "db")?;
+    let query = take_string(&mut map, "query")?;
+    let arr = match take_field(&mut map, "args")? {
+        Value::Array(arr) => arr,
+        other => bail!("field \"args\" expected array, got {other:?}"),
+    };
+    let mut args = Vec::with_capacity(arr.len());
+    for item in arr {
+        args.push(query_arg_from_value(item)?);
+    }
+    Ok(SubscribeRequest { db, query, args })
+}
+
+/// Encode one subscription frame as a bare msgpack map.
+pub fn encode_subscription_frame(frame: &SubscriptionFrame) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    match frame {
+        SubscriptionFrame::Open { basis, columns } => {
+            rmp::encode::write_map_len(&mut buf, 3)?;
+            write_str_field(&mut buf, "kind", "open")?;
+            rmp::encode::write_str(&mut buf, "basis")?;
+            write_tx_basis(&mut buf, basis)?;
+            rmp::encode::write_str(&mut buf, "columns")?;
+            rmp::encode::write_array_len(&mut buf, columns.len() as u32)?;
+            for col in columns {
+                write_column_description(&mut buf, col)?;
+            }
+        }
+        SubscriptionFrame::Delta { basis, rows } => {
+            rmp::encode::write_map_len(&mut buf, 3)?;
+            write_str_field(&mut buf, "kind", "delta")?;
+            rmp::encode::write_str(&mut buf, "basis")?;
+            write_tx_basis(&mut buf, basis)?;
+            rmp::encode::write_str(&mut buf, "rows")?;
+            rmp::encode::write_array_len(&mut buf, rows.len() as u32)?;
+            for (values, weight) in rows {
+                rmp::encode::write_array_len(&mut buf, 2)?;
+                rmp::encode::write_array_len(&mut buf, values.len() as u32)?;
+                for v in values {
+                    write_data_type(&mut buf, v)?;
+                }
+                rmp::encode::write_sint(&mut buf, *weight)?;
+            }
+        }
+        SubscriptionFrame::Error(err) => {
+            let severity_str = match err.severity {
+                b'E' => "E",
+                b'F' => "F",
+                other => bail!("invalid severity byte: {other:#x}"),
+            };
+            rmp::encode::write_map_len(&mut buf, 6)?;
+            write_str_field(&mut buf, "kind", "error")?;
+            rmp::encode::write_str(&mut buf, "severity")?;
+            rmp::encode::write_str(&mut buf, severity_str)?;
+            rmp::encode::write_str(&mut buf, "code")?;
+            rmp::encode::write_uint(&mut buf, err.code as u64)?;
+            rmp::encode::write_str(&mut buf, "message")?;
+            rmp::encode::write_str(&mut buf, &err.message)?;
+            rmp::encode::write_str(&mut buf, "detail")?;
+            write_optional_string(&mut buf, &err.detail)?;
+            rmp::encode::write_str(&mut buf, "hint")?;
+            write_optional_string(&mut buf, &err.hint)?;
+        }
+    }
+    Ok(buf)
+}
+
+/// Decode one subscription frame from a complete msgpack value buffer.
+pub fn decode_subscription_frame(data: &[u8]) -> Result<SubscriptionFrame> {
+    subscription_frame_from_value(read_body_value(data)?)
+}
+
+/// Build a subscription frame from an already-parsed msgpack value (used by the
+/// streaming decoder).
+pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
+    let mut map = map_from_value(v)?;
+    let kind = take_string(&mut map, "kind")?;
+    match kind.as_str() {
+        "open" => {
+            let basis = tx_basis_from_value(take_field(&mut map, "basis")?)?;
+            let cols_arr = match take_field(&mut map, "columns")? {
+                Value::Array(arr) => arr,
+                other => bail!("field \"columns\" expected array, got {other:?}"),
+            };
+            let mut columns = Vec::with_capacity(cols_arr.len());
+            for item in cols_arr {
+                columns.push(column_description_from_value(item)?);
+            }
+            Ok(SubscriptionFrame::Open { basis, columns })
+        }
+        "delta" => {
+            let basis = tx_basis_from_value(take_field(&mut map, "basis")?)?;
+            let rows_arr = match take_field(&mut map, "rows")? {
+                Value::Array(arr) => arr,
+                other => bail!("field \"rows\" expected array, got {other:?}"),
+            };
+            let mut rows = Vec::with_capacity(rows_arr.len());
+            for entry in rows_arr {
+                rows.push(delta_row_from_value(entry)?);
+            }
+            Ok(SubscriptionFrame::Delta { basis, rows })
+        }
+        "error" => {
+            let severity_str = take_string(&mut map, "severity")?;
+            let severity = match severity_str.as_str() {
+                "E" => b'E',
+                "F" => b'F',
+                other => bail!("invalid severity string: {other:?}"),
+            };
+            let code_i64 = take_i64(&mut map, "code")?;
+            if code_i64 < 0 || code_i64 > u16::MAX as i64 {
+                bail!("code out of u16 range: {code_i64}");
+            }
+            let message = take_string(&mut map, "message")?;
+            let detail = take_optional_string(&mut map, "detail")?;
+            let hint = take_optional_string(&mut map, "hint")?;
+            Ok(SubscriptionFrame::Error(ErrorResponseBody {
+                severity,
+                code: code_i64 as u16,
+                message,
+                detail,
+                hint,
+            }))
+        }
+        other => bail!("unknown subscription frame kind: {other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
     use edn::kw;
+
+    fn sample_basis() -> TxBasis {
+        TxBasis {
+            tx_key: TxKey {
+                tx_id: 7,
+                system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            },
+            tx_eid: 8_796_093_022_208,
+        }
+    }
+
+    #[test]
+    fn subscribe_request_round_trip() {
+        for db in [None, Some(sample_basis())] {
+            let req = SubscribeRequest {
+                db,
+                query: "[:find ?n :where [?e :name ?n]]".to_string(),
+                args: vec![QueryArg::Scalar(DataType::Long(42))],
+            };
+            let bytes = encode_subscribe_request(&req).expect("encode");
+            assert_eq!(decode_subscribe_request(&bytes).expect("decode"), req);
+        }
+    }
+
+    #[test]
+    fn open_frame_round_trip() {
+        let frame = SubscriptionFrame::Open {
+            basis: sample_basis(),
+            columns: vec![ColumnDescription {
+                name: "n".to_string(),
+                data_type: 255,
+                members: None,
+            }],
+        };
+        let bytes = encode_subscription_frame(&frame).expect("encode");
+        assert_eq!(decode_subscription_frame(&bytes).expect("decode"), frame);
+    }
+
+    #[test]
+    fn delta_frame_round_trip() {
+        // Includes a |weight| > 1 row to assert raw signed weights round-trip.
+        let frame = SubscriptionFrame::Delta {
+            basis: sample_basis(),
+            rows: vec![
+                (vec![DataType::String("Ivan".to_string())], 1),
+                (vec![DataType::String("Petr".to_string())], -2),
+            ],
+        };
+        let bytes = encode_subscription_frame(&frame).expect("encode");
+        assert_eq!(decode_subscription_frame(&bytes).expect("decode"), frame);
+    }
+
+    #[test]
+    fn error_frame_round_trip() {
+        let frame = SubscriptionFrame::Error(ErrorResponseBody {
+            severity: b'F',
+            code: 4000,
+            message: "boom".to_string(),
+            detail: Some("detail".to_string()),
+            hint: None,
+        });
+        let bytes = encode_subscription_frame(&frame).expect("encode");
+        assert_eq!(decode_subscription_frame(&bytes).expect("decode"), frame);
+    }
+
+    #[test]
+    fn unknown_subscription_frame_kind_errors() {
+        let mut buf = Vec::new();
+        rmp::encode::write_map_len(&mut buf, 1).unwrap();
+        write_str_field(&mut buf, "kind", "heartbeat").unwrap();
+        let err = decode_subscription_frame(&buf).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unknown subscription frame kind: heartbeat"));
+    }
+
+    #[test]
+    fn delta_frame_decodes_regardless_of_key_order() {
+        let mut buf = Vec::new();
+        rmp::encode::write_map_len(&mut buf, 3).unwrap();
+        rmp::encode::write_str(&mut buf, "rows").unwrap();
+        rmp::encode::write_array_len(&mut buf, 1).unwrap();
+        rmp::encode::write_array_len(&mut buf, 2).unwrap();
+        rmp::encode::write_array_len(&mut buf, 1).unwrap();
+        write_data_type(&mut buf, &DataType::Long(5)).unwrap();
+        rmp::encode::write_sint(&mut buf, 1).unwrap();
+        write_str_field(&mut buf, "kind", "delta").unwrap();
+        rmp::encode::write_str(&mut buf, "basis").unwrap();
+        write_tx_basis(&mut buf, &sample_basis()).unwrap();
+        assert_eq!(
+            decode_subscription_frame(&buf).expect("decode"),
+            SubscriptionFrame::Delta {
+                basis: sample_basis(),
+                rows: vec![(vec![DataType::Long(5)], 1)],
+            }
+        );
+    }
 
     fn round_trip(dt: &DataType) -> DataType {
         let mut buf = Vec::new();

@@ -1,6 +1,7 @@
 (ns xyz.triplox.types
   "Conversion between Triplox wire types and Clojure types."
-  (:import [java.util Map]))
+  (:import [java.util Map]
+           [xyz.triplox.client Delta Row]))
 
 (defn wire->clj
   "Convert a wire protocol value to an idiomatic Clojure value.
@@ -20,3 +21,10 @@
     (mapv wire->clj v)
 
     :else v))
+
+(defn delta->clj
+  [^Delta delta]
+  (when delta
+    (mapv (fn [^Row row]
+            [(mapv wire->clj (.values row)) (.weight row)])
+          (.rows delta))))

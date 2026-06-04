@@ -1939,7 +1939,7 @@ mod tests {
         flush_wal(&node).await;
 
         let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(delta.basis, basis);
         let mut rows = delta.rows;
         rows.sort_by_key(|row| format!("{:?}", row));
         let mut expected = vec![
@@ -2013,7 +2013,7 @@ mod tests {
         flush_wal(&node).await;
 
         let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(future_basis));
+        assert_eq!(delta.basis, future_basis);
         assert_eq!(
             delta.rows,
             vec![(
@@ -2048,7 +2048,7 @@ mod tests {
         flush_wal(&node).await;
 
         let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(delta.basis, basis);
         assert_eq!(
             delta.rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
@@ -2096,7 +2096,7 @@ mod tests {
         flush_wal(&node).await;
 
         let delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(delta.basis, Some(second_basis));
+        assert_eq!(delta.basis, second_basis);
         assert_eq!(
             delta.rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
@@ -2139,7 +2139,7 @@ mod tests {
 
         let mut delta = recv_incremental_delta(&mut subscription).await;
         delta.rows.sort_by_key(|row| format!("{:?}", row));
-        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(delta.basis, basis);
         assert_eq!(
             delta.rows,
             vec![
@@ -2184,7 +2184,7 @@ mod tests {
 
         let mut delta = recv_incremental_delta(&mut subscription).await;
         delta.rows.sort_by_key(|row| format!("{:?}", row));
-        assert_eq!(delta.basis, Some(basis));
+        assert_eq!(delta.basis, basis);
         assert_eq!(
             delta.rows,
             vec![

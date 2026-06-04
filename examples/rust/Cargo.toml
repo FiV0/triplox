@@ -5,14 +5,24 @@ edition = "2021"
 publish = false
 readme = "README.md"
 
+# Standalone package — not a member of the parent triplox workspace.
+[workspace]
+
 [[bin]]
 name = "simple-example"
 path = "src/simple_example.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "streaming-example"
+path = "src/streaming_example.rs"
+test = false
+bench = false
+
 [dependencies]
 triplox = { path = "../.." }
-edn = { path = "../../edn" }
+edn = { path = "../../edn", package = "triplox-edn" }
 anyhow = "1.0"
+futures = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
