@@ -2,12 +2,12 @@
 
 pub mod cdc;
 
-use object_store::aws::AmazonS3Builder;
 use slatedb::config::{
     DurabilityLevel, ObjectStoreCacheOptions, ReadOptions, ScanOptions, Settings, WriteOptions,
 };
 use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slatedb::db_cache::{DbCache, SplitCache};
+use slatedb::object_store::aws::AmazonS3Builder;
 use slatedb::object_store::local::LocalFileSystem;
 use slatedb::object_store::{memory::InMemory, ObjectStore};
 use slatedb::Db;

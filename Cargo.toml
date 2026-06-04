@@ -41,15 +41,14 @@ triplox-client = { workspace = true }
 futures = "0.3"
 indexmap = "2.14.0"
 log = "0.4"
-object_store = { version = "0.12.3", features = ["aws"] }
 rand = "0.9"
 regex = "1.12.3"
 rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
 size-of = { version = "0.1.7", package = "feldera-size-of" }
 # slatedb = { version = "0.12.0", features = ["wal_disable"] }
-slatedb = { git = "https://github.com/slatedb/slatedb", rev = "e4a31506e78878e313a001e0ade760ddbda59dba", features = ["wal_disable"] }
-slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "055bc31d4817b6354329c4929dfe6b5eab24d618" }
+slatedb = { version = "0.13.1", features = ["aws", "wal_disable"] }
+slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "d8c46bab7f26302afe6505202ef4c8360b890547" }
 # slatedb_estimates = { path = "../slatedb-estimates" }
 thiserror = { workspace = true }
 toml = "0.8"
