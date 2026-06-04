@@ -3,7 +3,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [io.triplox.api :as tc]
+            [xyz.triplox.api :as tc]
             [auctionmark.schema :as schema])
   (:import [java.util Random Comparator]
            [java.util.concurrent ConcurrentLinkedQueue]
