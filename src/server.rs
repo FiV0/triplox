@@ -334,7 +334,7 @@ async fn subscribe<L: TxLog + 'static>(
 
     let subscription = state
         .node
-        .register_incremental_query(parsed)
+        .register_incremental_query(parsed, &request.args)
         .await
         .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
@@ -631,17 +631,22 @@ async fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::{DataType, QueryArg};
     use futures::StreamExt;
     use triplox_client::msgpack_codec::{
         decode_subscription_frame, encode_subscribe_request, SubscribeRequest,
     };
 
     fn subscribe_body(query: &str, db: Option<TxBasis>) -> Bytes {
+        subscribe_body_with_args(query, db, vec![])
+    }
+
+    fn subscribe_body_with_args(query: &str, db: Option<TxBasis>, args: Vec<QueryArg>) -> Bytes {
         Bytes::from(
             encode_subscribe_request(&SubscribeRequest {
                 db,
                 query: query.to_string(),
-                args: vec![],
+                args,
             })
             .expect("encode subscribe request"),
         )
@@ -689,6 +694,29 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.code, ErrorCode::QueryError);
+    }
+
+    #[tokio::test]
+    async fn subscribe_rejects_non_empty_args() {
+        let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
+        let err = subscribe(
+            State(server),
+            subscribe_body_with_args(
+                "[:find ?n :where [?e :name ?n]]",
+                None,
+                vec![QueryArg::Scalar(DataType::String("Ivan".to_string()))],
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.code, ErrorCode::QueryError);
+        assert!(
+            err.message
+                .contains("Incremental query args are not supported yet"),
+            "unexpected error: {}",
+            err.message
+        );
     }
 
     #[tokio::test]

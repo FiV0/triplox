@@ -332,7 +332,14 @@ impl<L: TxLog> Node<L> {
     pub(crate) async fn register_incremental_query(
         &self,
         query: ParsedQuery,
+        args: &[QueryArg],
     ) -> Result<IncrementalQuerySubscription, Error> {
+        if !args.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Incremental query args are not supported yet"
+            ));
+        }
+
         self.incremental
             .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
             .await
@@ -406,7 +413,7 @@ mod tests {
     use super::*;
     use crate::clock::st_from_unix_epoch;
     use crate::error::TriploxError;
-    use crate::ops::{DataType, EntityRef, TxOp};
+    use crate::ops::{DataType, EntityRef, QueryArg, TxOp};
     use crate::partition::{extract_partition, TX_PARTITION};
     use crate::schema::{
         test_schema_tx, unique_identity_schema_attribute, unique_value_schema_attribute,
@@ -1913,7 +1920,7 @@ mod tests {
         let expected_basis = *node.db().await.unwrap().tx_basis();
 
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
 
@@ -1925,11 +1932,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_incremental_query_rejects_non_empty_args() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let err = node
+            .register_incremental_query(
+                parse_query("[:find ?name :where [?e :name ?name]]"),
+                &[QueryArg::Scalar("Alice".into())],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Incremental query args are not supported yet"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
     async fn test_incremental_schema_query_before_user_tx_observes_schema_changes() {
         let node = Node::memory_node().await;
 
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?ident :where [?e :db/ident ?ident]]"))
+            .register_incremental_query(
+                parse_query("[:find ?ident :where [?e :db/ident ?ident]]"),
+                &[],
+            )
             .await
             .unwrap();
         let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
@@ -1968,7 +1999,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
 
@@ -1993,9 +2024,10 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         let mut subscription = node
-            .register_incremental_query(parse_query(
-                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
-            ))
+            .register_incremental_query(
+                parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
+                &[],
+            )
             .await
             .unwrap();
         let future_basis = match node
@@ -2029,7 +2061,7 @@ mod tests {
         define_test_schema(&node).await;
         flush_wal(&node).await;
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let basis = match node
@@ -2073,7 +2105,7 @@ mod tests {
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         assert_eq!(subscription.basis, first_basis);
@@ -2112,7 +2144,7 @@ mod tests {
         define_test_schema(&node).await;
         flush_wal(&node).await;
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let basis = match node
@@ -2164,7 +2196,7 @@ mod tests {
         assert!(matches!(result, TransactionResult::TxCommited(_)));
         flush_wal(&node).await;
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let basis = match node
@@ -2200,9 +2232,10 @@ mod tests {
         define_test_schema(&node).await;
         flush_wal(&node).await;
         let mut subscription = node
-            .register_incremental_query(parse_query(
-                "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]",
-            ))
+            .register_incremental_query(
+                parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
+                &[],
+            )
             .await
             .unwrap();
         let mut rows = Vec::new();
@@ -2268,7 +2301,7 @@ mod tests {
         let mut subscription = node
             .register_incremental_query(parse_query(
                 "[:find ?name ?friend-name ?age :where [?e :name ?name] [?e :follows ?friend] [?friend :name ?friend-name] [?friend :age ?age]]",
-            ))
+            ), &[])
             .await
             .unwrap();
         let mut rows = Vec::new();
@@ -2344,7 +2377,7 @@ mod tests {
         let mut subscription = node
             .register_incremental_query(parse_query(
                 r#"[:find ?name ?age :where [?e :name ?name] [?other :age ?age] [?e :name "Alice"]]"#,
-            ))
+            ), &[])
             .await
             .unwrap();
         let mut rows = Vec::new();
@@ -2407,7 +2440,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"), &[])
             .await
             .unwrap_err();
 
@@ -2424,7 +2457,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"))
+            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"), &[])
             .await
             .unwrap_err();
 
@@ -2442,7 +2475,7 @@ mod tests {
         flush_wal(&node).await;
         let query = "[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]";
         let mut subscription = node
-            .register_incremental_query(parse_query(query))
+            .register_incremental_query(parse_query(query), &[])
             .await
             .unwrap();
         let mut rows = Vec::new();
@@ -2495,7 +2528,7 @@ mod tests {
         flush_wal(&node).await;
         let query = "[:find ?name ?age :where [?e :name ?name] [?other :age ?age]]";
         let mut subscription = node
-            .register_incremental_query(parse_query(query))
+            .register_incremental_query(parse_query(query), &[])
             .await
             .unwrap();
         let mut rows = Vec::new();
@@ -2540,7 +2573,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e ?a ?v]]"))
+            .register_incremental_query(parse_query("[:find ?e :where [?e ?a ?v]]"), &[])
             .await
             .unwrap_err();
 
@@ -2555,7 +2588,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let handle = subscription.handle;
@@ -2571,7 +2604,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let handle = subscription.handle;
@@ -2588,7 +2621,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
         let handle = subscription.handle;
@@ -2606,7 +2639,7 @@ mod tests {
         let storage_path = dir.path().join("dbsp-incremental").join("query-1");
 
         let _subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
 
