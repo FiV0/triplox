@@ -2,7 +2,7 @@
   "AuctionMark benchmark entry point, workload driver, and reporting."
   (:require [clojure.tools.cli :as cli]
             [clojure.tools.logging :as log]
-            [io.triplox.api :as tc]
+            [xyz.triplox.api :as tc]
             [auctionmark.procedures :as proc])
   (:import [java.io Closeable]
            [java.util Random]
