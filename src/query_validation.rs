@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Error;
 use edn::query::{
-    Binding, Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern,
-    PatternNonValuePlace, PatternValuePlace, Variable, WhereClause,
+    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
+    PatternValuePlace, Variable, WhereClause,
 };
 
 use crate::expr::expr_variables;
@@ -13,12 +13,62 @@ use crate::query::{
     pattern_variables, query_variable_order, resolve_order_columns,
 };
 
+fn validate_where_clauses_recursively<F>(
+    clauses: &[WhereClause],
+    validate_clause: &mut F,
+) -> Result<(), Error>
+where
+    F: FnMut(&WhereClause) -> Result<(), Error>,
+{
+    for clause in clauses {
+        validate_where_clause_recursively(clause, validate_clause)?;
+    }
+    Ok(())
+}
+
+fn validate_where_clause_recursively<F>(
+    clause: &WhereClause,
+    validate_clause: &mut F,
+) -> Result<(), Error>
+where
+    F: FnMut(&WhereClause) -> Result<(), Error>,
+{
+    validate_clause(clause)?;
+    match clause {
+        WhereClause::OrJoin(oj) => {
+            for branch in &oj.clauses {
+                validate_or_branch_recursively(branch, validate_clause)?;
+            }
+            Ok(())
+        }
+        WhereClause::NotJoin(nj) => {
+            validate_where_clauses_recursively(&nj.clauses, validate_clause)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_or_branch_recursively<F>(
+    branch: &OrWhereClause,
+    validate_clause: &mut F,
+) -> Result<(), Error>
+where
+    F: FnMut(&WhereClause) -> Result<(), Error>,
+{
+    match branch {
+        OrWhereClause::Clause(clause) => validate_where_clause_recursively(clause, validate_clause),
+        OrWhereClause::And(children) => {
+            validate_where_clauses_recursively(children, validate_clause)
+        }
+    }
+}
+
 /// Validate that all variables in NOT clauses are bound by positive clauses.
 fn validate_not_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
-    for clause in where_clauses {
+    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::NotJoin(nj) = clause {
             for var in not_clause_variables(&nj.clauses) {
                 if !var_index.contains_key(&var) {
@@ -29,52 +79,71 @@ fn validate_not_clauses(
                 }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
-/// Collect all variables referenced by inner clauses of a NOT.
+/// Collect all pattern variables referenced by inner clauses of a NOT.
 fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut vars = Vec::new();
     let mut seen = HashSet::new();
-    for clause in inner_clauses {
-        if let WhereClause::Pattern(pattern) = clause {
+    collect_pattern_variables_recursively(inner_clauses, &mut seen, &mut vars);
+    vars
+}
+
+fn collect_pattern_variables_recursively(
+    clauses: &[WhereClause],
+    seen: &mut HashSet<Variable>,
+    vars: &mut Vec<Variable>,
+) {
+    for clause in clauses {
+        collect_pattern_variables_in_clause(clause, seen, vars);
+    }
+}
+
+fn collect_pattern_variables_in_clause(
+    clause: &WhereClause,
+    seen: &mut HashSet<Variable>,
+    vars: &mut Vec<Variable>,
+) {
+    match clause {
+        WhereClause::Pattern(pattern) => {
             for var in pattern_variables(pattern) {
                 if seen.insert(var.clone()) {
                     vars.push(var);
                 }
             }
         }
+        WhereClause::OrJoin(oj) => {
+            for branch in &oj.clauses {
+                collect_pattern_variables_in_or_branch(branch, seen, vars);
+            }
+        }
+        WhereClause::NotJoin(nj) => {
+            collect_pattern_variables_recursively(&nj.clauses, seen, vars);
+        }
+        _ => {}
     }
-    vars
+}
+
+fn collect_pattern_variables_in_or_branch(
+    branch: &OrWhereClause,
+    seen: &mut HashSet<Variable>,
+    vars: &mut Vec<Variable>,
+) {
+    match branch {
+        OrWhereClause::Clause(clause) => collect_pattern_variables_in_clause(clause, seen, vars),
+        OrWhereClause::And(children) => {
+            collect_pattern_variables_recursively(children, seen, vars);
+        }
+    }
 }
 
 fn validate_pattern_variables(where_clauses: &[WhereClause]) -> Result<(), Error> {
-    for clause in where_clauses {
-        validate_pattern_variables_in_clause(clause)?;
-    }
-    Ok(())
-}
-
-fn validate_pattern_variables_in_or_branch(branch: &OrWhereClause) -> Result<(), Error> {
-    match branch {
-        OrWhereClause::Clause(clause) => validate_pattern_variables_in_clause(clause),
-        OrWhereClause::And(children) => validate_pattern_variables(children),
-    }
-}
-
-fn validate_pattern_variables_in_clause(clause: &WhereClause) -> Result<(), Error> {
-    match clause {
+    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| match clause {
         WhereClause::Pattern(pattern) => validate_single_pattern_variables(pattern),
-        WhereClause::OrJoin(oj) => {
-            for branch in &oj.clauses {
-                validate_pattern_variables_in_or_branch(branch)?;
-            }
-            Ok(())
-        }
-        WhereClause::NotJoin(nj) => validate_pattern_variables(&nj.clauses),
         _ => Ok(()),
-    }
+    })
 }
 
 fn validate_single_pattern_variables(pattern: &Pattern) -> Result<(), Error> {
@@ -107,7 +176,7 @@ fn validate_predicate_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
-    for clause in where_clauses {
+    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::Pred(pred) = clause {
             let expr = convert_predicate(pred)?;
             let vars = expr_variables(&expr);
@@ -125,8 +194,8 @@ fn validate_predicate_clauses(
                 }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Validate that all WhereFn input variables precede the output variable in the join order.
@@ -134,7 +203,7 @@ fn validate_fn_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<(), Error> {
-    for clause in where_clauses {
+    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::WhereFn(wf) = clause {
             let fn_expr = convert_where_fn(wf)?;
             let output_pos = var_index.get(&fn_expr.output).ok_or_else(|| {
@@ -156,8 +225,8 @@ fn validate_fn_clauses(
                 }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Validate that all aggregate variables are bound by where clauses.
@@ -198,33 +267,10 @@ fn validate_aggregate_clauses(
 }
 
 fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
-    for clause in clauses {
-        validate_or_clause(clause)?;
-    }
-    Ok(())
-}
-
-fn validate_or_clause(clause: &WhereClause) -> Result<(), Error> {
-    match clause {
-        WhereClause::OrJoin(oj) => validate_or_join(oj),
-        WhereClause::NotJoin(nj) => validate_or_clauses(&nj.clauses),
+    validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
+        WhereClause::OrJoin(oj) => validate_or_branch_variables(&oj.clauses),
         _ => Ok(()),
-    }
-}
-
-fn validate_or_join(oj: &OrJoin) -> Result<(), Error> {
-    validate_or_branch_variables(&oj.clauses)?;
-    for branch in &oj.clauses {
-        validate_or_branch(branch)?;
-    }
-    Ok(())
-}
-
-fn validate_or_branch(branch: &OrWhereClause) -> Result<(), Error> {
-    match branch {
-        OrWhereClause::Clause(clause) => validate_or_clause(clause),
-        OrWhereClause::And(children) => validate_or_clauses(children),
-    }
+    })
 }
 
 /// Validate that all OR branches have the same free variables.
@@ -412,6 +458,48 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("OR branch 1 has different free variables"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_not_unbound_variable_inside_or() {
+        let parsed = parse_query(
+            r#"[:find ?e :where (or [?e :name "A"] (and [?e :name "B"] (not [?v :age 30])))]"#,
+        );
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Variable ?v in NOT clause is not bound"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_predicate_unbound_variable_inside_or() {
+        let parsed = parse_query(
+            r#"[:find ?e :where (or [?e :name "A"] (and [?e :name "B"] [(< ?unbound 30)]))]"#,
+        );
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Predicate variable ?unbound is not bound"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_fn_unbound_input_inside_or() {
+        let parsed = parse_query(
+            r#"[:find ?e :where [?e :age ?age] (or (and [?e :name "A"] [(+ ?age 1) ?next]) (and [?e :name "B"] [(+ ?unbound 1) ?next]))]"#,
+        );
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Function input variable ?unbound not in join order"),
             "unexpected error: {}",
             err
         );
