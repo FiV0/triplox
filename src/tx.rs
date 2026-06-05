@@ -405,6 +405,10 @@ pub async fn resolve_lookup_refs(
     Ok(result)
 }
 
+fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
+    anyhow::anyhow!("unallocated entity id {}", id)
+}
+
 pub(crate) fn validate_allocated_entity_ids(
     datoms: &[DatomWithTempids],
     schema: &Schema,
@@ -431,10 +435,6 @@ pub(crate) fn validate_allocated_entity_ids(
     }
 
     Ok(())
-}
-
-fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
-    anyhow::anyhow!("unallocated entity id {}", id)
 }
 
 #[cfg(test)]
