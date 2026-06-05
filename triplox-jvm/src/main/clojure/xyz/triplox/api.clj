@@ -1,9 +1,11 @@
 (ns xyz.triplox.api
   "Clojure client API for Triplox."
-  (:require [xyz.triplox.types :as types]
-            [xyz.triplox.tx :as tx])
-  (:import [xyz.triplox.client TriploxNode Db TxBasis TxKey TxResult QueryArg QueryArg$Scalar QueryArg$Collection Subscription Delta Row]
-           [java.util.concurrent TimeUnit]))
+  (:require
+   [xyz.triplox.tx :as tx]
+   [xyz.triplox.types :as types])
+  (:import
+   [java.util.concurrent TimeUnit]
+   [xyz.triplox.client Db QueryArg$Collection QueryArg$Scalar Subscription TriploxNode TxBasis TxKey TxResult]))
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
@@ -37,11 +39,12 @@
   "Execute a transaction and wait for indexing. Returns result map."
   [conn tx-data]
   (let [^TxResult result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
-    {:tx-id (.txId result)
-     :system-time (.systemTime result)
-     :tx-eid (.txEid result)
-     :committed? (.isCommitted result)
-     :error-message (.errorMessage result)}))
+    (cond-> {:tx-id (.txId result)
+             :system-time (.systemTime result)
+             :tx-eid (.txEid result)
+             :committed? (.isCommitted result)}
+      (not (.isCommitted result))
+      (assoc :error-message (.errorMessage result)))))
 
 (defn submit-tx
   "Submit a fire-and-forget transaction. Returns result map."
