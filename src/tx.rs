@@ -7,6 +7,7 @@ use edn::symbols::Keyword;
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
 use crate::indexer::vae_key_to_parts;
 use crate::iterator::slate_key_iterator::SlateKeyIterator;
+use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType};
 use crate::util::{concat_bytes, next_prefix};
@@ -402,6 +403,38 @@ pub async fn resolve_lookup_refs(
         });
     }
     Ok(result)
+}
+
+fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
+    anyhow::anyhow!("unallocated entity id {}", id)
+}
+
+pub(crate) fn validate_allocated_entity_ids(
+    datoms: &[DatomWithTempids],
+    schema: &Schema,
+    partition_map: &PartitionMap,
+) -> Result<()> {
+    for datom in datoms {
+        let (_, attr) = schema
+            .get_attribute(&datom.attribute)
+            .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
+
+        if let IdOrTempId::Id(id) = datom.entity {
+            if !partition_map.contains_entid(id) {
+                return Err(unallocated_entity_id_error(id));
+            }
+        }
+
+        if attr.value_type == ValueType::Ref {
+            if let ValueWithTempIds::Data(DataType::Long(id)) = datom.value {
+                if !partition_map.contains_entid(id) {
+                    return Err(unallocated_entity_id_error(id));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -420,6 +420,7 @@ mod tests {
     };
     use edn::kw;
     use edn::Keyword;
+    use regex::Regex;
     use slatedb::config::{FlushOptions, FlushType};
     use triplox_client::transaction::TransactionResult;
 
@@ -427,6 +428,15 @@ mod tests {
     async fn define_test_schema(node: &impl SubmitNode) {
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
         assert!(matches!(result, TransactionResult::TxCommited(_)));
+    }
+
+    fn assert_aborted_with_error_matching(result: TransactionResult, pattern: &str) {
+        let TransactionResult::TxAborted(_, error) = result else {
+            panic!("transaction should abort, got {:?}", result);
+        };
+        let error = error.to_string();
+        let re = Regex::new(pattern).expect("valid regex");
+        assert!(re.is_match(&error), "unexpected error: {}", error);
     }
 
     fn parse_query(input: &str) -> ParsedQuery {
@@ -3314,6 +3324,43 @@ mod tests {
             "tempids that appear only in value position must abort, got {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_explicit_unallocated_ids_abort() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:db/id), DataType::Long(11111)),
+                (kw!(:name), "Ivan".into()),
+            ])])
+            .await
+            .unwrap();
+
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
+
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: EntityRef::Id(11111),
+                attribute: kw!(:name),
+                value: "Ivan".into(),
+            }])
+            .await
+            .unwrap();
+
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
+
+        let result = node
+            .execute_tx(vec![TxOp::put(vec![
+                (kw!(:name), "Bob".into()),
+                (kw!(:follows), DataType::Long(11111)),
+            ])])
+            .await
+            .unwrap();
+
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
     }
 
     /// Cross-iteration EV→E resolution where the second-iteration store

@@ -35,26 +35,31 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Converts DatomExpanded -> DatomWithTempids (eliminates LookupRef variants)
    - Errors if any lookup ref has no matching entity
                                 ↓
-4. Resolve tempids/upserts      tempids::resolve_tempids(...)
+4. Validate explicit IDs        tx::validate_allocated_entity_ids(...)
+   - Concrete entity IDs must already be allocated in their partition
+   - Ref-typed Long values must point to already allocated entity IDs
+   - Tempids remain deferred and can still allocate within this transaction
+                                ↓
+5. Resolve tempids/upserts      tempids::resolve_tempids(...)
    - Splits DatomWithTempids into Mentat-style Generation populations
    - Resolves :db.unique/identity tempids against unique-only VAE
    - Evolves complex upserts until no simple upserts remain
    - Allocates remaining tempids, coalescing unresolved identity matches
    Build tx entity datoms       build_tx_entity_datoms(tx_eid, tx_key, ...)
                                 ↓
-5. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
+6. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
                                 ↓
-6. Validate                     validate_unique_constraints + schema.validate_datoms(datoms)
+7. Validate                     validate_unique_constraints + schema.validate_datoms(datoms)
    - Unique checks for :db.unique/value and :db.unique/identity
    - Type checking: value type matches attribute's value_type
    - Unknown attribute errors
    - Detects schema changes
                                 ↓
-7. Write indices + commit       let mut batch = WriteBatch::new();
+8. Write indices + commit       let mut batch = WriteBatch::new();
                                 write_index_entries(&mut batch, ...);
                                 slatedb.write_with_options(batch, ...)
                                 ↓
-8. Apply on success only:
+9. Apply on success only:
    - self.metadata.partition_map = pending_pm    (counter reservation committed)
    - self.metadata.schema.apply_schema_update(schema_update)  (infallible)
    - self.metadata.advance_generation()
@@ -72,6 +77,8 @@ TxOp (EntityRef + DataType)
 DatomExpanded (EntityExpanded + ValueExpanded)   may contain LookupRef + TempId
     ↓ resolve_lookup_refs (async, unique-only VAE index)
 DatomWithTempids (IdOrTempId + ValueWithTempIds) only TempId remains
+    ↓ validate_allocated_entity_ids (sync, partition map)
+DatomWithTempids                                explicit IDs checked
     ↓ tempids::resolve_tempids (async, VAE + partition map)
 Datom (i64 + DataType)                           fully concrete
 ```
