@@ -310,7 +310,14 @@ impl Indexer {
         let with_tempids =
             tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
 
-        // 4. Resolve tempids, including identity upserts, then build tx entity datoms
+        // 4. Validate explicit entity IDs before tempids become concrete IDs
+        tx::validate_allocated_entity_ids(
+            &with_tempids,
+            &self.metadata.schema,
+            &self.metadata.partition_map,
+        )?;
+
+        // 5. Resolve tempids, including identity upserts, then build tx entity datoms
         let mut datoms = tempids::resolve_tempids(
             with_tempids,
             &self.metadata.schema,
@@ -320,28 +327,28 @@ impl Indexer {
         .await?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 5. Finalize datoms (card-one rewrite) against current storage state
+        // 6. Finalize datoms (card-one rewrite) against current storage state
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
-        // 6. Unique + general validation
+        // 7. Unique + general validation
         self.validate_unique_constraints(&datoms).await?;
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 7. Prepare schema update before writing to avoid leaking rejected datoms
+        // 8. Prepare schema update before writing to avoid leaking rejected datoms
         let schema_update = if validation.schema_changes_detected {
             Some(self.metadata.schema.prepare_schema_update(&datoms)?)
         } else {
             None
         };
 
-        // 8. Write indices + commit
+        // 9. Write indices + commit
         let mut batch = WriteBatch::new();
         write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
-        // 9. Apply on success only
+        // 10. Apply on success only
         self.metadata.partition_map = pending_pm;
         if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
             self.metadata.schema.apply_schema_update(schema_update);
