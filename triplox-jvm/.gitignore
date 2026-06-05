@@ -2,6 +2,9 @@
 build
 .idea
 .lsp
+!.lsp/
+.lsp/*
+!.lsp/config.edn
 .clj-kondo
 **/.nrepl-port
 .cpcache
