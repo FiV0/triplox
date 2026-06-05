@@ -1,4 +1,4 @@
-(ns xyz.triplox.integration.tx
+(ns xyz.triplox.integration.tx-test
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [xyz.triplox.api :as api]
             [xyz.triplox.integration.query-test :as query-test :refer [*conn*]]))
