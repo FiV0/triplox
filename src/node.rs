@@ -3327,7 +3327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_unallocated_db_id_aborts() {
+    async fn test_explicit_unallocated_ids_abort() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
@@ -3340,12 +3340,6 @@ mod tests {
             .unwrap();
 
         assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
-    }
-
-    #[tokio::test]
-    async fn test_explicit_unallocated_entity_ref_aborts() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
 
         let result = node
             .execute_tx(vec![TxOp::Add {
@@ -3357,12 +3351,6 @@ mod tests {
             .unwrap();
 
         assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
-    }
-
-    #[tokio::test]
-    async fn test_unallocated_ref_value_aborts() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
 
         let result = node
             .execute_tx(vec![TxOp::put(vec![
