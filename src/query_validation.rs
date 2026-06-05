@@ -236,7 +236,7 @@ fn validate_aggregate_clauses(
 ) -> Result<(), Error> {
     let elements = match find {
         FindSpec::FindRel(elements) => elements,
-        _ => return Ok(()),
+        _ => return Err(anyhow::anyhow!("Only FindRel is currently supported")),
     };
     for elem in elements {
         if let Element::Aggregate(agg) = elem {
