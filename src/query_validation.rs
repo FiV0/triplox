@@ -9,8 +9,9 @@ use edn::query::{
 use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    build_var_index, collect_variables_from_or_branch, convert_predicate, convert_where_fn,
-    pattern_variables, query_variable_order, resolve_order_columns,
+    build_var_index, clause_mentioned_variables, convert_predicate, convert_where_fn,
+    or_branch_bound_variables, or_branch_mentioned_variables, pattern_variables,
+    query_variable_order, resolve_order_columns,
 };
 
 fn validate_where_clauses_recursively<F>(
@@ -83,60 +84,18 @@ fn validate_not_clauses(
     })
 }
 
-/// Collect all pattern variables referenced by inner clauses of a NOT.
+/// Collect all variables referenced by inner clauses of a NOT.
 fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
     let mut vars = Vec::new();
     let mut seen = HashSet::new();
-    collect_pattern_variables_recursively(inner_clauses, &mut seen, &mut vars);
+    for clause in inner_clauses {
+        for var in clause_mentioned_variables(clause) {
+            if seen.insert(var.clone()) {
+                vars.push(var);
+            }
+        }
+    }
     vars
-}
-
-fn collect_pattern_variables_recursively(
-    clauses: &[WhereClause],
-    seen: &mut HashSet<Variable>,
-    vars: &mut Vec<Variable>,
-) {
-    for clause in clauses {
-        collect_pattern_variables_in_clause(clause, seen, vars);
-    }
-}
-
-fn collect_pattern_variables_in_clause(
-    clause: &WhereClause,
-    seen: &mut HashSet<Variable>,
-    vars: &mut Vec<Variable>,
-) {
-    match clause {
-        WhereClause::Pattern(pattern) => {
-            for var in pattern_variables(pattern) {
-                if seen.insert(var.clone()) {
-                    vars.push(var);
-                }
-            }
-        }
-        WhereClause::OrJoin(oj) => {
-            for branch in &oj.clauses {
-                collect_pattern_variables_in_or_branch(branch, seen, vars);
-            }
-        }
-        WhereClause::NotJoin(nj) => {
-            collect_pattern_variables_recursively(&nj.clauses, seen, vars);
-        }
-        _ => {}
-    }
-}
-
-fn collect_pattern_variables_in_or_branch(
-    branch: &OrWhereClause,
-    seen: &mut HashSet<Variable>,
-    vars: &mut Vec<Variable>,
-) {
-    match branch {
-        OrWhereClause::Clause(clause) => collect_pattern_variables_in_clause(clause, seen, vars),
-        OrWhereClause::And(children) => {
-            collect_pattern_variables_recursively(children, seen, vars);
-        }
-    }
 }
 
 fn validate_pattern_variables(where_clauses: &[WhereClause]) -> Result<(), Error> {
@@ -279,20 +238,33 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
         return Err(anyhow::anyhow!("OR clause must have at least one branch"));
     }
 
-    let first_vars: HashSet<Variable> = collect_variables_from_or_branch(&branches[0])
+    let first_bound_vars: HashSet<Variable> = or_branch_bound_variables(&branches[0])
+        .into_iter()
+        .collect();
+    let first_mentioned_vars: HashSet<Variable> = or_branch_mentioned_variables(&branches[0])
         .into_iter()
         .collect();
 
     for (i, branch) in branches.iter().enumerate().skip(1) {
-        let branch_vars: HashSet<Variable> = collect_variables_from_or_branch(branch)
-            .into_iter()
-            .collect();
-        if branch_vars != first_vars {
+        let branch_bound_vars: HashSet<Variable> =
+            or_branch_bound_variables(branch).into_iter().collect();
+        if branch_bound_vars != first_bound_vars {
             return Err(anyhow::anyhow!(
                 "OR branch {} has different free variables {:?} than branch 0 {:?}",
                 i,
-                branch_vars,
-                first_vars
+                branch_bound_vars,
+                first_bound_vars
+            ));
+        }
+
+        let branch_mentioned_vars: HashSet<Variable> =
+            or_branch_mentioned_variables(branch).into_iter().collect();
+        if branch_mentioned_vars != first_mentioned_vars {
+            return Err(anyhow::anyhow!(
+                "OR branch {} mentions different variables {:?} than branch 0 {:?}",
+                i,
+                branch_mentioned_vars,
+                first_mentioned_vars
             ));
         }
     }
@@ -443,7 +415,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 has different free variables"),
+                .contains("OR branch 1 mentions different variables"),
             "unexpected error: {}",
             err
         );
@@ -471,7 +443,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("Variable ?v in NOT clause is not bound"),
+                .contains("OR branch 1 mentions different variables"),
             "unexpected error: {}",
             err
         );
@@ -485,10 +457,33 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("Predicate variable ?unbound is not bound"),
+                .contains("OR branch 1 mentions different variables"),
             "unexpected error: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_validate_rejects_or_predicate_using_later_outer_variable() {
+        let parsed = parse_query(
+            r#"[:find ?e ?age :where (or (and [?e :name "A"] [(< ?age 30)]) [?e :name "B"]) [?e :age ?age]]"#,
+        );
+
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("OR branch 1 mentions different variables"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_or_predicates_with_same_outer_variables() {
+        let parsed = parse_query(
+            r#"[:find ?e ?age :where [?e :age ?age] (or (and [?e :name "A"] [(< ?age 30)]) (and [?e :name "B"] [(< ?age 40)]))]"#,
+        );
+        assert!(validate_query(&parsed, &[]).is_ok());
     }
 
     #[test]
@@ -499,7 +494,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("Function input variable ?unbound not in join order"),
+                .contains("OR branch 1 mentions different variables"),
             "unexpected error: {}",
             err
         );
