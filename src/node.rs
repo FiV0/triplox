@@ -3339,10 +3339,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_aborted_with_error_matching(
-            result,
-            r"^Explicit entity id \d+ has not been allocated$",
-        );
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
     }
 
     #[tokio::test]
@@ -3359,10 +3356,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_aborted_with_error_matching(
-            result,
-            r"^Explicit entity id \d+ has not been allocated$",
-        );
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
     }
 
     #[tokio::test]
@@ -3378,10 +3372,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_aborted_with_error_matching(
-            result,
-            r"^Ref value for attribute :follows points to unallocated entity id \d+$",
-        );
+        assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
     }
 
     /// Cross-iteration EV→E resolution where the second-iteration store

@@ -417,27 +417,24 @@ pub(crate) fn validate_allocated_entity_ids(
 
         if let IdOrTempId::Id(id) = datom.entity {
             if !partition_map.contains_entid(id) {
-                return Err(anyhow::anyhow!(
-                    "Explicit entity id {} has not been allocated",
-                    id
-                ));
+                return Err(unallocated_entity_id_error(id));
             }
         }
 
         if attr.value_type == ValueType::Ref {
             if let ValueWithTempIds::Data(DataType::Long(id)) = datom.value {
                 if !partition_map.contains_entid(id) {
-                    return Err(anyhow::anyhow!(
-                        "Ref value for attribute {} points to unallocated entity id {}",
-                        datom.attribute,
-                        id
-                    ));
+                    return Err(unallocated_entity_id_error(id));
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
+    anyhow::anyhow!("unallocated entity id {}", id)
 }
 
 #[cfg(test)]
