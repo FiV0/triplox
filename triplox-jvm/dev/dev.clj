@@ -1,6 +1,5 @@
 (ns dev
-  "REPL playground for Triplox client."
-  (:require [triplox.api :as t]))
+  (:require [xyz.triplox.api :as t]))
 
 (comment
   (def conn (t/connect "localhost" 5490))
