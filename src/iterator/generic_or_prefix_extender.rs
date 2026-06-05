@@ -23,7 +23,9 @@ impl GenericOrPrefixExtender {
 
 impl PrefixExtender for GenericOrPrefixExtender {
     fn count(&self, prefix: &Prefix) -> usize {
-        self.children.iter().map(|c| c.count(prefix)).sum()
+        self.children
+            .iter()
+            .fold(0, |total, child| total.saturating_add(child.count(prefix)))
     }
 
     fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
@@ -57,7 +59,11 @@ impl PrefixExtender for GenericOrPrefixExtender {
 mod tests {
     use super::*;
     use crate::algo::generic_join::{GenericJoin, SingleLevelExtender};
+    use crate::expr::Expr;
+    use crate::iterator::GenericPredicatePrefixExtender;
+    use crate::ops::DataType;
     use bytes::Bytes;
+    use edn::query::ToVariable;
 
     fn bi(n: i32) -> Bytes {
         Bytes::from(n.to_be_bytes().to_vec())
@@ -69,6 +75,25 @@ mod tests {
         let ext2 = SingleLevelExtender::new(vec![bi(4), bi(5)], 0);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
         assert_eq!(or_ext.count(&vec![]), 5);
+    }
+
+    #[test]
+    fn test_or_extender_count_saturates_for_predicate_only_children() {
+        let pred1 = GenericPredicatePrefixExtender::new(
+            Expr::Literal(DataType::Boolean(true)),
+            vec![],
+            "?x".to_var(),
+            0,
+        );
+        let pred2 = GenericPredicatePrefixExtender::new(
+            Expr::Literal(DataType::Boolean(true)),
+            vec![],
+            "?x".to_var(),
+            0,
+        );
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(pred1), Box::new(pred2)]);
+
+        assert_eq!(or_ext.count(&vec![]), usize::MAX);
     }
 
     #[test]
