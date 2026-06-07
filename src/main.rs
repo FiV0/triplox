@@ -21,8 +21,6 @@ fn load_config() -> Result<Config> {
 
 async fn run_server(config: Config) -> Result<()> {
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-    let dbsp_storage_path = config.dbsp_storage_path();
-    let remote_local_disk_storage_path = config.remote_local_disk_storage_path();
 
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
@@ -50,18 +48,19 @@ async fn run_server(config: Config) -> Result<()> {
         shutdown_token.cancel();
     });
 
-    match config.storage {
+    match &config.storage {
         StorageConfig::Dev => {
             let server = DevServer::new();
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
+            let dbsp_storage_path = config.dbsp_storage_path();
             let node = Arc::new(Node::memory_node_with_dbsp_storage(dbsp_storage_path).await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Local { path } => {
-            let node = Arc::new(Node::local_node(&path).await?);
+            let node = Arc::new(Node::local_node(path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -73,17 +72,18 @@ async fn run_server(config: Config) -> Result<()> {
             region,
             file_log_path,
         } => {
-            let local_disk_storage_path = remote_local_disk_storage_path
+            let local_disk_storage_path = config
+                .remote_local_disk_storage_path()
                 .expect("remote storage should have a local disk storage path");
             let node = Arc::new(
                 Node::remote_node(
-                    &file_log_path,
+                    file_log_path,
                     &local_disk_storage_path,
-                    &endpoint,
-                    &bucket,
-                    &access_key,
-                    &secret_key,
-                    &region,
+                    endpoint,
+                    bucket,
+                    access_key,
+                    secret_key,
+                    region,
                 )
                 .await?,
             );
