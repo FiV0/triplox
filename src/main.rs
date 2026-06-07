@@ -54,8 +54,7 @@ async fn run_server(config: Config) -> Result<()> {
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
-            let dbsp_storage_path = config.dbsp_storage_path();
-            let node = Arc::new(Node::memory_node_with_dbsp_storage(dbsp_storage_path).await);
+            let node = Arc::new(Node::memory_node().await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }

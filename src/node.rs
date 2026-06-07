@@ -7,7 +7,6 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::clock;
-use crate::config::default_ephemeral_dbsp_storage_path;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
@@ -149,7 +148,7 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
 }
 
 impl Node<MemoryLog> {
-    pub async fn memory_node_with_dbsp_storage(incremental_storage_path: PathBuf) -> Self {
+    pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_basis = *crate::bootstrap::BOOTSTRAP_TX_BASIS;
@@ -168,7 +167,10 @@ impl Node<MemoryLog> {
         )
         .await;
         let incremental = IncrementalQueryService::new(
-            incremental_storage_path,
+            std::env::temp_dir().join(format!(
+                "triplox-dbsp-incremental-{}",
+                crate::util::random_string(10)
+            )),
             Handle::current(),
             subscription.clone(),
             slate.object_path.clone(),
@@ -182,10 +184,6 @@ impl Node<MemoryLog> {
             subscription,
             incremental,
         }
-    }
-
-    pub async fn memory_node() -> Self {
-        Self::memory_node_with_dbsp_storage(default_ephemeral_dbsp_storage_path()).await
     }
 }
 
@@ -2603,26 +2601,6 @@ mod tests {
         let node = Node::local_node(dir.path()).await.unwrap();
         define_test_schema(&node).await;
         let storage_path = dir.path().join("dbsp").join("query-1");
-
-        let _subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
-            .await
-            .unwrap();
-
-        assert!(storage_path.exists());
-
-        node.close().await.unwrap();
-
-        assert!(!storage_path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_memory_node_uses_configured_incremental_query_storage() {
-        let dir = tempfile::tempdir().unwrap();
-        let dbsp_storage_path = dir.path().join("dbsp");
-        let node = Node::memory_node_with_dbsp_storage(dbsp_storage_path.clone()).await;
-        define_test_schema(&node).await;
-        let storage_path = dbsp_storage_path.join("query-1");
 
         let _subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"))
