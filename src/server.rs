@@ -9,7 +9,6 @@
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -339,9 +338,7 @@ impl<L: TxLog + 'static> Server<L> {
 // Dev Server (per-connection in-memory nodes)
 // ---------------------------------------------------------------------------
 
-pub struct DevServer {
-    dbsp_storage_path: Option<PathBuf>,
-}
+pub struct DevServer;
 
 impl Default for DevServer {
     fn default() -> Self {
@@ -351,15 +348,7 @@ impl Default for DevServer {
 
 impl DevServer {
     pub fn new() -> Self {
-        DevServer {
-            dbsp_storage_path: None,
-        }
-    }
-
-    pub fn with_dbsp_storage_path(dbsp_storage_path: PathBuf) -> Self {
-        DevServer {
-            dbsp_storage_path: Some(dbsp_storage_path),
-        }
+        DevServer
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -368,23 +357,13 @@ impl DevServer {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
-        let dbsp_storage_path = self.dbsp_storage_path.clone();
         accept_loop(
             listener,
             token,
             "Dev HTTP",
             move |stream, _peer, conn_id, conn_token, join_set| {
-                let dbsp_storage_path = dbsp_storage_path.clone();
                 join_set.spawn(async move {
-                    let node = Arc::new(match dbsp_storage_path {
-                        Some(path) => {
-                            Node::memory_node_with_dbsp_storage(
-                                path.join(format!("connection-{}", conn_id)),
-                            )
-                            .await
-                        }
-                        None => Node::memory_node().await,
-                    });
+                    let node = Arc::new(Node::memory_node().await);
 
                     let app_state = Arc::new(Server { node: node.clone() });
                     let router = build_router(app_state);

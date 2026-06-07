@@ -87,7 +87,8 @@ impl Config {
             StorageConfig::Remote { file_log_path, .. } => self
                 .remote_local_disk_storage_root(file_log_path)
                 .join(DBSP_STORAGE_DIR),
-            StorageConfig::Dev | StorageConfig::Memory => self
+            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
+            StorageConfig::Memory => self
                 .local_disk_storage
                 .path
                 .as_ref()

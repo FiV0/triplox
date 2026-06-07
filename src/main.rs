@@ -23,7 +23,6 @@ async fn run_server(config: Config) -> Result<()> {
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let dbsp_storage_path = config.dbsp_storage_path();
     let remote_local_disk_storage_path = config.remote_local_disk_storage_path();
-    let has_configured_local_disk_storage = config.local_disk_storage.path.is_some();
 
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
@@ -53,11 +52,7 @@ async fn run_server(config: Config) -> Result<()> {
 
     match config.storage {
         StorageConfig::Dev => {
-            let server = if has_configured_local_disk_storage {
-                DevServer::with_dbsp_storage_path(dbsp_storage_path)
-            } else {
-                DevServer::new()
-            };
+            let server = DevServer::new();
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
