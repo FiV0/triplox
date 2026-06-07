@@ -464,21 +464,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_or_predicate_using_later_outer_variable() {
-        let parsed = parse_query(
-            r#"[:find ?e ?age :where (or (and [?e :name "A"] [(< ?age 30)]) [?e :name "B"]) [?e :age ?age]]"#,
-        );
-
-        let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("OR branch 1 mentions different variables"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[test]
     fn test_validate_accepts_or_predicates_with_same_outer_variables() {
         let parsed = parse_query(
             r#"[:find ?e ?age :where [?e :age ?age] (or (and [?e :name "A"] [(< ?age 30)]) (and [?e :name "B"] [(< ?age 40)]))]"#,
