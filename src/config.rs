@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_node_uses_configured_local_disk_storage_when_present() {
+    fn memory_node_uses_default_dbsp_storage_when_local_disk_storage_is_present() {
         let config: Config = toml::from_str(
             r#"
             [storage]
@@ -190,9 +190,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            config.dbsp_storage_path(),
-            PathBuf::from("/tmp/triplox-disk/dbsp")
-        );
+        let dbsp_storage_path = config.dbsp_storage_path();
+        assert_ne!(dbsp_storage_path, PathBuf::from("/tmp/triplox-disk/dbsp"));
+        assert!(dbsp_storage_path.starts_with(std::env::temp_dir()));
+        assert!(dbsp_storage_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("triplox-dbsp-"));
     }
 }
