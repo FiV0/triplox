@@ -74,18 +74,16 @@ pub fn default_ephemeral_dbsp_storage_path() -> PathBuf {
 impl Config {
     pub fn dbsp_storage_path(&self) -> PathBuf {
         match &self.storage {
+            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
+
+            StorageConfig::Memory => default_ephemeral_dbsp_storage_path(),
+
             StorageConfig::Local { path } => path.join(DBSP_STORAGE_DIR),
+
             StorageConfig::Remote { .. } => self
                 .local_disk_storage_path()
                 .expect("remote storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
-            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
-            StorageConfig::Memory => self
-                .local_disk_storage
-                .path
-                .as_ref()
-                .map(|path| path.join(DBSP_STORAGE_DIR))
-                .unwrap_or_else(default_ephemeral_dbsp_storage_path),
         }
     }
 
