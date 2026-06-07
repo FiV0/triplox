@@ -11,9 +11,9 @@ use tokio::runtime::Handle;
 use crate::schema::IdentMap;
 
 use edn::query::{
-    Binding, Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin, OrJoin,
-    OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
-    ToVariable, UnifyVars, Variable, WhereClause, WhereFn,
+    Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin,
+    OrJoin, OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
+    Predicate, ToVariable, UnifyVars, Variable, WhereClause, WhereFn,
 };
 
 use crate::aggregate::{make_accumulator, Accumulator};
@@ -365,29 +365,31 @@ pub(crate) fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
 // Variable collection from clauses
 // ---------------------------------------------------------------------------
 
-/// Extract variables from an OrWhereClause.
-pub(crate) fn collect_variables_from_or_branch(branch: &OrWhereClause) -> Vec<Variable> {
+/// Extract variables bound by an OrWhereClause.
+pub(crate) fn or_branch_bound_variables(branch: &OrWhereClause) -> Vec<Variable> {
     match branch {
-        OrWhereClause::Clause(clause) => collect_variables_from_clause(clause),
-        OrWhereClause::And(children) => children
-            .iter()
-            .flat_map(collect_variables_from_clause)
-            .collect(),
+        OrWhereClause::Clause(clause) => clause_bound_variables(clause),
+        OrWhereClause::And(children) => children.iter().flat_map(clause_bound_variables).collect(),
     }
 }
 
-/// Recursively extract variables from a single WhereClause.
+/// Extract all variables mentioned by an OrWhereClause.
+pub(crate) fn or_branch_mentioned_variables(branch: &OrWhereClause) -> Vec<Variable> {
+    branch.collect_mentioned_variables().into_iter().collect()
+}
+
+/// Recursively extract variables bound by a single WhereClause.
 /// Only positive (Pattern/OrJoin/WhereFn) clauses contribute variables. NotJoin and Pred
 /// clauses do not introduce new variables.
-fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
+pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::Pattern(pattern) => pattern_variables(pattern),
         WhereClause::OrJoin(oj) => {
-            // All branches must have the same free variables (validated in execute_query).
+            // All branches must bind the same variables; validate_query enforces this.
             // Extract from the first branch only.
             oj.clauses
                 .first()
-                .map(collect_variables_from_or_branch)
+                .map(or_branch_bound_variables)
                 .unwrap_or_default()
         }
         WhereClause::WhereFn(wf) => {
@@ -400,6 +402,11 @@ fn collect_variables_from_clause(clause: &WhereClause) -> Vec<Variable> {
         WhereClause::NotJoin(_) | WhereClause::Pred(_) => vec![],
         _ => vec![],
     }
+}
+
+/// Extract all variables syntactically mentioned by a single WhereClause.
+pub(crate) fn clause_mentioned_variables(clause: &WhereClause) -> Vec<Variable> {
+    clause.collect_mentioned_variables().into_iter().collect()
 }
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).
@@ -438,7 +445,7 @@ pub fn query_variable_order(
         .collect();
 
     for clause in reordered {
-        for var in collect_variables_from_clause(clause) {
+        for var in clause_bound_variables(clause) {
             if seen.insert(var.clone()) {
                 order.push(var);
             }
