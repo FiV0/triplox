@@ -250,8 +250,8 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
             or_branch_bound_variables(branch).into_iter().collect();
         if branch_bound_vars != first_bound_vars {
             return Err(anyhow::anyhow!(
-                "OR branch {} has different free variables {:?} than branch 0 {:?}",
-                i,
+                "OR branch {} has different free variables {:?} than branch 1 {:?}",
+                i + 1,
                 branch_bound_vars,
                 first_bound_vars
             ));
@@ -261,8 +261,8 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
             or_branch_mentioned_variables(branch).into_iter().collect();
         if branch_mentioned_vars != first_mentioned_vars {
             return Err(anyhow::anyhow!(
-                "OR branch {} mentions different variables {:?} than branch 0 {:?}",
-                i,
+                "OR branch {} mentions different variables {:?} than branch 1 {:?}",
+                i + 1,
                 branch_mentioned_vars,
                 first_mentioned_vars
             ));
@@ -415,7 +415,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 mentions different variables"),
+                .contains("OR branch 2 mentions different variables"),
             "unexpected error: {}",
             err
         );
@@ -429,7 +429,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 has different free variables"),
+                .contains("OR branch 2 has different free variables"),
             "unexpected error: {}",
             err
         );
@@ -443,7 +443,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 mentions different variables"),
+                .contains("OR branch 2 mentions different variables"),
             "unexpected error: {}",
             err
         );
@@ -457,7 +457,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 mentions different variables"),
+                .contains("OR branch 2 mentions different variables"),
             "unexpected error: {}",
             err
         );
@@ -479,7 +479,7 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("OR branch 1 mentions different variables"),
+                .contains("OR branch 2 mentions different variables"),
             "unexpected error: {}",
             err
         );
