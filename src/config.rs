@@ -87,13 +87,7 @@ impl Config {
             StorageConfig::Remote { file_log_path, .. } => self
                 .remote_local_disk_storage_root(file_log_path)
                 .join(DBSP_STORAGE_DIR),
-            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
-            StorageConfig::Memory => self
-                .local_disk_storage
-                .path
-                .as_ref()
-                .map(|path| path.join(DBSP_STORAGE_DIR))
-                .unwrap_or_else(default_ephemeral_dbsp_storage_path),
+            StorageConfig::Dev | StorageConfig::Memory => default_ephemeral_dbsp_storage_path(),
         }
     }
 
@@ -204,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_node_uses_configured_local_disk_storage_when_present() {
+    fn memory_node_uses_default_dbsp_storage_when_local_disk_storage_is_present() {
         let config: Config = toml::from_str(
             r#"
             [storage]
@@ -216,9 +210,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            config.dbsp_storage_path(),
-            PathBuf::from("/tmp/triplox-disk/dbsp")
-        );
+        let dbsp_storage_path = config.dbsp_storage_path();
+        assert_ne!(dbsp_storage_path, PathBuf::from("/tmp/triplox-disk/dbsp"));
+        assert!(dbsp_storage_path.starts_with(std::env::temp_dir()));
+        assert!(dbsp_storage_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("triplox-dbsp-"));
     }
 }
