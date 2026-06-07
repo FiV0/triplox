@@ -4,7 +4,6 @@ use serde::Deserialize;
 
 const DBSP_STORAGE_DIR: &str = "dbsp";
 const REMOTE_CACHE_DIR: &str = "cache";
-const REMOTE_DEFAULT_LOCAL_DISK_STORAGE_DIR: &str = "local_disk_storage";
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -72,49 +71,38 @@ pub fn default_ephemeral_dbsp_storage_path() -> PathBuf {
     std::env::temp_dir().join(format!("triplox-dbsp-{}", crate::util::random_string(10)))
 }
 
-fn default_remote_local_disk_storage_root(file_log_path: &std::path::Path) -> PathBuf {
-    file_log_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(REMOTE_DEFAULT_LOCAL_DISK_STORAGE_DIR)
-}
-
 impl Config {
     pub fn dbsp_storage_path(&self) -> PathBuf {
         match &self.storage {
             StorageConfig::Local { path } => path.join(DBSP_STORAGE_DIR),
-            StorageConfig::Remote { file_log_path, .. } => self
-                .remote_local_disk_storage_root(file_log_path)
+            StorageConfig::Remote { .. } => self
+                .local_disk_storage_path()
+                .expect("remote storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
-            StorageConfig::Dev | StorageConfig::Memory => default_ephemeral_dbsp_storage_path(),
+            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
+            StorageConfig::Memory => self
+                .local_disk_storage
+                .path
+                .as_ref()
+                .map(|path| path.join(DBSP_STORAGE_DIR))
+                .unwrap_or_else(default_ephemeral_dbsp_storage_path),
         }
     }
 
     pub fn remote_cache_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { file_log_path, .. } => Some(
-                self.remote_local_disk_storage_root(file_log_path)
-                    .join(REMOTE_CACHE_DIR),
-            ),
+            StorageConfig::Remote { .. } => self
+                .local_disk_storage_path()
+                .map(|path| path.join(REMOTE_CACHE_DIR)),
             _ => None,
         }
     }
 
-    pub fn remote_local_disk_storage_path(&self) -> Option<PathBuf> {
+    pub fn local_disk_storage_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { file_log_path, .. } => {
-                Some(self.remote_local_disk_storage_root(file_log_path))
-            }
+            StorageConfig::Remote { .. } => self.local_disk_storage.path.clone(),
             _ => None,
         }
-    }
-
-    fn remote_local_disk_storage_root(&self, file_log_path: &std::path::Path) -> PathBuf {
-        self.local_disk_storage
-            .path
-            .clone()
-            .unwrap_or_else(|| default_remote_local_disk_storage_root(file_log_path))
     }
 }
 
@@ -155,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_defaults_local_disk_storage_next_to_file_log_parent() {
+    fn remote_without_local_disk_storage_has_no_local_disk_storage_path() {
         let config: Config = toml::from_str(
             r#"
             [storage]
@@ -169,14 +157,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            config.remote_cache_path().unwrap(),
-            PathBuf::from("/tmp/triplox-log/local_disk_storage/cache")
-        );
-        assert_eq!(
-            config.dbsp_storage_path(),
-            PathBuf::from("/tmp/triplox-log/local_disk_storage/dbsp")
-        );
+        assert_eq!(config.local_disk_storage_path(), None);
+        assert_eq!(config.remote_cache_path(), None);
     }
 
     #[test]
@@ -198,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_node_uses_default_dbsp_storage_when_local_disk_storage_is_present() {
+    fn memory_node_uses_configured_local_disk_storage_when_present() {
         let config: Config = toml::from_str(
             r#"
             [storage]
@@ -210,13 +192,9 @@ mod tests {
         )
         .unwrap();
 
-        let dbsp_storage_path = config.dbsp_storage_path();
-        assert_ne!(dbsp_storage_path, PathBuf::from("/tmp/triplox-disk/dbsp"));
-        assert!(dbsp_storage_path.starts_with(std::env::temp_dir()));
-        assert!(dbsp_storage_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("triplox-dbsp-"));
+        assert_eq!(
+            config.dbsp_storage_path(),
+            PathBuf::from("/tmp/triplox-disk/dbsp")
+        );
     }
 }

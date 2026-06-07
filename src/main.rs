@@ -54,7 +54,8 @@ async fn run_server(config: Config) -> Result<()> {
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Memory => {
-            let node = Arc::new(Node::memory_node().await);
+            let dbsp_storage_path = config.dbsp_storage_path();
+            let node = Arc::new(Node::memory_node_with_dbsp_storage(dbsp_storage_path).await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -71,9 +72,9 @@ async fn run_server(config: Config) -> Result<()> {
             region,
             file_log_path,
         } => {
-            let local_disk_storage_path = config
-                .remote_local_disk_storage_path()
-                .expect("remote storage should have a local disk storage path");
+            let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
+                bail!("remote storage requires local_disk_storage.path");
+            };
             let node = Arc::new(
                 Node::remote_node(
                     file_log_path,
