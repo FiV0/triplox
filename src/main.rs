@@ -48,7 +48,7 @@ async fn run_server(config: Config) -> Result<()> {
         shutdown_token.cancel();
     });
 
-    match config.storage {
+    match &config.storage {
         StorageConfig::Dev => {
             let server = DevServer::new();
             server.listen(&bind_addr, token).await
@@ -59,7 +59,7 @@ async fn run_server(config: Config) -> Result<()> {
             server.listen(&bind_addr, token).await
         }
         StorageConfig::Local { path } => {
-            let node = Arc::new(Node::local_node(&path).await?);
+            let node = Arc::new(Node::local_node(path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -69,16 +69,20 @@ async fn run_server(config: Config) -> Result<()> {
             access_key,
             secret_key,
             region,
-            log_path,
+            file_log_path,
         } => {
+            let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
+                bail!("remote storage requires local_disk_storage.path");
+            };
             let node = Arc::new(
                 Node::remote_node(
-                    &log_path,
-                    &endpoint,
-                    &bucket,
-                    &access_key,
-                    &secret_key,
-                    &region,
+                    file_log_path,
+                    &local_disk_storage_path,
+                    endpoint,
+                    bucket,
+                    access_key,
+                    secret_key,
+                    region,
                 )
                 .await?,
             );

@@ -4,7 +4,10 @@ endpoint = "http://minio:9000"
 bucket = "triplox"
 access_key = "triplox"
 secret_key = "triplox123"
-log_path = "/var/lib/triplox/log"
+file_log_path = "/var/lib/triplox/log/log"
+
+[local_disk_storage]
+path = "/var/lib/triplox/disk"
 
 [server]
 host = "0.0.0.0"

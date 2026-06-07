@@ -248,24 +248,26 @@ impl Node<FileLog> {
         std::fs::create_dir_all(root_path.join("db"))?;
         let db_path = root_path.join("db");
         let slate = local_slate(&db_path).await;
-        Self::from_slate_and_log(
-            slate,
-            &root_path.join("log"),
-            root_path.join("dbsp-incremental"),
-        )
-        .await
+        Self::from_slate_and_log(slate, &root_path.join("log"), root_path.join("dbsp")).await
     }
 
     pub async fn remote_node(
-        log_path: &Path,
+        file_log_path: &Path,
+        local_disk_storage_path: &Path,
         endpoint: &str,
         bucket: &str,
         access_key: &str,
         secret_key: &str,
         region: &str,
     ) -> Result<Self, Error> {
-        std::fs::create_dir_all(log_path)?;
-        let cache_path = log_path.join("cache");
+        if let Some(parent) = file_log_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::create_dir_all(local_disk_storage_path)?;
+        let cache_path = local_disk_storage_path.join("cache");
         let slate = remote_slate(
             endpoint,
             bucket,
@@ -275,12 +277,7 @@ impl Node<FileLog> {
             &cache_path,
         )
         .await?;
-        Self::from_slate_and_log(
-            slate,
-            &log_path.join("log"),
-            log_path.join("dbsp-incremental"),
-        )
-        .await
+        Self::from_slate_and_log(slate, file_log_path, local_disk_storage_path.join("dbsp")).await
     }
 }
 
@@ -2646,7 +2643,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let node = Node::local_node(dir.path()).await.unwrap();
         define_test_schema(&node).await;
-        let storage_path = dir.path().join("dbsp-incremental").join("query-1");
+        let storage_path = dir.path().join("dbsp").join("query-1");
 
         let _subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])

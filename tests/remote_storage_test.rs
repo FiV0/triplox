@@ -55,10 +55,12 @@ async fn test_remote_node_with_s3_storage() {
         .await
         .expect("Failed to create bucket");
 
-    // Create remote node with a temp dir for the FileLog
+    // Create remote node with temp dirs for the FileLog and local disk storage.
     let log_dir = tempdir().unwrap();
+    let disk_dir = tempdir().unwrap();
     let node = Node::remote_node(
-        log_dir.path(),
+        &log_dir.path().join("log"),
+        disk_dir.path(),
         &endpoint,
         "triplox",
         "minioadmin",
