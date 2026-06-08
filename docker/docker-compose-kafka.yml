@@ -105,7 +105,10 @@ services:
   triplox:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.kafka
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_PACKAGES: cmake
+        CARGO_FEATURES: kafka
     environment:
       TRIPLOX_STORAGE: kafka
     ports:
