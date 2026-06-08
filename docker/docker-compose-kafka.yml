@@ -54,6 +54,7 @@ services:
       - KAFKA_S3_SECRET_KEY=triplox123
       - KAFKA_HEAP_OPTS=-Xms512m -Xmx1g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=512M
       - CLUSTER_ID=rZdE0DjZSrqy96PXrMUZVw
+      - LOG_DIR=/tmp/kafka-logs
     command:
       - bash
       - -c
@@ -85,6 +86,8 @@ services:
 
   create-topic:
     image: automqinc/automq:1.7.0-strimzi
+    environment:
+      - LOG_DIR=/tmp/kafka-logs
     depends_on:
       automq:
         condition: service_healthy
