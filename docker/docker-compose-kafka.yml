@@ -52,16 +52,22 @@ services:
     environment:
       - KAFKA_S3_ACCESS_KEY=triplox
       - KAFKA_S3_SECRET_KEY=triplox123
-      - KAFKA_HEAP_OPTS=-Xms512m -Xmx1g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=512M
+      - KAFKA_HEAP_OPTS=-Xms1g -Xmx4g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=1G
+      # Keep heap/error dumps in /tmp; /opt/kafka is not writable in the Strimzi image.
+      - KAFKA_OPTS=-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:ErrorFile=/tmp/hs_err_pid%p.log -Dio.netty.allocator.maxOrder=11
       - CLUSTER_ID=rZdE0DjZSrqy96PXrMUZVw
       # The Strimzi image runs as uid 1001 and cannot create /opt/kafka/logs.
       - LOG_DIR=/tmp/kafka-logs
     # AutoMQ defaults s3.wal.path away from this MinIO stack, which leaves the broker stuck in RECOVERY.
     # Keep Kafka's internal offsets topic small for this single-node dev stack.
+    # Triplox uses short-lived Kafka clients; Kafka logs their closed responses as noisy Processor WARNs.
     command:
       - bash
       - -c
       - |
+        cp /opt/kafka/config/log4j.properties /tmp/kafka-log4j.properties
+        printf '%s\n' 'log4j.logger.kafka.network.Processor=ERROR' >> /tmp/kafka-log4j.properties
+        export KAFKA_LOG4J_OPTS='-Dlog4j.configuration=file:/tmp/kafka-log4j.properties'
         /opt/kafka/bin/kafka-server-start.sh \
         /opt/kafka/config/kraft/server.properties \
         --override cluster.id=$$CLUSTER_ID \
