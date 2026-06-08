@@ -123,6 +123,23 @@ This starts:
 
 The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total ordering (WAL semantics).
 
+#### Resetting the Kafka stack
+
+Wipe all MinIO data used by the Kafka stack and remove Kafka compose named
+volumes:
+
+```bash
+./docker/scripts/reset-kafka-stack.sh
+```
+
+This stops `docker/docker-compose-kafka.yml`, removes named volumes such as
+`mc-config`, and clears the contents of `docker/data/minio/` (keeping the ext4
+mount). It resets the AutoMQ buckets (`automq-data`, `automq-ops`) and the
+Triplox Kafka storage bucket (`triplox-kafka`). Because MinIO data is shared
+with the remote stack, it also removes any remote-stack bucket data in that
+directory. After it finishes, re-run
+`docker compose -f docker/docker-compose-kafka.yml up --build`.
+
 ### Custom config
 
 Mount your own config file and pass its path as an argument:
