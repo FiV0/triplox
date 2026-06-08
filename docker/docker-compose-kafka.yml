@@ -54,7 +54,9 @@ services:
       - KAFKA_S3_SECRET_KEY=triplox123
       - KAFKA_HEAP_OPTS=-Xms512m -Xmx1g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=512M
       - CLUSTER_ID=rZdE0DjZSrqy96PXrMUZVw
+      # The Strimzi image runs as uid 1001 and cannot create /opt/kafka/logs.
       - LOG_DIR=/tmp/kafka-logs
+    # AutoMQ defaults s3.wal.path away from this MinIO stack, which leaves the broker stuck in RECOVERY.
     command:
       - bash
       - -c
@@ -71,6 +73,7 @@ services:
         --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override autobalancer.reporter.metrics.reporting.interval.ms=5000
     depends_on:
       createbucket:
@@ -87,6 +90,7 @@ services:
   create-topic:
     image: automqinc/automq:1.7.0-strimzi
     environment:
+      # kafka-topics.sh uses the same GC log path defaults as the broker.
       - LOG_DIR=/tmp/kafka-logs
     depends_on:
       automq:
