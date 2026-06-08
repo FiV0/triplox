@@ -48,7 +48,7 @@ services:
       "
 
   automq:
-    image: automqinc/automq:latest
+    image: automqinc/automq:1.7.0-strimzi
     environment:
       - KAFKA_S3_ACCESS_KEY=triplox
       - KAFKA_S3_SECRET_KEY=triplox123
@@ -84,7 +84,7 @@ services:
       start_period: 30s
 
   create-topic:
-    image: automqinc/automq:latest
+    image: automqinc/automq:1.7.0-strimzi
     depends_on:
       automq:
         condition: service_healthy
