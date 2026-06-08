@@ -16,7 +16,7 @@ use rdkafka::TopicPartitionList;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::clock::SystemTimeSource;
-use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 
 const PARTITION: i32 = 0;
@@ -325,7 +325,69 @@ impl TxLogWriter for KafkaLog {
     }
 }
 
-impl TxLog for KafkaLog {}
+impl TxLog for KafkaLog {
+    async fn ensure_bootstrap_record(&self) -> Result<()> {
+        let bootstrap_record = BOOTSTRAP_RECORD.clone();
+
+        match self.read_txs_after(None, 1).await?.first() {
+            Some(record) if record == &bootstrap_record => return Ok(()),
+            Some(record) => {
+                bail!(
+                    "kafka log starts with non-bootstrap record {:?}",
+                    record.tx_key
+                );
+            }
+            None => {}
+        }
+
+        let _append_guard = self.append_lock.lock().await;
+        if self.next_offset.load(Ordering::Acquire) != 0 {
+            bail!("kafka log has offsets but no readable bootstrap record");
+        }
+
+        let delivery_result = self
+            .producer
+            .send(
+                FutureRecord::<str, _>::to(&self.topic)
+                    .partition(PARTITION)
+                    .payload(&bootstrap_record.record)
+                    .timestamp(bootstrap_record.tx_key.system_time.timestamp_millis()),
+                Timeout::After(Duration::from_secs(5)),
+            )
+            .await;
+
+        let (partition, offset) = delivery_result
+            .map_err(|(e, _message)| e)
+            .context("Kafka bootstrap produce failed")?;
+        if partition != PARTITION {
+            bail!(
+                "Kafka bootstrap produced to unexpected partition: expected {}, got {}",
+                PARTITION,
+                partition
+            );
+        }
+        if offset != bootstrap_record.tx_key.tx_id {
+            bail!(
+                "Kafka bootstrap produced to unexpected offset: expected {}, got {}",
+                bootstrap_record.tx_key.tx_id,
+                offset
+            );
+        }
+
+        let record = read_record_at_offset(
+            &self.consumer_config,
+            &self.topic,
+            offset,
+            Duration::from_secs(5),
+        )
+        .context("Failed to read Kafka bootstrap record")?;
+        if record != bootstrap_record {
+            bail!("Kafka bootstrap record did not match reserved bootstrap record");
+        }
+        self.next_offset.fetch_max(offset + 1, Ordering::Release);
+        Ok(())
+    }
+}
 
 #[cfg(feature = "kafka-integration-test")]
 #[cfg(test)]

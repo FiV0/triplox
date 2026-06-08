@@ -102,6 +102,15 @@ impl Config {
                 .local_disk_storage_path()
                 .expect("remote storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
+
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka { cache_path, .. } => cache_path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .map_or_else(
+                    || cache_path.join(DBSP_STORAGE_DIR),
+                    |path| path.join(DBSP_STORAGE_DIR),
+                ),
         }
     }
 

@@ -307,18 +307,12 @@ impl Node<crate::kafka_log::KafkaLog> {
         .await?;
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
-        let snapshot = Arc::new(slate.db.snapshot().await?);
-        let latest_indexed = latest_tx_basis_from_snapshot(&snapshot).await?;
-        let latest_indexed_tx = if latest_indexed.tx_eid > crate::bootstrap::BOOTSTRAP_TX_EID {
-            Some(latest_indexed)
-        } else {
-            None
-        };
-
+        let snapshot = slate.db.snapshot().await?;
+        let latest_indexed = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
             slate.db.clone(),
             metadata,
-            latest_indexed_tx,
+            latest_indexed,
         )));
 
         let log = Arc::new(
@@ -330,7 +324,11 @@ impl Node<crate::kafka_log::KafkaLog> {
             .await?,
         );
 
-        let after_tx_id = latest_indexed_tx.map(|b| b.tx_key.tx_id);
+        if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
+            log.ensure_bootstrap_record().await?;
+        }
+
+        let after_tx_id = Some(latest_indexed.tx_key.tx_id);
 
         let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
         let last_tx_key = records.last().map(|r| r.tx_key);
@@ -341,6 +339,18 @@ impl Node<crate::kafka_log::KafkaLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+        let incremental_storage_path = config
+            .cache_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map_or_else(|| config.cache_path.join("dbsp"), |path| path.join("dbsp"));
+        let incremental = IncrementalQueryService::new(
+            incremental_storage_path,
+            Handle::current(),
+            subscription.clone(),
+            slate.object_path.clone(),
+            slate.object_store.clone(),
+        );
 
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
             let completion = waiter.await_tx(tx_key).await?;
@@ -352,6 +362,7 @@ impl Node<crate::kafka_log::KafkaLog> {
             indexer,
             slate,
             subscription,
+            incremental,
         })
     }
 }

@@ -104,14 +104,14 @@ async fn run_server(config: Config) -> Result<()> {
         } => {
             let node = Arc::new(
                 Node::kafka_node(KafkaNodeConfig {
-                    bootstrap_servers: &bootstrap_servers,
-                    topic: &topic,
-                    endpoint: &endpoint,
-                    bucket: &bucket,
-                    access_key: &access_key,
-                    secret_key: &secret_key,
-                    region: &region,
-                    cache_path: &cache_path,
+                    bootstrap_servers,
+                    topic,
+                    endpoint,
+                    bucket,
+                    access_key,
+                    secret_key,
+                    region,
+                    cache_path,
                 })
                 .await?,
             );
