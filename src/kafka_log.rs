@@ -122,6 +122,10 @@ fn message_to_record<M: Message>(msg: &M) -> Result<Record> {
     })
 }
 
+fn is_kafka_bootstrap_record(record: &Record) -> bool {
+    record.tx_key.tx_id == BOOTSTRAP_RECORD.tx_key.tx_id && record.record == BOOTSTRAP_RECORD.record
+}
+
 fn spawn_live_consumer(
     consumer_config: ClientConfig,
     topic: String,
@@ -157,8 +161,13 @@ fn spawn_live_consumer(
                     Some(Ok(msg)) => match message_to_record(&msg) {
                         Ok(record) => {
                             next_offset.fetch_max(record.tx_key.tx_id + 1, Ordering::Release);
-                            if let Err(e) = tx_sender.send(record) {
-                                warn!("Failed to send record from kafka log to subscribers: {}", e);
+                            if tx_sender.receiver_count() > 0 {
+                                if let Err(e) = tx_sender.send(record) {
+                                    warn!(
+                                        "Failed to send record from kafka log to subscribers: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                         Err(e) => error!("Kafka live consumer record error: {}", e),
@@ -330,7 +339,7 @@ impl TxLog for KafkaLog {
         let bootstrap_record = BOOTSTRAP_RECORD.clone();
 
         match self.read_txs_after(None, 1).await?.first() {
-            Some(record) if record == &bootstrap_record => return Ok(()),
+            Some(record) if is_kafka_bootstrap_record(record) => return Ok(()),
             Some(record) => {
                 bail!(
                     "kafka log starts with non-bootstrap record {:?}",
@@ -381,11 +390,41 @@ impl TxLog for KafkaLog {
             Duration::from_secs(5),
         )
         .context("Failed to read Kafka bootstrap record")?;
-        if record != bootstrap_record {
+        if !is_kafka_bootstrap_record(&record) {
             bail!("Kafka bootstrap record did not match reserved bootstrap record");
         }
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use crate::clock::st_from_unix_epoch;
+
+    #[test]
+    fn test_kafka_bootstrap_record_allows_broker_timestamp() {
+        let mut record = BOOTSTRAP_RECORD.clone();
+        record.tx_key.system_time = st_from_unix_epoch(1_780_931_760_255_000);
+
+        assert!(is_kafka_bootstrap_record(&record));
+    }
+
+    #[test]
+    fn test_kafka_bootstrap_record_rejects_non_bootstrap_payload() {
+        let mut record = BOOTSTRAP_RECORD.clone();
+        record.record = vec![1];
+
+        assert!(!is_kafka_bootstrap_record(&record));
+    }
+
+    #[test]
+    fn test_kafka_bootstrap_record_rejects_non_bootstrap_offset() {
+        let mut record = BOOTSTRAP_RECORD.clone();
+        record.tx_key.tx_id = 1;
+
+        assert!(!is_kafka_bootstrap_record(&record));
     }
 }
 

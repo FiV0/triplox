@@ -57,6 +57,7 @@ services:
       # The Strimzi image runs as uid 1001 and cannot create /opt/kafka/logs.
       - LOG_DIR=/tmp/kafka-logs
     # AutoMQ defaults s3.wal.path away from this MinIO stack, which leaves the broker stuck in RECOVERY.
+    # Keep Kafka's internal offsets topic small for this single-node dev stack.
     command:
       - bash
       - -c
@@ -74,6 +75,7 @@ services:
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override offsets.topic.num.partitions=1 \
         --override autobalancer.reporter.metrics.reporting.interval.ms=5000
     depends_on:
       createbucket:
