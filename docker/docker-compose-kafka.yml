@@ -81,6 +81,7 @@ services:
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override log.message.timestamp.type=LogAppendTime \
         --override offsets.topic.num.partitions=1 \
         --override autobalancer.reporter.metrics.reporting.interval.ms=5000
     depends_on:
@@ -115,6 +116,7 @@ services:
       --replication-factor 1
       --config retention.ms=-1
       --config retention.bytes=-1
+      --config message.timestamp.type=LogAppendTime
       "
 
   triplox:

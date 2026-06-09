@@ -8,10 +8,12 @@ use chrono::{DateTime, Utc};
 use log::{error, warn};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::topic_partition_list::Offset;
 use rdkafka::util::Timeout;
 use rdkafka::Message;
+use rdkafka::Timestamp;
 use rdkafka::TopicPartitionList;
 use tokio::sync::{broadcast, Mutex};
 
@@ -94,16 +96,27 @@ impl Drop for LiveConsumer {
     }
 }
 
-fn message_to_record<M: Message>(msg: &M) -> Result<Record> {
-    let offset = msg.offset();
-    let timestamp_ms = match msg.timestamp() {
-        rdkafka::Timestamp::CreateTime(ms) => ms,
-        rdkafka::Timestamp::LogAppendTime(ms) => ms,
-        rdkafka::Timestamp::NotAvailable => {
+fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTime<Utc>> {
+    let timestamp_ms = match timestamp {
+        Timestamp::CreateTime(_) => {
+            // Transaction time must be broker append time, not a producer clock.
+            bail!(
+                "Kafka message at offset {} uses CreateTime; Triplox Kafka logs require LogAppendTime",
+                offset
+            );
+        }
+        Timestamp::LogAppendTime(ms) => ms,
+        Timestamp::NotAvailable => {
             bail!("Kafka message at offset {} has no timestamp", offset);
         }
     };
-    let system_time = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_else(Utc::now);
+
+    Ok(DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_else(Utc::now))
+}
+
+fn message_to_record(msg: &BorrowedMessage<'_>) -> Result<Record> {
+    let offset = msg.offset();
+    let system_time = timestamp_to_system_time(offset, msg.timestamp())?;
     let payload = msg.payload().unwrap_or_default().to_vec();
 
     Ok(Record {
@@ -290,16 +303,17 @@ impl TxLogWriter for KafkaLog {
             )
             .await;
 
-        let (partition, offset) = delivery_result
+        let delivery = delivery_result
             .map_err(|(e, _message)| e)
             .context("Kafka produce failed")?;
-        if partition != PARTITION {
+        if delivery.partition != PARTITION {
             bail!(
                 "Kafka produced to unexpected partition: expected {}, got {}",
                 PARTITION,
-                partition
+                delivery.partition
             );
         }
+        let offset = delivery.offset;
 
         let consumer_config = self.consumer_config.clone();
         let topic = self.topic.clone();
@@ -341,22 +355,22 @@ impl TxLog for KafkaLog {
             .send(
                 FutureRecord::<str, _>::to(&self.topic)
                     .partition(PARTITION)
-                    .payload(&bootstrap_record.record)
-                    .timestamp(bootstrap_record.tx_key.system_time.timestamp_millis()),
+                    .payload(&bootstrap_record.record),
                 Timeout::After(Duration::from_secs(5)),
             )
             .await;
 
-        let (partition, offset) = delivery_result
+        let delivery = delivery_result
             .map_err(|(e, _message)| e)
             .context("Kafka bootstrap produce failed")?;
-        if partition != PARTITION {
+        if delivery.partition != PARTITION {
             bail!(
                 "Kafka bootstrap produced to unexpected partition: expected {}, got {}",
                 PARTITION,
-                partition
+                delivery.partition
             );
         }
+        let offset = delivery.offset;
         if offset != bootstrap_record.tx_key.tx_id {
             bail!(
                 "Kafka bootstrap produced to unexpected offset: expected {}, got {}",
@@ -408,6 +422,14 @@ mod unit_tests {
 
         assert!(!is_kafka_bootstrap_record(&record));
     }
+
+    #[test]
+    fn test_timestamp_to_system_time_rejects_create_time() {
+        let err = timestamp_to_system_time(7, Timestamp::CreateTime(1_000))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("require LogAppendTime"));
+    }
 }
 
 #[cfg(feature = "kafka-integration-test")]
@@ -437,11 +459,11 @@ mod tests {
                 .expect("Failed to create admin client");
 
         use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
+        let topic_config = NewTopic::new(topic, 1, TopicReplication::Fixed(1))
+            .set("message.timestamp.type", "LogAppendTime");
+
         admin_client
-            .create_topics(
-                &[NewTopic::new(topic, 1, TopicReplication::Fixed(1))],
-                &AdminOptions::new(),
-            )
+            .create_topics(&[topic_config], &AdminOptions::new())
             .await
             .expect("Failed to create topic");
 
@@ -559,6 +581,7 @@ mod tests {
         let payload = vec![42, 43, 44];
         producer
             .send(
+                // LogAppendTime topics ignore producer timestamps and use broker append time.
                 FutureRecord::<str, _>::to(&topic)
                     .partition(PARTITION)
                     .payload(&payload)

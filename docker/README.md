@@ -121,7 +121,9 @@ This starts:
 - **AutoMQ** (Kafka-compatible broker) on port 9092, backed by MinIO
 - **Triplox** on port 5490 with transaction log on Kafka and SlateDB on MinIO
 
-The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total ordering (WAL semantics).
+The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total
+ordering (WAL semantics), and `message.timestamp.type=LogAppendTime` so Triplox
+transaction times come from the broker append time rather than producer clocks.
 
 #### Resetting the Kafka stack
 
