@@ -6,6 +6,8 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use log::{error, warn};
+use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::message::BorrowedMessage;
@@ -21,6 +23,8 @@ use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD
 use crate::transaction::TxKey;
 
 const PARTITION: i32 = 0;
+const MESSAGE_TIMESTAMP_TYPE_CONFIG: &str = "message.timestamp.type";
+const LOG_APPEND_TIME: &str = "LogAppendTime";
 static NEXT_CONSUMER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KafkaLog {
@@ -45,6 +49,8 @@ impl KafkaLog {
         consumer_config
             .set("bootstrap.servers", bootstrap_servers)
             .set("enable.auto.commit", "false");
+
+        ensure_log_append_time_topic(bootstrap_servers, &topic).await?;
 
         // Fetch current high watermark to initialize next_offset
         let consumer: BaseConsumer = consumer_config
@@ -80,6 +86,49 @@ impl KafkaLog {
     }
 }
 
+async fn ensure_log_append_time_topic(bootstrap_servers: &str, topic: &str) -> Result<()> {
+    let admin_client: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", bootstrap_servers)
+        .create()
+        .context("Failed to create Kafka admin client")?;
+
+    let resources = [ResourceSpecifier::Topic(topic)];
+    let mut configs = admin_client
+        .describe_configs(&resources, &AdminOptions::new())
+        .await
+        .context("Failed to describe Kafka topic config")?;
+    let config = configs
+        .pop()
+        .context("Kafka describe configs returned no topic config")?
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to describe Kafka topic config for {}: {}", topic, e)
+        })?;
+    let timestamp_type = config
+        .get(MESSAGE_TIMESTAMP_TYPE_CONFIG)
+        .and_then(|entry| entry.value.as_deref());
+
+    validate_log_append_time_config(topic, timestamp_type)
+}
+
+fn validate_log_append_time_config(topic: &str, timestamp_type: Option<&str>) -> Result<()> {
+    match timestamp_type {
+        Some(LOG_APPEND_TIME) => Ok(()),
+        Some(other) => bail!(
+            "Kafka topic {} must set {}={}, got {}",
+            topic,
+            MESSAGE_TIMESTAMP_TYPE_CONFIG,
+            LOG_APPEND_TIME,
+            other
+        ),
+        None => bail!(
+            "Kafka topic {} must expose {}={}",
+            topic,
+            MESSAGE_TIMESTAMP_TYPE_CONFIG,
+            LOG_APPEND_TIME
+        ),
+    }
+}
+
 struct LiveConsumer {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -101,7 +150,10 @@ fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTim
         Timestamp::LogAppendTime(ms) => ms,
         _ => {
             // Transaction time must be broker append time
-            bail!("Triplox Kafka log requires LogAppendTime at offset {}", offset);
+            bail!(
+                "Triplox Kafka log requires LogAppendTime at offset {}",
+                offset
+            );
         }
     };
 
@@ -422,7 +474,31 @@ mod unit_tests {
         let err = timestamp_to_system_time(7, Timestamp::CreateTime(1_000))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("require LogAppendTime"));
+        assert!(err.contains("requires LogAppendTime"));
+    }
+
+    #[test]
+    fn test_validate_log_append_time_config_accepts_log_append_time() {
+        validate_log_append_time_config("topic", Some("LogAppendTime")).unwrap();
+    }
+
+    #[test]
+    fn test_validate_log_append_time_config_rejects_create_time() {
+        let err = validate_log_append_time_config("topic", Some("CreateTime"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("message.timestamp.type=LogAppendTime"));
+        assert!(err.contains("got CreateTime"));
+    }
+
+    #[test]
+    fn test_validate_log_append_time_config_rejects_missing_config() {
+        let err = validate_log_append_time_config("topic", None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("message.timestamp.type=LogAppendTime"));
     }
 }
 
