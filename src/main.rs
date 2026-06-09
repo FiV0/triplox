@@ -63,29 +63,11 @@ async fn run_server(config: Config) -> Result<()> {
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
-        StorageConfig::Remote {
-            endpoint,
-            bucket,
-            access_key,
-            secret_key,
-            region,
-            file_log_path,
-        } => {
+        StorageConfig::Remote(remote_config) => {
             let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
                 bail!("remote storage requires local_disk_storage.path");
             };
-            let node = Arc::new(
-                Node::remote_node(
-                    file_log_path,
-                    &local_disk_storage_path,
-                    endpoint,
-                    bucket,
-                    access_key,
-                    secret_key,
-                    region,
-                )
-                .await?,
-            );
+            let node = Arc::new(Node::remote_node(remote_config, &local_disk_storage_path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }

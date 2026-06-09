@@ -6,6 +6,7 @@ use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 use edn::kw;
+use triplox::config::RemoteStorageConfig;
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
 use triplox::ops::{DataType, TxOp};
 use triplox::schema::test_schema_tx;
@@ -58,17 +59,17 @@ async fn test_remote_node_with_s3_storage() {
     // Create remote node with temp dirs for the FileLog and local disk storage.
     let log_dir = tempdir().unwrap();
     let disk_dir = tempdir().unwrap();
-    let node = Node::remote_node(
-        &log_dir.path().join("log"),
-        disk_dir.path(),
-        &endpoint,
-        "triplox",
-        "minioadmin",
-        "minioadmin",
-        "us-east-1",
-    )
-    .await
-    .unwrap();
+    let remote_config = RemoteStorageConfig {
+        endpoint,
+        bucket: "triplox".to_string(),
+        access_key: "minioadmin".to_string(),
+        secret_key: "minioadmin".to_string(),
+        region: "us-east-1".to_string(),
+        file_log_path: log_dir.path().join("log"),
+    };
+    let node = Node::remote_node(&remote_config, disk_dir.path())
+        .await
+        .unwrap();
 
     // Define schema
     let result = node.execute_tx(test_schema_tx()).await.unwrap();

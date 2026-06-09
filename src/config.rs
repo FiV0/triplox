@@ -28,6 +28,17 @@ fn default_region() -> String {
     "eu-central-1".to_string()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RemoteStorageConfig {
+    pub endpoint: String,
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    pub file_log_path: PathBuf,
+}
+
 #[cfg(feature = "kafka")]
 #[derive(Debug, Deserialize)]
 pub struct KafkaStorageConfig {
@@ -50,15 +61,7 @@ pub enum StorageConfig {
     Local {
         path: PathBuf,
     },
-    Remote {
-        endpoint: String,
-        bucket: String,
-        access_key: String,
-        secret_key: String,
-        #[serde(default = "default_region")]
-        region: String,
-        file_log_path: PathBuf,
-    },
+    Remote(RemoteStorageConfig),
     #[cfg(feature = "kafka")]
     Kafka(KafkaStorageConfig),
 }
@@ -101,7 +104,7 @@ impl Config {
 
             StorageConfig::Local { path } => path.join(DBSP_STORAGE_DIR),
 
-            StorageConfig::Remote { .. } => self
+            StorageConfig::Remote(_) => self
                 .local_disk_storage_path()
                 .expect("remote storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
@@ -116,7 +119,7 @@ impl Config {
 
     pub fn remote_cache_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { .. } => self
+            StorageConfig::Remote(_) => self
                 .local_disk_storage_path()
                 .map(|path| path.join(REMOTE_CACHE_DIR)),
             #[cfg(feature = "kafka")]
@@ -129,7 +132,7 @@ impl Config {
 
     pub fn local_disk_storage_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { .. } => self.local_disk_storage.path.clone(),
+            StorageConfig::Remote(_) => self.local_disk_storage.path.clone(),
             #[cfg(feature = "kafka")]
             StorageConfig::Kafka(_) => self.local_disk_storage.path.clone(),
             _ => None,
@@ -159,10 +162,13 @@ mod tests {
         )
         .unwrap();
 
-        let StorageConfig::Remote { file_log_path, .. } = &config.storage else {
+        let StorageConfig::Remote(remote_storage) = &config.storage else {
             panic!("expected remote storage");
         };
-        assert_eq!(file_log_path, &PathBuf::from("/tmp/triplox-log/log"));
+        assert_eq!(
+            remote_storage.file_log_path,
+            PathBuf::from("/tmp/triplox-log/log")
+        );
         assert_eq!(
             config.remote_cache_path().unwrap(),
             PathBuf::from("/tmp/triplox-disk/cache")
