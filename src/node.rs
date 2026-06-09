@@ -156,7 +156,7 @@ pub struct KafkaNodeConfig<'a> {
     pub access_key: &'a str,
     pub secret_key: &'a str,
     pub region: &'a str,
-    pub cache_path: &'a Path,
+    pub local_disk_storage_path: &'a Path,
 }
 
 impl Node<MemoryLog> {
@@ -296,13 +296,15 @@ impl Node<FileLog> {
 #[cfg(feature = "kafka")]
 impl Node<crate::kafka_log::KafkaLog> {
     pub async fn kafka_node(config: KafkaNodeConfig<'_>) -> Result<Self, Error> {
+        std::fs::create_dir_all(config.local_disk_storage_path)?;
+        let cache_path = config.local_disk_storage_path.join("cache");
         let slate = remote_slate(
             config.endpoint,
             config.bucket,
             config.access_key,
             config.secret_key,
             config.region,
-            config.cache_path,
+            &cache_path,
         )
         .await?;
         let metadata = crate::bootstrap::init_db(&slate).await?;
@@ -339,13 +341,8 @@ impl Node<crate::kafka_log::KafkaLog> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental_storage_path = config
-            .cache_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .map_or_else(|| config.cache_path.join("dbsp"), |path| path.join("dbsp"));
         let incremental = IncrementalQueryService::new(
-            incremental_storage_path,
+            config.local_disk_storage_path.join("dbsp"),
             Handle::current(),
             subscription.clone(),
             slate.object_path.clone(),

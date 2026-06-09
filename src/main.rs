@@ -100,8 +100,10 @@ async fn run_server(config: Config) -> Result<()> {
             access_key,
             secret_key,
             region,
-            cache_path,
         } => {
+            let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
+                bail!("kafka storage requires local_disk_storage.path");
+            };
             let node = Arc::new(
                 Node::kafka_node(KafkaNodeConfig {
                     bootstrap_servers,
@@ -111,7 +113,7 @@ async fn run_server(config: Config) -> Result<()> {
                     access_key,
                     secret_key,
                     region,
-                    cache_path,
+                    local_disk_storage_path: &local_disk_storage_path,
                 })
                 .await?,
             );

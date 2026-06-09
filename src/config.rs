@@ -51,7 +51,6 @@ pub enum StorageConfig {
         secret_key: String,
         #[serde(default = "default_region")]
         region: String,
-        cache_path: PathBuf,
     },
 }
 
@@ -104,19 +103,20 @@ impl Config {
                 .join(DBSP_STORAGE_DIR),
 
             #[cfg(feature = "kafka")]
-            StorageConfig::Kafka { cache_path, .. } => cache_path
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-                .map_or_else(
-                    || cache_path.join(DBSP_STORAGE_DIR),
-                    |path| path.join(DBSP_STORAGE_DIR),
-                ),
+            StorageConfig::Kafka { .. } => self
+                .local_disk_storage_path()
+                .expect("kafka storage requires local_disk_storage.path")
+                .join(DBSP_STORAGE_DIR),
         }
     }
 
     pub fn remote_cache_path(&self) -> Option<PathBuf> {
         match &self.storage {
             StorageConfig::Remote { .. } => self
+                .local_disk_storage_path()
+                .map(|path| path.join(REMOTE_CACHE_DIR)),
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka { .. } => self
                 .local_disk_storage_path()
                 .map(|path| path.join(REMOTE_CACHE_DIR)),
             _ => None,
@@ -126,6 +126,8 @@ impl Config {
     pub fn local_disk_storage_path(&self) -> Option<PathBuf> {
         match &self.storage {
             StorageConfig::Remote { .. } => self.local_disk_storage.path.clone(),
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka { .. } => self.local_disk_storage.path.clone(),
             _ => None,
         }
     }
@@ -184,6 +186,39 @@ mod tests {
 
         assert_eq!(config.local_disk_storage_path(), None);
         assert_eq!(config.remote_cache_path(), None);
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn parses_kafka_storage_with_local_disk_storage_paths() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "kafka"
+            bootstrap_servers = "automq:9092"
+            endpoint = "http://localhost:9000"
+            bucket = "triplox-kafka"
+            access_key = "triplox"
+            secret_key = "triplox123"
+
+            [local_disk_storage]
+            path = "/tmp/triplox-disk"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.local_disk_storage_path().unwrap(),
+            PathBuf::from("/tmp/triplox-disk")
+        );
+        assert_eq!(
+            config.remote_cache_path().unwrap(),
+            PathBuf::from("/tmp/triplox-disk/cache")
+        );
+        assert_eq!(
+            config.dbsp_storage_path(),
+            PathBuf::from("/tmp/triplox-disk/dbsp")
+        );
     }
 
     #[test]
