@@ -146,8 +146,8 @@ where
     D: slatedb::DbReadOps + Sync,
 {
     let attributes = plan
-        .patterns
-        .iter()
+        .leaf_patterns()
+        .into_iter()
         .map(|pattern| pattern.attribute)
         .collect::<HashSet<_>>();
     let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();

@@ -847,7 +847,6 @@ mod tests {
             variables: vec!["?e".to_var(), "?name".to_var()],
             where_terms: vec![WhereTermPlan::Pattern(pattern.clone())],
             joins: vec![],
-            patterns: vec![pattern],
         }
     }
 

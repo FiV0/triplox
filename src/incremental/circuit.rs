@@ -410,7 +410,6 @@ mod tests {
             find_vars,
             variables,
             where_terms,
-            patterns,
             joins,
         }
     }
@@ -467,7 +466,6 @@ mod tests {
                 ],
                 output_vars: vec!["?e".to_var()],
             })],
-            patterns: vec![alice, bob],
             joins: vec![],
         }
     }
@@ -495,7 +493,6 @@ mod tests {
                 ],
                 output_vars: vec!["?e".to_var()],
             })],
-            patterns: vec![named, typed],
             joins: vec![],
         }
     }
@@ -523,7 +520,6 @@ mod tests {
                 ],
                 output_vars: vec!["?e".to_var(), "?v".to_var()],
             })],
-            patterns: vec![name, follows],
             joins: vec![],
         }
     }
@@ -904,7 +900,6 @@ mod tests {
             value: PatternSlot::Variable("?friend".to_var()),
             output_vars: vec!["?e".to_var(), "?friend".to_var()],
         };
-        plan.patterns.push(follows_pattern.clone());
         plan.where_terms
             .push(WhereTermPlan::Pattern(follows_pattern));
         plan.joins.push(JoinPlan {

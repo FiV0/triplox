@@ -20,8 +20,15 @@ pub(crate) struct IncrementalQueryPlan {
     pub find_vars: Vec<Variable>,
     pub variables: Vec<Variable>,
     pub where_terms: Vec<WhereTermPlan>,
-    pub patterns: Vec<PatternPlan>,
     pub joins: Vec<JoinPlan>,
+}
+
+impl IncrementalQueryPlan {
+    pub(crate) fn leaf_patterns(&self) -> Vec<&PatternPlan> {
+        let mut patterns = Vec::new();
+        collect_leaf_patterns(&self.where_terms, &mut patterns);
+        patterns
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,9 +90,6 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
         bail!("Incremental queries require at least one triple pattern");
     }
 
-    let mut patterns = Vec::new();
-    collect_leaf_patterns(&where_terms, &mut patterns);
-
     let variables = collect_variables(&where_terms);
     for var in &find_vars {
         if !variables.contains(var) {
@@ -102,7 +106,6 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
         find_vars,
         variables,
         where_terms,
-        patterns,
         joins,
     })
 }
@@ -319,10 +322,10 @@ fn collect_variables(terms: &[WhereTermPlan]) -> Vec<Variable> {
     variables
 }
 
-fn collect_leaf_patterns(terms: &[WhereTermPlan], patterns: &mut Vec<PatternPlan>) {
+fn collect_leaf_patterns<'a>(terms: &'a [WhereTermPlan], patterns: &mut Vec<&'a PatternPlan>) {
     for term in terms {
         match term {
-            WhereTermPlan::Pattern(pattern) => patterns.push(pattern.clone()),
+            WhereTermPlan::Pattern(pattern) => patterns.push(pattern),
             WhereTermPlan::Or(or) => collect_leaf_patterns(&or.branches, patterns),
         }
     }
@@ -428,11 +431,12 @@ mod tests {
 
         assert_eq!(plan.find_vars, vec!["?e".to_var(), "?name".to_var()]);
         assert_eq!(plan.variables, vec!["?e".to_var(), "?name".to_var()]);
-        assert_eq!(plan.patterns.len(), 1);
-        assert_eq!(plan.patterns[0].attribute, 10);
+        let leaf_patterns = plan.leaf_patterns();
+        assert_eq!(leaf_patterns.len(), 1);
+        assert_eq!(leaf_patterns[0].attribute, 10);
         assert_eq!(
-            plan.patterns[0].output_vars,
-            vec!["?e".to_var(), "?name".to_var()]
+            &leaf_patterns[0].output_vars,
+            &vec!["?e".to_var(), "?name".to_var()]
         );
         assert!(plan.joins.is_empty());
     }
@@ -494,12 +498,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.patterns[0].value, encoded_string("Alice"));
+        let leaf_patterns = plan.leaf_patterns();
+        assert_eq!(&leaf_patterns[0].value, &encoded_string("Alice"));
         assert_eq!(
-            plan.patterns[1].entity,
-            PatternSlot::Variable("?other".to_var())
+            &leaf_patterns[1].entity,
+            &PatternSlot::Variable("?other".to_var())
         );
-        assert_eq!(plan.patterns[1].value, encoded_long(30));
+        assert_eq!(&leaf_patterns[1].value, &encoded_long(30));
     }
 
     #[test]
@@ -527,11 +532,12 @@ mod tests {
 
         assert_eq!(plan.find_vars, vec!["?e".to_var()]);
         assert_eq!(plan.variables, vec!["?e".to_var()]);
-        assert_eq!(plan.patterns.len(), 2);
-        assert_eq!(plan.patterns[0].attribute, 10);
-        assert_eq!(plan.patterns[0].value, encoded_string("Alice"));
-        assert_eq!(plan.patterns[1].attribute, 10);
-        assert_eq!(plan.patterns[1].value, encoded_string("Bob"));
+        let leaf_patterns = plan.leaf_patterns();
+        assert_eq!(leaf_patterns.len(), 2);
+        assert_eq!(leaf_patterns[0].attribute, 10);
+        assert_eq!(&leaf_patterns[0].value, &encoded_string("Alice"));
+        assert_eq!(leaf_patterns[1].attribute, 10);
+        assert_eq!(&leaf_patterns[1].value, &encoded_string("Bob"));
     }
 
     #[test]
@@ -546,7 +552,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.variables, vec!["?e".to_var()]);
-        assert_eq!(plan.patterns.len(), 3);
+        assert_eq!(plan.leaf_patterns().len(), 3);
         assert!(plan.joins.is_empty());
         assert!(matches!(plan.where_terms[0], WhereTermPlan::Or(_)));
     }
@@ -580,7 +586,7 @@ mod tests {
         let schema = test_schema();
         let plan = plan_query(&parse_query("[:find ?e :where [?e 10 ?name]]"), &schema).unwrap();
 
-        assert_eq!(plan.patterns[0].attribute, 10);
+        assert_eq!(plan.leaf_patterns()[0].attribute, 10);
     }
 
     #[test]
