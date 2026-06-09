@@ -5,6 +5,11 @@ use serde::Deserialize;
 const DBSP_STORAGE_DIR: &str = "dbsp";
 const REMOTE_CACHE_DIR: &str = "cache";
 
+#[derive(Debug, Default, Deserialize)]
+pub struct LocalDiskStorageConfig {
+    pub path: Option<PathBuf>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub storage: StorageConfig,
@@ -52,11 +57,6 @@ pub enum StorageConfig {
         #[serde(default = "default_region")]
         region: String,
     },
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct LocalDiskStorageConfig {
-    pub path: Option<PathBuf>,
 }
 
 fn default_host() -> String {
