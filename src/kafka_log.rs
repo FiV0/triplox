@@ -98,16 +98,10 @@ impl Drop for LiveConsumer {
 
 fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTime<Utc>> {
     let timestamp_ms = match timestamp {
-        Timestamp::CreateTime(_) => {
-            // Transaction time must be broker append time, not a producer clock.
-            bail!(
-                "Kafka message at offset {} uses CreateTime; Triplox Kafka logs require LogAppendTime",
-                offset
-            );
-        }
         Timestamp::LogAppendTime(ms) => ms,
-        Timestamp::NotAvailable => {
-            bail!("Kafka message at offset {} has no timestamp", offset);
+        _ => {
+            // Transaction time must be broker append time
+            bail!("Triplox Kafka log requires LogAppendTime at offset {}", offset);
         }
     };
 
