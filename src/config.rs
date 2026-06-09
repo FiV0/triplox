@@ -14,6 +14,15 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
+#[cfg(feature = "kafka")]
+fn default_kafka_topic() -> String {
+    "triplox-tx-log".to_string()
+}
+
+fn default_region() -> String {
+    "eu-central-1".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StorageConfig {
@@ -51,29 +60,20 @@ pub struct LocalDiskStorageConfig {
     pub path: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ServerConfig {
-    #[serde(default = "default_host")]
-    pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-}
-
-#[cfg(feature = "kafka")]
-fn default_kafka_topic() -> String {
-    "triplox-tx-log".to_string()
-}
-
-fn default_region() -> String {
-    "eu-central-1".to_string()
-}
-
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
 
 fn default_port() -> u16 {
     5490
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
 }
 
 impl Default for ServerConfig {
