@@ -318,12 +318,8 @@ impl Node<crate::kafka_log::KafkaLog> {
         )));
 
         let log = Arc::new(
-            crate::kafka_log::KafkaLog::new(
-                config.bootstrap_servers,
-                config.topic.to_string(),
-                Box::new(clock::SystemClock),
-            )
-            .await?,
+            crate::kafka_log::KafkaLog::new(config.bootstrap_servers, config.topic.to_string())
+                .await?,
         );
 
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {

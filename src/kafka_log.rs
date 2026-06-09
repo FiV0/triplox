@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use log::{error, warn};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -15,7 +15,6 @@ use rdkafka::Message;
 use rdkafka::TopicPartitionList;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::clock::SystemTimeSource;
 use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 
@@ -27,18 +26,13 @@ pub struct KafkaLog {
     consumer_config: ClientConfig,
     topic: String,
     tx_sender: broadcast::Sender<Record>,
-    clock: Mutex<Box<dyn SystemTimeSource>>,
     append_lock: Mutex<()>,
     next_offset: Arc<AtomicI64>,
     _live_consumer: LiveConsumer,
 }
 
 impl KafkaLog {
-    pub async fn new(
-        bootstrap_servers: &str,
-        topic: String,
-        clock: Box<dyn SystemTimeSource>,
-    ) -> Result<Self> {
+    pub async fn new(bootstrap_servers: &str, topic: String) -> Result<Self> {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", bootstrap_servers)
             .set("message.timeout.ms", "5000")
@@ -77,7 +71,6 @@ impl KafkaLog {
             consumer_config,
             topic,
             tx_sender,
-            clock: Mutex::new(clock),
             append_lock: Mutex::new(()),
             next_offset,
             _live_consumer: live_consumer,
@@ -287,23 +280,12 @@ impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let _append_guard = self.append_lock.lock().await;
 
-        // Truncate to millisecond precision to match Kafka timestamp resolution
-        let mut clock = self.clock.lock().await;
-        let mut system_time = clock.now();
-        drop(clock);
-        system_time = system_time
-            .with_nanosecond((system_time.timestamp_subsec_nanos() / 1_000_000) * 1_000_000)
-            .expect("truncated nanoseconds should always be valid");
-
-        let timestamp_ms = system_time.timestamp_millis();
-
         let delivery_result = self
             .producer
             .send(
                 FutureRecord::<str, _>::to(&self.topic)
                     .partition(PARTITION)
-                    .payload(&record)
-                    .timestamp(timestamp_ms),
+                    .payload(&record),
                 Timeout::After(Duration::from_secs(5)),
             )
             .await;
@@ -432,7 +414,6 @@ mod unit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::{st_from_unix_epoch, MockClock, SystemClock};
     use crate::log::{subscribe, MockSubscriber};
     use std::sync::Arc;
     use std::time::Duration;
@@ -479,19 +460,8 @@ mod tests {
         create_topic(&bootstrap, &topic).await;
 
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let clock = MockClock::new(vec![
-            st_from_unix_epoch(1_000_000), // 1 second (ms-aligned)
-            st_from_unix_epoch(2_000_000), // 2 seconds
-            st_from_unix_epoch(3_000_000), // 3 seconds
-            st_from_unix_epoch(4_000_000),
-            st_from_unix_epoch(5_000_000),
-        ]);
 
-        let log = Arc::new(
-            KafkaLog::new(&bootstrap, topic.clone(), Box::new(clock))
-                .await
-                .unwrap(),
-        );
+        let log = Arc::new(KafkaLog::new(&bootstrap, topic.clone()).await.unwrap());
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
         let tx_key_0 = log.append_tx(vec![1, 2, 3]).await.unwrap();
@@ -545,16 +515,7 @@ mod tests {
 
         create_topic(&bootstrap, &topic).await;
 
-        let clock = MockClock::new(vec![
-            st_from_unix_epoch(1_000_000),
-            st_from_unix_epoch(2_000_000),
-        ]);
-
-        let log = Arc::new(
-            KafkaLog::new(&bootstrap, topic.clone(), Box::new(clock))
-                .await
-                .unwrap(),
-        );
+        let log = Arc::new(KafkaLog::new(&bootstrap, topic.clone()).await.unwrap());
 
         // Write one transaction
         log.append_tx(vec![1, 2, 3]).await.unwrap();
@@ -586,11 +547,7 @@ mod tests {
         let topic = unique_topic();
         create_topic(&bootstrap, &topic).await;
 
-        let log = Arc::new(
-            KafkaLog::new(&bootstrap, topic.clone(), Box::new(SystemClock))
-                .await
-                .unwrap(),
-        );
+        let log = Arc::new(KafkaLog::new(&bootstrap, topic.clone()).await.unwrap());
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
