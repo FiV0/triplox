@@ -475,6 +475,17 @@ mod unit_tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("requires LogAppendTime"));
+        assert!(err.contains("offset 7"));
+    }
+
+    #[test]
+    fn test_timestamp_to_system_time_rejects_not_available() {
+        let err = timestamp_to_system_time(7, Timestamp::NotAvailable)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("requires LogAppendTime"));
+        assert!(err.contains("offset 7"));
     }
 
     #[test]
