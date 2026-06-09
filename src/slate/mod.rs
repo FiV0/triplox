@@ -13,6 +13,7 @@ use slatedb::object_store::{memory::InMemory, ObjectStore};
 use slatedb::Db;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::util::random_string;
 
@@ -123,7 +124,7 @@ pub async fn remote_slate(
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
     std::fs::create_dir_all(cache_path)?;
     let settings = Settings {
-        flush_interval: None,
+        flush_interval: Some(Duration::new(0, 100000)),
         max_unflushed_bytes: 2 * 1024 * 1024 * 1024,
         l0_max_ssts: 16,
         wal_enabled: true,
