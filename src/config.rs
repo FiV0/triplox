@@ -28,6 +28,20 @@ fn default_region() -> String {
     "eu-central-1".to_string()
 }
 
+#[cfg(feature = "kafka")]
+#[derive(Debug, Deserialize)]
+pub struct KafkaStorageConfig {
+    pub bootstrap_servers: String,
+    #[serde(default = "default_kafka_topic")]
+    pub topic: String,
+    pub endpoint: String,
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StorageConfig {
@@ -46,17 +60,7 @@ pub enum StorageConfig {
         file_log_path: PathBuf,
     },
     #[cfg(feature = "kafka")]
-    Kafka {
-        bootstrap_servers: String,
-        #[serde(default = "default_kafka_topic")]
-        topic: String,
-        endpoint: String,
-        bucket: String,
-        access_key: String,
-        secret_key: String,
-        #[serde(default = "default_region")]
-        region: String,
-    },
+    Kafka(KafkaStorageConfig),
 }
 
 fn default_host() -> String {
@@ -103,7 +107,7 @@ impl Config {
                 .join(DBSP_STORAGE_DIR),
 
             #[cfg(feature = "kafka")]
-            StorageConfig::Kafka { .. } => self
+            StorageConfig::Kafka(_) => self
                 .local_disk_storage_path()
                 .expect("kafka storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
@@ -116,7 +120,7 @@ impl Config {
                 .local_disk_storage_path()
                 .map(|path| path.join(REMOTE_CACHE_DIR)),
             #[cfg(feature = "kafka")]
-            StorageConfig::Kafka { .. } => self
+            StorageConfig::Kafka(_) => self
                 .local_disk_storage_path()
                 .map(|path| path.join(REMOTE_CACHE_DIR)),
             _ => None,
@@ -127,7 +131,7 @@ impl Config {
         match &self.storage {
             StorageConfig::Remote { .. } => self.local_disk_storage.path.clone(),
             #[cfg(feature = "kafka")]
-            StorageConfig::Kafka { .. } => self.local_disk_storage.path.clone(),
+            StorageConfig::Kafka(_) => self.local_disk_storage.path.clone(),
             _ => None,
         }
     }
@@ -207,6 +211,10 @@ mod tests {
         )
         .unwrap();
 
+        let StorageConfig::Kafka(kafka_storage) = &config.storage else {
+            panic!("expected kafka storage");
+        };
+        assert_eq!(kafka_storage.topic, "triplox-tx-log");
         assert_eq!(
             config.local_disk_storage_path().unwrap(),
             PathBuf::from("/tmp/triplox-disk")

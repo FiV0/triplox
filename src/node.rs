@@ -7,6 +7,8 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::clock;
+#[cfg(feature = "kafka")]
+use crate::config::KafkaStorageConfig;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
@@ -147,18 +149,6 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
     }
 }
 
-#[cfg(feature = "kafka")]
-pub struct KafkaNodeConfig<'a> {
-    pub bootstrap_servers: &'a str,
-    pub topic: &'a str,
-    pub endpoint: &'a str,
-    pub bucket: &'a str,
-    pub access_key: &'a str,
-    pub secret_key: &'a str,
-    pub region: &'a str,
-    pub local_disk_storage_path: &'a Path,
-}
-
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
@@ -295,15 +285,18 @@ impl Node<FileLog> {
 
 #[cfg(feature = "kafka")]
 impl Node<crate::kafka_log::KafkaLog> {
-    pub async fn kafka_node(config: KafkaNodeConfig<'_>) -> Result<Self, Error> {
-        std::fs::create_dir_all(config.local_disk_storage_path)?;
-        let cache_path = config.local_disk_storage_path.join("cache");
+    pub async fn kafka_node(
+        config: &KafkaStorageConfig,
+        local_disk_storage_path: &Path,
+    ) -> Result<Self, Error> {
+        std::fs::create_dir_all(local_disk_storage_path)?;
+        let cache_path = local_disk_storage_path.join("cache");
         let slate = remote_slate(
-            config.endpoint,
-            config.bucket,
-            config.access_key,
-            config.secret_key,
-            config.region,
+            &config.endpoint,
+            &config.bucket,
+            &config.access_key,
+            &config.secret_key,
+            &config.region,
             &cache_path,
         )
         .await?;
@@ -318,7 +311,7 @@ impl Node<crate::kafka_log::KafkaLog> {
         )));
 
         let log = Arc::new(
-            crate::kafka_log::KafkaLog::new(config.bootstrap_servers, config.topic.to_string())
+            crate::kafka_log::KafkaLog::new(&config.bootstrap_servers, config.topic.clone())
                 .await?,
         );
 
@@ -338,7 +331,7 @@ impl Node<crate::kafka_log::KafkaLog> {
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
         let incremental = IncrementalQueryService::new(
-            config.local_disk_storage_path.join("dbsp"),
+            local_disk_storage_path.join("dbsp"),
             Handle::current(),
             subscription.clone(),
             slate.object_path.clone(),

@@ -5,8 +5,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use triplox::config::{Config, StorageConfig};
-#[cfg(feature = "kafka")]
-use triplox::node::KafkaNodeConfig;
 use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
@@ -92,31 +90,11 @@ async fn run_server(config: Config) -> Result<()> {
             server.listen(&bind_addr, token).await
         }
         #[cfg(feature = "kafka")]
-        StorageConfig::Kafka {
-            bootstrap_servers,
-            topic,
-            endpoint,
-            bucket,
-            access_key,
-            secret_key,
-            region,
-        } => {
+        StorageConfig::Kafka(kafka_config) => {
             let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
                 bail!("kafka storage requires local_disk_storage.path");
             };
-            let node = Arc::new(
-                Node::kafka_node(KafkaNodeConfig {
-                    bootstrap_servers,
-                    topic,
-                    endpoint,
-                    bucket,
-                    access_key,
-                    secret_key,
-                    region,
-                    local_disk_storage_path: &local_disk_storage_path,
-                })
-                .await?,
-            );
+            let node = Arc::new(Node::kafka_node(kafka_config, &local_disk_storage_path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
