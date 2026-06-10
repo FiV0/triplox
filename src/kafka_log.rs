@@ -32,68 +32,53 @@ const RETENTION_BYTES_CONFIG: &str = "retention.bytes";
 const READ_POLL_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CONSUMER_ID: AtomicU64 = AtomicU64::new(0);
 
-pub struct KafkaLog {
-    producer: FutureProducer,
-    consumer_config: ClientConfig,
-    topic: String,
-    tx_sender: broadcast::Sender<Record>,
-    next_offset: Arc<AtomicI64>,
-    _live_consumer: LiveConsumer,
+fn validate_log_append_time_config(topic: &str, timestamp_type: Option<&str>) -> Result<()> {
+    match timestamp_type {
+        Some(LOG_APPEND_TIME) => Ok(()),
+        Some(other) => bail!(
+            "Kafka topic {} must set {}={}, got {}",
+            topic,
+            MESSAGE_TIMESTAMP_TYPE_CONFIG,
+            LOG_APPEND_TIME,
+            other
+        ),
+        None => bail!(
+            "Kafka topic {} must expose {}={}",
+            topic,
+            MESSAGE_TIMESTAMP_TYPE_CONFIG,
+            LOG_APPEND_TIME
+        ),
+    }
 }
 
-impl KafkaLog {
-    pub async fn new(bootstrap_servers: &str, topic: String) -> Result<Self> {
-        // Idempotence stops librdkafka's internal retries from duplicating
-        // or reordering tx records; it implies acks=all, set here explicitly.
-        let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", bootstrap_servers)
-            .set("message.timeout.ms", "5000")
-            .set("enable.idempotence", "true")
-            .set("acks", "all")
-            .create()
-            .context("Failed to create Kafka producer")?;
-
-        // An out-of-range offset (e.g. a retention-truncated topic) must surface
-        // as an error; the default reset to "latest" silently skips records.
-        let mut consumer_config = ClientConfig::new();
-        consumer_config
-            .set("bootstrap.servers", bootstrap_servers)
-            .set("enable.auto.commit", "false")
-            .set("auto.offset.reset", "error");
-
-        ensure_tx_log_topic(bootstrap_servers, &topic).await?;
-
-        // Fetch current high watermark to initialize next_offset
-        let consumer: BaseConsumer = consumer_config
-            .clone()
-            .set("group.id", "triplox-init")
-            .create()
-            .context("Failed to create Kafka consumer for watermark query")?;
-
-        let (_low, high) = consumer
-            .fetch_watermarks(&topic, PARTITION, Duration::from_secs(5))
-            .context("Failed to fetch watermarks")?;
-
-        let (tx_sender, _) = broadcast::channel(1024);
-        let next_offset = Arc::new(AtomicI64::new(high));
-
-        let live_consumer = spawn_live_consumer(
-            consumer_config.clone(),
-            topic.clone(),
-            tx_sender.clone(),
-            next_offset.clone(),
-            high,
-        )?;
-
-        Ok(KafkaLog {
-            producer,
-            consumer_config,
+// Kafka's default 7-day retention would silently delete tx log history.
+fn validate_infinite_retention_config(topic: &str, key: &str, value: Option<&str>) -> Result<()> {
+    match value {
+        Some("-1") => Ok(()),
+        Some(other) => bail!(
+            "Kafka topic {} must set {}=-1 to retain the full tx log, got {}",
             topic,
-            tx_sender,
-            next_offset,
-            _live_consumer: live_consumer,
-        })
+            key,
+            other
+        ),
+        None => bail!(
+            "Kafka topic {} must expose {}=-1 to retain the full tx log",
+            topic,
+            key
+        ),
     }
+}
+
+// tx_ids are offsets of partition 0; extra partitions would break total ordering.
+fn validate_single_partition(topic: &str, partition_count: usize) -> Result<()> {
+    if partition_count != 1 {
+        bail!(
+            "Kafka topic {} must have exactly 1 partition, got {}",
+            topic,
+            partition_count
+        );
+    }
+    Ok(())
 }
 
 async fn ensure_tx_log_topic(bootstrap_servers: &str, topic: &str) -> Result<()> {
@@ -134,71 +119,6 @@ async fn ensure_tx_log_topic(bootstrap_servers: &str, topic: &str) -> Result<()>
         .partitions()
         .len();
     validate_single_partition(topic, partition_count)
-}
-
-// Kafka's default 7-day retention would silently delete tx log history.
-fn validate_infinite_retention_config(topic: &str, key: &str, value: Option<&str>) -> Result<()> {
-    match value {
-        Some("-1") => Ok(()),
-        Some(other) => bail!(
-            "Kafka topic {} must set {}=-1 to retain the full tx log, got {}",
-            topic,
-            key,
-            other
-        ),
-        None => bail!(
-            "Kafka topic {} must expose {}=-1 to retain the full tx log",
-            topic,
-            key
-        ),
-    }
-}
-
-// tx_ids are offsets of partition 0; extra partitions would break total ordering.
-fn validate_single_partition(topic: &str, partition_count: usize) -> Result<()> {
-    if partition_count != 1 {
-        bail!(
-            "Kafka topic {} must have exactly 1 partition, got {}",
-            topic,
-            partition_count
-        );
-    }
-    Ok(())
-}
-
-fn validate_log_append_time_config(topic: &str, timestamp_type: Option<&str>) -> Result<()> {
-    match timestamp_type {
-        Some(LOG_APPEND_TIME) => Ok(()),
-        Some(other) => bail!(
-            "Kafka topic {} must set {}={}, got {}",
-            topic,
-            MESSAGE_TIMESTAMP_TYPE_CONFIG,
-            LOG_APPEND_TIME,
-            other
-        ),
-        None => bail!(
-            "Kafka topic {} must expose {}={}",
-            topic,
-            MESSAGE_TIMESTAMP_TYPE_CONFIG,
-            LOG_APPEND_TIME
-        ),
-    }
-}
-
-struct LiveConsumer {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl Drop for LiveConsumer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(handle) = self.handle.take() {
-            if handle.join().is_err() {
-                error!("Kafka live consumer thread panicked while stopping");
-            }
-        }
-    }
 }
 
 fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTime<Utc>> {
@@ -245,6 +165,22 @@ fn delivery_to_tx_key(delivery: &Delivery) -> Result<TxKey> {
 
 fn is_kafka_bootstrap_record(record: &Record) -> bool {
     record.tx_key.tx_id == BOOTSTRAP_RECORD.tx_key.tx_id && record.record == BOOTSTRAP_RECORD.record
+}
+
+struct LiveConsumer {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for LiveConsumer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            if handle.join().is_err() {
+                error!("Kafka live consumer thread panicked while stopping");
+            }
+        }
+    }
 }
 
 fn spawn_live_consumer(
@@ -373,6 +309,70 @@ fn read_records_blocking(
     }
 
     Ok(records)
+}
+
+pub struct KafkaLog {
+    producer: FutureProducer,
+    consumer_config: ClientConfig,
+    topic: String,
+    tx_sender: broadcast::Sender<Record>,
+    next_offset: Arc<AtomicI64>,
+    _live_consumer: LiveConsumer,
+}
+
+impl KafkaLog {
+    pub async fn new(bootstrap_servers: &str, topic: String) -> Result<Self> {
+        // Idempotence stops librdkafka's internal retries from duplicating
+        // or reordering tx records; it implies acks=all, set here explicitly.
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", bootstrap_servers)
+            .set("message.timeout.ms", "5000")
+            .set("enable.idempotence", "true")
+            .set("acks", "all")
+            .create()
+            .context("Failed to create Kafka producer")?;
+
+        // An out-of-range offset (e.g. a retention-truncated topic) must surface
+        // as an error; the default reset to "latest" silently skips records.
+        let mut consumer_config = ClientConfig::new();
+        consumer_config
+            .set("bootstrap.servers", bootstrap_servers)
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "error");
+
+        ensure_tx_log_topic(bootstrap_servers, &topic).await?;
+
+        // Fetch current high watermark to initialize next_offset
+        let consumer: BaseConsumer = consumer_config
+            .clone()
+            .set("group.id", "triplox-init")
+            .create()
+            .context("Failed to create Kafka consumer for watermark query")?;
+
+        let (_low, high) = consumer
+            .fetch_watermarks(&topic, PARTITION, Duration::from_secs(5))
+            .context("Failed to fetch watermarks")?;
+
+        let (tx_sender, _) = broadcast::channel(1024);
+        let next_offset = Arc::new(AtomicI64::new(high));
+
+        let live_consumer = spawn_live_consumer(
+            consumer_config.clone(),
+            topic.clone(),
+            tx_sender.clone(),
+            next_offset.clone(),
+            high,
+        )?;
+
+        Ok(KafkaLog {
+            producer,
+            consumer_config,
+            topic,
+            tx_sender,
+            next_offset,
+            _live_consumer: live_consumer,
+        })
+    }
 }
 
 impl TxLogReader for KafkaLog {
