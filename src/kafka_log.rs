@@ -215,7 +215,13 @@ fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTim
         }
     };
 
-    Ok(DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_else(Utc::now))
+    // Never fall back to wall-clock time: system_time must be identical on every replay.
+    DateTime::from_timestamp_millis(timestamp_ms).with_context(|| {
+        format!(
+            "Kafka timestamp {} out of range at offset {}",
+            timestamp_ms, offset
+        )
+    })
 }
 
 fn message_to_record(msg: &BorrowedMessage<'_>) -> Result<Record> {
@@ -287,7 +293,12 @@ fn spawn_live_consumer(
                                 }
                             }
                         }
-                        Err(e) => error!("Kafka live consumer record error: {}", e),
+                        // Skipping the record would hand subscribers a silent gap;
+                        // stalling live updates is the lesser failure.
+                        Err(e) => {
+                            error!("Kafka live consumer stopping on unreadable record: {}", e);
+                            break;
+                        }
                     },
                     Some(Err(e)) => error!("Kafka live consumer error: {}", e),
                     None => {}
@@ -572,6 +583,16 @@ mod unit_tests {
             .to_string();
 
         assert!(err.contains("requires LogAppendTime"));
+        assert!(err.contains("offset 7"));
+    }
+
+    #[test]
+    fn test_timestamp_to_system_time_rejects_out_of_range_millis() {
+        let err = timestamp_to_system_time(7, Timestamp::LogAppendTime(i64::MAX))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("out of range"));
         assert!(err.contains("offset 7"));
     }
 
