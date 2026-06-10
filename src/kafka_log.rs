@@ -42,9 +42,13 @@ pub struct KafkaLog {
 
 impl KafkaLog {
     pub async fn new(bootstrap_servers: &str, topic: String) -> Result<Self> {
+        // Idempotence stops librdkafka's internal retries from duplicating
+        // or reordering tx records; it implies acks=all, set here explicitly.
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", bootstrap_servers)
             .set("message.timeout.ms", "5000")
+            .set("enable.idempotence", "true")
+            .set("acks", "all")
             .create()
             .context("Failed to create Kafka producer")?;
 
