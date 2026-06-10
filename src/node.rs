@@ -508,6 +508,55 @@ mod tests {
         );
     }
 
+    // Regression: overwriting a cardinality-one attribute twice must leave a
+    // single live value (the old-value scan previously missed the auto-retract
+    // once the prefix started with a retracted value group).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_card_one_second_overwrite_single_live_value() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::Add {
+            entity: "e".into(),
+            attribute: kw!(:name),
+            value: "alice".into(),
+        }])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query(r#"[:find ?e :where [?e :name "alice"]]"#)
+            .await
+            .unwrap();
+        let DataType::Long(entity_id) = result[0][0] else {
+            panic!("expected Long entity id, got {:?}", result);
+        };
+
+        for name in ["bob", "carol"] {
+            let result = node
+                .execute_tx(vec![TxOp::Add {
+                    entity: EntityRef::Id(entity_id),
+                    attribute: kw!(:name),
+                    value: name.into(),
+                }])
+                .await
+                .unwrap();
+            assert!(matches!(result, TransactionResult::TxCommited(_)));
+        }
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![vec![DataType::String("carol".to_string())]],
+            "cardinality-one attribute must have exactly one live value"
+        );
+    }
+
     // End-to-end query tests
 
     #[tokio::test(flavor = "multi_thread")]

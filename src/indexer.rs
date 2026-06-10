@@ -13,6 +13,7 @@ use edn::kw;
 use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
+use crate::iterator::slate_key_iterator::SlateKeyIterator;
 use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
@@ -404,38 +405,19 @@ impl Indexer {
         // uses entity entid and attribute entid
         let mut old_values: HashMap<(Entid, Entid), DataType> =
             HashMap::with_capacity(eav_prefixes.len());
-        if let Some(first_prefix) = eav_prefixes.keys().next() {
-            let mut iter = self
-                .slatedb
-                .scan_with_options(
-                    first_prefix.clone()..vec![codec::EAV_END],
-                    &DEFAULT_SCAN_OPTIONS,
-                )
-                .await?;
-
-            let mut last_returned = Bytes::new();
+        if !eav_prefixes.is_empty() {
+            let mut iter = SlateKeyIterator::scan_prefix(&self.slatedb, &[codec::EAV]).await?;
             for (eav_prefix, (entity, attribute_id)) in &eav_prefixes {
-                if last_returned.as_ref() < eav_prefix.as_slice() {
-                    iter.seek(eav_prefix).await?;
-                    let Some(kv) = iter.next().await? else {
-                        // Prefixes are sorted, so no later prefix can match once the range is exhausted.
-                        break;
-                    };
-                    last_returned = kv.key;
-                }
-
-                if last_returned.starts_with(eav_prefix) {
-                    assert!(
-                        last_returned.len() >= codec::TX_EID_OP_SUFFIX,
-                        "Key too short ({} bytes) to contain tx_eid + op suffix",
-                        last_returned.len()
-                    );
-                    if last_returned[last_returned.len() - 1] != codec::RETRACT {
-                        let value_bytes = &last_returned
-                            [eav_prefix.len()..last_returned.len() - codec::TX_EID_OP_SUFFIX];
+                match tx::find_live_key_under_prefix(&mut iter, eav_prefix).await? {
+                    Some(key) => {
+                        let value_bytes =
+                            &key[eav_prefix.len()..key.len() - codec::TX_EID_OP_SUFFIX];
                         let mut cursor = value_bytes;
                         old_values.insert((*entity, *attribute_id), decode_datatype(&mut cursor)?);
                     }
+                    // Prefixes are sorted, so no later prefix can match once the range is exhausted.
+                    None if iter.peek().is_none() => break,
+                    None => {}
                 }
             }
         }
@@ -1920,6 +1902,293 @@ mod tests {
 
         assert!(saw_email, "unique :email should have a VAE entry");
         assert!(!saw_name, "non-unique :name should not have a VAE entry");
+        Ok(())
+    }
+
+    /// Transact a single Add op; `tx_id` also derives the system time.
+    async fn transact_add(
+        indexer: &mut Indexer,
+        tx_id: i64,
+        entity: EntityRef,
+        attribute: edn::symbols::Keyword,
+        value: DataType,
+    ) -> Result<(), Error> {
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id,
+                    system_time: st_from_unix_epoch(tx_id as u64 * 100),
+                },
+                vec![TxOp::Add {
+                    entity,
+                    attribute,
+                    value,
+                }],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Collect (value, op) pairs from the EAV index for one (entity, attribute).
+    async fn eav_entries_for(
+        slate: &Arc<slatedb::Db>,
+        entity_id: i64,
+        attribute_id: i64,
+    ) -> Result<Vec<(DataType, u8)>, Error> {
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        let mut entries = Vec::new();
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, value, _tx, op) = eav_key_to_parts(kv.key)?;
+            if eid == DataType::Long(entity_id) && attribute == attribute_id {
+                entries.push((value, op));
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Values whose ADD count exceeds their RETRACT count, i.e. currently live.
+    fn live_values(entries: &[(DataType, u8)]) -> Vec<DataType> {
+        let mut counts: HashMap<DataType, i64> = HashMap::new();
+        for (value, op) in entries {
+            *counts.entry(value.clone()).or_default() += if *op == codec::ADD { 1 } else { -1 };
+        }
+        counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(value, _)| value)
+            .collect()
+    }
+
+    // Regression for the old-value scan giving up when the first value group
+    // under an (entity, attr) prefix is dead: "alice" sorts before "bob", so at
+    // tx3 the scan hits alice's RETRACT entry first and must skip past it to
+    // find "bob" as the value to auto-retract.
+    #[tokio::test]
+    async fn test_retract_on_second_overwrite() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        let entity = EntityRef::Id(entity_id);
+        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
+        transact_add(&mut indexer, 3, entity, kw!(:name), "carol".into()).await?;
+
+        let entries = eav_entries_for(&slate, entity_id, name_id).await?;
+        assert!(
+            entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
+            "Expected RETRACT for bob, got {:?}",
+            entries
+        );
+        assert_eq!(
+            live_values(&entries),
+            vec![DataType::String("carol".into())],
+            "Expected carol as the only live value, got {:?}",
+            entries
+        );
+        Ok(())
+    }
+
+    // Long keys encode descending, so a decreasing chain puts the dead larger
+    // value first under the prefix; the scan must skip it.
+    #[tokio::test]
+    async fn test_retract_on_second_overwrite_decreasing_longs() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let age_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:age))
+            .unwrap()
+            .0;
+
+        transact_add(&mut indexer, 1, "e".into(), kw!(:age), DataType::Long(3)).await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        let entity = EntityRef::Id(entity_id);
+        transact_add(
+            &mut indexer,
+            2,
+            entity.clone(),
+            kw!(:age),
+            DataType::Long(1),
+        )
+        .await?;
+        transact_add(&mut indexer, 3, entity, kw!(:age), DataType::Long(5)).await?;
+
+        let entries = eav_entries_for(&slate, entity_id, age_id).await?;
+        assert!(
+            entries.contains(&(DataType::Long(1), codec::RETRACT)),
+            "Expected RETRACT for 1, got {:?}",
+            entries
+        );
+        assert_eq!(
+            live_values(&entries),
+            vec![DataType::Long(5)],
+            "Expected 5 as the only live value, got {:?}",
+            entries
+        );
+        Ok(())
+    }
+
+    // Re-asserting a previously retracted value leaves its group with a
+    // RETRACT-then-ADD history; later old-value lookups must still resolve.
+    #[tokio::test]
+    async fn test_retract_after_reasserting_old_value() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        let entity = EntityRef::Id(entity_id);
+        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
+        transact_add(&mut indexer, 3, entity.clone(), kw!(:name), "alice".into()).await?;
+        transact_add(&mut indexer, 4, entity, kw!(:name), "carol".into()).await?;
+
+        let entries = eav_entries_for(&slate, entity_id, name_id).await?;
+        assert!(
+            entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
+            "Expected RETRACT for bob at tx3, got {:?}",
+            entries
+        );
+        assert_eq!(
+            live_values(&entries),
+            vec![DataType::String("carol".into())],
+            "Expected carol as the only live value, got {:?}",
+            entries
+        );
+        Ok(())
+    }
+
+    // Asserting the current value again after an overwrite history must be
+    // dropped as a no-op, proving the live value is actually found.
+    #[tokio::test]
+    async fn test_same_value_no_retract_after_overwrite() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        let entity = EntityRef::Id(entity_id);
+        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
+        transact_add(&mut indexer, 3, entity, kw!(:name), "bob".into()).await?;
+
+        let entries = eav_entries_for(&slate, entity_id, name_id).await?;
+        let bob = DataType::String("bob".into());
+        let bob_adds = entries
+            .iter()
+            .filter(|(v, op)| *v == bob && *op == codec::ADD)
+            .count();
+        let bob_retracts = entries
+            .iter()
+            .filter(|(v, op)| *v == bob && *op == codec::RETRACT)
+            .count();
+        assert_eq!(bob_adds, 1, "re-assert must be dropped, got {:?}", entries);
+        assert_eq!(bob_retracts, 0, "no retract expected, got {:?}", entries);
+        Ok(())
+    }
+
+    // Two card-one attrs resolved in one tx through the shared iterator, both
+    // with a dead value group sorting first under their prefix; skipping in one
+    // prefix must not break resolution of the other.
+    #[tokio::test]
+    async fn test_old_value_scan_skips_dead_values_across_prefixes() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+        let age_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:age))
+            .unwrap()
+            .0;
+
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 1,
+                    system_time: st_from_unix_epoch(100),
+                },
+                vec![TxOp::put(vec![
+                    (kw!(:name), "alice".into()),
+                    (kw!(:age), DataType::Long(2)),
+                ])],
+            )
+            .await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 2,
+                    system_time: st_from_unix_epoch(200),
+                },
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), DataType::Long(entity_id)),
+                    (kw!(:name), "bob".into()),
+                    (kw!(:age), DataType::Long(1)),
+                ])],
+            )
+            .await?;
+        indexer
+            .transact_tx(
+                TxKey {
+                    tx_id: 3,
+                    system_time: st_from_unix_epoch(300),
+                },
+                vec![TxOp::put(vec![
+                    (kw!(:db/id), DataType::Long(entity_id)),
+                    (kw!(:name), "carol".into()),
+                    (kw!(:age), DataType::Long(5)),
+                ])],
+            )
+            .await?;
+
+        let name_entries = eav_entries_for(&slate, entity_id, name_id).await?;
+        let age_entries = eav_entries_for(&slate, entity_id, age_id).await?;
+        assert!(
+            name_entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
+            "Expected RETRACT for bob, got {:?}",
+            name_entries
+        );
+        assert!(
+            age_entries.contains(&(DataType::Long(1), codec::RETRACT)),
+            "Expected RETRACT for 1, got {:?}",
+            age_entries
+        );
+        assert_eq!(
+            live_values(&name_entries),
+            vec![DataType::String("carol".into())]
+        );
+        assert_eq!(live_values(&age_entries), vec![DataType::Long(5)]);
         Ok(())
     }
 }
