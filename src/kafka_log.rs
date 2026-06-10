@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -30,7 +30,6 @@ const RETENTION_MS_CONFIG: &str = "retention.ms";
 const RETENTION_BYTES_CONFIG: &str = "retention.bytes";
 // Per-message stall budget for reads below the high watermark; generous to cover AutoMQ S3 reads.
 const READ_POLL_STALL_TIMEOUT: Duration = Duration::from_secs(10);
-static NEXT_CONSUMER_ID: AtomicU64 = AtomicU64::new(0);
 
 fn validate_log_append_time_config(topic: &str, timestamp_type: Option<&str>) -> Result<()> {
     match timestamp_type {
@@ -186,14 +185,10 @@ fn spawn_live_consumer(
     next_offset: Arc<AtomicI64>,
     start_offset: i64,
 ) -> Result<LiveConsumer> {
-    let consumer_id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
-    let thread_name = format!("triplox-kafka-live-{}", consumer_id);
+    let thread_name = String::from("triplox-kafka-live");
     let consumer: BaseConsumer = consumer_config
         .clone()
-        .set(
-            "group.id",
-            format!("triplox-live-{}-{}", std::process::id(), consumer_id),
-        )
+        .set("group.id", format!("triplox-live-{}", std::process::id()))
         .create()
         .context("Failed to create Kafka consumer for live updates")?;
 
