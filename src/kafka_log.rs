@@ -52,10 +52,13 @@ impl KafkaLog {
             .create()
             .context("Failed to create Kafka producer")?;
 
+        // An out-of-range offset (e.g. a retention-truncated topic) must surface
+        // as an error; the default reset to "latest" silently skips records.
         let mut consumer_config = ClientConfig::new();
         consumer_config
             .set("bootstrap.servers", bootstrap_servers)
-            .set("enable.auto.commit", "false");
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "error");
 
         ensure_log_append_time_topic(bootstrap_servers, &topic).await?;
 
