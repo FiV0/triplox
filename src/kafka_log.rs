@@ -401,48 +401,6 @@ impl TxLogReader for KafkaLog {
     }
 }
 
-fn read_bootstrap_record_at_offset(
-    consumer_config: &ClientConfig,
-    topic: &str,
-    offset: i64,
-    timeout: Duration,
-) -> Result<Record> {
-    let consumer_id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
-    let consumer: BaseConsumer = consumer_config
-        .clone()
-        .set(
-            "group.id",
-            format!(
-                "triplox-bootstrap-confirm-{}-{}",
-                std::process::id(),
-                consumer_id
-            ),
-        )
-        .create()
-        .context("Failed to create Kafka consumer for bootstrap confirmation")?;
-
-    let mut tpl = TopicPartitionList::new();
-    tpl.add_partition_offset(topic, PARTITION, Offset::Offset(offset))
-        .context("Failed to set bootstrap confirmation offset")?;
-    consumer
-        .assign(&tpl)
-        .context("Failed to assign bootstrap confirmation partition")?;
-
-    match consumer.poll(Timeout::After(timeout)) {
-        Some(Ok(msg)) if msg.offset() == offset => message_to_record(&msg),
-        Some(Ok(msg)) => bail!(
-            "Kafka bootstrap confirmation read unexpected offset: expected {}, got {}",
-            offset,
-            msg.offset()
-        ),
-        Some(Err(e)) => Err(e).context("Kafka bootstrap confirmation consume failed"),
-        None => bail!(
-            "Timed out reading Kafka bootstrap confirmation at offset {}",
-            offset
-        ),
-    }
-}
-
 impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let delivery_result = self
@@ -523,16 +481,9 @@ impl TxLog for KafkaLog {
             );
         }
 
-        let record = read_bootstrap_record_at_offset(
-            &self.consumer_config,
-            &self.topic,
-            offset,
-            Duration::from_secs(5),
-        )
-        .context("Failed to read Kafka bootstrap record")?;
-        if !is_kafka_bootstrap_record(&record) {
-            bail!("Kafka bootstrap record did not match reserved bootstrap record");
-        }
+        // Offset and payload are checked above; the delivery just needs broker append time.
+        delivery_to_tx_key(&delivery)
+            .context("Failed to read Kafka bootstrap delivery timestamp")?;
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
         Ok(())
     }

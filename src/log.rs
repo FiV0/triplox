@@ -169,6 +169,9 @@ pub trait TxLogReader: Send + Sync + 'static {
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {
+    /// Append a record to the log and return its assigned TxKey.
+    /// An error does not guarantee the record was kept out of the log (e.g. a
+    /// lost ack on a distributed log); blindly retrying may append it twice.
     fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = Result<TxKey>> + Send;
 }
 
