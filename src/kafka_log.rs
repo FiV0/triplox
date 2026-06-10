@@ -69,18 +69,6 @@ fn validate_infinite_retention_config(topic: &str, key: &str, value: Option<&str
     }
 }
 
-// tx_ids are offsets of partition 0; extra partitions would break total ordering.
-fn validate_single_partition(topic: &str, partition_count: usize) -> Result<()> {
-    if partition_count != 1 {
-        bail!(
-            "Kafka topic {} must have exactly 1 partition, got {}",
-            topic,
-            partition_count
-        );
-    }
-    Ok(())
-}
-
 async fn ensure_tx_log_topic(bootstrap_servers: &str, topic: &str) -> Result<()> {
     let admin_client: AdminClient<DefaultClientContext> = ClientConfig::new()
         .set("bootstrap.servers", bootstrap_servers)
@@ -118,7 +106,15 @@ async fn ensure_tx_log_topic(bootstrap_servers: &str, topic: &str) -> Result<()>
         .with_context(|| format!("Kafka metadata missing topic {}", topic))?
         .partitions()
         .len();
-    validate_single_partition(topic, partition_count)
+    // tx_ids are offsets of partition 0; extra partitions would break total ordering.
+    if partition_count != 1 {
+        bail!(
+            "Kafka topic {} must have exactly 1 partition, got {}",
+            topic,
+            partition_count
+        );
+    }
+    Ok(())
 }
 
 fn timestamp_to_system_time(offset: i64, timestamp: Timestamp) -> Result<DateTime<Utc>> {
@@ -631,21 +627,6 @@ mod unit_tests {
             .to_string();
 
         assert!(err.contains("retention.bytes=-1"));
-    }
-
-    #[test]
-    fn test_validate_single_partition_accepts_one() {
-        validate_single_partition("topic", 1).unwrap();
-    }
-
-    #[test]
-    fn test_validate_single_partition_rejects_multiple() {
-        let err = validate_single_partition("topic", 3)
-            .unwrap_err()
-            .to_string();
-
-        assert!(err.contains("exactly 1 partition"));
-        assert!(err.contains("got 3"));
     }
 }
 
