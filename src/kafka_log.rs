@@ -11,6 +11,7 @@ use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::message::BorrowedMessage;
+use rdkafka::producer::future_producer::Delivery;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::topic_partition_list::Offset;
 use rdkafka::util::Timeout;
@@ -32,7 +33,7 @@ pub struct KafkaLog {
     consumer_config: ClientConfig,
     topic: String,
     tx_sender: broadcast::Sender<Record>,
-    append_lock: Mutex<()>,
+    bootstrap_lock: Mutex<()>,
     next_offset: Arc<AtomicI64>,
     _live_consumer: LiveConsumer,
 }
@@ -79,7 +80,7 @@ impl KafkaLog {
             consumer_config,
             topic,
             tx_sender,
-            append_lock: Mutex::new(()),
+            bootstrap_lock: Mutex::new(()),
             next_offset,
             _live_consumer: live_consumer,
         })
@@ -171,6 +172,13 @@ fn message_to_record(msg: &BorrowedMessage<'_>) -> Result<Record> {
             system_time,
         },
         record: payload,
+    })
+}
+
+fn delivery_to_tx_key(delivery: &Delivery) -> Result<TxKey> {
+    Ok(TxKey {
+        tx_id: delivery.offset,
+        system_time: timestamp_to_system_time(delivery.offset, delivery.timestamp)?,
     })
 }
 
@@ -293,7 +301,7 @@ impl TxLogReader for KafkaLog {
     }
 }
 
-fn read_record_at_offset(
+fn read_bootstrap_record_at_offset(
     consumer_config: &ClientConfig,
     topic: &str,
     offset: i64,
@@ -305,31 +313,31 @@ fn read_record_at_offset(
         .set(
             "group.id",
             format!(
-                "triplox-append-confirm-{}-{}",
+                "triplox-bootstrap-confirm-{}-{}",
                 std::process::id(),
                 consumer_id
             ),
         )
         .create()
-        .context("Failed to create Kafka consumer for append confirmation")?;
+        .context("Failed to create Kafka consumer for bootstrap confirmation")?;
 
     let mut tpl = TopicPartitionList::new();
     tpl.add_partition_offset(topic, PARTITION, Offset::Offset(offset))
-        .context("Failed to set append confirmation offset")?;
+        .context("Failed to set bootstrap confirmation offset")?;
     consumer
         .assign(&tpl)
-        .context("Failed to assign append confirmation partition")?;
+        .context("Failed to assign bootstrap confirmation partition")?;
 
     match consumer.poll(Timeout::After(timeout)) {
         Some(Ok(msg)) if msg.offset() == offset => message_to_record(&msg),
         Some(Ok(msg)) => bail!(
-            "Kafka append confirmation read unexpected offset: expected {}, got {}",
+            "Kafka bootstrap confirmation read unexpected offset: expected {}, got {}",
             offset,
             msg.offset()
         ),
-        Some(Err(e)) => Err(e).context("Kafka append confirmation consume failed"),
+        Some(Err(e)) => Err(e).context("Kafka bootstrap confirmation consume failed"),
         None => bail!(
-            "Timed out reading Kafka append confirmation at offset {}",
+            "Timed out reading Kafka bootstrap confirmation at offset {}",
             offset
         ),
     }
@@ -337,8 +345,6 @@ fn read_record_at_offset(
 
 impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let _append_guard = self.append_lock.lock().await;
-
         let delivery_result = self
             .producer
             .send(
@@ -359,18 +365,10 @@ impl TxLogWriter for KafkaLog {
                 delivery.partition
             );
         }
-        let offset = delivery.offset;
-
-        let consumer_config = self.consumer_config.clone();
-        let topic = self.topic.clone();
-        let tx_key = tokio::task::spawn_blocking(move || {
-            read_record_at_offset(&consumer_config, &topic, offset, Duration::from_secs(5))
-        })
-        .await
-        .context("Kafka append confirmation task failed")?
-        .context("Failed to read Kafka append timestamp")?
-        .tx_key;
-        self.next_offset.fetch_max(offset + 1, Ordering::Release);
+        let tx_key =
+            delivery_to_tx_key(&delivery).context("Failed to read Kafka delivery timestamp")?;
+        self.next_offset
+            .fetch_max(tx_key.tx_id + 1, Ordering::Release);
 
         Ok(tx_key)
     }
@@ -391,7 +389,7 @@ impl TxLog for KafkaLog {
             None => {}
         }
 
-        let _append_guard = self.append_lock.lock().await;
+        let _bootstrap_guard = self.bootstrap_lock.lock().await;
         if self.next_offset.load(Ordering::Acquire) != 0 {
             bail!("kafka log has offsets but no readable bootstrap record");
         }
@@ -425,7 +423,7 @@ impl TxLog for KafkaLog {
             );
         }
 
-        let record = read_record_at_offset(
+        let record = read_bootstrap_record_at_offset(
             &self.consumer_config,
             &self.topic,
             offset,
@@ -483,6 +481,34 @@ mod unit_tests {
         let err = timestamp_to_system_time(7, Timestamp::NotAvailable)
             .unwrap_err()
             .to_string();
+
+        assert!(err.contains("requires LogAppendTime"));
+        assert!(err.contains("offset 7"));
+    }
+
+    #[test]
+    fn test_delivery_to_tx_key_uses_delivery_offset_and_log_append_time() {
+        let delivery = Delivery {
+            partition: PARTITION,
+            offset: 7,
+            timestamp: Timestamp::LogAppendTime(1_780_931_760_255),
+        };
+
+        let tx_key = delivery_to_tx_key(&delivery).unwrap();
+
+        assert_eq!(tx_key.tx_id, 7);
+        assert_eq!(tx_key.system_time.timestamp_millis(), 1_780_931_760_255);
+    }
+
+    #[test]
+    fn test_delivery_to_tx_key_rejects_non_log_append_time() {
+        let delivery = Delivery {
+            partition: PARTITION,
+            offset: 7,
+            timestamp: Timestamp::CreateTime(1_000),
+        };
+
+        let err = delivery_to_tx_key(&delivery).unwrap_err().to_string();
 
         assert!(err.contains("requires LogAppendTime"));
         assert!(err.contains("offset 7"));
