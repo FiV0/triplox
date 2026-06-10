@@ -18,7 +18,7 @@ use rdkafka::util::Timeout;
 use rdkafka::Message;
 use rdkafka::Timestamp;
 use rdkafka::TopicPartitionList;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 
 use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
@@ -37,7 +37,6 @@ pub struct KafkaLog {
     consumer_config: ClientConfig,
     topic: String,
     tx_sender: broadcast::Sender<Record>,
-    bootstrap_lock: Mutex<()>,
     next_offset: Arc<AtomicI64>,
     _live_consumer: LiveConsumer,
 }
@@ -91,7 +90,6 @@ impl KafkaLog {
             consumer_config,
             topic,
             tx_sender,
-            bootstrap_lock: Mutex::new(()),
             next_offset,
             _live_consumer: live_consumer,
         })
@@ -447,7 +445,7 @@ impl TxLog for KafkaLog {
             None => {}
         }
 
-        let _bootstrap_guard = self.bootstrap_lock.lock().await;
+        // Best-effort early-out; the delivery offset check below is the real arbiter.
         if self.next_offset.load(Ordering::Acquire) != 0 {
             bail!("kafka log has offsets but no readable bootstrap record");
         }
@@ -473,18 +471,29 @@ impl TxLog for KafkaLog {
             );
         }
         let offset = delivery.offset;
+        self.next_offset.fetch_max(offset + 1, Ordering::Release);
         if offset != bootstrap_record.tx_key.tx_id {
-            bail!(
-                "Kafka bootstrap produced to unexpected offset: expected {}, got {}",
-                bootstrap_record.tx_key.tx_id,
-                offset
-            );
+            // Lost a bootstrap race: another writer claimed offset 0 and our empty
+            // record is orphaned at `offset` (indexed later as a failed tx).
+            return match self.read_txs_after(None, 1).await?.first() {
+                Some(record) if is_kafka_bootstrap_record(record) => {
+                    warn!(
+                        "Kafka bootstrap raced another writer; orphan empty record at offset {}",
+                        offset
+                    );
+                    Ok(())
+                }
+                first => bail!(
+                    "Kafka bootstrap produced to offset {} and offset 0 holds no bootstrap record: {:?}",
+                    offset,
+                    first.map(|record| record.tx_key)
+                ),
+            };
         }
 
         // Offset and payload are checked above; the delivery just needs broker append time.
         delivery_to_tx_key(&delivery)
             .context("Failed to read Kafka bootstrap delivery timestamp")?;
-        self.next_offset.fetch_max(offset + 1, Ordering::Release);
         Ok(())
     }
 }
@@ -767,6 +776,30 @@ mod tests {
             "Should process transaction exactly once"
         );
         assert_eq!(subscriber.records[0].record, vec![1, 2, 3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_kafka_log_bootstrap_record_is_idempotent() {
+        init();
+        let Some(bootstrap) = test_bootstrap_servers() else {
+            eprintln!("Skipping: KAFKA_BOOTSTRAP_SERVERS not set");
+            return;
+        };
+        let topic = unique_topic();
+        create_topic(&bootstrap, &topic).await;
+
+        let log = KafkaLog::new(&bootstrap, topic.clone()).await.unwrap();
+        log.ensure_bootstrap_record().await.unwrap();
+        // Second call takes the fast path: offset 0 already holds the bootstrap record.
+        log.ensure_bootstrap_record().await.unwrap();
+
+        let records = log.read_txs_after(None, 10).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(is_kafka_bootstrap_record(&records[0]));
+
+        // Appends after bootstrap start at offset 1.
+        let tx_key = log.append_tx(vec![1, 2, 3]).await.unwrap();
+        assert_eq!(tx_key.tx_id, 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
