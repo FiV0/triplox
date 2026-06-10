@@ -238,7 +238,18 @@ pub(crate) fn build_tx_entity_datoms(
 
 impl Indexer {
     pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: TxBasis) -> Self {
-        let (tx_completion_sender, _) = broadcast::channel(1024);
+        Self::with_channel_capacity(slatedb, metadata, latest_indexed_tx, 1024)
+    }
+
+    /// Like `new` with an explicit completion-channel capacity, so tests can
+    /// force broadcast lag deterministically.
+    pub(crate) fn with_channel_capacity(
+        slatedb: Arc<Db>,
+        metadata: Metadata,
+        latest_indexed_tx: TxBasis,
+        capacity: usize,
+    ) -> Self {
+        let (tx_completion_sender, _) = broadcast::channel(capacity);
         Indexer {
             slatedb,
             metadata,
@@ -268,7 +279,7 @@ impl Indexer {
     ) -> Result<TxBasis, Error> {
         match self.transact_tx_inner(tx_key, tx_ops).await {
             Ok(basis) => Ok(basis),
-            Err(e) => match self.write_aborted_tx(tx_key, e.to_string()).await {
+            Err(e) => match self.write_aborted_tx(tx_key, format!("{:#}", e)).await {
                 // semantic error
                 Ok(basis) => {
                     let err = Arc::new(e);
@@ -549,6 +560,7 @@ impl Indexer {
         TxWaiter {
             latest_tx: self.latest_indexed_tx,
             rx: self.tx_completion_sender.subscribe(),
+            slatedb: self.slatedb.clone(),
         }
     }
 
@@ -577,6 +589,7 @@ impl Indexer {
 pub(crate) struct TxWaiter {
     latest_tx: TxBasis,
     rx: broadcast::Receiver<TxCompletionMessage>,
+    slatedb: Arc<Db>,
 }
 
 pub(crate) struct TxCompletion {
@@ -584,46 +597,145 @@ pub(crate) struct TxCompletion {
     pub result: Result<(), Arc<anyhow::Error>>,
 }
 
+/// Look up a transaction's persisted outcome via the AVE index on `:db/txId`,
+/// reading `:db/txResult`/`:db/txError` from the tx entity.
+///
+/// Returns `None` if no tx entity exists: the tx is either not yet indexed or
+/// failed without persisting an outcome (technical abort, deserialize failure).
+pub(crate) async fn lookup_tx_completion<D>(
+    sdb: &D,
+    tx_key: TxKey,
+) -> Result<Option<TxCompletion>, Error>
+where
+    D: DbReadOps + Sync,
+{
+    // Keyed on tx_id only; the log assigns system_time together with tx_id.
+    let mut value_buf = Vec::new();
+    encode_datatype(&DataType::Long(tx_key.tx_id), &mut value_buf);
+    let ave_prefix = concat_bytes(&[
+        &[codec::AVE],
+        &encode_i64_bytes(crate::schema::DB_TX_ID),
+        &value_buf,
+    ]);
+    let mut iter = sdb
+        .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
+        .await?;
+    let mut tx_eid: Option<i64> = None;
+    while let Some(kv) = iter.next().await? {
+        let (_attribute, _value, entity, _tx_eid, op) = ave_key_to_parts(kv.key)?;
+        if op == codec::RETRACT {
+            continue;
+        }
+        match entity {
+            DataType::Long(eid) => {
+                tx_eid = Some(eid);
+                break;
+            }
+            other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
+        }
+    }
+    let Some(tx_eid) = tx_eid else {
+        return Ok(None);
+    };
+
+    let mut entity_buf = Vec::new();
+    encode_datatype(&DataType::Long(tx_eid), &mut entity_buf);
+    let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_buf]);
+    let mut iter = sdb
+        .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
+        .await?;
+    let mut tx_result: Option<i64> = None;
+    let mut tx_error: Option<String> = None;
+    while let Some(kv) = iter.next().await? {
+        let (_entity, attribute, value, _tx_eid, op) = eav_key_to_parts(kv.key)?;
+        if op == codec::RETRACT {
+            continue;
+        }
+        if attribute == crate::schema::DB_TX_RESULT {
+            if let DataType::Long(result) = value {
+                tx_result = Some(result);
+            }
+        }
+        if attribute == crate::schema::DB_TX_ERROR {
+            if let DataType::String(err) = value {
+                tx_error = Some(err);
+            }
+        }
+    }
+
+    let result = match tx_result {
+        Some(DB_TX_COMMITTED) => Ok(()),
+        Some(DB_TX_ABORTED) => Err(Arc::new(anyhow::anyhow!(
+            "{}",
+            tx_error.unwrap_or_else(|| format!("Transaction {} aborted", tx_key.tx_id))
+        ))),
+        Some(other) => bail!("Tx entity {tx_eid} has unknown :db/txResult {other}"),
+        None => bail!("Tx entity {tx_eid} missing :db/txResult"),
+    };
+    Ok(Some(TxCompletion {
+        basis: Some(TxBasis { tx_key, tx_eid }),
+        result,
+    }))
+}
+
 impl TxWaiter {
     // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
     // await_indexed answers "Are we there yet?" without knowing anything about the result.
 
+    /// Recover an already-indexed transaction's outcome from storage. Missing
+    /// tx entity means the tx failed without persisting an outcome (technical
+    /// abort, deserialize failure); mirror the live notification shape for
+    /// those: no basis, an error result.
+    async fn completion_from_storage(&self, tx_key: TxKey) -> Result<TxCompletion, Error> {
+        match lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
+            Some(completion) => Ok(completion),
+            None => Ok(TxCompletion {
+                basis: None,
+                result: Err(Arc::new(anyhow::anyhow!(
+                    "Transaction {} left no tx entity; it failed with a non-recoverable error whose details were lost",
+                    tx_key.tx_id
+                ))),
+            }),
+        }
+    }
+
     /// Wait until `tx_key` has been indexed. Returns the indexed basis and status,
     /// `Err` on abort or if the indexer shuts down.
     pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
-        // Fast path: already indexed at subscription time
-        if tx_key == self.latest_tx.tx_key {
-            return Ok(TxCompletion {
-                basis: Some(self.latest_tx),
-                // TODO: We are not filling in the error here if there was a semantic error.
-                result: Ok(()),
-            });
-        }
-        if tx_key < self.latest_tx.tx_key {
-            return Ok(TxCompletion {
-                basis: None,
-                result: Ok(()),
-            });
+        // Fast path: already indexed at subscription time; storage is the
+        // authoritative record of its outcome.
+        if tx_key <= self.latest_tx.tx_key {
+            return self.completion_from_storage(tx_key).await;
         }
 
-        // TODO: The >= check can return a different tx's result if the
-        // broadcast channel lags. Will be revisited when the log is removed and we
-        // ingest directly into Slate.
         loop {
             match self.rx.recv().await {
                 Ok((completed_tx_key, completed_basis, result)) => {
-                    if completed_tx_key >= tx_key {
-                        return Ok(TxCompletion {
-                            basis: completed_basis,
-                            result,
-                        });
+                    match completed_tx_key.cmp(&tx_key) {
+                        std::cmp::Ordering::Less => continue,
+                        std::cmp::Ordering::Equal => {
+                            return Ok(TxCompletion {
+                                basis: completed_basis,
+                                result,
+                            });
+                        }
+                        // The indexer broadcasts exactly one message per log
+                        // record in order, so seeing a later tx first means our
+                        // message was dropped during a lag.
+                        std::cmp::Ordering::Greater => {
+                            return self.completion_from_storage(tx_key).await;
+                        }
                     }
-                    // Keep waiting for higher tx_id
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
-                    // TODO(#282): recover exact tx outcome or fail instead of risking a later tx's result.
-                    // Channel overflowed. Just continue waiting - we'll eventually
-                    // get the notification or the channel will close.
+                    // Our notification may have been dropped; check storage. Not
+                    // found means the tx is still pending or left no entity — a
+                    // later tx's message will resolve it via the Greater branch.
+                    if let Some(completion) =
+                        lookup_tx_completion(self.slatedb.as_ref(), tx_key).await?
+                    {
+                        return Ok(completion);
+                    }
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -790,11 +902,21 @@ mod tests {
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
+        bootstrapped_indexer_with_capacity(slate, 1024).await
+    }
+
+    /// Like `bootstrapped_indexer` with an explicit completion-channel capacity
+    /// (capacity 1 forces broadcast lag with two transactions).
+    async fn bootstrapped_indexer_with_capacity(
+        slate: &SlateComponents,
+        capacity: usize,
+    ) -> Indexer {
         let metadata = crate::bootstrap::init_db(slate).await.unwrap();
-        let mut indexer = Indexer::new(
+        let mut indexer = Indexer::with_channel_capacity(
             slate.db.clone(),
             metadata,
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+            capacity,
         );
         let tx_key_0 = TxKey {
             tx_id: 0,
@@ -1186,6 +1308,231 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Failed to write aborted tx entity"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lookup_tx_completion_committed() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let basis = indexer
+            .transact_tx(
+                tx_key,
+                vec![TxOp::Add {
+                    entity: "alice".into(),
+                    attribute: kw!(:name),
+                    value: "alice".into(),
+                }],
+            )
+            .await?;
+
+        let completion = lookup_tx_completion(components.db.as_ref(), tx_key)
+            .await?
+            .expect("tx entity should exist");
+        assert_eq!(completion.basis, Some(basis));
+        assert!(completion.result.is_ok());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lookup_tx_completion_aborted() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(2),
+        };
+        let basis = indexer
+            .transact_tx(
+                tx_key,
+                vec![TxOp::Add {
+                    entity: "e".into(),
+                    attribute: kw!(:nonexistent),
+                    value: "x".into(),
+                }],
+            )
+            .await?;
+
+        let completion = lookup_tx_completion(components.db.as_ref(), tx_key)
+            .await?
+            .expect("aborted tx entity should exist");
+        assert_eq!(completion.basis, Some(basis));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lookup_tx_completion_missing() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        bootstrapped_indexer(&components).await;
+        let tx_key = TxKey {
+            tx_id: 42,
+            system_time: st_from_unix_epoch(2),
+        };
+        assert!(lookup_tx_completion(components.db.as_ref(), tx_key)
+            .await?
+            .is_none());
+
+        Ok(())
+    }
+
+    fn test_tx_key(tx_id: i64) -> TxKey {
+        TxKey {
+            tx_id,
+            system_time: st_from_unix_epoch(tx_id as u64 * 100),
+        }
+    }
+
+    fn add_op(name: &str) -> Vec<TxOp> {
+        vec![TxOp::Add {
+            entity: name.into(),
+            attribute: kw!(:name),
+            value: name.into(),
+        }]
+    }
+
+    fn aborting_op() -> Vec<TxOp> {
+        vec![TxOp::Add {
+            entity: "e".into(),
+            attribute: kw!(:nonexistent),
+            value: "x".into(),
+        }]
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_lagged_aborted_tx_recovers_from_storage() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer_with_capacity(&components, 1).await;
+        let tx_key_1 = test_tx_key(1);
+        let waiter = indexer.tx_waiter();
+
+        let basis_1 = indexer.transact_tx(tx_key_1, aborting_op()).await?;
+        // The second completion evicts the first from the capacity-1 channel
+        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
+
+        let completion = waiter.await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, Some(basis_1));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_lagged_committed_tx_recovers_from_storage() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer_with_capacity(&components, 1).await;
+        let tx_key_1 = test_tx_key(1);
+        let waiter = indexer.tx_waiter();
+
+        let basis_1 = indexer.transact_tx(tx_key_1, add_op("alice")).await?;
+        indexer.transact_tx(test_tx_key(2), aborting_op()).await?;
+
+        let completion = waiter.await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, Some(basis_1));
+        assert!(completion.result.is_ok());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_lagged_technical_abort_returns_error() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer_with_capacity(&components, 1).await;
+        let tx_key_1 = test_tx_key(1);
+        let waiter = indexer.tx_waiter();
+
+        // Deserialize failure: notifies without persisting a tx entity
+        indexer
+            .accept(Record {
+                tx_key: tx_key_1,
+                record: vec![0xff],
+            })
+            .await;
+        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
+
+        let completion = waiter.await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, None);
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("left no tx entity"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_fast_path_latest_aborted() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key = test_tx_key(1);
+
+        let basis = indexer.transact_tx(tx_key, aborting_op()).await?;
+
+        // Waiter created after indexing: fast path must report the real abort
+        let completion = indexer.tx_waiter().await_tx(tx_key).await?;
+        assert_eq!(completion.basis, Some(basis));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_fast_path_earlier_tx_returns_real_result() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key_1 = test_tx_key(1);
+
+        let basis_1 = indexer.transact_tx(tx_key_1, add_op("alice")).await?;
+        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
+
+        let completion = indexer.tx_waiter().await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, Some(basis_1));
+        assert!(completion.result.is_ok());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_await_tx_fast_path_earlier_missing_tx() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let tx_key_1 = test_tx_key(1);
+
+        indexer
+            .accept(Record {
+                tx_key: tx_key_1,
+                record: vec![0xff],
+            })
+            .await;
+        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
+
+        let completion = indexer.tx_waiter().await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, None);
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("left no tx entity"));
 
         Ok(())
     }
