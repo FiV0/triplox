@@ -204,7 +204,7 @@ fn spawn_live_consumer(
     let handle = std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            while !thread_stop.load(Ordering::Acquire) {
+            while !thread_stop.load(Ordering::Relaxed) {
                 match consumer.poll(Timeout::After(Duration::from_millis(100))) {
                     Some(Ok(msg)) => match message_to_record(&msg) {
                         Ok(record) => {
