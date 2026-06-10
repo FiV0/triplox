@@ -26,6 +26,8 @@ use crate::transaction::TxKey;
 const PARTITION: i32 = 0;
 const MESSAGE_TIMESTAMP_TYPE_CONFIG: &str = "message.timestamp.type";
 const LOG_APPEND_TIME: &str = "LogAppendTime";
+const RETENTION_MS_CONFIG: &str = "retention.ms";
+const RETENTION_BYTES_CONFIG: &str = "retention.bytes";
 // Per-message stall budget for reads below the high watermark; generous to cover AutoMQ S3 reads.
 const READ_POLL_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CONSUMER_ID: AtomicU64 = AtomicU64::new(0);
@@ -60,7 +62,7 @@ impl KafkaLog {
             .set("enable.auto.commit", "false")
             .set("auto.offset.reset", "error");
 
-        ensure_log_append_time_topic(bootstrap_servers, &topic).await?;
+        ensure_tx_log_topic(bootstrap_servers, &topic).await?;
 
         // Fetch current high watermark to initialize next_offset
         let consumer: BaseConsumer = consumer_config
@@ -96,7 +98,7 @@ impl KafkaLog {
     }
 }
 
-async fn ensure_log_append_time_topic(bootstrap_servers: &str, topic: &str) -> Result<()> {
+async fn ensure_tx_log_topic(bootstrap_servers: &str, topic: &str) -> Result<()> {
     let admin_client: AdminClient<DefaultClientContext> = ClientConfig::new()
         .set("bootstrap.servers", bootstrap_servers)
         .create()
@@ -116,8 +118,54 @@ async fn ensure_log_append_time_topic(bootstrap_servers: &str, topic: &str) -> R
     let timestamp_type = config
         .get(MESSAGE_TIMESTAMP_TYPE_CONFIG)
         .and_then(|entry| entry.value.as_deref());
+    validate_log_append_time_config(topic, timestamp_type)?;
+    for key in [RETENTION_MS_CONFIG, RETENTION_BYTES_CONFIG] {
+        let value = config.get(key).and_then(|entry| entry.value.as_deref());
+        validate_infinite_retention_config(topic, key, value)?;
+    }
 
-    validate_log_append_time_config(topic, timestamp_type)
+    let metadata = admin_client
+        .inner()
+        .fetch_metadata(Some(topic), Duration::from_secs(5))
+        .context("Failed to fetch Kafka topic metadata")?;
+    let partition_count = metadata
+        .topics()
+        .iter()
+        .find(|t| t.name() == topic)
+        .with_context(|| format!("Kafka metadata missing topic {}", topic))?
+        .partitions()
+        .len();
+    validate_single_partition(topic, partition_count)
+}
+
+// Kafka's default 7-day retention would silently delete tx log history.
+fn validate_infinite_retention_config(topic: &str, key: &str, value: Option<&str>) -> Result<()> {
+    match value {
+        Some("-1") => Ok(()),
+        Some(other) => bail!(
+            "Kafka topic {} must set {}=-1 to retain the full tx log, got {}",
+            topic,
+            key,
+            other
+        ),
+        None => bail!(
+            "Kafka topic {} must expose {}=-1 to retain the full tx log",
+            topic,
+            key
+        ),
+    }
+}
+
+// tx_ids are offsets of partition 0; extra partitions would break total ordering.
+fn validate_single_partition(topic: &str, partition_count: usize) -> Result<()> {
+    if partition_count != 1 {
+        bail!(
+            "Kafka topic {} must have exactly 1 partition, got {}",
+            topic,
+            partition_count
+        );
+    }
+    Ok(())
 }
 
 fn validate_log_append_time_config(topic: &str, timestamp_type: Option<&str>) -> Result<()> {
@@ -578,6 +626,46 @@ mod unit_tests {
 
         assert!(err.contains("message.timestamp.type=LogAppendTime"));
     }
+
+    #[test]
+    fn test_validate_infinite_retention_config_accepts_minus_one() {
+        validate_infinite_retention_config("topic", RETENTION_MS_CONFIG, Some("-1")).unwrap();
+    }
+
+    #[test]
+    fn test_validate_infinite_retention_config_rejects_finite_retention() {
+        let err =
+            validate_infinite_retention_config("topic", RETENTION_MS_CONFIG, Some("604800000"))
+                .unwrap_err()
+                .to_string();
+
+        assert!(err.contains("retention.ms=-1"));
+        assert!(err.contains("got 604800000"));
+    }
+
+    #[test]
+    fn test_validate_infinite_retention_config_rejects_missing_config() {
+        let err = validate_infinite_retention_config("topic", RETENTION_BYTES_CONFIG, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("retention.bytes=-1"));
+    }
+
+    #[test]
+    fn test_validate_single_partition_accepts_one() {
+        validate_single_partition("topic", 1).unwrap();
+    }
+
+    #[test]
+    fn test_validate_single_partition_rejects_multiple() {
+        let err = validate_single_partition("topic", 3)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("exactly 1 partition"));
+        assert!(err.contains("got 3"));
+    }
 }
 
 #[cfg(feature = "kafka-integration-test")]
@@ -608,7 +696,9 @@ mod tests {
 
         use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
         let topic_config = NewTopic::new(topic, 1, TopicReplication::Fixed(1))
-            .set("message.timestamp.type", "LogAppendTime");
+            .set("message.timestamp.type", "LogAppendTime")
+            .set("retention.ms", "-1")
+            .set("retention.bytes", "-1");
 
         admin_client
             .create_topics(&[topic_config], &AdminOptions::new())
