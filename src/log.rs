@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use anyhow::Result;
 use log::{error, info, trace, warn};
@@ -29,6 +30,9 @@ pub(crate) trait Subscriber: Send + Sync {
 
 pub type TxId = i64;
 
+const CATCH_UP_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const CATCH_UP_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
+
 async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     log: &L,
     last_tx_id: &mut Option<TxId>,
@@ -38,6 +42,7 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     task_token: &CancellationToken,
 ) {
     let mut remaining = max_records;
+    let mut retry_delay = CATCH_UP_RETRY_INITIAL_DELAY;
 
     loop {
         if task_token.is_cancelled() {
@@ -54,6 +59,7 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
         match txs {
             Ok(txs) if txs.is_empty() => break,
             Ok(txs) => {
+                retry_delay = CATCH_UP_RETRY_INITIAL_DELAY;
                 trace!("Processing {} txs catching up", txs.len());
                 let mut subscriber = subscriber.write().await;
                 for tx in &txs {
@@ -67,9 +73,19 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
                     break;
                 }
             }
+            // We retry until the node gets shut down. Dying here would mean that the node
+            // potentially starts with gap of transactions that are unprocessed. The
+            // live phase accepts any later tx_id.
             Err(e) => {
-                error!("Error reading txs: {}", e);
-                break;
+                error!(
+                    "Error reading txs during catch-up; retrying in {:?}: {}",
+                    retry_delay, e
+                );
+                tokio::select! {
+                    _ = task_token.cancelled() => break,
+                    _ = tokio::time::sleep(retry_delay) => {}
+                }
+                retry_delay = std::cmp::min(retry_delay * 2, CATCH_UP_RETRY_MAX_DELAY);
             }
         }
     }
@@ -154,7 +170,10 @@ pub trait TxLogReader: Send + Sync + 'static {
 }
 
 pub trait TxLogWriter: Send + Sync + 'static {
-    fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = TxKey> + Send;
+    /// Append a record to the log and return its assigned TxKey.
+    /// An error does not guarantee the record was kept out of the log (e.g. a
+    /// lost ack on a distributed log); blindly retrying may append it twice.
+    fn append_tx(&self, record: Vec<u8>) -> impl Future<Output = Result<TxKey>> + Send;
 }
 
 pub trait TxLog: TxLogReader + TxLogWriter {
@@ -183,8 +202,8 @@ impl Subscriber for MockSubscriber {
 mod tests {
     use super::*;
     use crate::clock::st_from_unix_epoch;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::sync::{Barrier, Mutex, Notify, RwLock};
 
     struct SlowReadLog {
@@ -229,7 +248,7 @@ mod tests {
     }
 
     impl TxLogWriter for SlowReadLog {
-        async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+        async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
             let mut records = self.records.lock().await;
             let tx_key = TxKey {
                 tx_id: records.len() as TxId,
@@ -239,7 +258,7 @@ mod tests {
             records.push(record.clone());
             drop(records);
             let _ = self.tx_sender.send(record);
-            tx_key
+            Ok(tx_key)
         }
     }
 
@@ -286,6 +305,40 @@ mod tests {
         }
     }
 
+    struct FlakyLog {
+        inner: SnapshotLog,
+        remaining_failures: AtomicUsize,
+    }
+
+    impl FlakyLog {
+        fn new(record_count: usize, failures: usize) -> Self {
+            Self {
+                inner: SnapshotLog::new(record_count),
+                remaining_failures: AtomicUsize::new(failures),
+            }
+        }
+    }
+
+    impl TxLogReader for FlakyLog {
+        async fn read_txs_after(
+            &self,
+            after_tx_id: Option<TxId>,
+            limit: u16,
+        ) -> Result<Vec<Record>> {
+            let remaining = self.remaining_failures.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.remaining_failures
+                    .store(remaining.saturating_sub(1), Ordering::SeqCst);
+                anyhow::bail!("transient read failure");
+            }
+            self.inner.read_txs_after(after_tx_id, limit).await
+        }
+
+        async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+            self.inner.subscribe_txs().await
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn append_does_not_wait_for_pending_subscription_read() {
         let log = Arc::new(SlowReadLog::new());
@@ -299,7 +352,8 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(100), log.append_tx(vec![1, 2, 3]))
             .await
-            .expect("append should not wait for subscription read");
+            .expect("append should not wait for subscription read")
+            .unwrap();
 
         log.release_read.notify_waiters();
         token.cancel();
@@ -339,5 +393,53 @@ mod tests {
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 3);
         assert_eq!(last_tx_id, Some(2));
+    }
+
+    // A transient read error must not end catch-up early: the live phase accepts
+    // any later tx_id, so records skipped here would be lost permanently.
+    #[tokio::test]
+    async fn catch_up_retries_after_transient_read_error() {
+        let log = FlakyLog::new(10, 2);
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = CancellationToken::new();
+        let mut last_tx_id = None;
+
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, None, &token).await;
+
+        let subscriber = subscriber.read().await;
+        assert_eq!(subscriber.records.len(), 10);
+        assert_eq!(last_tx_id, Some(9));
+    }
+
+    #[tokio::test]
+    async fn catch_up_retry_stops_on_cancellation() {
+        let log = Arc::new(FlakyLog::new(10, usize::MAX));
+        let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
+        let token = CancellationToken::new();
+
+        let task_token = token.clone();
+        let task_log = log.clone();
+        let task_subscriber = subscriber.clone();
+        let handle = tokio::spawn(async move {
+            let mut last_tx_id = None;
+            catch_up_transactions(
+                task_log.as_ref(),
+                &mut last_tx_id,
+                &task_subscriber,
+                100,
+                None,
+                &task_token,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        token.cancel();
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("catch-up should stop on cancellation")
+            .unwrap();
+        assert!(subscriber.read().await.records.is_empty());
     }
 }

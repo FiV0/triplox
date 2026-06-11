@@ -2,7 +2,13 @@
 
 # --- Stage 1: Chef base ---
 FROM rust:1-bookworm AS chef
+ARG BUILD_PACKAGES=""
 RUN cargo install cargo-chef
+RUN if [ -n "$BUILD_PACKAGES" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends $BUILD_PACKAGES && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 WORKDIR /app
 
 # --- Stage 2: Planner ---
@@ -12,13 +18,22 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # --- Stage 3: Builder ---
 FROM chef AS builder
+ARG CARGO_FEATURES=""
 COPY --from=planner /app/recipe.json recipe.json
 # Copy local workspace path dependencies needed by cargo-chef.
 COPY edn/ edn/
 COPY triplox-client/ triplox-client/
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo chef cook --release --features "$CARGO_FEATURES" --recipe-path recipe.json; \
+    else \
+        cargo chef cook --release --recipe-path recipe.json; \
+    fi
 COPY . .
-RUN cargo build --release
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release; \
+    fi
 
 # --- Stage 4: Runtime ---
 FROM debian:bookworm-slim AS runtime

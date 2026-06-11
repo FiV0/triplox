@@ -7,12 +7,17 @@ use anyhow::Error;
 use tokio::runtime::Handle;
 
 use crate::clock;
+#[cfg(feature = "kafka")]
+use crate::config::KafkaStorageConfig;
+use crate::config::RemoteStorageConfig;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
 use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
+#[cfg(feature = "kafka")]
+use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -147,6 +152,65 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
     }
 }
 
+impl<L: TxLog> Node<L> {
+    /// Shared setup: bootstrap the database, ensure the log's bootstrap record,
+    /// subscribe the indexer, and wait for catch-up of un-indexed log records.
+    async fn from_slate_and_tx_log(
+        slate: SlateComponents,
+        log: Arc<L>,
+        incremental_storage_path: PathBuf,
+    ) -> Result<Self, Error> {
+        let metadata = crate::bootstrap::init_db(&slate).await?;
+
+        let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
+        if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
+            log.ensure_bootstrap_record().await?;
+        }
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+            slate.db.clone(),
+            metadata,
+            latest_indexed,
+        )));
+
+        let after_tx_id = Some(latest_indexed.tx_key.tx_id);
+
+        // TODO: This read_txs_after is called here and then again in the catch-up phase of
+        // the subscriber.
+        // Read the last tx_key from the log before subscribing (for catch-up awaiting)
+        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
+        let last_tx_key = records.last().map(|r| r.tx_key);
+
+        // Create a waiter for catch-up completion
+        let waiter = match last_tx_key {
+            Some(_) => Some(indexer.read().await.tx_waiter()),
+            None => None,
+        };
+
+        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+        let incremental = IncrementalQueryService::new(
+            incremental_storage_path,
+            Handle::current(),
+            subscription.clone(),
+            slate.object_path.clone(),
+            slate.object_store.clone(),
+        );
+
+        // Wait for catch-up to complete if there are un-indexed transactions
+        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
+            let completion = waiter.await_tx(tx_key).await?;
+            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+        }
+
+        Ok(Node {
+            log,
+            indexer,
+            slate,
+            subscription,
+            incremental,
+        })
+    }
+}
+
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let slate = in_memory_slate().await;
@@ -188,60 +252,14 @@ impl Node<MemoryLog> {
 }
 
 impl Node<FileLog> {
-    /// Shared setup: given a slate and a path to the log file, bootstrap the
-    /// database, create the indexer & FileLog, subscribe, and catch up.
+    /// Create the FileLog at `log_file` and finish setup via `from_slate_and_tx_log`.
     async fn from_slate_and_log(
         slate: SlateComponents,
         log_file: &Path,
         incremental_storage_path: PathBuf,
     ) -> Result<Self, Error> {
-        let metadata = crate::bootstrap::init_db(&slate).await?;
-
-        let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
-        if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
-            log.ensure_bootstrap_record().await?;
-        }
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slate.db.clone(),
-            metadata,
-            latest_indexed,
-        )));
-
-        let after_tx_id = Some(latest_indexed.tx_key.tx_id);
-
-        // Read the last tx_key from the log before subscribing (for catch-up awaiting)
-        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
-        let last_tx_key = records.last().map(|r| r.tx_key);
-
-        // Create a waiter for catch-up completion
-        let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
-            None => None,
-        };
-
-        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(
-            incremental_storage_path,
-            Handle::current(),
-            subscription.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
-        );
-
-        // Wait for catch-up to complete if there are un-indexed transactions
-        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            let completion = waiter.await_tx(tx_key).await?;
-            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
-        }
-
-        Ok(Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-            incremental,
-        })
+        Self::from_slate_and_tx_log(slate, log, incremental_storage_path).await
     }
 
     pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
@@ -252,15 +270,11 @@ impl Node<FileLog> {
     }
 
     pub async fn remote_node(
-        file_log_path: &Path,
+        config: &RemoteStorageConfig,
         local_disk_storage_path: &Path,
-        endpoint: &str,
-        bucket: &str,
-        access_key: &str,
-        secret_key: &str,
-        region: &str,
     ) -> Result<Self, Error> {
-        if let Some(parent) = file_log_path
+        if let Some(parent) = config
+            .file_log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
         {
@@ -269,15 +283,42 @@ impl Node<FileLog> {
         std::fs::create_dir_all(local_disk_storage_path)?;
         let cache_path = local_disk_storage_path.join("cache");
         let slate = remote_slate(
-            endpoint,
-            bucket,
-            access_key,
-            secret_key,
-            region,
+            &config.endpoint,
+            &config.bucket,
+            &config.access_key,
+            &config.secret_key,
+            &config.region,
             &cache_path,
         )
         .await?;
-        Self::from_slate_and_log(slate, file_log_path, local_disk_storage_path.join("dbsp")).await
+        Self::from_slate_and_log(
+            slate,
+            &config.file_log_path,
+            local_disk_storage_path.join("dbsp"),
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "kafka")]
+impl Node<KafkaLog> {
+    pub async fn kafka_node(
+        config: &KafkaStorageConfig,
+        local_disk_storage_path: &Path,
+    ) -> Result<Self, Error> {
+        std::fs::create_dir_all(local_disk_storage_path)?;
+        let cache_path = local_disk_storage_path.join("cache");
+        let slate = remote_slate(
+            &config.endpoint,
+            &config.bucket,
+            &config.access_key,
+            &config.secret_key,
+            &config.region,
+            &cache_path,
+        )
+        .await?;
+        let log = Arc::new(KafkaLog::new(&config.bootstrap_servers, config.topic.clone()).await?);
+        Self::from_slate_and_tx_log(slate, log, local_disk_storage_path.join("dbsp")).await
     }
 }
 
@@ -354,7 +395,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
-        Ok(self.log.append_tx(serialized).await)
+        self.log.append_tx(serialized).await
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {
@@ -363,7 +404,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
 
         let waiter = self.indexer.read().await.tx_waiter();
 
-        let tx_key = self.log.append_tx(serialized).await;
+        let tx_key = self.log.append_tx(serialized).await?;
 
         let completion = waiter.await_tx(tx_key).await?;
         let basis = completion.basis.ok_or_else(|| {

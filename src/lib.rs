@@ -11,6 +11,8 @@ mod incremental;
 mod index;
 mod indexer;
 mod iterator;
+#[cfg(feature = "kafka")]
+pub(crate) mod kafka_log;
 mod log;
 pub mod logging;
 mod memory_log;

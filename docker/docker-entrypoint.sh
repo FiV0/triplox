@@ -22,9 +22,12 @@ case "$TRIPLOX_STORAGE" in
     remote)
         CONFIG_FILE="/etc/triplox/triplox-remote.toml"
         ;;
+    kafka)
+        CONFIG_FILE="/etc/triplox/triplox-kafka.toml"
+        ;;
     *)
         echo "Error: unknown TRIPLOX_STORAGE value: $TRIPLOX_STORAGE"
-        echo "Supported values: dev, memory, local, remote"
+        echo "Supported values: dev, memory, local, remote, kafka"
         exit 1
         ;;
 esac

@@ -108,6 +108,59 @@ and clears the contents of `docker/data/minio/` (keeping the ext4 mount). It
 does not unmount or delete the loopback image. After it finishes, re-run
 `docker compose -f docker/docker-compose.yml up --build`.
 
+### Kafka mode (AutoMQ)
+
+Using docker-compose with AutoMQ as the Kafka-compatible broker backed by S3:
+
+```bash
+docker compose -f docker/docker-compose-kafka.yml up --build
+```
+
+This starts:
+- **MinIO** on port 9000 (S3 API) and 9001 (console)
+- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by MinIO
+- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on MinIO
+
+The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total
+ordering (WAL semantics), and `message.timestamp.type=LogAppendTime` so Triplox
+transaction times come from the broker append time rather than producer clocks.
+
+#### Running the Kafka integration tests
+
+The `kafka-integration-test` cargo feature gates tests that need a live broker;
+without `KAFKA_BOOTSTRAP_SERVERS` set they skip silently. Run them against the
+AutoMQ stack with:
+
+```bash
+./docker/scripts/run-kafka-integration-tests.sh
+```
+
+The script starts MinIO + AutoMQ (advertising `localhost:9092` so host clients
+can connect, with MinIO data on a named volume instead of the loopback mount),
+runs `cargo test -p triplox --features kafka-integration-test kafka_log::tests`,
+and tears the stack down afterwards. The same script backs the manually
+triggered `Kafka Integration` workflow (`gh workflow run kafka-integration.yml`
+or the Actions UI). Each test creates its own uniquely named topic,
+so runs don't interfere with a concurrently running dev stack's data — though
+both bind port 9092, so stop the dev stack first.
+
+#### Resetting the Kafka stack
+
+Wipe all MinIO data used by the Kafka stack and remove Kafka compose named
+volumes:
+
+```bash
+./docker/scripts/reset-kafka-stack.sh
+```
+
+This stops `docker/docker-compose-kafka.yml`, removes named volumes such as
+`mc-config`, and clears the contents of `docker/data/minio/` (keeping the ext4
+mount). It resets the AutoMQ buckets (`automq-data`, `automq-ops`) and the
+Triplox Kafka storage bucket (`triplox-kafka`). Because MinIO data is shared
+with the remote stack, it also removes any remote-stack bucket data in that
+directory. After it finishes, re-run
+`docker compose -f docker/docker-compose-kafka.yml up --build`.
+
 ### Custom config
 
 Mount your own config file and pass its path as an argument:
@@ -122,13 +175,14 @@ docker run -p 5490:5490 \
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRIPLOX_STORAGE` | `memory` | Storage mode: `dev`, `memory`, `local`, or `remote` |
+| `TRIPLOX_STORAGE` | `memory` | Storage mode: `dev`, `memory`, `local`, `remote`, or `kafka` |
 
 ## Ports
 
 | Port | Protocol | Description |
 |---|---|---|
 | 5490 | TCP | Triplox wire protocol |
+| 9092 | TCP | Kafka broker (AutoMQ, kafka mode only) |
 
 ## Volumes
 

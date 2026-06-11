@@ -5,6 +5,11 @@ use serde::Deserialize;
 const DBSP_STORAGE_DIR: &str = "dbsp";
 const REMOTE_CACHE_DIR: &str = "cache";
 
+#[derive(Debug, Default, Deserialize)]
+pub struct LocalDiskStorageConfig {
+    pub path: Option<PathBuf>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub storage: StorageConfig,
@@ -12,6 +17,40 @@ pub struct Config {
     pub local_disk_storage: LocalDiskStorageConfig,
     #[serde(default)]
     pub server: ServerConfig,
+}
+
+#[cfg(feature = "kafka")]
+fn default_kafka_topic() -> String {
+    "triplox-tx-log".to_string()
+}
+
+fn default_region() -> String {
+    "eu-central-1".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteStorageConfig {
+    pub endpoint: String,
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    pub file_log_path: PathBuf,
+}
+
+#[cfg(feature = "kafka")]
+#[derive(Debug, Deserialize)]
+pub struct KafkaStorageConfig {
+    pub bootstrap_servers: String,
+    #[serde(default = "default_kafka_topic")]
+    pub topic: String,
+    pub endpoint: String,
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    #[serde(default = "default_region")]
+    pub region: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,32 +61,9 @@ pub enum StorageConfig {
     Local {
         path: PathBuf,
     },
-    Remote {
-        endpoint: String,
-        bucket: String,
-        access_key: String,
-        secret_key: String,
-        #[serde(default = "default_region")]
-        region: String,
-        file_log_path: PathBuf,
-    },
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct LocalDiskStorageConfig {
-    pub path: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServerConfig {
-    #[serde(default = "default_host")]
-    pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-}
-
-fn default_region() -> String {
-    "eu-central-1".to_string()
+    Remote(RemoteStorageConfig),
+    #[cfg(feature = "kafka")]
+    Kafka(KafkaStorageConfig),
 }
 
 fn default_host() -> String {
@@ -56,6 +72,14 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     5490
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
 }
 
 impl Default for ServerConfig {
@@ -80,16 +104,26 @@ impl Config {
 
             StorageConfig::Local { path } => path.join(DBSP_STORAGE_DIR),
 
-            StorageConfig::Remote { .. } => self
+            StorageConfig::Remote(_) => self
                 .local_disk_storage_path()
                 .expect("remote storage requires local_disk_storage.path")
+                .join(DBSP_STORAGE_DIR),
+
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka(_) => self
+                .local_disk_storage_path()
+                .expect("kafka storage requires local_disk_storage.path")
                 .join(DBSP_STORAGE_DIR),
         }
     }
 
     pub fn remote_cache_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { .. } => self
+            StorageConfig::Remote(_) => self
+                .local_disk_storage_path()
+                .map(|path| path.join(REMOTE_CACHE_DIR)),
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka(_) => self
                 .local_disk_storage_path()
                 .map(|path| path.join(REMOTE_CACHE_DIR)),
             _ => None,
@@ -98,7 +132,9 @@ impl Config {
 
     pub fn local_disk_storage_path(&self) -> Option<PathBuf> {
         match &self.storage {
-            StorageConfig::Remote { .. } => self.local_disk_storage.path.clone(),
+            StorageConfig::Remote(_) => self.local_disk_storage.path.clone(),
+            #[cfg(feature = "kafka")]
+            StorageConfig::Kafka(_) => self.local_disk_storage.path.clone(),
             _ => None,
         }
     }
@@ -126,10 +162,13 @@ mod tests {
         )
         .unwrap();
 
-        let StorageConfig::Remote { file_log_path, .. } = &config.storage else {
+        let StorageConfig::Remote(remote_storage) = &config.storage else {
             panic!("expected remote storage");
         };
-        assert_eq!(file_log_path, &PathBuf::from("/tmp/triplox-log/log"));
+        assert_eq!(
+            remote_storage.file_log_path,
+            PathBuf::from("/tmp/triplox-log/log")
+        );
         assert_eq!(
             config.remote_cache_path().unwrap(),
             PathBuf::from("/tmp/triplox-disk/cache")
@@ -157,6 +196,43 @@ mod tests {
 
         assert_eq!(config.local_disk_storage_path(), None);
         assert_eq!(config.remote_cache_path(), None);
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn parses_kafka_storage_with_local_disk_storage_paths() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "kafka"
+            bootstrap_servers = "automq:9092"
+            endpoint = "http://localhost:9000"
+            bucket = "triplox-kafka"
+            access_key = "triplox"
+            secret_key = "triplox123"
+
+            [local_disk_storage]
+            path = "/tmp/triplox-disk"
+            "#,
+        )
+        .unwrap();
+
+        let StorageConfig::Kafka(kafka_storage) = &config.storage else {
+            panic!("expected kafka storage");
+        };
+        assert_eq!(kafka_storage.topic, "triplox-tx-log");
+        assert_eq!(
+            config.local_disk_storage_path().unwrap(),
+            PathBuf::from("/tmp/triplox-disk")
+        );
+        assert_eq!(
+            config.remote_cache_path().unwrap(),
+            PathBuf::from("/tmp/triplox-disk/cache")
+        );
+        assert_eq!(
+            config.dbsp_storage_path(),
+            PathBuf::from("/tmp/triplox-disk/dbsp")
+        );
     }
 
     #[test]

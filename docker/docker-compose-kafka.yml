@@ -1,0 +1,138 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    # Dev-only credentials — do not use in production
+    environment:
+      MINIO_ROOT_USER: triplox
+      MINIO_ROOT_PASSWORD: triplox123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  createbucket:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      mc alias set myminio http://minio:9000 triplox triplox123 &&
+      mc mb --ignore-existing myminio/triplox-kafka &&
+      mc mb --ignore-existing myminio/automq-data &&
+      mc mb --ignore-existing myminio/automq-ops
+      "
+
+  mc:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    tty: true
+    stdin_open: true
+    volumes:
+      - mc-config:/root/.mc
+    command: >
+      -c "
+      mc alias set triplox http://minio:9000 triplox triplox123 &&
+      tail -f /dev/null
+      "
+
+  automq:
+    image: automqinc/automq:1.7.0-strimzi
+    environment:
+      - KAFKA_S3_ACCESS_KEY=triplox
+      - KAFKA_S3_SECRET_KEY=triplox123
+      - KAFKA_HEAP_OPTS=-Xms1g -Xmx4g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=1G
+      # Keep heap/error dumps in /tmp; /opt/kafka is not writable in the Strimzi image.
+      - KAFKA_OPTS=-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:ErrorFile=/tmp/hs_err_pid%p.log -Dio.netty.allocator.maxOrder=11
+      - CLUSTER_ID=rZdE0DjZSrqy96PXrMUZVw
+      # The Strimzi image runs as uid 1001 and cannot create /opt/kafka/logs.
+      - LOG_DIR=/tmp/kafka-logs
+    # AutoMQ defaults s3.wal.path away from this MinIO stack, which leaves the broker stuck in RECOVERY.
+    # Keep Kafka's internal offsets topic small for this single-node dev stack.
+    # Triplox uses short-lived Kafka clients; Kafka logs their closed responses as noisy Processor WARNs.
+    command:
+      - bash
+      - -c
+      - |
+        cp /opt/kafka/config/log4j.properties /tmp/kafka-log4j.properties
+        printf '%s\n' 'log4j.logger.kafka.network.Processor=ERROR' >> /tmp/kafka-log4j.properties
+        export KAFKA_LOG4J_OPTS='-Dlog4j.configuration=file:/tmp/kafka-log4j.properties'
+        /opt/kafka/bin/kafka-server-start.sh \
+        /opt/kafka/config/kraft/server.properties \
+        --override cluster.id=$$CLUSTER_ID \
+        --override node.id=0 \
+        --override process.roles=broker,controller \
+        --override controller.quorum.voters=0@automq:9093 \
+        --override controller.quorum.bootstrap.servers=automq:9093 \
+        --override listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+        --override advertised.listeners=PLAINTEXT://${KAFKA_ADVERTISED_HOST:-automq}:9092 \
+        --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+        --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override s3.wal.path='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
+        --override log.message.timestamp.type=LogAppendTime \
+        --override offsets.topic.num.partitions=1 \
+        --override autobalancer.reporter.metrics.reporting.interval.ms=5000
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  create-topic:
+    image: automqinc/automq:1.7.0-strimzi
+    environment:
+      # kafka-topics.sh uses the same GC log path defaults as the broker.
+      - LOG_DIR=/tmp/kafka-logs
+    depends_on:
+      automq:
+        condition: service_healthy
+    # Keep WAL records until Triplox has checkpoint-aware Kafka truncation.
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      /opt/kafka/bin/kafka-topics.sh
+      --bootstrap-server automq:9092
+      --create --if-not-exists
+      --topic triplox-tx-log
+      --partitions 1
+      --replication-factor 1
+      --config retention.ms=-1
+      --config retention.bytes=-1
+      --config message.timestamp.type=LogAppendTime
+      "
+
+  triplox:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_PACKAGES: cmake
+        CARGO_FEATURES: kafka
+    environment:
+      TRIPLOX_STORAGE: kafka
+    ports:
+      - "5490:5490"
+    depends_on:
+      create-topic:
+        condition: service_completed_successfully
+
+volumes:
+  mc-config:

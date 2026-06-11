@@ -1,7 +1,7 @@
 use crate::clock::SystemTimeSource;
 use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::warn;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -103,9 +103,9 @@ impl TxLogReader for FileLog {
 }
 
 impl TxLogWriter for FileLog {
-    async fn append_tx(&self, record: Vec<u8>) -> TxKey {
+    async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
         let mut state = self.state.lock().await;
-        let tx_id = state.file.stream_position().unwrap() as TxId;
+        let tx_id = state.file.stream_position()? as TxId;
 
         let record = Record {
             tx_key: TxKey {
@@ -116,9 +116,9 @@ impl TxLogWriter for FileLog {
         };
 
         // Serialize and write the record
-        bincode::serialize_into(&mut state.file, &record).unwrap();
-        state.file.flush().unwrap();
-        state.file.get_ref().sync_data().unwrap();
+        bincode::serialize_into(&mut state.file, &record).context("Failed to serialize record")?;
+        state.file.flush()?;
+        state.file.get_ref().sync_data()?;
         drop(state);
 
         // Notify subscribers
@@ -126,7 +126,7 @@ impl TxLogWriter for FileLog {
             warn!("Failed to send record from file log to subscribers: {}", e);
         }
 
-        record.tx_key
+        Ok(record.tx_key)
     }
 }
 
@@ -160,9 +160,9 @@ mod tests {
         let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).unwrap());
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        log.append_tx(vec![1, 2, 3]).await;
-        log.append_tx(vec![4, 5, 6]).await;
-        log.append_tx(vec![7, 8, 9]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
+        log.append_tx(vec![7, 8, 9]).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -182,8 +182,8 @@ mod tests {
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
         let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
-        log.append_tx(vec![10, 11, 12]).await;
-        log.append_tx(vec![13, 14, 15]).await;
+        log.append_tx(vec![10, 11, 12]).await.unwrap();
+        log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -208,7 +208,7 @@ mod tests {
         let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).unwrap());
 
         // Write one transaction
-        log.append_tx(vec![1, 2, 3]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
@@ -251,7 +251,7 @@ mod tests {
             Box::new(MockClock::new(vec![st_from_unix_epoch(0)])),
         )
         .unwrap();
-        log.append_tx(vec![1, 2, 3]).await;
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
         drop(log);
 
         let log = FileLog::new(
@@ -259,7 +259,7 @@ mod tests {
             Box::new(MockClock::new(vec![st_from_unix_epoch(100)])),
         )
         .unwrap();
-        log.append_tx(vec![4, 5, 6]).await;
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
 
         let records = log.read_txs_after(None, u16::MAX).await.unwrap();
         assert_eq!(records.len(), 2);
