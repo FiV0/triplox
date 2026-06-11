@@ -238,70 +238,6 @@ fn spawn_live_consumer(
     })
 }
 
-fn read_records_blocking(
-    consumer_config: &ClientConfig,
-    topic: &str,
-    start_offset: i64,
-    limit: u16,
-    next_offset: &AtomicI64,
-) -> Result<Vec<Record>> {
-    // Create a temporary consumer for this read
-    let consumer: BaseConsumer = consumer_config
-        .clone()
-        .set("group.id", format!("triplox-read-{}", start_offset))
-        .create()
-        .context("Failed to create Kafka consumer for read")?;
-
-    let (_low, high) = consumer
-        .fetch_watermarks(topic, PARTITION, Duration::from_secs(5))
-        .context("Failed to fetch watermarks")?;
-    next_offset.fetch_max(high, Ordering::Release);
-    if start_offset >= high {
-        return Ok(vec![]);
-    }
-
-    let mut tpl = TopicPartitionList::new();
-    tpl.add_partition_offset(topic, PARTITION, Offset::Offset(start_offset))
-        .context("Failed to set partition offset")?;
-    consumer
-        .assign(&tpl)
-        .context("Failed to assign partition")?;
-
-    let end_offset = std::cmp::min(start_offset.saturating_add(limit as i64), high);
-    let mut records = Vec::with_capacity((end_offset - start_offset) as usize);
-
-    // Offsets below `high` are known to exist, so a poll timeout is a stalled fetch,
-    // not end-of-log. Callers treat a short batch as having reached the end of the
-    // log, so a partial result here would make subscribers silently skip records.
-    while (records.len() as i64) < (end_offset - start_offset) {
-        let expected_offset = start_offset + records.len() as i64;
-        match consumer.poll(Timeout::After(READ_POLL_STALL_TIMEOUT)) {
-            Some(Ok(msg)) => {
-                if msg.offset() != expected_offset {
-                    bail!(
-                        "Kafka read got offset {}, expected {}",
-                        msg.offset(),
-                        expected_offset
-                    );
-                }
-                records.push(message_to_record(&msg)?);
-            }
-            Some(Err(e)) => {
-                bail!("Kafka consume error: {}", e);
-            }
-            None => {
-                bail!(
-                    "Kafka read stalled at offset {} (high watermark {})",
-                    expected_offset,
-                    high
-                );
-            }
-        }
-    }
-
-    Ok(records)
-}
-
 pub struct KafkaLog {
     producer: FutureProducer,
     consumer_config: ClientConfig,
@@ -365,6 +301,74 @@ impl KafkaLog {
             _live_consumer: live_consumer,
         })
     }
+}
+
+fn read_records_blocking(
+    consumer_config: &ClientConfig,
+    topic: &str,
+    start_offset: i64,
+    limit: u16,
+    next_offset: &AtomicI64,
+) -> Result<Vec<Record>> {
+    // TODO: This constant recreation of consumers should be refactored.
+    // The TxReaderLog trait was created when we only had a FileLog. We should refactor it
+    // to something more amenable to a distributed log.
+    // Create a temporary consumer for this read
+    let consumer: BaseConsumer = consumer_config
+        .clone()
+        .set("group.id", format!("triplox-read-{}", start_offset))
+        .create()
+        .context("Failed to create Kafka consumer for read")?;
+
+    let (_low, high) = consumer
+        .fetch_watermarks(topic, PARTITION, Duration::from_secs(5))
+        .context("Failed to fetch watermarks")?;
+    next_offset.fetch_max(high, Ordering::Release);
+    if start_offset >= high {
+        return Ok(vec![]);
+    }
+
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(topic, PARTITION, Offset::Offset(start_offset))
+        .context("Failed to set partition offset")?;
+    consumer
+        .assign(&tpl)
+        .context("Failed to assign partition")?;
+
+    let end_offset = std::cmp::min(start_offset.saturating_add(limit as i64), high);
+    let mut records = Vec::with_capacity((end_offset - start_offset) as usize);
+
+    // Offsets below `high` are known to exist, so a poll timeout is a stalled fetch,
+    // not end-of-log. Callers treat a short batch as having reached the end of the
+    // log, so a partial result here would make subscribers silently skip records.
+    while (records.len() as i64) < (end_offset - start_offset) {
+        let expected_offset = start_offset + records.len() as i64;
+        match consumer.poll(Timeout::After(READ_POLL_STALL_TIMEOUT)) {
+            Some(Ok(msg)) => {
+                if msg.offset() != expected_offset {
+                    bail!(
+                        "Kafka read got offset {}, expected {}",
+                        msg.offset(),
+                        expected_offset
+                    );
+                }
+                records.push(message_to_record(&msg)?);
+            }
+            Some(Err(e)) => {
+                bail!("Kafka consume error: {}", e);
+            }
+            // TODO: This might be a bit to optimistic here. Maybe retry a couple of times.
+            None => {
+                bail!(
+                    "Kafka read stalled at offset {} (high watermark {})",
+                    expected_offset,
+                    high
+                );
+            }
+        }
+    }
+
+    Ok(records)
 }
 
 impl TxLogReader for KafkaLog {
