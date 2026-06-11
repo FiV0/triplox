@@ -76,7 +76,7 @@ services:
         --override controller.quorum.voters=0@automq:9093 \
         --override controller.quorum.bootstrap.servers=automq:9093 \
         --override listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
-        --override advertised.listeners=PLAINTEXT://automq:9092 \
+        --override advertised.listeners=PLAINTEXT://${KAFKA_ADVERTISED_HOST:-automq}:9092 \
         --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \

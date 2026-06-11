@@ -125,6 +125,24 @@ The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total
 ordering (WAL semantics), and `message.timestamp.type=LogAppendTime` so Triplox
 transaction times come from the broker append time rather than producer clocks.
 
+#### Running the Kafka integration tests
+
+The `kafka-integration-test` cargo feature gates tests that need a live broker;
+without `KAFKA_BOOTSTRAP_SERVERS` set they skip silently. Run them against the
+AutoMQ stack with:
+
+```bash
+./docker/scripts/run-kafka-integration-tests.sh
+```
+
+The script starts MinIO + AutoMQ (advertising `localhost:9092` so host clients
+can connect, with MinIO data on a named volume instead of the loopback mount),
+runs `cargo test -p triplox --features kafka-integration-test kafka_log::tests`,
+and tears the stack down afterwards. CI runs the same script in the
+`kafka-integration-test` job. Each test creates its own uniquely named topic,
+so runs don't interfere with a concurrently running dev stack's data — though
+both bind port 9092, so stop the dev stack first.
+
 #### Resetting the Kafka stack
 
 Wipe all MinIO data used by the Kafka stack and remove Kafka compose named
