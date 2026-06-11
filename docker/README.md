@@ -138,8 +138,9 @@ AutoMQ stack with:
 The script starts MinIO + AutoMQ (advertising `localhost:9092` so host clients
 can connect, with MinIO data on a named volume instead of the loopback mount),
 runs `cargo test -p triplox --features kafka-integration-test kafka_log::tests`,
-and tears the stack down afterwards. CI runs the same script in the
-`kafka-integration-test` job. Each test creates its own uniquely named topic,
+and tears the stack down afterwards. The same script backs the manually
+triggered `Kafka Integration` workflow (`gh workflow run kafka-integration.yml`
+or the Actions UI). Each test creates its own uniquely named topic,
 so runs don't interfere with a concurrently running dev stack's data — though
 both bind port 9092, so stop the dev stack first.
 

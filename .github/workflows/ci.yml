@@ -31,21 +31,6 @@ jobs:
       - name: Run triplox-client tests
         run: cargo test -p triplox-client --all-features
 
-  kafka-integration-test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run Kafka integration tests
-        run: docker/scripts/run-kafka-integration-tests.sh
-
   jvm-test:
     runs-on: ubuntu-latest
 
