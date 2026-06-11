@@ -301,6 +301,31 @@ impl KafkaLog {
             _live_consumer: live_consumer,
         })
     }
+
+    // Produce one record to the log partition and return the broker's delivery ack.
+    async fn produce(&self, payload: &[u8]) -> Result<Delivery> {
+        let delivery_result = self
+            .producer
+            .send(
+                FutureRecord::<str, _>::to(&self.topic)
+                    .partition(PARTITION)
+                    .payload(payload),
+                Timeout::After(Duration::from_secs(5)),
+            )
+            .await;
+
+        let delivery = delivery_result
+            .map_err(|(e, _message)| e)
+            .context("Kafka produce failed")?;
+        if delivery.partition != PARTITION {
+            bail!(
+                "Kafka produced to unexpected partition: expected {}, got {}",
+                PARTITION,
+                delivery.partition
+            );
+        }
+        Ok(delivery)
+    }
 }
 
 fn read_records_blocking(
@@ -397,26 +422,7 @@ impl TxLogReader for KafkaLog {
 
 impl TxLogWriter for KafkaLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let delivery_result = self
-            .producer
-            .send(
-                FutureRecord::<str, _>::to(&self.topic)
-                    .partition(PARTITION)
-                    .payload(&record),
-                Timeout::After(Duration::from_secs(5)),
-            )
-            .await;
-
-        let delivery = delivery_result
-            .map_err(|(e, _message)| e)
-            .context("Kafka produce failed")?;
-        if delivery.partition != PARTITION {
-            bail!(
-                "Kafka produced to unexpected partition: expected {}, got {}",
-                PARTITION,
-                delivery.partition
-            );
-        }
+        let delivery = self.produce(&record).await?;
         let tx_key =
             delivery_to_tx_key(&delivery).context("Failed to read Kafka delivery timestamp")?;
         self.next_offset
@@ -446,26 +452,10 @@ impl TxLog for KafkaLog {
             bail!("kafka log has offsets but no readable bootstrap record");
         }
 
-        let delivery_result = self
-            .producer
-            .send(
-                FutureRecord::<str, _>::to(&self.topic)
-                    .partition(PARTITION)
-                    .payload(&bootstrap_record.record),
-                Timeout::After(Duration::from_secs(5)),
-            )
-            .await;
-
-        let delivery = delivery_result
-            .map_err(|(e, _message)| e)
+        let delivery = self
+            .produce(&bootstrap_record.record)
+            .await
             .context("Kafka bootstrap produce failed")?;
-        if delivery.partition != PARTITION {
-            bail!(
-                "Kafka bootstrap produced to unexpected partition: expected {}, got {}",
-                PARTITION,
-                delivery.partition
-            );
-        }
         let offset = delivery.offset;
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
         if offset != bootstrap_record.tx_key.tx_id {
