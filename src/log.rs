@@ -73,8 +73,9 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
                     break;
                 }
             }
-            // Giving up would leave a permanent gap: the live phase accepts any
-            // later tx_id, so unread records would be skipped silently. Retry instead.
+            // We retry until the node gets shut down. Dying here would mean that the node
+            // potentially starts with gap of transactions that are unprocessed. The
+            // live phase accepts any later tx_id.
             Err(e) => {
                 error!(
                     "Error reading txs during catch-up; retrying in {:?}: {}",

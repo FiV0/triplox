@@ -174,6 +174,8 @@ impl<L: TxLog> Node<L> {
 
         let after_tx_id = Some(latest_indexed.tx_key.tx_id);
 
+        // TODO: This read_txs_after is called here and then again in the catch-up phase of
+        // the subscriber.
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
         let last_tx_key = records.last().map(|r| r.tx_key);
