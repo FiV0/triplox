@@ -460,7 +460,7 @@ impl TxLog for KafkaLog {
         self.next_offset.fetch_max(offset + 1, Ordering::Release);
         if offset != bootstrap_record.tx_key.tx_id {
             // Lost a bootstrap race: another writer claimed offset 0 and our empty
-            // record is orphaned at `offset` (indexed later as a failed tx).
+            // record is orphaned at `offset` (the indexer skips it with a warning).
             return match self.read_txs_after(None, 1).await?.first() {
                 Some(record) if is_kafka_bootstrap_record(record) => {
                     warn!(
