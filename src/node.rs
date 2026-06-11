@@ -152,58 +152,17 @@ impl SchemaProvider for tokio::sync::RwLock<Indexer> {
     }
 }
 
-impl Node<MemoryLog> {
-    pub async fn memory_node() -> Self {
-        let slate = in_memory_slate().await;
-        let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
-        let bootstrap_basis = *crate::bootstrap::BOOTSTRAP_TX_BASIS;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slate.db.clone(),
-            metadata,
-            bootstrap_basis,
-        )));
-        let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
-        log.ensure_bootstrap_record().await.unwrap();
-
-        let subscription = subscribe(
-            log.clone(),
-            Some(bootstrap_basis.tx_key.tx_id),
-            indexer.clone(),
-        )
-        .await;
-        let incremental = IncrementalQueryService::new(
-            std::env::temp_dir().join(format!(
-                "triplox-dbsp-incremental-{}",
-                crate::util::random_string(10)
-            )),
-            Handle::current(),
-            subscription.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
-        );
-
-        Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-            incremental,
-        }
-    }
-}
-
-impl Node<FileLog> {
-    /// Shared setup: given a slate and a path to the log file, bootstrap the
-    /// database, create the indexer & FileLog, subscribe, and catch up.
-    async fn from_slate_and_log(
+impl<L: TxLog> Node<L> {
+    /// Shared setup: bootstrap the database, ensure the log's bootstrap record,
+    /// subscribe the indexer, and wait for catch-up of un-indexed log records.
+    async fn from_slate_and_tx_log(
         slate: SlateComponents,
-        log_file: &Path,
+        log: Arc<L>,
         incremental_storage_path: PathBuf,
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
         let latest_indexed = latest_tx_basis_from_sdb(slate.db.as_ref()).await?;
-        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
             log.ensure_bootstrap_record().await?;
         }
@@ -247,6 +206,58 @@ impl Node<FileLog> {
             subscription,
             incremental,
         })
+    }
+}
+
+impl Node<MemoryLog> {
+    pub async fn memory_node() -> Self {
+        let slate = in_memory_slate().await;
+        let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
+        let bootstrap_basis = *crate::bootstrap::BOOTSTRAP_TX_BASIS;
+        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+            slate.db.clone(),
+            metadata,
+            bootstrap_basis,
+        )));
+        let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
+        log.ensure_bootstrap_record().await.unwrap();
+
+        let subscription = subscribe(
+            log.clone(),
+            Some(bootstrap_basis.tx_key.tx_id),
+            indexer.clone(),
+        )
+        .await;
+        let incremental = IncrementalQueryService::new(
+            std::env::temp_dir().join(format!(
+                "triplox-dbsp-incremental-{}",
+                crate::util::random_string(10)
+            )),
+            Handle::current(),
+            subscription.clone(),
+            slate.object_path.clone(),
+            slate.object_store.clone(),
+        );
+
+        Node {
+            log,
+            indexer,
+            slate,
+            subscription,
+            incremental,
+        }
+    }
+}
+
+impl Node<FileLog> {
+    /// Create the FileLog at `log_file` and finish setup via `from_slate_and_tx_log`.
+    async fn from_slate_and_log(
+        slate: SlateComponents,
+        log_file: &Path,
+        incremental_storage_path: PathBuf,
+    ) -> Result<Self, Error> {
+        let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
+        Self::from_slate_and_tx_log(slate, log, incremental_storage_path).await
     }
 
     pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
@@ -304,53 +315,8 @@ impl Node<KafkaLog> {
             &cache_path,
         )
         .await?;
-        let metadata = crate::bootstrap::init_db(&slate).await?;
-
-        let snapshot = slate.db.snapshot().await?;
-        let latest_indexed = latest_tx_basis_from_sdb(snapshot.as_ref()).await?;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
-            slate.db.clone(),
-            metadata,
-            latest_indexed,
-        )));
-
         let log = Arc::new(KafkaLog::new(&config.bootstrap_servers, config.topic.clone()).await?);
-
-        if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
-            log.ensure_bootstrap_record().await?;
-        }
-
-        let after_tx_id = Some(latest_indexed.tx_key.tx_id);
-
-        let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
-        let last_tx_key = records.last().map(|r| r.tx_key);
-
-        let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
-            None => None,
-        };
-
-        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(
-            local_disk_storage_path.join("dbsp"),
-            Handle::current(),
-            subscription.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
-        );
-
-        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            let completion = waiter.await_tx(tx_key).await?;
-            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
-        }
-
-        Ok(Node {
-            log,
-            indexer,
-            slate,
-            subscription,
-            incremental,
-        })
+        Self::from_slate_and_tx_log(slate, log, local_disk_storage_path.join("dbsp")).await
     }
 }
 
