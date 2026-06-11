@@ -329,6 +329,7 @@ impl KafkaLog {
         consumer_config
             .set("bootstrap.servers", bootstrap_servers)
             .set("enable.auto.commit", "false")
+            // This 'error' configuration is only available in librdkafka
             .set("auto.offset.reset", "error");
 
         ensure_tx_log_topic(bootstrap_servers, &topic).await?;
