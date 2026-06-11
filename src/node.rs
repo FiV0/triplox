@@ -16,6 +16,8 @@ use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
 use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
+#[cfg(feature = "kafka")]
+use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
@@ -286,7 +288,7 @@ impl Node<FileLog> {
 }
 
 #[cfg(feature = "kafka")]
-impl Node<crate::kafka_log::KafkaLog> {
+impl Node<KafkaLog> {
     pub async fn kafka_node(
         config: &KafkaStorageConfig,
         local_disk_storage_path: &Path,
@@ -312,10 +314,7 @@ impl Node<crate::kafka_log::KafkaLog> {
             latest_indexed,
         )));
 
-        let log = Arc::new(
-            crate::kafka_log::KafkaLog::new(&config.bootstrap_servers, config.topic.clone())
-                .await?,
-        );
+        let log = Arc::new(KafkaLog::new(&config.bootstrap_servers, config.topic.clone()).await?);
 
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_BASIS {
             log.ensure_bootstrap_record().await?;
