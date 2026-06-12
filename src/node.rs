@@ -15,7 +15,7 @@ use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
-use crate::indexer::{latest_tx_basis_from_sdb, Indexer};
+use crate::indexer::{latest_tx_basis_from_sdb, Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
@@ -170,7 +170,7 @@ impl<L: TxLog> Node<L> {
             slate.db.clone(),
             metadata,
             latest_indexed,
-            1024,
+            DEFAULT_TX_COMPLETION_CAPACITY,
         )));
 
         let after_tx_id = Some(latest_indexed.tx_key.tx_id);
@@ -220,7 +220,7 @@ impl Node<MemoryLog> {
             slate.db.clone(),
             metadata,
             bootstrap_basis,
-            1024,
+            DEFAULT_TX_COMPLETION_CAPACITY,
         )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();

@@ -28,6 +28,8 @@ use crate::util::concat_bytes;
 
 type TxCompletionMessage = (TxKey, Option<TxBasis>, Result<(), Arc<Error>>);
 
+pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
+
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
@@ -817,7 +819,7 @@ mod tests {
     /// Uses init_db for bootstrap, then transacts test schema via the indexer.
     /// Returns the indexer ready for test data at tx_id=1+.
     async fn bootstrapped_indexer(slate: &SlateComponents) -> Indexer {
-        bootstrapped_indexer_with_capacity(slate, 1024).await
+        bootstrapped_indexer_with_capacity(slate, DEFAULT_TX_COMPLETION_CAPACITY).await
     }
 
     /// Like `bootstrapped_indexer` with an explicit completion-channel capacity
@@ -1105,7 +1107,7 @@ mod tests {
             slate.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
-            1024,
+            DEFAULT_TX_COMPLETION_CAPACITY,
         );
 
         let tx_key = TxKey {
@@ -1195,7 +1197,7 @@ mod tests {
             components.db.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
-            1024,
+            DEFAULT_TX_COMPLETION_CAPACITY,
         );
         let tx_key = TxKey {
             tx_id: 1,
