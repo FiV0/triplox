@@ -16,28 +16,38 @@ use crate::schema::Schema;
 use crate::tx::{self, DatomWithTempids, IdOrTempId};
 use crate::upsert_resolution::{Generation, TempIdMap, UniqueLookup};
 
+fn conflicting_upserts(conflicts: BTreeMap<String, BTreeSet<Entid>>) -> anyhow::Error {
+    anyhow::anyhow!("Conflicting upserts: {:?}", conflicts)
+}
+
 async fn resolve_temp_id_avs(
     tempid_avs: &[(String, UniqueLookup)],
     db: &slatedb::Db,
 ) -> Result<TempIdMap> {
-    let mut unique_lookups: HashMap<UniqueLookup, Vec<String>> = HashMap::new();
-    for (tempid, lookup) in tempid_avs {
-        unique_lookups
-            .entry(lookup.clone())
-            .or_default()
-            .push(tempid.clone());
-    }
-
-    let lookups: Vec<UniqueLookup> = unique_lookups.keys().cloned().collect();
+    let lookups: Vec<UniqueLookup> = tempid_avs.iter().map(|(_, l)| l.clone()).collect();
     let resolved = tx::batch_lookup_unique_eids(db, &lookups).await?;
 
-    let mut temp_id_map = HashMap::new();
-    for (lookup, tempids) in unique_lookups {
-        if let Some(&eid) = resolved.get(&lookup) {
-            for tempid in tempids {
-                temp_id_map.insert(tempid, eid);
-            }
+    // A tempid may carry several identity assertions; collect every entid they
+    // resolve to so that disagreement aborts instead of one binding silently
+    // winning by iteration order.
+    let mut candidates: BTreeMap<String, BTreeSet<Entid>> = BTreeMap::new();
+    for (tempid, lookup) in tempid_avs {
+        if let Some(&eid) = resolved.get(lookup) {
+            candidates.entry(tempid.clone()).or_default().insert(eid);
         }
+    }
+
+    let mut temp_id_map = TempIdMap::new();
+    let mut conflicts: BTreeMap<String, BTreeSet<Entid>> = BTreeMap::new();
+    for (tempid, eids) in candidates {
+        if eids.len() == 1 {
+            temp_id_map.insert(tempid, eids.into_iter().next().unwrap());
+        } else {
+            conflicts.insert(tempid, eids);
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(conflicting_upserts(conflicts));
     }
     Ok(temp_id_map)
 }
@@ -59,7 +69,7 @@ fn record_resolutions(
     }
 
     if !conflicts.is_empty() {
-        return Err(anyhow::anyhow!("Conflicting upserts: {:?}", conflicts));
+        return Err(conflicting_upserts(conflicts));
     }
     Ok(())
 }
@@ -166,6 +176,8 @@ mod tests {
             (kw!(:name), 100, ValueType::String, None),
             (kw!(:age), 101, ValueType::Long, None),
             (kw!(:follows), 102, ValueType::Ref, None),
+            (kw!(:email), 103, ValueType::String, Some(Unique::Identity)),
+            (kw!(:ssn), 104, ValueType::String, Some(Unique::Identity)),
         ] {
             schema.ident_map.insert(kw.clone(), eid);
             schema.entid_map.insert(eid, kw);
@@ -191,28 +203,31 @@ mod tests {
         (resolved, pm)
     }
 
+    async fn seed_datom(db: &slatedb::Db, schema: &Schema, datom: Datom) {
+        let mut batch = WriteBatch::new();
+        write_index_entries(&mut batch, &[datom], schema, 1).unwrap();
+        db.write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await
+            .unwrap();
+    }
+
     async fn seed_ident(
         db: &slatedb::Db,
         schema: &Schema,
         entity: Entid,
         ident: edn::symbols::Keyword,
     ) {
-        let mut batch = WriteBatch::new();
-        write_index_entries(
-            &mut batch,
-            &[Datom {
+        seed_datom(
+            db,
+            schema,
+            Datom {
                 entity,
                 attribute: kw!(:db/ident),
                 value: DataType::Keyword(ident),
                 op: DatomOp::Assert,
-            }],
-            schema,
-            1,
+            },
         )
-        .unwrap();
-        db.write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
-            .await
-            .unwrap();
+        .await;
     }
 
     #[tokio::test]
@@ -253,6 +268,119 @@ mod tests {
         ];
         let (resolved, _) = resolve(datoms).await;
         assert_ne!(resolved[0].entity, resolved[1].entity);
+    }
+
+    #[tokio::test]
+    async fn test_conflicting_identity_upserts_on_single_tempid_errors() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        seed_datom(
+            slate.db.as_ref(),
+            &schema,
+            Datom {
+                entity: 42,
+                attribute: kw!(:email),
+                value: DataType::String("a@x".to_string()),
+                op: DatomOp::Assert,
+            },
+        )
+        .await;
+        seed_datom(
+            slate.db.as_ref(),
+            &schema,
+            Datom {
+                entity: 43,
+                attribute: kw!(:ssn),
+                value: DataType::String("123".to_string()),
+                op: DatomOp::Assert,
+            },
+        )
+        .await;
+        let datoms = vec![
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:email),
+                value: ValueWithTempIds::Data(DataType::String("a@x".to_string())),
+                op: DatomOp::Assert,
+            },
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:ssn),
+                value: ValueWithTempIds::Data(DataType::String("123".to_string())),
+                op: DatomOp::Assert,
+            },
+        ];
+
+        let msg = resolve_tempids(datoms, &schema, &slate.db, &mut pm)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            msg.contains("Conflicting upserts"),
+            "expected 'Conflicting upserts', got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("\"t\"") && msg.contains("42") && msg.contains("43"),
+            "error should name the tempid and both candidate entids, got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_identity_upserts_same_entity_succeeds() {
+        let slate = in_memory_slate().await;
+        let schema = tempid_test_schema();
+        let mut pm = PartitionMap::new();
+        seed_datom(
+            slate.db.as_ref(),
+            &schema,
+            Datom {
+                entity: 42,
+                attribute: kw!(:email),
+                value: DataType::String("a@x".to_string()),
+                op: DatomOp::Assert,
+            },
+        )
+        .await;
+        seed_datom(
+            slate.db.as_ref(),
+            &schema,
+            Datom {
+                entity: 42,
+                attribute: kw!(:ssn),
+                value: DataType::String("123".to_string()),
+                op: DatomOp::Assert,
+            },
+        )
+        .await;
+        let datoms = vec![
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:email),
+                value: ValueWithTempIds::Data(DataType::String("a@x".to_string())),
+                op: DatomOp::Assert,
+            },
+            DatomWithTempids {
+                entity: IdOrTempId::TempId("t".to_string()),
+                attribute: kw!(:ssn),
+                value: ValueWithTempIds::Data(DataType::String("123".to_string())),
+                op: DatomOp::Assert,
+            },
+        ];
+
+        let resolved = resolve_tempids(datoms, &schema, &slate.db, &mut pm)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.iter().all(|d| d.entity == 42));
+        assert!(
+            pm.is_empty(),
+            "upserted tempid should not allocate a new entid"
+        );
     }
 
     #[tokio::test]

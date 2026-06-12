@@ -3588,6 +3588,63 @@ mod tests {
         }
     }
 
+    /// A single tempid asserting two different `:db.unique/identity`
+    /// attributes that resolve to two different existing entities must abort
+    /// as a conflicting upsert naming the tempid and both candidates — not as
+    /// a downstream unique-constraint violation against a nondeterministically
+    /// chosen winner (#380).
+    #[tokio::test]
+    async fn test_conflicting_identity_upserts_single_tempid_rejects_tx() {
+        let node = Node::memory_node().await;
+        node.execute_tx(vec![
+            unique_identity_schema_attribute(kw!(:user/email), "string"),
+            unique_identity_schema_attribute(kw!(:user/ssn), "string"),
+        ])
+        .await
+        .unwrap();
+
+        node.execute_tx(vec![
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("alice".into())),
+                (kw!(:user/email), "a@x".into()),
+            ]),
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::String("bob".into())),
+                (kw!(:user/ssn), "123".into()),
+            ]),
+        ])
+        .await
+        .unwrap();
+
+        let result = node
+            .execute_tx(vec![
+                TxOp::Add {
+                    entity: "t".into(),
+                    attribute: kw!(:user/email),
+                    value: "a@x".into(),
+                },
+                TxOp::Add {
+                    entity: "t".into(),
+                    attribute: kw!(:user/ssn),
+                    value: "123".into(),
+                },
+            ])
+            .await
+            .unwrap();
+
+        match result {
+            TransactionResult::TxAborted(_, err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Conflicting upserts"),
+                    "expected 'Conflicting upserts', got: {}",
+                    msg
+                );
+            }
+            TransactionResult::TxCommited(_) => panic!("expected TxAborted, got TxCommited"),
+        }
+    }
+
     /// In-tx ownership transfer of a unique-identity ref attribute.
     ///
     /// The user retracts carol's `(:user/primary-friend, bob)` ownership and
