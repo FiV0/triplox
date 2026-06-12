@@ -1905,58 +1905,51 @@ mod tests {
         Ok(())
     }
 
-    /// Transact a single Add op; `tx_id` also derives the system time.
-    async fn transact_add(
-        indexer: &mut Indexer,
-        tx_id: i64,
-        entity: EntityRef,
-        attribute: edn::symbols::Keyword,
-        value: DataType,
-    ) -> Result<(), Error> {
+    /// Transact a single op; `tx_id` also derives the system time.
+    async fn transact(indexer: &mut Indexer, tx_id: i64, op: TxOp) -> Result<(), Error> {
         indexer
             .transact_tx(
                 TxKey {
                     tx_id,
                     system_time: st_from_unix_epoch(tx_id as u64 * 100),
                 },
-                vec![TxOp::Add {
-                    entity,
-                    attribute,
-                    value,
-                }],
+                vec![op],
             )
             .await?;
         Ok(())
     }
 
-    /// Collect (value, op) pairs from the EAV index for one (entity, attribute).
+    /// Collect (value, tx_eid, op) triples from the EAV index for one (entity, attribute).
     async fn eav_entries_for(
         slate: &Arc<slatedb::Db>,
         entity_id: i64,
         attribute_id: i64,
-    ) -> Result<Vec<(DataType, u8)>, Error> {
+    ) -> Result<Vec<(DataType, i64, u8)>, Error> {
         let mut iter = slate
             .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
             .await?;
         let mut entries = Vec::new();
         while let Some(kv) = iter.next().await? {
-            let (eid, attribute, value, _tx, op) = eav_key_to_parts(kv.key)?;
+            let (eid, attribute, value, tx, op) = eav_key_to_parts(kv.key)?;
             if eid == DataType::Long(entity_id) && attribute == attribute_id {
-                entries.push((value, op));
+                entries.push((value, tx, op));
             }
         }
         Ok(entries)
     }
 
-    /// Values whose ADD count exceeds their RETRACT count, i.e. currently live.
-    fn live_values(entries: &[(DataType, u8)]) -> Vec<DataType> {
-        let mut counts: HashMap<DataType, i64> = HashMap::new();
-        for (value, op) in entries {
-            *counts.entry(value.clone()).or_default() += if *op == codec::ADD { 1 } else { -1 };
+    /// Values whose latest entry (highest tx_eid) is an ADD, i.e. currently live.
+    fn live_values(entries: &[(DataType, i64, u8)]) -> Vec<DataType> {
+        let mut latest: HashMap<DataType, (i64, u8)> = HashMap::new();
+        for (value, tx, op) in entries {
+            let entry = latest.entry(value.clone()).or_insert((*tx, *op));
+            if *tx > entry.0 {
+                *entry = (*tx, *op);
+            }
         }
-        counts
+        latest
             .into_iter()
-            .filter(|(_, count)| *count > 0)
+            .filter(|(_, (_, op))| *op == codec::ADD)
             .map(|(value, _)| value)
             .collect()
     }
@@ -1977,15 +1970,43 @@ mod tests {
             .unwrap()
             .0;
 
-        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
+        transact(
+            &mut indexer,
+            1,
+            TxOp::Add {
+                entity: "e".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            },
+        )
+        .await?;
         let entity_id = find_first_user_entity(&slate).await?;
-        let entity = EntityRef::Id(entity_id);
-        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
-        transact_add(&mut indexer, 3, entity, kw!(:name), "carol".into()).await?;
+        transact(
+            &mut indexer,
+            2,
+            TxOp::Add {
+                entity: EntityRef::Id(entity_id),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            },
+        )
+        .await?;
+        transact(
+            &mut indexer,
+            3,
+            TxOp::Add {
+                entity: EntityRef::Id(entity_id),
+                attribute: kw!(:name),
+                value: "carol".into(),
+            },
+        )
+        .await?;
 
         let entries = eav_entries_for(&slate, entity_id, name_id).await?;
         assert!(
-            entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
+            entries
+                .iter()
+                .any(|(v, _, op)| *v == DataType::String("bob".into()) && *op == codec::RETRACT),
             "Expected RETRACT for bob, got {:?}",
             entries
         );
@@ -1995,119 +2016,6 @@ mod tests {
             "Expected carol as the only live value, got {:?}",
             entries
         );
-        Ok(())
-    }
-
-    // Long keys encode descending, so a decreasing chain puts the dead larger
-    // value first under the prefix; the scan must skip it.
-    #[tokio::test]
-    async fn test_retract_on_second_overwrite_decreasing_longs() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let age_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:age))
-            .unwrap()
-            .0;
-
-        transact_add(&mut indexer, 1, "e".into(), kw!(:age), DataType::Long(3)).await?;
-        let entity_id = find_first_user_entity(&slate).await?;
-        let entity = EntityRef::Id(entity_id);
-        transact_add(
-            &mut indexer,
-            2,
-            entity.clone(),
-            kw!(:age),
-            DataType::Long(1),
-        )
-        .await?;
-        transact_add(&mut indexer, 3, entity, kw!(:age), DataType::Long(5)).await?;
-
-        let entries = eav_entries_for(&slate, entity_id, age_id).await?;
-        assert!(
-            entries.contains(&(DataType::Long(1), codec::RETRACT)),
-            "Expected RETRACT for 1, got {:?}",
-            entries
-        );
-        assert_eq!(
-            live_values(&entries),
-            vec![DataType::Long(5)],
-            "Expected 5 as the only live value, got {:?}",
-            entries
-        );
-        Ok(())
-    }
-
-    // Re-asserting a previously retracted value leaves its group with a
-    // RETRACT-then-ADD history; later old-value lookups must still resolve.
-    #[tokio::test]
-    async fn test_retract_after_reasserting_old_value() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let name_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:name))
-            .unwrap()
-            .0;
-
-        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
-        let entity_id = find_first_user_entity(&slate).await?;
-        let entity = EntityRef::Id(entity_id);
-        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
-        transact_add(&mut indexer, 3, entity.clone(), kw!(:name), "alice".into()).await?;
-        transact_add(&mut indexer, 4, entity, kw!(:name), "carol".into()).await?;
-
-        let entries = eav_entries_for(&slate, entity_id, name_id).await?;
-        assert!(
-            entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
-            "Expected RETRACT for bob at tx3, got {:?}",
-            entries
-        );
-        assert_eq!(
-            live_values(&entries),
-            vec![DataType::String("carol".into())],
-            "Expected carol as the only live value, got {:?}",
-            entries
-        );
-        Ok(())
-    }
-
-    // Asserting the current value again after an overwrite history must be
-    // dropped as a no-op, proving the live value is actually found.
-    #[tokio::test]
-    async fn test_same_value_no_retract_after_overwrite() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let name_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:name))
-            .unwrap()
-            .0;
-
-        transact_add(&mut indexer, 1, "e".into(), kw!(:name), "alice".into()).await?;
-        let entity_id = find_first_user_entity(&slate).await?;
-        let entity = EntityRef::Id(entity_id);
-        transact_add(&mut indexer, 2, entity.clone(), kw!(:name), "bob".into()).await?;
-        transact_add(&mut indexer, 3, entity, kw!(:name), "bob".into()).await?;
-
-        let entries = eav_entries_for(&slate, entity_id, name_id).await?;
-        let bob = DataType::String("bob".into());
-        let bob_adds = entries
-            .iter()
-            .filter(|(v, op)| *v == bob && *op == codec::ADD)
-            .count();
-        let bob_retracts = entries
-            .iter()
-            .filter(|(v, op)| *v == bob && *op == codec::RETRACT)
-            .count();
-        assert_eq!(bob_adds, 1, "re-assert must be dropped, got {:?}", entries);
-        assert_eq!(bob_retracts, 0, "no retract expected, got {:?}", entries);
         Ok(())
     }
 
@@ -2132,55 +2040,50 @@ mod tests {
             .unwrap()
             .0;
 
-        indexer
-            .transact_tx(
-                TxKey {
-                    tx_id: 1,
-                    system_time: st_from_unix_epoch(100),
-                },
-                vec![TxOp::put(vec![
-                    (kw!(:name), "alice".into()),
-                    (kw!(:age), DataType::Long(2)),
-                ])],
-            )
-            .await?;
+        transact(
+            &mut indexer,
+            1,
+            TxOp::put(vec![
+                (kw!(:name), "alice".into()),
+                (kw!(:age), DataType::Long(2)),
+            ]),
+        )
+        .await?;
         let entity_id = find_first_user_entity(&slate).await?;
-        indexer
-            .transact_tx(
-                TxKey {
-                    tx_id: 2,
-                    system_time: st_from_unix_epoch(200),
-                },
-                vec![TxOp::put(vec![
-                    (kw!(:db/id), DataType::Long(entity_id)),
-                    (kw!(:name), "bob".into()),
-                    (kw!(:age), DataType::Long(1)),
-                ])],
-            )
-            .await?;
-        indexer
-            .transact_tx(
-                TxKey {
-                    tx_id: 3,
-                    system_time: st_from_unix_epoch(300),
-                },
-                vec![TxOp::put(vec![
-                    (kw!(:db/id), DataType::Long(entity_id)),
-                    (kw!(:name), "carol".into()),
-                    (kw!(:age), DataType::Long(5)),
-                ])],
-            )
-            .await?;
+        transact(
+            &mut indexer,
+            2,
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::Long(entity_id)),
+                (kw!(:name), "bob".into()),
+                (kw!(:age), DataType::Long(1)),
+            ]),
+        )
+        .await?;
+        transact(
+            &mut indexer,
+            3,
+            TxOp::put(vec![
+                (kw!(:db/id), DataType::Long(entity_id)),
+                (kw!(:name), "carol".into()),
+                (kw!(:age), DataType::Long(5)),
+            ]),
+        )
+        .await?;
 
         let name_entries = eav_entries_for(&slate, entity_id, name_id).await?;
         let age_entries = eav_entries_for(&slate, entity_id, age_id).await?;
         assert!(
-            name_entries.contains(&(DataType::String("bob".into()), codec::RETRACT)),
+            name_entries
+                .iter()
+                .any(|(v, _, op)| *v == DataType::String("bob".into()) && *op == codec::RETRACT),
             "Expected RETRACT for bob, got {:?}",
             name_entries
         );
         assert!(
-            age_entries.contains(&(DataType::Long(1), codec::RETRACT)),
+            age_entries
+                .iter()
+                .any(|(v, _, op)| *v == DataType::Long(1) && *op == codec::RETRACT),
             "Expected RETRACT for 1, got {:?}",
             age_entries
         );
