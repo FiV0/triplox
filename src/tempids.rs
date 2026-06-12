@@ -203,26 +203,9 @@ mod tests {
         (resolved, pm)
     }
 
-    async fn seed_datom(
-        db: &slatedb::Db,
-        schema: &Schema,
-        entity: Entid,
-        attribute: edn::symbols::Keyword,
-        value: DataType,
-    ) {
+    async fn seed_datom(db: &slatedb::Db, schema: &Schema, datom: Datom) {
         let mut batch = WriteBatch::new();
-        write_index_entries(
-            &mut batch,
-            &[Datom {
-                entity,
-                attribute,
-                value,
-                op: DatomOp::Assert,
-            }],
-            schema,
-            1,
-        )
-        .unwrap();
+        write_index_entries(&mut batch, &[datom], schema, 1).unwrap();
         db.write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await
             .unwrap();
@@ -234,7 +217,17 @@ mod tests {
         entity: Entid,
         ident: edn::symbols::Keyword,
     ) {
-        seed_datom(db, schema, entity, kw!(:db/ident), DataType::Keyword(ident)).await;
+        seed_datom(
+            db,
+            schema,
+            Datom {
+                entity,
+                attribute: kw!(:db/ident),
+                value: DataType::Keyword(ident),
+                op: DatomOp::Assert,
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -285,17 +278,23 @@ mod tests {
         seed_datom(
             slate.db.as_ref(),
             &schema,
-            42,
-            kw!(:email),
-            DataType::String("a@x".to_string()),
+            Datom {
+                entity: 42,
+                attribute: kw!(:email),
+                value: DataType::String("a@x".to_string()),
+                op: DatomOp::Assert,
+            },
         )
         .await;
         seed_datom(
             slate.db.as_ref(),
             &schema,
-            43,
-            kw!(:ssn),
-            DataType::String("123".to_string()),
+            Datom {
+                entity: 43,
+                attribute: kw!(:ssn),
+                value: DataType::String("123".to_string()),
+                op: DatomOp::Assert,
+            },
         )
         .await;
         let datoms = vec![
@@ -338,17 +337,23 @@ mod tests {
         seed_datom(
             slate.db.as_ref(),
             &schema,
-            42,
-            kw!(:email),
-            DataType::String("a@x".to_string()),
+            Datom {
+                entity: 42,
+                attribute: kw!(:email),
+                value: DataType::String("a@x".to_string()),
+                op: DatomOp::Assert,
+            },
         )
         .await;
         seed_datom(
             slate.db.as_ref(),
             &schema,
-            42,
-            kw!(:ssn),
-            DataType::String("123".to_string()),
+            Datom {
+                entity: 42,
+                attribute: kw!(:ssn),
+                value: DataType::String("123".to_string()),
+                op: DatomOp::Assert,
+            },
         )
         .await;
         let datoms = vec![
