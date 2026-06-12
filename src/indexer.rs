@@ -332,6 +332,10 @@ impl Indexer {
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
         // 7. Finalize datoms (card-one rewrite) against current storage state
+        // The reason this step can-t invalidate the datom set is that this can only ever do two things:
+        // - Drop an assert those value is already stored. No conflict possible.
+        // - Add a retract for a stored value. By construction it's valid and validation assured 
+        //   that there is at most one assert per (entity, card-one attribute) pair. 
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 8. Unique validation (needs the auto-generated card-one retracts)
