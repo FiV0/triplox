@@ -805,7 +805,7 @@ mod tests {
     }
 
     /// Find the first user-partition entity ID by scanning the EAV index.
-    async fn find_first_user_entity(slate: &Arc<slatedb::Db>) -> Result<i64, Error> {
+    async fn find_first_user_entity(slate: &Db) -> Result<i64, Error> {
         let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
         let mut iter = slate
             .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
@@ -818,7 +818,7 @@ mod tests {
                 }
             }
         }
-        panic!("No user-partition entity found in EAV index");
+        anyhow::bail!("No user-partition entity found in EAV index")
     }
 
     /// Count (ADD, RETRACT) EAV entries for a given entity and attribute.
@@ -912,7 +912,7 @@ mod tests {
         }];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
-        // Verify an EAV entry in USER_PARTITION exists (panics if none found)
+        // Verify an EAV entry in USER_PARTITION exists (errors if none found)
         find_first_user_entity(&slate).await?;
 
         Ok(())
