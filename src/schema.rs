@@ -467,8 +467,10 @@ impl Schema {
         self.attribute_map.contains_key(&entity_id)
     }
 
-    /// Validate finalized transaction datoms against the current schema.
+    /// Validate resolved transaction datoms against the current schema.
     ///
+    /// Runs before the card-one finalize rewrite so intra-tx conflicts are
+    /// judged on user intent, not on mechanically rewritten datoms (#379).
     /// This step does general transaction validation only. Schema-related datoms
     /// are merely witnessed so the caller can decide whether a schema delta must
     /// be prepared in a separate pass.

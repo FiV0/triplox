@@ -328,28 +328,30 @@ impl Indexer {
         .await?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 6. Finalize datoms (card-one rewrite) against current storage state
-        let datoms = self.finalize_datoms_for_commit(datoms).await?;
-
-        // 7. Unique + general validation
-        self.validate_unique_constraints(&datoms).await?;
+        // 6. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 8. Prepare schema update before writing to avoid leaking rejected datoms
+        // 7. Finalize datoms (card-one rewrite) against current storage state
+        let datoms = self.finalize_datoms_for_commit(datoms).await?;
+
+        // 8. Unique validation (needs the auto-generated card-one retracts)
+        self.validate_unique_constraints(&datoms).await?;
+
+        // 9. Prepare schema update before writing to avoid leaking rejected datoms
         let schema_update = if validation.schema_changes_detected {
             Some(self.metadata.schema.prepare_schema_update(&datoms)?)
         } else {
             None
         };
 
-        // 9. Write indices + commit
+        // 10. Write indices + commit
         let mut batch = WriteBatch::new();
         write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
-        // 10. Apply on success only
+        // 11. Apply on success only
         self.metadata.partition_map = pending_pm;
         if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
             self.metadata.schema.apply_schema_update(schema_update);
@@ -1392,6 +1394,184 @@ mod tests {
             }
         }
         assert_eq!(add_count, 1, "Expected 1 ADD entry (second tx dropped)");
+        assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
+    /// Find the first user-partition entity ID in the EAV index.
+    async fn find_user_entity_id(slate: &Db) -> Result<i64, Error> {
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base {
+                    return Ok(id);
+                }
+            }
+        }
+        anyhow::bail!("Should have found user entity")
+    }
+
+    /// Count (ADD, RETRACT) EAV entries for a given entity and attribute.
+    async fn count_eav_ops(
+        slate: &Db,
+        entity_id: i64,
+        attr_id: Entid,
+    ) -> Result<(u32, u32), Error> {
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        let mut add_count = 0;
+        let mut retract_count = 0;
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != attr_id {
+                continue;
+            }
+            match op {
+                codec::ADD => add_count += 1,
+                codec::RETRACT => retract_count += 1,
+                _ => {}
+            }
+        }
+        Ok((add_count, retract_count))
+    }
+
+    // Regression test for #379 consequence 1: retract + re-assert of the stored
+    // value must abort as an add/retract conflict instead of silently retracting.
+    #[tokio::test]
+    async fn test_retract_and_reassert_stored_value_aborts() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        let tx1 = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        indexer
+            .transact_tx(
+                tx1,
+                vec![TxOp::Add {
+                    entity: "alice".into(),
+                    attribute: kw!(:name),
+                    value: "alice".into(),
+                }],
+            )
+            .await?;
+        let entity_id = find_user_entity_id(&slate).await?;
+
+        // Second tx: retract + re-assert the stored value — must abort, not retract
+        let tx2 = TxKey {
+            tx_id: 2,
+            system_time: st_from_unix_epoch(200),
+        };
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                tx2,
+                vec![
+                    TxOp::Retract {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alice".into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alice".into(),
+                    },
+                ],
+            )
+            .await?;
+        let completion = waiter.await_tx(tx2).await?;
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot both assert and retract"));
+
+        // The stored value must survive: 1 ADD, no RETRACTs
+        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
+        assert_eq!(add_count, 1, "Expected the original ADD to survive");
+        assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
+    // Regression test for #379 consequence 2: two asserts for a card-one attribute
+    // must abort even when one of them equals the stored value.
+    #[tokio::test]
+    async fn test_card_one_two_asserts_abort_even_when_one_matches_stored() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        let tx1 = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        indexer
+            .transact_tx(
+                tx1,
+                vec![TxOp::Add {
+                    entity: "alice".into(),
+                    attribute: kw!(:name),
+                    value: "alice".into(),
+                }],
+            )
+            .await?;
+        let entity_id = find_user_entity_id(&slate).await?;
+
+        // Second tx: assert stored value + a different value — must abort, not let "bob" win
+        let tx2 = TxKey {
+            tx_id: 2,
+            system_time: st_from_unix_epoch(200),
+        };
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                tx2,
+                vec![
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alice".into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "bob".into(),
+                    },
+                ],
+            )
+            .await?;
+        let completion = waiter.await_tx(tx2).await?;
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot assert multiple values"));
+
+        // Storage unchanged: only the original ADD, no "bob", no RETRACTs
+        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
+        assert_eq!(add_count, 1, "Expected only the original ADD");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
 
         Ok(())
