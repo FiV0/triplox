@@ -285,6 +285,43 @@ fn validate_unique_identity_lookup(
     Ok(())
 }
 
+/// Advance `iter` to the first key under `prefix` whose logical group's latest
+/// entry is an assert. A logical group is the key minus the `[tx_eid][op]`
+/// suffix; tx_eids encode descending, so the first key per group is its latest
+/// entry. Groups whose latest entry is a retraction are skipped via next_prefix.
+/// Returns the live key, or None if the prefix has no live entry (callers
+/// distinguish global iterator exhaustion via `iter.peek().is_none()`).
+pub(crate) async fn find_live_key_under_prefix(
+    iter: &mut SlateKeyIterator,
+    prefix: &[u8],
+) -> Result<Option<bytes::Bytes>> {
+    iter.seek(prefix).await?;
+    loop {
+        let Some(key) = iter.peek() else {
+            return Ok(None);
+        };
+
+        if !key.starts_with(prefix) {
+            return Ok(None);
+        }
+
+        assert!(
+            key.len() >= codec::TX_EID_OP_SUFFIX,
+            "Key too short ({} bytes) to contain tx_eid + op suffix",
+            key.len()
+        );
+        if key[key.len() - 1] != codec::RETRACT {
+            return Ok(Some(key.clone()));
+        }
+
+        let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
+        let Some(next_group) = next_prefix(&key[..logical_key_end]) else {
+            return Ok(None);
+        };
+        iter.seek(&next_group).await?;
+    }
+}
+
 /// Batch-resolve `[attribute, value]` pairs to entity IDs via the unique-only
 /// VAE index. One forward scan covers all lookups, seeking to each prefix in
 /// sorted order. Returns a map from `(attr_eid, value)` to the owning entity.
@@ -310,43 +347,24 @@ pub async fn batch_lookup_unique_eids(
     let mut iter = SlateKeyIterator::scan_prefix(db, &[codec::VAE]).await?;
 
     for (vae_prefix, (attr_eid, value)) in &prefixes {
-        iter.seek(vae_prefix).await?;
-        loop {
-            let Some(key) = iter.peek() else {
-                return Ok(resolved);
-            };
-
-            if !key.starts_with(vae_prefix) {
-                break;
-            }
-
-            assert!(
-                key.len() >= codec::TX_EID_OP_SUFFIX,
-                "Key too short ({} bytes) to contain tx_eid + op suffix",
-                key.len()
-            );
-            if key[key.len() - 1] == codec::RETRACT {
-                let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
-                let Some(next_entity) = next_prefix(&key[..logical_key_end]) else {
-                    return Ok(resolved);
-                };
-                iter.seek(&next_entity).await?;
-                continue;
-            }
-
-            let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(key.clone())?;
-            match entity {
-                DataType::Long(eid) => {
-                    resolved.insert((*attr_eid, value.clone()), eid);
-                    break;
-                }
-                other => {
-                    return Err(anyhow::anyhow!(
-                        "Expected Long entity ID in VAE key, got {:?}",
-                        other
-                    ));
+        match find_live_key_under_prefix(&mut iter, vae_prefix).await? {
+            Some(key) => {
+                let (_value, _attribute, entity, _tx_eid, _op) = vae_key_to_parts(key)?;
+                match entity {
+                    DataType::Long(eid) => {
+                        resolved.insert((*attr_eid, value.clone()), eid);
+                    }
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "Expected Long entity ID in VAE key, got {:?}",
+                            other
+                        ));
+                    }
                 }
             }
+            // Prefixes are sorted, so no later prefix can match once the range is exhausted.
+            None if iter.peek().is_none() => break,
+            None => {}
         }
     }
 
