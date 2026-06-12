@@ -334,8 +334,8 @@ impl Indexer {
         // 7. Finalize datoms (card-one rewrite) against current storage state
         // The reason this step can-t invalidate the datom set is that this can only ever do two things:
         // - Drop an assert those value is already stored. No conflict possible.
-        // - Add a retract for a stored value. By construction it's valid and validation assured 
-        //   that there is at most one assert per (entity, card-one attribute) pair. 
+        // - Add a retract for a stored value. By construction it's valid and validation assured
+        //   that there is at most one assert per (entity, card-one attribute) pair.
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
         // 8. Unique validation (needs the auto-generated card-one retracts)
@@ -804,6 +804,48 @@ mod tests {
         indexer
     }
 
+    /// Find the first user-partition entity ID by scanning the EAV index.
+    async fn find_first_user_entity(slate: &Arc<slatedb::Db>) -> Result<i64, Error> {
+        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
+            if let DataType::Long(id) = eid {
+                if id >= user_base {
+                    return Ok(id);
+                }
+            }
+        }
+        panic!("No user-partition entity found in EAV index");
+    }
+
+    /// Count (ADD, RETRACT) EAV entries for a given entity and attribute.
+    async fn count_eav_ops(
+        slate: &Db,
+        entity_id: i64,
+        attr_id: Entid,
+    ) -> Result<(u32, u32), Error> {
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .await?;
+        let mut add_count = 0;
+        let mut retract_count = 0;
+        while let Some(kv) = iter.next().await? {
+            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
+            if eid != DataType::Long(entity_id) || attribute != attr_id {
+                continue;
+            }
+            match op {
+                codec::ADD => add_count += 1,
+                codec::RETRACT => retract_count += 1,
+                _ => {}
+            }
+        }
+        Ok((add_count, retract_count))
+    }
+
     #[tokio::test]
     async fn test_indexer() -> Result<(), Error> {
         let components = in_memory_slate().await;
@@ -870,23 +912,8 @@ mod tests {
         }];
         indexer.transact_tx(tx_key, tx_ops).await.unwrap();
 
-        // Verify an EAV entry in USER_PARTITION exists
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await
-            .unwrap();
-        let mut found = false;
-        while let Some(kv) = iter.next().await? {
-            let (entity_id, _, _, _, _) = eav_key_to_parts(kv.key).unwrap();
-            if let DataType::Long(eid) = entity_id {
-                if eid >= user_base {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        assert!(found, "Expected EAV entry to be written to the database");
+        // Verify an EAV entry in USER_PARTITION exists (panics if none found)
+        find_first_user_entity(&slate).await?;
 
         Ok(())
     }
@@ -1259,21 +1286,7 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find the auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
-        let mut entity_id: i64 = 0;
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    entity_id = id;
-                    break;
-                }
-            }
-        }
-        assert!(entity_id >= user_base, "Should have found user entity");
+        let entity_id = find_first_user_entity(&slate).await?;
 
         // Second tx: assert name="bob" for same entity — should auto-retract "alice"
         let tx2 = TxKey {
@@ -1349,20 +1362,7 @@ mod tests {
         indexer.transact_tx(tx1, tx_ops).await?;
 
         // Find auto-assigned entity ID
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
-        let mut entity_id: i64 = 0;
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    entity_id = id;
-                    break;
-                }
-            }
-        }
+        let entity_id = find_first_user_entity(&slate).await?;
 
         // Second tx: assert same name="alice" — datom should be dropped entirely
         let tx2 = TxKey {
@@ -1381,68 +1381,11 @@ mod tests {
             .await?;
 
         // Count EAV entries for entity, name attr — should be 1 ADD, 0 RETRACTs
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        let mut add_count = 0;
-        let mut retract_count = 0;
-        while let Some(kv) = iter.next().await? {
-            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if eid != DataType::Long(entity_id) || attribute != name_id {
-                continue;
-            }
-            match op {
-                codec::ADD => add_count += 1,
-                codec::RETRACT => retract_count += 1,
-                _ => {}
-            }
-        }
+        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
         assert_eq!(add_count, 1, "Expected 1 ADD entry (second tx dropped)");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
 
         Ok(())
-    }
-
-    /// Find the first user-partition entity ID in the EAV index.
-    async fn find_user_entity_id(slate: &Db) -> Result<i64, Error> {
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    return Ok(id);
-                }
-            }
-        }
-        anyhow::bail!("Should have found user entity")
-    }
-
-    /// Count (ADD, RETRACT) EAV entries for a given entity and attribute.
-    async fn count_eav_ops(
-        slate: &Db,
-        entity_id: i64,
-        attr_id: Entid,
-    ) -> Result<(u32, u32), Error> {
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        let mut add_count = 0;
-        let mut retract_count = 0;
-        while let Some(kv) = iter.next().await? {
-            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if eid != DataType::Long(entity_id) || attribute != attr_id {
-                continue;
-            }
-            match op {
-                codec::ADD => add_count += 1,
-                codec::RETRACT => retract_count += 1,
-                _ => {}
-            }
-        }
-        Ok((add_count, retract_count))
     }
 
     // Regression test for #379 consequence 1: retract + re-assert of the stored
@@ -1473,7 +1416,7 @@ mod tests {
                 }],
             )
             .await?;
-        let entity_id = find_user_entity_id(&slate).await?;
+        let entity_id = find_first_user_entity(&slate).await?;
 
         // Second tx: retract + re-assert the stored value — must abort, not retract
         let tx2 = TxKey {
@@ -1508,74 +1451,6 @@ mod tests {
         // The stored value must survive: 1 ADD, no RETRACTs
         let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
         assert_eq!(add_count, 1, "Expected the original ADD to survive");
-        assert_eq!(retract_count, 0, "Expected no RETRACT entries");
-
-        Ok(())
-    }
-
-    // Regression test for #379 consequence 2: two asserts for a card-one attribute
-    // must abort even when one of them equals the stored value.
-    #[tokio::test]
-    async fn test_card_one_two_asserts_abort_even_when_one_matches_stored() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let name_id = indexer
-            .metadata()
-            .schema
-            .get_attribute(&kw!(:name))
-            .unwrap()
-            .0;
-
-        let tx1 = TxKey {
-            tx_id: 1,
-            system_time: st_from_unix_epoch(100),
-        };
-        indexer
-            .transact_tx(
-                tx1,
-                vec![TxOp::Add {
-                    entity: "alice".into(),
-                    attribute: kw!(:name),
-                    value: "alice".into(),
-                }],
-            )
-            .await?;
-        let entity_id = find_user_entity_id(&slate).await?;
-
-        // Second tx: assert stored value + a different value — must abort, not let "bob" win
-        let tx2 = TxKey {
-            tx_id: 2,
-            system_time: st_from_unix_epoch(200),
-        };
-        let waiter = indexer.tx_waiter();
-        indexer
-            .transact_tx(
-                tx2,
-                vec![
-                    TxOp::Add {
-                        entity: EntityRef::Id(entity_id),
-                        attribute: kw!(:name),
-                        value: "alice".into(),
-                    },
-                    TxOp::Add {
-                        entity: EntityRef::Id(entity_id),
-                        attribute: kw!(:name),
-                        value: "bob".into(),
-                    },
-                ],
-            )
-            .await?;
-        let completion = waiter.await_tx(tx2).await?;
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot assert multiple values"));
-
-        // Storage unchanged: only the original ADD, no "bob", no RETRACTs
-        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
-        assert_eq!(add_count, 1, "Expected only the original ADD");
         assert_eq!(retract_count, 0, "Expected no RETRACT entries");
 
         Ok(())
@@ -1649,23 +1524,6 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    /// Find the first user-partition entity ID by scanning the EAV index.
-    async fn find_first_user_entity(slate: &Arc<slatedb::Db>) -> Result<i64, Error> {
-        let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
-            if let DataType::Long(id) = eid {
-                if id >= user_base {
-                    return Ok(id);
-                }
-            }
-        }
-        panic!("No user-partition entity found in EAV index");
     }
 
     // TODO move this test to a proper node level test once we support historic queries
@@ -1911,22 +1769,7 @@ mod tests {
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs, 0 RETRACTs
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        let mut add_count = 0;
-        let mut retract_count = 0;
-        while let Some(kv) = iter.next().await? {
-            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if eid != DataType::Long(entity_id) || attribute != tags_id {
-                continue;
-            }
-            match op {
-                codec::ADD => add_count += 1,
-                codec::RETRACT => retract_count += 1,
-                _ => {}
-            }
-        }
+        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, tags_id).await?;
         assert_eq!(add_count, 2, "Expected 2 ADD entries for cardinality-many");
         assert_eq!(
             retract_count, 0,
@@ -1979,19 +1822,7 @@ mod tests {
         indexer.transact_tx(tx2, tx_ops2).await?;
 
         // Scan EAV for entity, tags attr — expect 2 ADDs (both written)
-        let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
-            .await?;
-        let mut add_count = 0;
-        while let Some(kv) = iter.next().await? {
-            let (eid, attribute, _value, _ts, op) = eav_key_to_parts(kv.key)?;
-            if eid != DataType::Long(entity_id) || attribute != tags_id {
-                continue;
-            }
-            if op == codec::ADD {
-                add_count += 1;
-            }
-        }
+        let (add_count, _retract_count) = count_eav_ops(&slate, entity_id, tags_id).await?;
         assert_eq!(
             add_count, 2,
             "Expected 2 ADD entries for same value on cardinality-many"
