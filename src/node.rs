@@ -170,6 +170,7 @@ impl<L: TxLog> Node<L> {
             slate.db.clone(),
             metadata,
             latest_indexed,
+            1024,
         )));
 
         let after_tx_id = Some(latest_indexed.tx_key.tx_id);
@@ -219,6 +220,7 @@ impl Node<MemoryLog> {
             slate.db.clone(),
             metadata,
             bootstrap_basis,
+            1024,
         )));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();

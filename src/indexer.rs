@@ -237,19 +237,15 @@ pub(crate) fn build_tx_entity_datoms(
 }
 
 impl Indexer {
-    pub fn new(slatedb: Arc<Db>, metadata: Metadata, latest_indexed_tx: TxBasis) -> Self {
-        Self::with_channel_capacity(slatedb, metadata, latest_indexed_tx, 1024)
-    }
-
-    /// Like `new` with an explicit completion-channel capacity, so tests can
-    /// force broadcast lag deterministically.
-    pub(crate) fn with_channel_capacity(
+    /// `tx_completion_capacity` sizes the tx-completion broadcast channel;
+    /// tests use small values to force broadcast lag deterministically.
+    pub fn new(
         slatedb: Arc<Db>,
         metadata: Metadata,
         latest_indexed_tx: TxBasis,
-        capacity: usize,
+        tx_completion_capacity: usize,
     ) -> Self {
-        let (tx_completion_sender, _) = broadcast::channel(capacity);
+        let (tx_completion_sender, _) = broadcast::channel(tx_completion_capacity);
         Indexer {
             slatedb,
             metadata,
@@ -597,87 +593,6 @@ pub(crate) struct TxCompletion {
     pub result: Result<(), Arc<anyhow::Error>>,
 }
 
-/// Look up a transaction's persisted outcome via the AVE index on `:db/txId`,
-/// reading `:db/txResult`/`:db/txError` from the tx entity.
-///
-/// Returns `None` if no tx entity exists: the tx is either not yet indexed or
-/// failed without persisting an outcome (technical abort, deserialize failure).
-pub(crate) async fn lookup_tx_completion<D>(
-    sdb: &D,
-    tx_key: TxKey,
-) -> Result<Option<TxCompletion>, Error>
-where
-    D: DbReadOps + Sync,
-{
-    // Keyed on tx_id only; the log assigns system_time together with tx_id.
-    let mut value_buf = Vec::new();
-    encode_datatype(&DataType::Long(tx_key.tx_id), &mut value_buf);
-    let ave_prefix = concat_bytes(&[
-        &[codec::AVE],
-        &encode_i64_bytes(crate::schema::DB_TX_ID),
-        &value_buf,
-    ]);
-    let mut iter = sdb
-        .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    let mut tx_eid: Option<i64> = None;
-    while let Some(kv) = iter.next().await? {
-        let (_attribute, _value, entity, _tx_eid, op) = ave_key_to_parts(kv.key)?;
-        if op == codec::RETRACT {
-            continue;
-        }
-        match entity {
-            DataType::Long(eid) => {
-                tx_eid = Some(eid);
-                break;
-            }
-            other => bail!("Expected Long entity ID in AVE key, got {:?}", other),
-        }
-    }
-    let Some(tx_eid) = tx_eid else {
-        return Ok(None);
-    };
-
-    let mut entity_buf = Vec::new();
-    encode_datatype(&DataType::Long(tx_eid), &mut entity_buf);
-    let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_buf]);
-    let mut iter = sdb
-        .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
-        .await?;
-    let mut tx_result: Option<i64> = None;
-    let mut tx_error: Option<String> = None;
-    while let Some(kv) = iter.next().await? {
-        let (_entity, attribute, value, _tx_eid, op) = eav_key_to_parts(kv.key)?;
-        if op == codec::RETRACT {
-            continue;
-        }
-        if attribute == crate::schema::DB_TX_RESULT {
-            if let DataType::Long(result) = value {
-                tx_result = Some(result);
-            }
-        }
-        if attribute == crate::schema::DB_TX_ERROR {
-            if let DataType::String(err) = value {
-                tx_error = Some(err);
-            }
-        }
-    }
-
-    let result = match tx_result {
-        Some(DB_TX_COMMITTED) => Ok(()),
-        Some(DB_TX_ABORTED) => Err(Arc::new(anyhow::anyhow!(
-            "{}",
-            tx_error.unwrap_or_else(|| format!("Transaction {} aborted", tx_key.tx_id))
-        ))),
-        Some(other) => bail!("Tx entity {tx_eid} has unknown :db/txResult {other}"),
-        None => bail!("Tx entity {tx_eid} missing :db/txResult"),
-    };
-    Ok(Some(TxCompletion {
-        basis: Some(TxBasis { tx_key, tx_eid }),
-        result,
-    }))
-}
-
 impl TxWaiter {
     // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
     // await_indexed answers "Are we there yet?" without knowing anything about the result.
@@ -687,7 +602,7 @@ impl TxWaiter {
     /// abort, deserialize failure); mirror the live notification shape for
     /// those: no basis, an error result.
     async fn completion_from_storage(&self, tx_key: TxKey) -> Result<TxCompletion, Error> {
-        match lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
+        match tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
             Some(completion) => Ok(completion),
             None => Ok(TxCompletion {
                 basis: None,
@@ -732,7 +647,7 @@ impl TxWaiter {
                     // found means the tx is still pending or left no entity — a
                     // later tx's message will resolve it via the Greater branch.
                     if let Some(completion) =
-                        lookup_tx_completion(self.slatedb.as_ref(), tx_key).await?
+                        tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await?
                     {
                         return Ok(completion);
                     }
@@ -912,7 +827,7 @@ mod tests {
         capacity: usize,
     ) -> Indexer {
         let metadata = crate::bootstrap::init_db(slate).await.unwrap();
-        let mut indexer = Indexer::with_channel_capacity(
+        let mut indexer = Indexer::new(
             slate.db.clone(),
             metadata,
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
@@ -1190,6 +1105,7 @@ mod tests {
             slate.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+            1024,
         );
 
         let tx_key = TxKey {
@@ -1279,6 +1195,7 @@ mod tests {
             components.db.clone(),
             Metadata::new(Schema::default(), crate::metadata::PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+            1024,
         );
         let tx_key = TxKey {
             tx_id: 1,
@@ -1331,7 +1248,7 @@ mod tests {
             )
             .await?;
 
-        let completion = lookup_tx_completion(components.db.as_ref(), tx_key)
+        let completion = tx::lookup_tx_completion(components.db.as_ref(), tx_key)
             .await?
             .expect("tx entity should exist");
         assert_eq!(completion.basis, Some(basis));
@@ -1359,7 +1276,7 @@ mod tests {
             )
             .await?;
 
-        let completion = lookup_tx_completion(components.db.as_ref(), tx_key)
+        let completion = tx::lookup_tx_completion(components.db.as_ref(), tx_key)
             .await?
             .expect("aborted tx entity should exist");
         assert_eq!(completion.basis, Some(basis));
@@ -1380,7 +1297,7 @@ mod tests {
             tx_id: 42,
             system_time: st_from_unix_epoch(2),
         };
-        assert!(lookup_tx_completion(components.db.as_ref(), tx_key)
+        assert!(tx::lookup_tx_completion(components.db.as_ref(), tx_key)
             .await?
             .is_none());
 

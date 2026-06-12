@@ -217,6 +217,7 @@ mod tests {
             slate.db.clone(),
             Metadata::new(test_schema(), PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+            1024,
         )));
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
