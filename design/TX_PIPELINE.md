@@ -15,7 +15,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    Allocate tx entity           tx_eid = pending_pm.allocate_entid(TX_PARTITION)
                                 (pipeline reads go directly against slatedb;
                                  index writes are buffered in a WriteBatch
-                                 committed atomically in step 7)
+                                 committed atomically in step 9)
                                 ↓
 2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomExpanded>
    - TxOp::Put -> N DatomExpanded (one per attr)
@@ -47,19 +47,25 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Allocates remaining tempids, coalescing unresolved identity matches
    Build tx entity datoms       build_tx_entity_datoms(tx_eid, tx_key, ...)
                                 ↓
-6. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
-                                ↓
-7. Validate                     validate_unique_constraints + schema.validate_datoms(datoms)
-   - Unique checks for :db.unique/value and :db.unique/identity
+6. Validate                     schema.validate_datoms(datoms)
+   - Runs on the user's datoms before finalize, so intra-tx conflicts
+     (add/retract overlap, card-one multi-assert) judge user intent
    - Type checking: value type matches attribute's value_type
    - Unknown attribute errors
    - Detects schema changes
                                 ↓
-8. Write indices + commit       let mut batch = WriteBatch::new();
+7. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
+   - Purely mechanical rewrite: cannot change tx semantics
+                                ↓
+8. Unique validation            validate_unique_constraints
+   - Unique checks for :db.unique/value and :db.unique/identity
+   - Runs post-finalize: must see auto-generated card-one retracts
+                                ↓
+9. Write indices + commit       let mut batch = WriteBatch::new();
                                 write_index_entries(&mut batch, ...);
                                 slatedb.write_with_options(batch, ...)
                                 ↓
-9. Apply on success only:
+10. Apply on success only:
    - self.metadata.partition_map = pending_pm    (counter reservation committed)
    - self.metadata.schema.apply_schema_update(schema_update)  (infallible)
    - self.metadata.advance_generation()
