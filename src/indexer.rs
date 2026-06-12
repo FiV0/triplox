@@ -1456,6 +1456,74 @@ mod tests {
         Ok(())
     }
 
+    // Regression test for #379 consequence 2: two asserts for a card-one attribute
+    // must abort even when one of them equals the stored value.
+    #[tokio::test]
+    async fn test_card_one_two_asserts_abort_even_when_one_matches_stored() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        let tx1 = TxKey {
+            tx_id: 1,
+            system_time: st_from_unix_epoch(100),
+        };
+        indexer
+            .transact_tx(
+                tx1,
+                vec![TxOp::Add {
+                    entity: "alice".into(),
+                    attribute: kw!(:name),
+                    value: "alice".into(),
+                }],
+            )
+            .await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+
+        // Second tx: assert stored value + a different value — must abort, not let "bob" win
+        let tx2 = TxKey {
+            tx_id: 2,
+            system_time: st_from_unix_epoch(200),
+        };
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                tx2,
+                vec![
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alice".into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "bob".into(),
+                    },
+                ],
+            )
+            .await?;
+        let completion = waiter.await_tx(tx2).await?;
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot assert multiple values"));
+
+        // Storage unchanged: only the original ADD, no "bob", no RETRACTs
+        let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
+        assert_eq!(add_count, 1, "Expected only the original ADD");
+        assert_eq!(retract_count, 0, "Expected no RETRACT entries");
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_schema_immutability_rejected_in_pipeline() -> Result<(), Error> {
         let components = in_memory_slate().await;
