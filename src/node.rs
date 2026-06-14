@@ -197,8 +197,7 @@ impl<L: TxLog> Node<L> {
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            let completion = waiter.await_tx(tx_key).await?;
-            completion.result.map_err(|e| anyhow::anyhow!("{:#}", e))?;
+            waiter.await_indexed(tx_key).await?;
         }
 
         Ok(Node {
@@ -1404,6 +1403,56 @@ mod tests {
             "tx_waiter should not timeout for an already-indexed tx"
         );
         result.unwrap().expect("await_tx should succeed");
+
+        node.close().await.unwrap();
+    }
+
+    // Restarting after a trailing semantic error should not result in node startup failure.
+    // A semantic error is just transaction history.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_local_node_restart_over_trailing_aborted_tx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().to_path_buf();
+
+        // First node: bootstrap + define schema, then shut down cleanly so the
+        // schema tx is indexed into SlateDB.
+        let node = Node::local_node(&root_path).await.unwrap();
+        define_test_schema(&node).await;
+        node.close().await.unwrap();
+
+        // Append a fact using a non-existant attribute
+        let aborting_ops = collect_tx_ops(vec![TxOp::Add {
+            entity: "e".into(),
+            attribute: kw!(:nonexistent_attr),
+            value: "oops".into(),
+        }])
+        .unwrap();
+        let serialized = bincode::serialize(&aborting_ops).unwrap();
+        {
+            let log = FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap();
+            log.append_tx(serialized).await.unwrap();
+        }
+
+        // Restart: catch-up replays the un-indexed aborting tx as the last log
+        // record. The node must still come up.
+        let node = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Node::local_node(&root_path),
+        )
+        .await
+        .expect("restart should not hang")
+        .expect("node should restart over a trailing aborted tx");
+
+        // The node is usable afterwards and the abort is recorded as history.
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "alice".into(),
+            }])
+            .await
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommited(_)));
 
         node.close().await.unwrap();
     }
