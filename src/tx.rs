@@ -13,7 +13,7 @@ use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
-use crate::transaction::{TxBasis, TxKey};
+use crate::transaction::TxKey;
 use crate::util::{concat_bytes, next_prefix};
 
 // ---------------------------------------------------------------------------
@@ -466,7 +466,7 @@ pub(crate) fn validate_allocated_entity_ids(
 /// failed without persisting an outcome (technical abort, deserialize failure).
 ///
 /// TODO: I think this function can be replaced by an entity API call once we have
-/// simplified TxKey/TxBasis and an actual entity API.
+/// simplified TxKey and an actual entity API.
 pub(crate) async fn lookup_tx_completion<D>(
     sdb: &D,
     tx_key: TxKey,
@@ -539,7 +539,7 @@ where
         None => bail!("Tx entity {tx_eid} missing :db/txResult"),
     };
     Ok(Some(TxCompletion {
-        basis: Some(TxBasis { tx_key, tx_eid }),
+        tx_key: Some(tx_key),
         result,
     }))
 }

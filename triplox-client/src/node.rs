@@ -3,7 +3,7 @@ use edn::query::ParsedQuery;
 
 use crate::ops::{QueryArg, TxOp};
 use crate::query::QueryResult;
-use crate::transaction::{TransactionResult, TxBasis, TxKey};
+use crate::transaction::{TransactionResult, TxKey};
 
 #[allow(async_fn_in_trait)]
 pub trait SubmitNode {
@@ -84,5 +84,5 @@ pub trait Database {
 pub trait QueryNode {
     type DB: Database;
     async fn db(&self) -> Result<Self::DB, Error>;
-    async fn db_as_of(&self, basis: TxBasis) -> Result<Self::DB, Error>;
+    async fn db_as_of(&self, tx_key: TxKey) -> Result<Self::DB, Error>;
 }

@@ -9,14 +9,8 @@ pub struct TxKey {
     pub system_time: Instant,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TxBasis {
-    pub tx_key: TxKey,
-    pub tx_eid: i64,
-}
-
 #[derive(Debug)]
 pub enum TransactionResult {
-    TxCommited(TxBasis),
-    TxAborted(TxBasis, Box<dyn Error>),
+    TxCommited(TxKey),
+    TxAborted(TxKey, Box<dyn Error>),
 }

@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::ops::{DataType, EntityRef, QueryArg, TxOp};
 use crate::protocol::ColumnDescription;
-use crate::transaction::{TxBasis, TxKey};
+use crate::transaction::TxKey;
 
 // =============================================================================
 // Ext type codes
@@ -636,19 +636,17 @@ fn read_body_value(data: &[u8]) -> Result<Value> {
 pub struct OpenDbRequest {
     pub tx_id: Option<i64>,
     pub system_time: Option<DateTime<Utc>>,
-    pub tx_eid: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DbOpenedResponse {
     pub tx_id: i64,
     pub system_time: DateTime<Utc>,
-    pub tx_eid: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryRequest {
-    pub db: TxBasis,
+    pub db: TxKey,
     pub query: String,
     pub args: Vec<QueryArg>,
 }
@@ -675,7 +673,6 @@ pub struct TxResultResponse {
     pub status: u8,
     pub tx_id: i64,
     pub system_time: DateTime<Utc>,
-    pub tx_eid: i64,
     pub error_message: Option<String>,
 }
 
@@ -688,16 +685,14 @@ pub struct ErrorResponseBody {
     pub hint: Option<String>,
 }
 
-/// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}`.
+/// Encode an OpenDb request: `{"tx_id": int|nil, "system_time": Timestamp|nil}`.
 pub fn encode_open_db_request(req: &OpenDbRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 3)?;
+    rmp::encode::write_map_len(&mut buf, 2)?;
     rmp::encode::write_str(&mut buf, "tx_id")?;
     write_optional_i64(&mut buf, req.tx_id)?;
     rmp::encode::write_str(&mut buf, "system_time")?;
     write_optional_timestamp(&mut buf, req.system_time)?;
-    rmp::encode::write_str(&mut buf, "tx_eid")?;
-    write_optional_i64(&mut buf, req.tx_eid)?;
     Ok(buf)
 }
 
@@ -705,24 +700,17 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let tx_id = take_optional_i64(&mut map, "tx_id")?;
     let system_time = take_optional_timestamp(&mut map, "system_time")?;
-    let tx_eid = take_optional_i64(&mut map, "tx_eid")?;
-    Ok(OpenDbRequest {
-        tx_id,
-        system_time,
-        tx_eid,
-    })
+    Ok(OpenDbRequest { tx_id, system_time })
 }
 
-/// Encode a DbOpened response: `{"tx_id": int, "system_time": Timestamp, "tx_eid": int}`.
+/// Encode a DbOpened response: `{"tx_id": int, "system_time": Timestamp}`.
 pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 3)?;
+    rmp::encode::write_map_len(&mut buf, 2)?;
     rmp::encode::write_str(&mut buf, "tx_id")?;
     rmp::encode::write_sint(&mut buf, resp.tx_id)?;
     rmp::encode::write_str(&mut buf, "system_time")?;
     write_timestamp(&mut buf, &resp.system_time)?;
-    rmp::encode::write_str(&mut buf, "tx_eid")?;
-    rmp::encode::write_sint(&mut buf, resp.tx_eid)?;
     Ok(buf)
 }
 
@@ -730,42 +718,32 @@ pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
     let mut map = map_from_value(read_body_value(data)?)?;
     let tx_id = take_i64(&mut map, "tx_id")?;
     let system_time = take_timestamp(&mut map, "system_time")?;
-    let tx_eid = take_i64(&mut map, "tx_eid")?;
-    Ok(DbOpenedResponse {
-        tx_id,
-        system_time,
-        tx_eid,
-    })
+    Ok(DbOpenedResponse { tx_id, system_time })
 }
 
-fn write_tx_basis<W: Write>(w: &mut W, basis: &TxBasis) -> Result<()> {
-    rmp::encode::write_map_len(w, 3)?;
+fn write_tx_key<W: Write>(w: &mut W, tx_key: &TxKey) -> Result<()> {
+    rmp::encode::write_map_len(w, 2)?;
     rmp::encode::write_str(w, "tx_id")?;
-    rmp::encode::write_sint(w, basis.tx_key.tx_id)?;
+    rmp::encode::write_sint(w, tx_key.tx_id)?;
     rmp::encode::write_str(w, "system_time")?;
-    write_timestamp(w, &basis.tx_key.system_time)?;
-    rmp::encode::write_str(w, "tx_eid")?;
-    rmp::encode::write_sint(w, basis.tx_eid)?;
+    write_timestamp(w, &tx_key.system_time)?;
     Ok(())
 }
 
-fn tx_basis_from_value(value: Value) -> Result<TxBasis> {
+fn tx_key_from_value(value: Value) -> Result<TxKey> {
     let mut map = map_from_value(value)?;
-    Ok(TxBasis {
-        tx_key: TxKey {
-            tx_id: take_i64(&mut map, "tx_id")?,
-            system_time: take_timestamp(&mut map, "system_time")?,
-        },
-        tx_eid: take_i64(&mut map, "tx_eid")?,
+    Ok(TxKey {
+        tx_id: take_i64(&mut map, "tx_id")?,
+        system_time: take_timestamp(&mut map, "system_time")?,
     })
 }
 
-/// Encode a Query request: `{"db": TxBasis, "query": str, "args": [QueryArg, ...]}`.
+/// Encode a Query request: `{"db": TxKey, "query": str, "args": [QueryArg, ...]}`.
 pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 3)?;
     rmp::encode::write_str(&mut buf, "db")?;
-    write_tx_basis(&mut buf, &req.db)?;
+    write_tx_key(&mut buf, &req.db)?;
     rmp::encode::write_str(&mut buf, "query")?;
     rmp::encode::write_str(&mut buf, &req.query)?;
     rmp::encode::write_str(&mut buf, "args")?;
@@ -778,7 +756,7 @@ pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
 
 pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
-    let db = tx_basis_from_value(take_field(&mut map, "db")?)?;
+    let db = tx_key_from_value(take_field(&mut map, "db")?)?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
         Value::Array(arr) => arr,
@@ -939,15 +917,13 @@ pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
 /// Encode a TxResult response.
 pub fn encode_tx_result_response(resp: &TxResultResponse) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 5)?;
+    rmp::encode::write_map_len(&mut buf, 4)?;
     rmp::encode::write_str(&mut buf, "status")?;
     rmp::encode::write_uint(&mut buf, resp.status as u64)?;
     rmp::encode::write_str(&mut buf, "tx_id")?;
     rmp::encode::write_sint(&mut buf, resp.tx_id)?;
     rmp::encode::write_str(&mut buf, "system_time")?;
     write_timestamp(&mut buf, &resp.system_time)?;
-    rmp::encode::write_str(&mut buf, "tx_eid")?;
-    rmp::encode::write_sint(&mut buf, resp.tx_eid)?;
     rmp::encode::write_str(&mut buf, "error_message")?;
     write_optional_string(&mut buf, &resp.error_message)?;
     Ok(buf)
@@ -961,13 +937,11 @@ pub fn decode_tx_result_response(data: &[u8]) -> Result<TxResultResponse> {
     }
     let tx_id = take_i64(&mut map, "tx_id")?;
     let system_time = take_timestamp(&mut map, "system_time")?;
-    let tx_eid = take_i64(&mut map, "tx_eid")?;
     let error_message = take_optional_string(&mut map, "error_message")?;
     Ok(TxResultResponse {
         status: status_i64 as u8,
         tx_id,
         system_time,
-        tx_eid,
         error_message,
     })
 }
@@ -1024,7 +998,7 @@ pub fn decode_error_body(data: &[u8]) -> Result<ErrorResponseBody> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubscribeRequest {
-    pub db: Option<TxBasis>,
+    pub db: Option<TxKey>,
     pub query: String,
     pub args: Vec<QueryArg>,
 }
@@ -1033,35 +1007,32 @@ pub struct SubscribeRequest {
 /// msgpack maps tagged by a `kind` discriminator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SubscriptionFrame {
-    /// First frame: registration basis and (internal) column schema.
+    /// First frame: registration tx_key and (internal) column schema.
     Open {
-        basis: TxBasis,
+        tx_key: TxKey,
         columns: Vec<ColumnDescription>,
     },
     /// One transaction's z-set changes as `(values, weight)` rows.
     Delta {
-        basis: TxBasis,
+        tx_key: TxKey,
         rows: Vec<(Vec<DataType>, i64)>,
     },
     /// Terminal error raised after the stream has started.
     Error(ErrorResponseBody),
 }
 
-fn write_optional_tx_basis<W: Write>(w: &mut W, basis: &Option<TxBasis>) -> Result<()> {
-    match basis {
-        Some(b) => write_tx_basis(w, b)?,
+fn write_optional_tx_key<W: Write>(w: &mut W, tx_key: &Option<TxKey>) -> Result<()> {
+    match tx_key {
+        Some(k) => write_tx_key(w, k)?,
         None => rmp::encode::write_nil(w)?,
     }
     Ok(())
 }
 
-fn take_optional_tx_basis(
-    map: &mut BTreeMap<String, Value>,
-    name: &str,
-) -> Result<Option<TxBasis>> {
+fn take_optional_tx_key(map: &mut BTreeMap<String, Value>, name: &str) -> Result<Option<TxKey>> {
     match map.remove(name) {
         None | Some(Value::Nil) => Ok(None),
-        Some(v) => Ok(Some(tx_basis_from_value(v)?)),
+        Some(v) => Ok(Some(tx_key_from_value(v)?)),
     }
 }
 
@@ -1093,12 +1064,12 @@ fn delta_row_from_value(v: Value) -> Result<(Vec<DataType>, i64)> {
     Ok((values, weight))
 }
 
-/// Encode a Subscribe request: `{"db": TxBasis|nil, "query": str, "args": [QueryArg, ...]}`.
+/// Encode a Subscribe request: `{"db": TxKey|nil, "query": str, "args": [QueryArg, ...]}`.
 pub fn encode_subscribe_request(req: &SubscribeRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 3)?;
     rmp::encode::write_str(&mut buf, "db")?;
-    write_optional_tx_basis(&mut buf, &req.db)?;
+    write_optional_tx_key(&mut buf, &req.db)?;
     rmp::encode::write_str(&mut buf, "query")?;
     rmp::encode::write_str(&mut buf, &req.query)?;
     rmp::encode::write_str(&mut buf, "args")?;
@@ -1111,7 +1082,7 @@ pub fn encode_subscribe_request(req: &SubscribeRequest) -> Result<Vec<u8>> {
 
 pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
-    let db = take_optional_tx_basis(&mut map, "db")?;
+    let db = take_optional_tx_key(&mut map, "db")?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
         Value::Array(arr) => arr,
@@ -1128,22 +1099,22 @@ pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
 pub fn encode_subscription_frame(frame: &SubscriptionFrame) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     match frame {
-        SubscriptionFrame::Open { basis, columns } => {
+        SubscriptionFrame::Open { tx_key, columns } => {
             rmp::encode::write_map_len(&mut buf, 3)?;
             write_str_field(&mut buf, "kind", "open")?;
-            rmp::encode::write_str(&mut buf, "basis")?;
-            write_tx_basis(&mut buf, basis)?;
+            rmp::encode::write_str(&mut buf, "tx_key")?;
+            write_tx_key(&mut buf, tx_key)?;
             rmp::encode::write_str(&mut buf, "columns")?;
             rmp::encode::write_array_len(&mut buf, columns.len() as u32)?;
             for col in columns {
                 write_column_description(&mut buf, col)?;
             }
         }
-        SubscriptionFrame::Delta { basis, rows } => {
+        SubscriptionFrame::Delta { tx_key, rows } => {
             rmp::encode::write_map_len(&mut buf, 3)?;
             write_str_field(&mut buf, "kind", "delta")?;
-            rmp::encode::write_str(&mut buf, "basis")?;
-            write_tx_basis(&mut buf, basis)?;
+            rmp::encode::write_str(&mut buf, "tx_key")?;
+            write_tx_key(&mut buf, tx_key)?;
             rmp::encode::write_str(&mut buf, "rows")?;
             rmp::encode::write_array_len(&mut buf, rows.len() as u32)?;
             for (values, weight) in rows {
@@ -1190,7 +1161,7 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
     let kind = take_string(&mut map, "kind")?;
     match kind.as_str() {
         "open" => {
-            let basis = tx_basis_from_value(take_field(&mut map, "basis")?)?;
+            let tx_key = tx_key_from_value(take_field(&mut map, "tx_key")?)?;
             let cols_arr = match take_field(&mut map, "columns")? {
                 Value::Array(arr) => arr,
                 other => bail!("field \"columns\" expected array, got {other:?}"),
@@ -1199,10 +1170,10 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
             for item in cols_arr {
                 columns.push(column_description_from_value(item)?);
             }
-            Ok(SubscriptionFrame::Open { basis, columns })
+            Ok(SubscriptionFrame::Open { tx_key, columns })
         }
         "delta" => {
-            let basis = tx_basis_from_value(take_field(&mut map, "basis")?)?;
+            let tx_key = tx_key_from_value(take_field(&mut map, "tx_key")?)?;
             let rows_arr = match take_field(&mut map, "rows")? {
                 Value::Array(arr) => arr,
                 other => bail!("field \"rows\" expected array, got {other:?}"),
@@ -1211,7 +1182,7 @@ pub fn subscription_frame_from_value(v: Value) -> Result<SubscriptionFrame> {
             for entry in rows_arr {
                 rows.push(delta_row_from_value(entry)?);
             }
-            Ok(SubscriptionFrame::Delta { basis, rows })
+            Ok(SubscriptionFrame::Delta { tx_key, rows })
         }
         "error" => {
             let severity_str = take_string(&mut map, "severity")?;
@@ -1245,19 +1216,16 @@ mod tests {
     use chrono::TimeZone;
     use edn::kw;
 
-    fn sample_basis() -> TxBasis {
-        TxBasis {
-            tx_key: TxKey {
-                tx_id: 7,
-                system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-            },
-            tx_eid: 8_796_093_022_208,
+    fn sample_tx_key() -> TxKey {
+        TxKey {
+            tx_id: 7,
+            system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         }
     }
 
     #[test]
     fn subscribe_request_round_trip() {
-        for db in [None, Some(sample_basis())] {
+        for db in [None, Some(sample_tx_key())] {
             let req = SubscribeRequest {
                 db,
                 query: "[:find ?n :where [?e :name ?n]]".to_string(),
@@ -1271,7 +1239,7 @@ mod tests {
     #[test]
     fn open_frame_round_trip() {
         let frame = SubscriptionFrame::Open {
-            basis: sample_basis(),
+            tx_key: sample_tx_key(),
             columns: vec![ColumnDescription {
                 name: "n".to_string(),
                 data_type: 255,
@@ -1286,7 +1254,7 @@ mod tests {
     fn delta_frame_round_trip() {
         // Includes a |weight| > 1 row to assert raw signed weights round-trip.
         let frame = SubscriptionFrame::Delta {
-            basis: sample_basis(),
+            tx_key: sample_tx_key(),
             rows: vec![
                 (vec![DataType::String("Ivan".to_string())], 1),
                 (vec![DataType::String("Petr".to_string())], -2),
@@ -1331,12 +1299,12 @@ mod tests {
         write_data_type(&mut buf, &DataType::Long(5)).unwrap();
         rmp::encode::write_sint(&mut buf, 1).unwrap();
         write_str_field(&mut buf, "kind", "delta").unwrap();
-        rmp::encode::write_str(&mut buf, "basis").unwrap();
-        write_tx_basis(&mut buf, &sample_basis()).unwrap();
+        rmp::encode::write_str(&mut buf, "tx_key").unwrap();
+        write_tx_key(&mut buf, &sample_tx_key()).unwrap();
         assert_eq!(
             decode_subscription_frame(&buf).expect("decode"),
             SubscriptionFrame::Delta {
-                basis: sample_basis(),
+                tx_key: sample_tx_key(),
                 rows: vec![(vec![DataType::Long(5)], 1)],
             }
         );
@@ -1586,20 +1554,15 @@ mod tests {
 
     #[test]
     fn round_trip_open_db_request_bodies() {
-        for (tx_id, system_time, tx_eid) in [
-            (None, None, None),
+        for (tx_id, system_time) in [
+            (None, None),
             (
                 Some(42i64),
                 Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
-                Some(100i64),
             ),
-            (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap()), Some(101)),
+            (Some(-1), Some(Utc.timestamp_opt(0, 1).unwrap())),
         ] {
-            let request = OpenDbRequest {
-                tx_id,
-                system_time,
-                tx_eid,
-            };
+            let request = OpenDbRequest { tx_id, system_time };
             let buf = encode_open_db_request(&request).unwrap();
             assert_eq!(decode_open_db_request(&buf).unwrap(), request);
         }
@@ -1611,7 +1574,6 @@ mod tests {
         let response = DbOpenedResponse {
             tx_id: 7,
             system_time,
-            tx_eid: 12345,
         };
         let buf = encode_db_opened_response(&response).unwrap();
         assert_eq!(decode_db_opened_response(&buf).unwrap(), response);
@@ -1620,12 +1582,9 @@ mod tests {
     #[test]
     fn round_trip_query_request_body() {
         let q = "{:find [?n] :where [[?e :name ?n]]}";
-        let db = TxBasis {
-            tx_key: TxKey {
-                tx_id: 42,
-                system_time: Utc.timestamp_opt(1_700_000_002, 0).unwrap(),
-            },
-            tx_eid: 100,
+        let db = TxKey {
+            tx_id: 42,
+            system_time: Utc.timestamp_opt(1_700_000_002, 0).unwrap(),
         };
         let args = vec![
             QueryArg::Scalar(DataType::Long(7)),
@@ -1700,7 +1659,6 @@ mod tests {
                 status,
                 tx_id: 7,
                 system_time: now,
-                tx_eid: 123,
                 error_message: err,
             };
             let buf = encode_tx_result_response(&response).unwrap();
@@ -1764,24 +1722,23 @@ mod tests {
 
     #[test]
     fn decode_db_opened_rejects_wrong_type() {
-        // {"tx_id": "not an int", "system_time": ts, "tx_eid": 7}
+        // {"tx_id": "not an int", "system_time": ts}
         let body = pack(Value::Map(vec![
             (Value::String("tx_id".into()), Value::String("nope".into())),
             (
                 Value::String("system_time".into()),
                 Value::Ext(EXT_TIMESTAMP, vec![0, 0, 0, 0]),
             ),
-            (Value::String("tx_eid".into()), Value::Integer(7.into())),
         ]));
         assert!(decode_db_opened_response(&body).is_err());
     }
 
     #[test]
     fn decode_db_opened_rejects_missing_system_time() {
-        let body = pack(Value::Map(vec![
-            (Value::String("tx_id".into()), Value::Integer(1.into())),
-            (Value::String("tx_eid".into()), Value::Integer(2.into())),
-        ]));
+        let body = pack(Value::Map(vec![(
+            Value::String("tx_id".into()),
+            Value::Integer(1.into()),
+        )]));
         assert!(decode_db_opened_response(&body).is_err());
     }
 
@@ -1873,7 +1830,6 @@ mod tests {
         let one = encode_open_db_request(&OpenDbRequest {
             tx_id: None,
             system_time: None,
-            tx_eid: None,
         })
         .unwrap();
         let mut two = one.clone();

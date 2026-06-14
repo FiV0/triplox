@@ -7,6 +7,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 
+use crate::partition::tx_eid_from_tx_id;
 use anyhow::{anyhow, Context, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
@@ -14,7 +15,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use triplox_client::transaction::TxBasis;
+use triplox_client::transaction::TxKey;
 
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
@@ -59,13 +60,13 @@ pub(crate) type IncrementalQueryHandle = u64;
 #[derive(Debug)]
 pub(crate) struct IncrementalQuerySubscription {
     pub handle: IncrementalQueryHandle,
-    pub basis: TxBasis,
+    pub tx_key: TxKey,
     pub deltas: mpsc::Receiver<IncrementalQueryDelta>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryDelta {
-    pub basis: TxBasis,
+    pub tx_key: TxKey,
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
@@ -74,7 +75,7 @@ type ServiceResult<T> = std::result::Result<T, String>;
 enum IncrementalCommand {
     Register {
         plan: IncrementalQueryPlan,
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
@@ -84,7 +85,7 @@ enum IncrementalCommand {
         response: oneshot::Sender<ServiceResult<()>>,
     },
     ApplyTriples {
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<()>>,
@@ -139,19 +140,20 @@ impl IncrementalQueryService {
         indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
         let _registration_guard = self.registration_gate.lock().await;
-        let (basis, schema) = {
+        let (tx_key, schema) = {
             let indexer = indexer.read().await;
-            (indexer.latest_tx_basis(), indexer.metadata().schema.clone())
+            (indexer.latest_tx_key(), indexer.metadata().schema.clone())
         };
         let plan = plan_query(&query, &schema)?;
-        let initial_triples = scan_current_triples(db, &plan, basis.tx_eid).await?;
+        let initial_triples =
+            scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
         let wal_cursor = CdcCursor {
             // TODO: This should likely be initialized to manifest.replay_after_wal_id + 1. See #337
             wal_id: 0,
             last_seq: db.status().durable_seq,
         };
         let subscription = self
-            .register_prepared_query(plan, basis, wal_cursor, initial_triples)
+            .register_prepared_query(plan, tx_key, wal_cursor, initial_triples)
             .await?;
         self.start_cdc_once(indexer);
         Ok(subscription)
@@ -191,7 +193,7 @@ impl IncrementalQueryService {
     pub(crate) async fn register_prepared_query(
         &self,
         plan: IncrementalQueryPlan,
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
@@ -199,7 +201,7 @@ impl IncrementalQueryService {
         self.commands
             .send(IncrementalCommand::Register {
                 plan,
-                basis,
+                tx_key,
                 wal_cursor,
                 initial_triples,
                 response,
@@ -224,14 +226,14 @@ impl IncrementalQueryService {
 
     pub(crate) async fn apply_triples(
         &self,
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::ApplyTriples {
-                basis,
+                tx_key,
                 wal_seq,
                 triples,
                 response,
@@ -300,7 +302,7 @@ struct RegisteredQuery {
     _plan: IncrementalQueryPlan,
     _circuit: QueryCircuit,
     sender: mpsc::Sender<IncrementalQueryDelta>,
-    _basis: TxBasis,
+    _tx_key: TxKey,
     _wal_cursor: CdcCursor,
 }
 
@@ -328,23 +330,23 @@ impl IncrementalQueryServiceInner {
             match command {
                 IncrementalCommand::Register {
                     plan,
-                    basis,
+                    tx_key,
                     wal_cursor,
                     initial_triples,
                     response,
                 } => {
-                    let _ = response.send(self.register(plan, basis, wal_cursor, initial_triples));
+                    let _ = response.send(self.register(plan, tx_key, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
                     let _ = response.send(self.unregister(handle));
                 }
                 IncrementalCommand::ApplyTriples {
-                    basis,
+                    tx_key,
                     wal_seq,
                     triples,
                     response,
                 } => {
-                    let _ = response.send(self.apply_triples(basis, wal_seq, triples));
+                    let _ = response.send(self.apply_triples(tx_key, wal_seq, triples));
                 }
                 IncrementalCommand::Shutdown { response } => {
                     let _ = response.send(self.remove_all_queries());
@@ -357,7 +359,7 @@ impl IncrementalQueryServiceInner {
     fn register(
         &mut self,
         plan: IncrementalQueryPlan,
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<IncrementalQuerySubscription> {
@@ -377,14 +379,14 @@ impl IncrementalQueryServiceInner {
                 _plan: plan,
                 _circuit: circuit,
                 sender,
-                _basis: basis,
+                _tx_key: tx_key,
                 _wal_cursor: wal_cursor,
             },
         );
 
         Ok(IncrementalQuerySubscription {
             handle,
-            basis,
+            tx_key,
             deltas: receiver,
         })
     }
@@ -396,7 +398,7 @@ impl IncrementalQueryServiceInner {
 
     fn apply_triples(
         &mut self,
-        basis: TxBasis,
+        tx_key: TxKey,
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<()> {
@@ -405,7 +407,7 @@ impl IncrementalQueryServiceInner {
         let cancel = self.cancel.clone();
 
         for (id, query) in &mut self.queries {
-            if basis.tx_key.tx_id <= query._basis.tx_key.tx_id {
+            if tx_key.tx_id <= query._tx_key.tx_id {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
@@ -418,7 +420,7 @@ impl IncrementalQueryServiceInner {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let delta = IncrementalQueryDelta { basis, rows };
+            let delta = IncrementalQueryDelta { tx_key, rows };
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
@@ -524,7 +526,7 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_basis(),
+                test_tx_key(),
                 test_cursor(),
                 initial_triples(),
             )
@@ -550,7 +552,7 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_basis(),
+                test_tx_key(),
                 test_cursor(),
                 initial_triples(),
             )
@@ -575,8 +577,8 @@ mod tests {
             runtime.handle().clone(),
             CancellationToken::new(),
         );
-        let old_basis = test_basis_with_tx_id(1);
-        let new_basis = test_basis_with_tx_id(2);
+        let old_basis = test_tx_key_with_tx_id(1);
+        let new_basis = test_tx_key_with_tx_id(2);
         let mut old_subscription = service
             .register(
                 single_pattern_plan(),
@@ -636,7 +638,7 @@ mod tests {
         let _subscription = service
             .register(
                 single_pattern_plan(),
-                test_basis(),
+                test_tx_key(),
                 test_cursor(),
                 Vec::new(),
             )
@@ -646,7 +648,7 @@ mod tests {
             let name = format!("Alice {seq}");
             service
                 .apply_triples(
-                    test_basis_with_tx_id(seq as i64 + 1),
+                    test_tx_key_with_tx_id(seq as i64 + 1),
                     seq as u64,
                     vec![name_triple(seq as i64, &name)],
                 )
@@ -657,7 +659,7 @@ mod tests {
         let handle = thread::spawn(move || {
             let name = format!("Alice {}", SUBSCRIPTION_CAPACITY + 1);
             let result = service.apply_triples(
-                test_basis_with_tx_id(SUBSCRIPTION_CAPACITY as i64 + 2),
+                test_tx_key_with_tx_id(SUBSCRIPTION_CAPACITY as i64 + 2),
                 (SUBSCRIPTION_CAPACITY + 1) as u64,
                 vec![name_triple((SUBSCRIPTION_CAPACITY + 1) as i64, &name)],
             );
@@ -732,7 +734,7 @@ mod tests {
         let _subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
-                test_basis(),
+                test_tx_key(),
                 test_cursor(),
                 initial_triples(),
             )
@@ -776,12 +778,12 @@ mod tests {
             "/test_incremental_registration_gate".to_string(),
             Arc::new(InMemory::new()),
         );
-        let query_basis = test_basis_with_tx_id(1);
-        let tx_basis = test_basis_with_tx_id(2);
+        let query_tx_key = test_tx_key_with_tx_id(1);
+        let apply_tx_key = test_tx_key_with_tx_id(2);
         let mut first_subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
-                query_basis,
+                query_tx_key,
                 test_cursor(),
                 vec![name_triple(42, "Alice")],
             )
@@ -793,7 +795,7 @@ mod tests {
         let apply = tokio::spawn(async move {
             let _registration_guard = applying_service.registration_gate.lock().await;
             applying_service
-                .apply_triples(tx_basis, 2, vec![name_triple(43, "Bob")])
+                .apply_triples(apply_tx_key, 2, vec![name_triple(43, "Bob")])
                 .await
         });
         tokio::task::yield_now().await;
@@ -802,7 +804,7 @@ mod tests {
         let mut second_subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
-                query_basis,
+                query_tx_key,
                 test_cursor(),
                 vec![name_triple(42, "Alice")],
             )
@@ -816,14 +818,14 @@ mod tests {
         assert_eq!(
             first_subscription.deltas.recv().await.unwrap(),
             IncrementalQueryDelta {
-                basis: tx_basis,
+                tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );
         assert_eq!(
             second_subscription.deltas.recv().await.unwrap(),
             IncrementalQueryDelta {
-                basis: tx_basis,
+                tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );
@@ -865,17 +867,14 @@ mod tests {
         )
     }
 
-    fn test_basis() -> TxBasis {
-        test_basis_with_tx_id(1)
+    fn test_tx_key() -> TxKey {
+        test_tx_key_with_tx_id(1)
     }
 
-    fn test_basis_with_tx_id(tx_id: i64) -> TxBasis {
-        TxBasis {
-            tx_key: TxKey {
-                tx_id,
-                system_time: Utc::now(),
-            },
-            tx_eid: tx_id + 1,
+    fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
+        TxKey {
+            tx_id,
+            system_time: Utc::now(),
         }
     }
 

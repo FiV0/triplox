@@ -74,9 +74,26 @@ Each transaction is reified as an entity in this partition. The transaction enti
 | `db/txId`       | long       | The sequential tx_id assigned by the log                       |
 | `db/txError`    | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
 
-A transaction with counter value `t` has entity ID `(1 << 42) | t`. This transaction entity ID is the temporal read basis (`tx_eid`) used to bound historical reads: a DB opened at a given basis sees datoms whose transaction entity is at or before that `tx_eid`. Transaction entities appear in the E-leading indices like any other entity, enabling queries such as "find all transactions after time T" through the standard query engine.
+The transaction entity ID (`tx_eid`) is **not minted** by the partition map; it is a
+pure function of the log-assigned `tx_id`:
 
-Note: `db/txId` remains the sequential log position, while `tx_eid` is the transaction entity ID used by covering indices and temporal reads. They are related but intentionally distinct identifiers.
+```
+tx_eid = make_entity_id(TX_PARTITION, tx_id) = (1 << 42) | tx_id   (== mask ^ tx_id)
+tx_id  = extract_counter(tx_eid)
+```
+
+So a `TxKey { tx_id, system_time }` immediately identifies a database value: its
+`tx_eid` (the temporal read coordinate) is recovered by masking, with no storage
+lookup. A DB opened at a given `TxKey` sees datoms whose transaction entity is at or
+before `tx_eid`. Transaction entities appear in the E-leading indices like any other
+entity, enabling queries such as "find all transactions after time T" through the
+standard query engine.
+
+The indexer *sets* (rather than allocates) the `TX_PARTITION` counter from each
+incoming `tx_id`, asserting it is strictly greater than the previous one so `tx_eid`
+is strictly increasing. `tx_id` need not be dense — e.g. the file log uses byte
+offsets, so `tx_eid`s have gaps. `db/txId` is stored for queryability but is
+redundant with the entity id (`db/txId == extract_counter(tx_eid)`).
 
 ### 2.3 :db.part/user (partition 2)
 

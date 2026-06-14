@@ -19,7 +19,7 @@ pub struct Record {
 }
 
 pub(crate) static BOOTSTRAP_RECORD: LazyLock<Record> = LazyLock::new(|| Record {
-    tx_key: crate::bootstrap::BOOTSTRAP_TX_BASIS.tx_key,
+    tx_key: *crate::bootstrap::BOOTSTRAP_TX_KEY,
     record: Vec::new(),
 });
 

@@ -20,7 +20,7 @@ use tokio_util::io::StreamReader;
 use crate::msgpack_codec::{subscription_frame_from_value, ErrorResponseBody, SubscriptionFrame};
 use crate::ops::DataType;
 use crate::protocol::DEFAULT_MAX_MESSAGE_SIZE;
-use crate::transaction::TxBasis;
+use crate::transaction::TxKey;
 
 type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
 type FrameStream = FramedRead<StreamReader<ByteStream, Bytes>, MsgpackFrameDecoder>;
@@ -30,8 +30,8 @@ const SUBSCRIPTION_QUEUE_CAPACITY: usize = 128;
 /// A single transaction's z-set changes for a subscribed query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Delta {
-    /// The transaction basis that produced this delta.
-    pub basis: TxBasis,
+    /// The transaction key that produced this delta.
+    pub tx_key: TxKey,
     /// `(values, weight)` rows; `weight` is the raw signed multiplicity.
     pub rows: Vec<(Vec<DataType>, i64)>,
 }
@@ -41,7 +41,7 @@ pub struct Delta {
 /// Implements `Stream<Item = Result<Delta>>`; use `StreamExt::next().await` or
 /// stream combinators. Dropping it cancels the HTTP/2 stream and unsubscribes.
 pub struct Subscription {
-    basis: TxBasis,
+    tx_key: TxKey,
     deltas: mpsc::Receiver<Result<Delta>>,
     reader: JoinHandle<()>,
 }
@@ -53,7 +53,7 @@ fn error_frame_to_error(err: ErrorResponseBody) -> Error {
 async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>>) {
     while let Some(frame) = frames.next().await {
         let (item, terminal) = match frame {
-            Ok(SubscriptionFrame::Delta { basis, rows }) => (Ok(Delta { basis, rows }), false),
+            Ok(SubscriptionFrame::Delta { tx_key, rows }) => (Ok(Delta { tx_key, rows }), false),
             Ok(SubscriptionFrame::Error(err)) => (Err(error_frame_to_error(err)), true),
             Ok(SubscriptionFrame::Open { .. }) => {
                 (Err(anyhow!("unexpected open frame mid-stream")), true)
@@ -68,9 +68,9 @@ async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>
 }
 
 impl Subscription {
-    /// The registration basis. Deltas describe transactions strictly after it.
-    pub fn basis(&self) -> TxBasis {
-        self.basis
+    /// The registration tx_key. Deltas describe transactions strictly after it.
+    pub fn tx_key(&self) -> TxKey {
+        self.tx_key
     }
 
     /// Wrap a streaming subscription response: frame its body and read the
@@ -88,8 +88,8 @@ impl Subscription {
     {
         let reader = StreamReader::new(Box::pin(stream) as ByteStream);
         let mut frames = FramedRead::new(reader, MsgpackFrameDecoder::default());
-        let basis = match frames.next().await {
-            Some(Ok(SubscriptionFrame::Open { basis, .. })) => basis,
+        let tx_key = match frames.next().await {
+            Some(Ok(SubscriptionFrame::Open { tx_key, .. })) => tx_key,
             Some(Ok(SubscriptionFrame::Error(err))) => return Err(error_frame_to_error(err)),
             Some(Ok(other)) => bail!("expected open frame, got {other:?}"),
             Some(Err(err)) => return Err(err),
@@ -98,7 +98,7 @@ impl Subscription {
         let (sender, deltas) = mpsc::channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let reader = tokio::spawn(read_deltas(frames, sender));
         Ok(Subscription {
-            basis,
+            tx_key,
             deltas,
             reader,
         })
@@ -189,19 +189,16 @@ mod tests {
     use std::sync::Arc;
     use tokio::time::{sleep, timeout, Duration};
 
-    fn sample_basis() -> TxBasis {
-        TxBasis {
-            tx_key: TxKey {
-                tx_id: 3,
-                system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-            },
-            tx_eid: 42,
+    fn sample_tx_key() -> TxKey {
+        TxKey {
+            tx_id: 3,
+            system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         }
     }
 
     fn open_bytes() -> Vec<u8> {
         encode_subscription_frame(&SubscriptionFrame::Open {
-            basis: sample_basis(),
+            tx_key: sample_tx_key(),
             columns: vec![ColumnDescription {
                 name: "n".to_string(),
                 data_type: 255,
@@ -213,7 +210,7 @@ mod tests {
 
     fn delta_bytes(name: &str) -> Vec<u8> {
         encode_subscription_frame(&SubscriptionFrame::Delta {
-            basis: sample_basis(),
+            tx_key: sample_tx_key(),
             rows: vec![(vec![DataType::String(name.to_string())], 1)],
         })
         .unwrap()
@@ -277,7 +274,7 @@ mod tests {
             futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
         let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
-        assert_eq!(sub.basis(), sample_basis());
+        assert_eq!(sub.tx_key(), sample_tx_key());
 
         let err = sub.next().await.expect("an item").unwrap_err();
         assert!(err
