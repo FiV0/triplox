@@ -527,6 +527,7 @@ where
 
     let result = match tx_result {
         Some(DB_TX_COMMITTED) => Ok(()),
+        // TODO: Assure identical errors on live and reconstruction path. See #393.
         Some(DB_TX_ABORTED) => Err(Arc::new(anyhow::anyhow!(
             "{}",
             tx_error.unwrap_or_else(|| format!("Transaction {} aborted", tx_key.tx_id))

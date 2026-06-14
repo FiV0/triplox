@@ -415,6 +415,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
             Ok(()) => Ok(TransactionResult::TxCommited(basis)),
             Err(e) => Ok(TransactionResult::TxAborted(
                 basis,
+                // TODO: Assure identical errors on live and reconstruction path. See #393.
                 anyhow::anyhow!("{:#}", e).into(),
             )),
         }
