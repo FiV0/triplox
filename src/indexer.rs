@@ -585,6 +585,10 @@ pub(crate) struct TxCompletion {
 }
 
 impl TxWaiter {
+    // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
+    // await_indexed answers "Are we there yet?" without knowing anything about the result.
+
+
     /// Wait until `tx_key` has been indexed. Returns the indexed basis and status,
     /// `Err` on abort or if the indexer shuts down.
     pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
