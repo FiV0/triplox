@@ -637,8 +637,7 @@ impl TxWaiter {
     }
 
     /// Wait until indexing has reached `tx_key`, regardless of whether that
-    /// transaction committed or aborted. Will raise an error on a technical
-    /// indexing error.
+    /// transaction committed or aborted.
     pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
         if tx_key.tx_id <= self.latest_tx.tx_key.tx_id {
             return Ok(());
@@ -646,17 +645,8 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok((completed_tx_key, completed_basis, _result)) => {
+                Ok((completed_tx_key, _completed_basis, _result)) => {
                     if completed_tx_key.tx_id >= tx_key.tx_id {
-                        // TODO: revisit when tackling #148. Maybe introduce a typed result variant differentiating the 3 cases (Success, Abort, Failure)
-                        // A technical indexing failure reports no basis, so we report it here as the node is in a
-                        // state it shouldn't be in.
-                        if completed_basis.is_none() {
-                            return Err(anyhow::anyhow!(
-                                "Indexing failed for tx {} during catch-up",
-                                tx_key.tx_id
-                            ));
-                        }
                         return Ok(());
                     }
                 }
