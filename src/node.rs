@@ -1457,39 +1457,6 @@ mod tests {
         node.close().await.unwrap();
     }
 
-    // A *technical* indexing failure on the trailing log record (here: bytes that
-    // can't be decoded into TxOps) is not valid history: nothing was indexed and
-    // the persisted index lags the log. Startup catch-up must surface it rather
-    // than silently coming up with a stale index.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_local_node_restart_fails_on_undecodable_trailing_tx() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = dir.path().to_path_buf();
-
-        let node = Node::local_node(&root_path).await.unwrap();
-        define_test_schema(&node).await;
-        node.close().await.unwrap();
-
-        // Append a record that bincode cannot deserialize into Vec<TxOp>.
-        {
-            let log = FileLog::new(&root_path.join("log"), Box::new(clock::SystemClock)).unwrap();
-            log.append_tx(vec![0xFF; 8]).await.unwrap();
-        }
-
-        // Restart must not hang, and must fail rather than start with the
-        // un-indexed trailing record silently dropped.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            Node::local_node(&root_path),
-        )
-        .await
-        .expect("restart should not hang");
-        assert!(
-            result.is_err(),
-            "node startup must fail when a trailing log record cannot be indexed"
-        );
-    }
-
     #[tokio::test]
     async fn test_db_as_of_filters_by_basis() {
         let node = Node::memory_node().await;

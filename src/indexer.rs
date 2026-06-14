@@ -637,7 +637,8 @@ impl TxWaiter {
     }
 
     /// Wait until indexing has reached `tx_key`, regardless of whether that
-    /// transaction committed or aborted.
+    /// transaction committed or aborted. Will raise an error on a technical
+    /// indexing error.
     pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
         if tx_key.tx_id <= self.latest_tx.tx_key.tx_id {
             return Ok(());
@@ -647,13 +648,9 @@ impl TxWaiter {
             match self.rx.recv().await {
                 Ok((completed_tx_key, completed_basis, _result)) => {
                     if completed_tx_key.tx_id >= tx_key.tx_id {
-                        // A committed or *semantically* aborted tx reports a basis and
-                        // advances the indexed position, so it counts as indexed. A
-                        // technical failure (e.g. undecodable TxOps, or a failed
-                        // abort-entity write) reports `None`: nothing was persisted and
-                        // the indexed position did not advance. Treating that as
-                        // indexed would let the node start with its index silently
-                        // behind the log, so surface it as an error instead.
+                        // TODO: revisit when tackling #148. Maybe introduce a typed result variant differentiating the 3 cases (Success, Abort, Failure)
+                        // A technical indexing failure reports no basis, so we report it here as the node is in a
+                        // state it shouldn't be in.
                         if completed_basis.is_none() {
                             return Err(anyhow::anyhow!(
                                 "Indexing failed for tx {} during catch-up",
