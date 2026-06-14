@@ -645,8 +645,21 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok((completed_tx_key, _completed_basis, _result)) => {
+                Ok((completed_tx_key, completed_basis, _result)) => {
                     if completed_tx_key.tx_id >= tx_key.tx_id {
+                        // A committed or *semantically* aborted tx reports a basis and
+                        // advances the indexed position, so it counts as indexed. A
+                        // technical failure (e.g. undecodable TxOps, or a failed
+                        // abort-entity write) reports `None`: nothing was persisted and
+                        // the indexed position did not advance. Treating that as
+                        // indexed would let the node start with its index silently
+                        // behind the log, so surface it as an error instead.
+                        if completed_basis.is_none() {
+                            return Err(anyhow::anyhow!(
+                                "Indexing failed for tx {} during catch-up",
+                                tx_key.tx_id
+                            ));
+                        }
                         return Ok(());
                     }
                 }
