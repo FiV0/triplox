@@ -1326,6 +1326,32 @@ mod tests {
         }]
     }
 
+    // Distinct from the committed lagged test below: only a semantically
+    // aborted tx exercises lookup_tx_completion's DB_TX_ABORTED -> Err(Arc)
+    // reconstruction flowing back through await_tx as Ok(TxCompletion) with an
+    // error result. The committed path returns Ok(Ok(())) and never hits it.
+    #[tokio::test]
+    async fn test_await_tx_lagged_aborted_tx_recovers_from_storage() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer_with_capacity(&components, 1).await;
+        let tx_key_1 = test_tx_key(1);
+        let waiter = indexer.tx_waiter();
+
+        let basis_1 = indexer.transact_tx(tx_key_1, aborting_op()).await?;
+        // The second completion evicts the first from the capacity-1 channel
+        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
+
+        let completion = waiter.await_tx(tx_key_1).await?;
+        assert_eq!(completion.basis, Some(basis_1));
+        assert!(completion
+            .result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown attribute"));
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_await_tx_lagged_committed_tx_recovers_from_storage() -> Result<(), Error> {
         let components = in_memory_slate().await;
