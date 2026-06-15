@@ -13,13 +13,8 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 ```
 1. Clone PartitionMap           pending_pm = self.metadata.partition_map.clone()
    Derive tx entity id          tx_eid = tx_eid_from_tx_id(tx_key.tx_id)
-   Set (not mint) TX counter    pending_pm.set_tx_counter(tx_key.tx_id)?
-                                (tx_eid is a pure function of the log-assigned
-                                 tx_id; set_tx_counter advances the TX_PARTITION
-                                 high-water mark and asserts strict monotonicity.
-                                 Pipeline reads go directly against slatedb;
-                                 index writes are buffered in a WriteBatch
-                                 committed atomically in step 9)
+                                pending_pm.set_tx_counter(tx_key.tx_id)?
+                                (pipeline reads work directly against slatedb)
                                 ↓
 2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomExpanded>
    - TxOp::Put -> N DatomExpanded (one per attr)
