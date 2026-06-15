@@ -75,7 +75,7 @@ impl ClientNode {
     ) -> Result<Subscription> {
         let parsed = query.into_query()?;
         let body = encode_subscribe_request(&SubscribeRequest {
-            basis_tx_key: None,
+            tx_key: None,
             query: parsed.to_string(),
             args: args.to_vec(),
         })?;
@@ -216,7 +216,7 @@ impl Database for ClientDb {
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
         let body = encode_query_request(&QueryRequest {
-            basis_tx_key: self.tx_key,
+            tx_key: self.tx_key,
             query: query.to_string(),
             args: args.to_vec(),
         })?;

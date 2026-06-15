@@ -219,12 +219,12 @@ The response body is a [`TxKey`](#24-txkey): the immutable DB read basis.
 ### 4.4 Query Request — `POST /db/query`
 
 ```
-{"basis_tx_key": <TxKey>,
+{"tx_key": <TxKey>,
  "query": <str>,
  "args": [<QueryArg>, ...]}
 ```
 
-`basis_tx_key` is a [`TxKey`](#24-txkey) DB read basis, as returned by the `OpenDb` response or a previous transaction result.
+`tx_key` is a [`TxKey`](#24-txkey) DB read basis, as returned by the `OpenDb` response or a previous transaction result.
 `query` is a Datalog query in EDN text. `args` provides values for variables
 declared in the query's `:in` clause; the number and order must match. For
 queries without `:in`, pass an empty array.
@@ -294,7 +294,7 @@ the server remains healthy.
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
 Takes the same body as a [Query Request](#44-query-request--post-dbquery), with two
-restrictions in this version: `basis_tx_key` **MUST be `nil`/omitted** (reserved for
+restrictions in this version: `tx_key` **MUST be `nil`/omitted** (reserved for
 future historical replay; a non-nil value is rejected with HTTP 400 / `InvalidQuery`)
 and `args` **MUST be empty** (reserved for future incremental `:in` bindings). Queries
 or args the incremental engine does not yet support mirror one-shot query failures and

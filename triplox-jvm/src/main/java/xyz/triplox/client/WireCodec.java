@@ -53,12 +53,12 @@ public final class WireCodec {
     }
 
     /**
-     * {@code POST /db/query} body: {@code {"basis_tx_key": TxKey, "query": str, "args": [QueryArg, ...]}}.
+     * {@code POST /db/query} body: {@code {"tx_key": TxKey, "query": str, "args": [QueryArg, ...]}}.
      */
     public static byte[] encodeQueryBody(TxKey basis, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
-            packer.packString("basis_tx_key"); packTxKey(packer, basis);
+            packer.packString("tx_key"); packTxKey(packer, basis);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -77,12 +77,12 @@ public final class WireCodec {
     }
 
     /**
-     * {@code POST /db/subscribe} body: {@code {"basis_tx_key": TxKey|nil, "query": str, "args": [QueryArg, ...]}}.
+     * {@code POST /db/subscribe} body: {@code {"tx_key": TxKey|nil, "query": str, "args": [QueryArg, ...]}}.
      */
     public static byte[] encodeSubscribeBody(TxKey db, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
-            packer.packString("basis_tx_key");
+            packer.packString("tx_key");
             if (db == null) packer.packNil();
             else packTxKey(packer, db);
             packer.packString("query"); packer.packString(query);
