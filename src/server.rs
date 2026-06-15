@@ -39,9 +39,9 @@ use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request, decode_subscribe_request,
-    encode_db_opened_response, encode_error_body, encode_query_response, encode_subscription_frame,
-    encode_tx_key_response, encode_tx_result_response, DbOpenedResponse, ErrorResponseBody,
-    QueryResponse, SubscriptionFrame, TxKeyResponse, TxResultResponse,
+    encode_error_body, encode_query_response, encode_subscription_frame, encode_tx_key,
+    encode_tx_result_response, ErrorResponseBody, QueryResponse, SubscriptionFrame,
+    TxResultResponse,
 };
 use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
@@ -163,11 +163,8 @@ async fn open_db<L: TxLog + 'static>(
         }
     };
 
-    let body = encode_db_opened_response(&DbOpenedResponse {
-        tx_id: tx_key.tx_id,
-        system_time: tx_key.system_time,
-    })
-    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    let body = encode_tx_key(&tx_key)
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
 }
 
@@ -237,11 +234,8 @@ async fn submit_tx<L: TxLog + 'static>(
         .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    let body = encode_tx_key_response(&TxKeyResponse {
-        tx_id: tx_key.tx_id,
-        system_time: tx_key.system_time,
-    })
-    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    let body = encode_tx_key(&tx_key)
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
 }
 

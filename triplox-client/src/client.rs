@@ -7,10 +7,9 @@ use anyhow::{bail, Error, Result};
 use reqwest::Client;
 
 use crate::msgpack_codec::{
-    decode_db_opened_response, decode_error_body, decode_query_response, decode_tx_key_response,
-    decode_tx_result_response, encode_execute_request, encode_open_db_request,
-    encode_query_request, encode_subscribe_request, ExecuteRequest, OpenDbRequest, QueryRequest,
-    SubscribeRequest,
+    decode_error_body, decode_query_response, decode_tx_key, decode_tx_result_response,
+    encode_execute_request, encode_open_db_request, encode_query_request, encode_subscribe_request,
+    ExecuteRequest, OpenDbRequest, QueryRequest, SubscribeRequest,
 };
 use crate::node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
 use crate::ops::QueryArg;
@@ -116,11 +115,7 @@ impl ClientNode {
             .await?;
 
         let data = check_response(resp).await?;
-        let opened = decode_db_opened_response(&data)?;
-        let tx_key = TxKey {
-            tx_id: opened.tx_id,
-            system_time: opened.system_time,
-        };
+        let tx_key = decode_tx_key(&data)?;
 
         Ok(ClientDb {
             tx_key,
@@ -143,11 +138,8 @@ impl SubmitNode for ClientNode {
             .await?;
 
         let data = check_response(resp).await?;
-        let tx_key = decode_tx_key_response(&data)?;
-        Ok(TxKey {
-            tx_id: tx_key.tx_id,
-            system_time: tx_key.system_time,
-        })
+        let tx_key = decode_tx_key(&data)?;
+        Ok(tx_key)
     }
 
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error> {

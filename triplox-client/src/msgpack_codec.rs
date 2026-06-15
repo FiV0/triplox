@@ -639,12 +639,6 @@ pub struct OpenDbRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DbOpenedResponse {
-    pub tx_id: i64,
-    pub system_time: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct QueryRequest {
     pub db: TxKey,
     pub query: String,
@@ -660,12 +654,6 @@ pub struct QueryResponse {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecuteRequest {
     pub ops: Vec<TxOp>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TxKeyResponse {
-    pub tx_id: i64,
-    pub system_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -703,22 +691,16 @@ pub fn decode_open_db_request(data: &[u8]) -> Result<OpenDbRequest> {
     Ok(OpenDbRequest { tx_id, system_time })
 }
 
-/// Encode a DbOpened response: `{"tx_id": int, "system_time": Timestamp}`.
-pub fn encode_db_opened_response(resp: &DbOpenedResponse) -> Result<Vec<u8>> {
+/// Encode a bare `TxKey` body: `{"tx_id": int, "system_time": Timestamp}`.
+/// Used for both the DbOpened and submit/execute responses.
+pub fn encode_tx_key(tx_key: &TxKey) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2)?;
-    rmp::encode::write_str(&mut buf, "tx_id")?;
-    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
-    rmp::encode::write_str(&mut buf, "system_time")?;
-    write_timestamp(&mut buf, &resp.system_time)?;
+    write_tx_key(&mut buf, tx_key)?;
     Ok(buf)
 }
 
-pub fn decode_db_opened_response(data: &[u8]) -> Result<DbOpenedResponse> {
-    let mut map = map_from_value(read_body_value(data)?)?;
-    let tx_id = take_i64(&mut map, "tx_id")?;
-    let system_time = take_timestamp(&mut map, "system_time")?;
-    Ok(DbOpenedResponse { tx_id, system_time })
+pub fn decode_tx_key(data: &[u8]) -> Result<TxKey> {
+    tx_key_from_value(read_body_value(data)?)
 }
 
 fn write_tx_key<W: Write>(w: &mut W, tx_key: &TxKey) -> Result<()> {
@@ -894,24 +876,6 @@ pub fn decode_execute_request(data: &[u8]) -> Result<ExecuteRequest> {
         ops.push(tx_op_from_value(item)?);
     }
     Ok(ExecuteRequest { ops })
-}
-
-/// Encode a TxKey response: `{"tx_id": int, "system_time": Timestamp}`.
-pub fn encode_tx_key_response(resp: &TxKeyResponse) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    rmp::encode::write_map_len(&mut buf, 2)?;
-    rmp::encode::write_str(&mut buf, "tx_id")?;
-    rmp::encode::write_sint(&mut buf, resp.tx_id)?;
-    rmp::encode::write_str(&mut buf, "system_time")?;
-    write_timestamp(&mut buf, &resp.system_time)?;
-    Ok(buf)
-}
-
-pub fn decode_tx_key_response(data: &[u8]) -> Result<TxKeyResponse> {
-    let mut map = map_from_value(read_body_value(data)?)?;
-    let tx_id = take_i64(&mut map, "tx_id")?;
-    let system_time = take_timestamp(&mut map, "system_time")?;
-    Ok(TxKeyResponse { tx_id, system_time })
 }
 
 /// Encode a TxResult response.
@@ -1569,14 +1533,13 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_db_opened_response_body() {
-        let system_time = Utc.timestamp_opt(1_700_000_001, 0).unwrap();
-        let response = DbOpenedResponse {
+    fn round_trip_tx_key_body() {
+        let tx_key = TxKey {
             tx_id: 7,
-            system_time,
+            system_time: Utc.timestamp_opt(1_700_000_001, 0).unwrap(),
         };
-        let buf = encode_db_opened_response(&response).unwrap();
-        assert_eq!(decode_db_opened_response(&buf).unwrap(), response);
+        let buf = encode_tx_key(&tx_key).unwrap();
+        assert_eq!(decode_tx_key(&buf).unwrap(), tx_key);
     }
 
     #[test]
@@ -1638,17 +1601,6 @@ mod tests {
         let request = ExecuteRequest { ops };
         let buf = encode_execute_request(&request).unwrap();
         assert_eq!(decode_execute_request(&buf).unwrap(), request);
-    }
-
-    #[test]
-    fn round_trip_tx_key_response_body() {
-        let now = Utc.timestamp_opt(1_700_000_000, 123_456).unwrap();
-        let response = TxKeyResponse {
-            tx_id: 101,
-            system_time: now,
-        };
-        let buf = encode_tx_key_response(&response).unwrap();
-        assert_eq!(decode_tx_key_response(&buf).unwrap(), response);
     }
 
     #[test]
@@ -1721,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_db_opened_rejects_wrong_type() {
+    fn decode_tx_key_rejects_wrong_type() {
         // {"tx_id": "not an int", "system_time": ts}
         let body = pack(Value::Map(vec![
             (Value::String("tx_id".into()), Value::String("nope".into())),
@@ -1730,16 +1682,16 @@ mod tests {
                 Value::Ext(EXT_TIMESTAMP, vec![0, 0, 0, 0]),
             ),
         ]));
-        assert!(decode_db_opened_response(&body).is_err());
+        assert!(decode_tx_key(&body).is_err());
     }
 
     #[test]
-    fn decode_db_opened_rejects_missing_system_time() {
+    fn decode_tx_key_rejects_missing_system_time() {
         let body = pack(Value::Map(vec![(
             Value::String("tx_id".into()),
             Value::Integer(1.into()),
         )]));
-        assert!(decode_db_opened_response(&body).is_err());
+        assert!(decode_tx_key(&body).is_err());
     }
 
     #[test]
