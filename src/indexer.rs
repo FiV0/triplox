@@ -34,9 +34,6 @@ pub(crate) enum TxOutcome {
 }
 
 /// A transaction's `TxOutcome` paired with the `TxKey` it applies to.
-///
-/// Broadcast by the indexer as each tx is indexed, and returned by
-/// `TxWaiter::await_tx` / `lookup_tx_completion` as a tx's resolved outcome.
 #[derive(Clone, Debug)]
 pub(crate) struct TxCompletion {
     pub tx_key: TxKey,
