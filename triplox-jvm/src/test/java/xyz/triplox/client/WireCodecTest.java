@@ -246,7 +246,7 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("open");
-            packer.packString("tx_key"); packBasis(packer, 7L, now);
+            packer.packString("tx_key"); WireCodec.packTxKey(packer, new TxKey(7L, now));
             packer.packString("columns");
             packer.packArrayHeader(1);
             packColumn(packer, "?name", (byte) 255);
@@ -265,7 +265,7 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("tx_key"); packBasis(packer, 7L, now);
+            packer.packString("tx_key"); WireCodec.packTxKey(packer, new TxKey(7L, now));
             packer.packString("rows");
             packer.packArrayHeader(2);
             packDeltaRow(packer, "Ivan", 1);
@@ -337,7 +337,7 @@ class WireCodecTest {
             packer.packArrayHeader(1);
             packDeltaRow(packer, "Ann", 1);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("tx_key"); packBasis(packer, 3L, now);
+            packer.packString("tx_key"); WireCodec.packTxKey(packer, new TxKey(3L, now));
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
@@ -361,11 +361,6 @@ class WireCodecTest {
         }
     }
 
-    private static void packBasis(MessagePacker packer, long txId, Instant systemTime) throws IOException {
-        packer.packMapHeader(2);
-        packer.packString("tx_id"); packer.packLong(txId);
-        packer.packString("system_time"); packer.packTimestamp(systemTime);
-    }
 
     private static void packDeltaRow(MessagePacker packer, String value, long weight) throws IOException {
         packer.packArrayHeader(2);

@@ -280,7 +280,8 @@ public final class WireCodec {
     // Field-map helpers
     // ---------------------------------------------------------------
 
-    private static void packTxKey(MessagePacker packer, TxKey basis) throws IOException {
+    // Package-private so test fixtures reuse the canonical tx_key encoding.
+    static void packTxKey(MessagePacker packer, TxKey basis) throws IOException {
         packer.packMapHeader(2);
         packer.packString("tx_id"); packer.packLong(basis.txId());
         packer.packString("system_time"); packer.packTimestamp(basis.systemTime());
