@@ -293,12 +293,16 @@ the server remains healthy.
 
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
-Takes the same body as a [Query Request](#44-query-request--post-dbquery), with two
-restrictions in this version: `tx_key` **MUST be `nil`/omitted** (reserved for
-future historical replay; a non-nil value is rejected with HTTP 400 / `InvalidQuery`)
-and `args` **MUST be empty** (reserved for future incremental `:in` bindings). Queries
-or args the incremental engine does not yet support mirror one-shot query failures and
-are rejected with HTTP 500 / `QueryError` (code 2001).
+```
+{"tx_key": <TxKey>|nil, "query": <str>, "args": [<QueryArg>, ...]}
+```
+
+The same `query`/`args` shape as a [Query Request](#44-query-request--post-dbquery),
+except `tx_key` is optional. In this version it **MUST be `nil`/omitted** (a non-nil
+value is rejected with HTTP 400 / `InvalidQuery`; it is reserved for future historical
+replay) and `args` **MUST be empty** (reserved for future incremental `:in` bindings).
+Queries or args the incremental engine does not yet support mirror one-shot query
+failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
