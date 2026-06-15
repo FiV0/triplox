@@ -200,25 +200,24 @@ than a single-member union.
 Either both fields are present (pinned transaction basis) or both are
 `nil` (latest indexed). Mixing `nil` with a value is rejected with HTTP 400.
 
-### 4.3 DbOpened Response
+### 4.3 OpenDb Response
 
 ```
 {"tx_id": <int>, "system_time": <Timestamp>}
 ```
 
-The response is the immutable DB read basis. The bounding transaction entity ID
-is derived from `tx_id` (`tx_eid = make_entity_id(TX_PARTITION, tx_id)`) and is
-not carried on the wire.
+The response is a `TxKey`, the immutable DB read basis is this TxKey. The bounding transaction entity ID
+is derived from `tx_id`.
 
 ### 4.4 Query Request — `POST /db/query`
 
 ```
-{"db": {"tx_id": <int>, "system_time": <Timestamp>},
+{"basis_tx_key": {"tx_id": <int>, "system_time": <Timestamp>},
  "query": <str>,
  "args": [<QueryArg>, ...]}
 ```
 
-`db` is a DB read basis returned by `DbOpened` or a previous transaction result.
+`basis_tx_key` is a DB read basis as returned by the `OpenDb` response or a previous transaction result.
 `query` is a Datalog query in EDN text. `args` provides values for variables
 declared in the query's `:in` clause; the number and order must match. For
 queries without `:in`, pass an empty array.
