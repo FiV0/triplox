@@ -21,12 +21,12 @@ The Attribute-Value-Entity [index](#index) view, ordered by attribute, then valu
 ## Basis
 
 A point in time a [database value](#database-value) is as-of. A basis is identified by a [TxKey](#txkey), so sometimes
-these are used interchangeably. The basis is more about a stable database value identifier where as the TxKey is
+these are used interchangeably. The basis is more about a stable database value identifier whereas the TxKey is
 concerned with identifying a transaction on the log. Every TxKey gives you a stable basis.
 
 ## Connection
 
-A client's handle to a [node](#node). Triplox has no distinct connection type (unlike Datomic); a client connects to a node and obtains a [database value](#database-value) to query.
+A client's handle to a [node](#node), returned by `connect`. You submit [transactions](#transaction) through it and call `db` on it to obtain a [database value](#database-value) to query.
 
 ## Covering index
 
