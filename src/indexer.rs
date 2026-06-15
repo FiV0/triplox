@@ -556,7 +556,7 @@ impl Indexer {
     /// ```
     pub(crate) fn tx_waiter(&self) -> TxWaiter {
         TxWaiter {
-            latest_tx: self.latest_indexed_tx,
+            baseline: self.latest_indexed_tx,
             rx: self.tx_completion_sender.subscribe(),
             slatedb: self.slatedb.clone(),
         }
@@ -585,7 +585,10 @@ impl Indexer {
 /// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
-    latest_tx: TxBasis,
+    /// Latest indexed tx captured when this waiter subscribed; the fast-path
+    /// boundary. A `tx_key` at or below it was already indexed at subscription
+    /// time, so its outcome is read from storage rather than awaited.
+    baseline: TxBasis,
     rx: broadcast::Receiver<TxCompletionMessage>,
     slatedb: Arc<Db>,
 }
@@ -604,7 +607,7 @@ impl TxWaiter {
     pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
         // Fast path: already indexed at subscription time; storage is the
         // authoritative record of its outcome.
-        if tx_key <= self.latest_tx.tx_key {
+        if tx_key <= self.baseline.tx_key {
             return self.completion_from_storage(tx_key).await;
         }
 
@@ -649,7 +652,7 @@ impl TxWaiter {
     /// Wait until indexing has reached `tx_key`, regardless of whether that
     /// transaction committed or aborted.
     pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
-        if tx_key.tx_id <= self.latest_tx.tx_key.tx_id {
+        if tx_key.tx_id <= self.baseline.tx_key.tx_id {
             return Ok(());
         }
 
