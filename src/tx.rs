@@ -464,7 +464,7 @@ pub(crate) fn validate_allocated_entity_ids(
 ///
 /// Returns `None` if no tx entity exists: the tx is either not yet indexed or
 /// failed without persisting an outcome (technical abort, deserialize failure).
-/// 
+///
 /// TODO: I think this function can be replaced by an entity API call once we have
 /// simplified TxKey/TxBasis and an actual entity API.
 pub(crate) async fn lookup_tx_completion<D>(
