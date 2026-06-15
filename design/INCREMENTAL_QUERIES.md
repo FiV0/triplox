@@ -153,7 +153,7 @@ after a circuit step. The command protocol exists to serialize
 mutations to the query registry and DBSP circuits onto the single
 service thread.
 
-Registration is serialized against CDC application by a registration gate owned
+Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
 body (basis capture, initial db capture, and the `Register` round-trip), and the
 CDC loop holds the same gate around each `apply_triples`. This makes the
