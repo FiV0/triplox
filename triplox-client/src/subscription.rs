@@ -186,19 +186,17 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
     use tokio::time::{sleep, timeout, Duration};
 
-    fn sample_tx_key() -> TxKey {
-        TxKey {
-            tx_id: 3,
-            system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-        }
-    }
+    static SAMPLE_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
+        tx_id: 3,
+        system_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+    });
 
     fn open_bytes() -> Vec<u8> {
         encode_subscription_frame(&SubscriptionFrame::Open {
-            tx_key: sample_tx_key(),
+            tx_key: *SAMPLE_TX_KEY,
             columns: vec![ColumnDescription {
                 name: "n".to_string(),
                 data_type: 255,
@@ -210,7 +208,7 @@ mod tests {
 
     fn delta_bytes(name: &str) -> Vec<u8> {
         encode_subscription_frame(&SubscriptionFrame::Delta {
-            tx_key: sample_tx_key(),
+            tx_key: *SAMPLE_TX_KEY,
             rows: vec![(vec![DataType::String(name.to_string())], 1)],
         })
         .unwrap()
@@ -274,7 +272,7 @@ mod tests {
             futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
         let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
-        assert_eq!(sub.tx_key(), sample_tx_key());
+        assert_eq!(sub.tx_key(), *SAMPLE_TX_KEY);
 
         let err = sub.next().await.expect("an item").unwrap_err();
         assert!(err
