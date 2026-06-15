@@ -145,6 +145,18 @@ form as the ext-3 Keyword payload.
 
 > **Note**: Only Scalar bindings are currently implemented in the query engine.
 
+### 2.4 TxKey
+
+A `TxKey` identifies a transaction and the immutable DB read basis it pins:
+
+```
+{"tx_id": <int>, "system_time": <Timestamp>}
+```
+
+`tx_id` is the log-assigned sequence position and `system_time` its wall-clock
+timestamp. The transaction entity ID that bounds temporal reads is derived from
+`tx_id` (see [§1.2](#12-db-values)) and is not carried on the wire.
+
 ---
 
 ## 3. Data Type Tags
@@ -202,22 +214,17 @@ Either both fields are present (pinned transaction basis) or both are
 
 ### 4.3 OpenDb Response
 
-```
-{"tx_id": <int>, "system_time": <Timestamp>}
-```
-
-The response is a `TxKey`, the immutable DB read basis is this TxKey. The bounding transaction entity ID
-is derived from `tx_id`.
+The response body is a [`TxKey`](#24-txkey): the immutable DB read basis.
 
 ### 4.4 Query Request — `POST /db/query`
 
 ```
-{"basis_tx_key": {"tx_id": <int>, "system_time": <Timestamp>},
+{"basis_tx_key": <TxKey>,
  "query": <str>,
  "args": [<QueryArg>, ...]}
 ```
 
-`basis_tx_key` is a DB read basis as returned by the `OpenDb` response or a previous transaction result.
+`basis_tx_key` is a [`TxKey`](#24-txkey) DB read basis, as returned by the `OpenDb` response or a previous transaction result.
 `query` is a Datalog query in EDN text. `args` provides values for variables
 declared in the query's `:in` clause; the number and order must match. For
 queries without `:in`, pass an empty array.
@@ -244,12 +251,9 @@ Both endpoints take the same body. They differ in semantics:
 
 ### 4.8 TxKey Response
 
-```
-{"tx_id": <int>, "system_time": <Timestamp>}
-```
-
-Returned for `/tx/submit`. The server has accepted the transaction and will
-durably log it; `system_time` is its assigned timestamp.
+The response body is a [`TxKey`](#24-txkey). Returned for `/tx/submit`: the server
+has accepted the transaction and will durably log it; `system_time` is its
+assigned timestamp.
 
 ### 4.9 TxResult Response
 
@@ -289,16 +293,12 @@ the server remains healthy.
 
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
-```
-{"basis_tx_key": <TxKey>|nil, "query": <str>, "args": [<QueryArg>, ...]}
-```
-
-Registers an incremental query and streams its result deltas. `basis_tx_key` is reserved
-for future historical replay and **MUST be `nil`/omitted** in this version (a
-non-nil `basis_tx_key` is rejected with HTTP 400 / `InvalidQuery`). `args` is reserved for
-future incremental `:in` bindings and **MUST be empty** in this version. Queries
-or args the incremental engine does not yet support currently mirror one-shot
-query failures and are rejected with HTTP 500 / `QueryError` (code 2001).
+Takes the same body as a [Query Request](#44-query-request--post-dbquery), with two
+restrictions in this version: `basis_tx_key` **MUST be `nil`/omitted** (reserved for
+future historical replay; a non-nil value is rejected with HTTP 400 / `InvalidQuery`)
+and `args` **MUST be empty** (reserved for future incremental `:in` bindings). Queries
+or args the incremental engine does not yet support mirror one-shot query failures and
+are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
@@ -322,7 +322,7 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
 
 ```
 {"kind": "open",
- "tx_key":  {"tx_id": <int>, "system_time": <Timestamp>},
+ "tx_key":  <TxKey>,
  "columns": [<ColumnDescription>, ...]}
 ```
 
@@ -333,7 +333,7 @@ it. `columns` matches [QueryResponse](#46-queryresponse).
 
 ```
 {"kind": "delta",
- "tx_key":  {"tx_id": <int>, "system_time": <Timestamp>},
+ "tx_key":  <TxKey>,
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
