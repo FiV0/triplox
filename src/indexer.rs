@@ -585,9 +585,7 @@ impl Indexer {
 /// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
-    /// Latest indexed tx captured when this waiter subscribed; the fast-path
-    /// boundary. A `tx_key` at or below it was already indexed at subscription
-    /// time, so its outcome is read from storage rather than awaited.
+    /// Latest indexed tx captured when this waiter subscribed.
     baseline: TxBasis,
     rx: broadcast::Receiver<TxCompletionMessage>,
     slatedb: Arc<Db>,
@@ -674,15 +672,19 @@ impl TxWaiter {
         }
     }
 
-    /// Recover an already-indexed transaction's outcome from storage. 
-    /// A missing tx entity means a technical failure. 
+    /// Recover an already-indexed transaction's outcome from storage.
+    /// A missing tx entity means a technical failure.
     async fn completion_from_storage(&self, tx_key: TxKey) -> Result<TxCompletion, Error> {
         match tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
             Some(completion) => Ok(completion),
             // TODO: Deal with proper error escalation here. See #118.
-            None => { 
-                error!("Transaction {} failed or could not be recovered!", tx_key.tx_id);
-                Err(anyhow::anyhow!("Transaction {} failed or could not be recovered!", tx_key.tx_id))
+            None => {
+                let msg = format!(
+                    "Transaction {} failed or could not be recovered!",
+                    tx_key.tx_id
+                );
+                error!("{msg}");
+                Err(anyhow::anyhow!(msg))
             }
         }
     }
