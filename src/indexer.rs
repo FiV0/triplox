@@ -627,12 +627,8 @@ impl TxWaiter {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
-                    // Our notification may have been dropped. Check storage. If no completion was found, continue.
-                    if let Some(completion) =
-                        tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await?
-                    {
-                        return Ok(completion);
-                    }
+                    // Our notification may have been dropped. We just continue because 
+                    // we deal with the correct resolution in the branch above eventually. 
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
