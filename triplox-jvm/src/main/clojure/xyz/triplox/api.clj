@@ -16,9 +16,9 @@
   "Open a DB value. Returns a Db."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn {:keys [tx-key] :as _opts}]
+  (^Db [conn {:keys [tx-id system-time] :as tx-key}]
    (if tx-key
-     (.openDbAsOf ^TriploxNode conn (TxKey. (long (:tx-id tx-key)) (:system-time tx-key)))
+     (.openDbAsOf ^TriploxNode conn (TxKey. (long tx-id) system-time))
      (.openDb ^TriploxNode conn))))
 
 (defn q
