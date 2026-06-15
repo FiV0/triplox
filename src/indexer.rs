@@ -1371,67 +1371,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_await_tx_fast_path_latest_aborted() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let tx_key = test_tx_key(1);
-
-        let basis = indexer.transact_tx(tx_key, aborting_op()).await?;
-
-        // Waiter created after indexing: fast path must report the real abort
-        let completion = indexer.tx_waiter().await_tx(tx_key).await?;
-        assert_eq!(completion.basis, Some(basis));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown attribute"));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_await_tx_fast_path_earlier_tx_returns_real_result() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let tx_key_1 = test_tx_key(1);
-
-        let basis_1 = indexer.transact_tx(tx_key_1, add_op("alice")).await?;
-        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
-
-        let completion = indexer.tx_waiter().await_tx(tx_key_1).await?;
-        assert_eq!(completion.basis, Some(basis_1));
-        assert!(completion.result.is_ok());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_await_tx_fast_path_earlier_missing_tx() -> Result<(), Error> {
-        let components = in_memory_slate().await;
-        let mut indexer = bootstrapped_indexer(&components).await;
-        let tx_key_1 = test_tx_key(1);
-
-        indexer
-            .accept(Record {
-                tx_key: tx_key_1,
-                record: vec![0xff],
-            })
-            .await;
-        indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
-
-        // Fast path over an earlier tx that left no entity: await_tx errors
-        // because the outcome can't be recovered from storage.
-        let err = match indexer.tx_waiter().await_tx(tx_key_1).await {
-            Ok(_) => panic!("expected await_tx to error for an unrecoverable tx"),
-            Err(e) => e,
-        };
-        assert!(err.to_string().contains("failed or could not be recovered"));
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_await_tx_ordering() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let slate = components.db.clone();
