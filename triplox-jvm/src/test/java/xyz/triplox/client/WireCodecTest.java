@@ -56,7 +56,7 @@ class WireCodecTest {
         byte[] body = WireCodec.encodeQueryBody(new TxKey(42L, now), "{:find [?e]}", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(3, unpacker.unpackMapHeader());
-            assertEquals("db", unpacker.unpackString());
+            assertEquals("basis_tx_key", unpacker.unpackString());
             assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(42L, unpacker.unpackLong());
@@ -215,7 +215,7 @@ class WireCodecTest {
         byte[] body = WireCodec.encodeSubscribeBody(null, "[:find ?n :where [?e :name ?n]]", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(3, unpacker.unpackMapHeader());
-            assertEquals("db", unpacker.unpackString());
+            assertEquals("basis_tx_key", unpacker.unpackString());
             unpacker.unpackNil();
             assertEquals("query", unpacker.unpackString());
             assertEquals("[:find ?n :where [?e :name ?n]]", unpacker.unpackString());
@@ -230,7 +230,7 @@ class WireCodecTest {
         byte[] body = WireCodec.encodeSubscribeBody(new TxKey(7L, now), "[:find ?n]", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(3, unpacker.unpackMapHeader());
-            assertEquals("db", unpacker.unpackString());
+            assertEquals("basis_tx_key", unpacker.unpackString());
             assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(7L, unpacker.unpackLong());

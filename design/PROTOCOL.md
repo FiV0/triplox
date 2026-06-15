@@ -290,12 +290,12 @@ the server remains healthy.
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
 ```
-{"db": <DbBasis>|nil, "query": <str>, "args": [<QueryArg>, ...]}
+{"basis_tx_key": <TxKey>|nil, "query": <str>, "args": [<QueryArg>, ...]}
 ```
 
-Registers an incremental query and streams its result deltas. `db` is reserved
+Registers an incremental query and streams its result deltas. `basis_tx_key` is reserved
 for future historical replay and **MUST be `nil`/omitted** in this version (a
-non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `args` is reserved for
+non-nil `basis_tx_key` is rejected with HTTP 400 / `InvalidQuery`). `args` is reserved for
 future incremental `:in` bindings and **MUST be empty** in this version. Queries
 or args the incremental engine does not yet support currently mirror one-shot
 query failures and are rejected with HTTP 500 / `QueryError` (code 2001).

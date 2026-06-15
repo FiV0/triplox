@@ -640,7 +640,7 @@ pub struct OpenDbRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryRequest {
-    pub db: TxKey,
+    pub basis_tx_key: TxKey,
     pub query: String,
     pub args: Vec<QueryArg>,
 }
@@ -720,12 +720,12 @@ fn tx_key_from_value(value: Value) -> Result<TxKey> {
     })
 }
 
-/// Encode a Query request: `{"db": TxKey, "query": str, "args": [QueryArg, ...]}`.
+/// Encode a Query request: `{"basis_tx_key": TxKey, "query": str, "args": [QueryArg, ...]}`.
 pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 3)?;
-    rmp::encode::write_str(&mut buf, "db")?;
-    write_tx_key(&mut buf, &req.db)?;
+    rmp::encode::write_str(&mut buf, "basis_tx_key")?;
+    write_tx_key(&mut buf, &req.basis_tx_key)?;
     rmp::encode::write_str(&mut buf, "query")?;
     rmp::encode::write_str(&mut buf, &req.query)?;
     rmp::encode::write_str(&mut buf, "args")?;
@@ -738,7 +738,7 @@ pub fn encode_query_request(req: &QueryRequest) -> Result<Vec<u8>> {
 
 pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
-    let db = tx_key_from_value(take_field(&mut map, "db")?)?;
+    let basis_tx_key = tx_key_from_value(take_field(&mut map, "basis_tx_key")?)?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
         Value::Array(arr) => arr,
@@ -748,7 +748,11 @@ pub fn decode_query_request(data: &[u8]) -> Result<QueryRequest> {
     for item in arr {
         args.push(query_arg_from_value(item)?);
     }
-    Ok(QueryRequest { db, query, args })
+    Ok(QueryRequest {
+        basis_tx_key,
+        query,
+        args,
+    })
 }
 
 /// Encode a query response: `{"columns": [...], "rows": [[...], ...]}`.
@@ -962,7 +966,7 @@ pub fn decode_error_body(data: &[u8]) -> Result<ErrorResponseBody> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubscribeRequest {
-    pub db: Option<TxKey>,
+    pub basis_tx_key: Option<TxKey>,
     pub query: String,
     pub args: Vec<QueryArg>,
 }
@@ -1028,12 +1032,12 @@ fn delta_row_from_value(v: Value) -> Result<(Vec<DataType>, i64)> {
     Ok((values, weight))
 }
 
-/// Encode a Subscribe request: `{"db": TxKey|nil, "query": str, "args": [QueryArg, ...]}`.
+/// Encode a Subscribe request: `{"basis_tx_key": TxKey|nil, "query": str, "args": [QueryArg, ...]}`.
 pub fn encode_subscribe_request(req: &SubscribeRequest) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     rmp::encode::write_map_len(&mut buf, 3)?;
-    rmp::encode::write_str(&mut buf, "db")?;
-    write_optional_tx_key(&mut buf, &req.db)?;
+    rmp::encode::write_str(&mut buf, "basis_tx_key")?;
+    write_optional_tx_key(&mut buf, &req.basis_tx_key)?;
     rmp::encode::write_str(&mut buf, "query")?;
     rmp::encode::write_str(&mut buf, &req.query)?;
     rmp::encode::write_str(&mut buf, "args")?;
@@ -1046,7 +1050,7 @@ pub fn encode_subscribe_request(req: &SubscribeRequest) -> Result<Vec<u8>> {
 
 pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
     let mut map = map_from_value(read_body_value(data)?)?;
-    let db = take_optional_tx_key(&mut map, "db")?;
+    let basis_tx_key = take_optional_tx_key(&mut map, "basis_tx_key")?;
     let query = take_string(&mut map, "query")?;
     let arr = match take_field(&mut map, "args")? {
         Value::Array(arr) => arr,
@@ -1056,7 +1060,11 @@ pub fn decode_subscribe_request(data: &[u8]) -> Result<SubscribeRequest> {
     for item in arr {
         args.push(query_arg_from_value(item)?);
     }
-    Ok(SubscribeRequest { db, query, args })
+    Ok(SubscribeRequest {
+        basis_tx_key,
+        query,
+        args,
+    })
 }
 
 /// Encode one subscription frame as a bare msgpack map.
@@ -1191,7 +1199,7 @@ mod tests {
     fn subscribe_request_round_trip() {
         for db in [None, Some(sample_tx_key())] {
             let req = SubscribeRequest {
-                db,
+                basis_tx_key: db,
                 query: "[:find ?n :where [?e :name ?n]]".to_string(),
                 args: vec![QueryArg::Scalar(DataType::Long(42))],
             };
@@ -1557,7 +1565,7 @@ mod tests {
             ]),
         ];
         let request = QueryRequest {
-            db,
+            basis_tx_key: db,
             query: q.into(),
             args,
         };

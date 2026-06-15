@@ -180,7 +180,7 @@ async fn query<L: TxLog + 'static>(
     })?;
     let db = state
         .node
-        .db_as_of(query_request.db)
+        .db_as_of(query_request.basis_tx_key)
         .await
         .map_err(open_db_error)?;
 
@@ -287,10 +287,10 @@ async fn subscribe<L: TxLog + 'static>(
     })?;
 
     // subscriptions start at the latest indexed basis only (for now).
-    if request.db.is_some() {
+    if request.basis_tx_key.is_some() {
         return Err(ApiError::bad_request(
             ErrorCode::InvalidQuery,
-            "Subscriptions must start at the latest indexed basis; `db` must be nil",
+            "Subscriptions must start at the latest indexed basis; `basis_tx_key` must be nil",
         ));
     }
 
@@ -628,7 +628,7 @@ mod tests {
     fn subscribe_body_with_args(query: &str, db: Option<TxKey>, args: Vec<QueryArg>) -> Bytes {
         Bytes::from(
             encode_subscribe_request(&SubscribeRequest {
-                db,
+                basis_tx_key: db,
                 query: query.to_string(),
                 args,
             })
