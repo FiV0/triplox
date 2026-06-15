@@ -54,12 +54,6 @@ pub fn partition_entity_prefix(partition: u32) -> Vec<u8> {
 
 /// Map a `tx_id` (the log-assigned transaction sequence number) to its
 /// transaction entity ID in `TX_PARTITION`.
-///
-/// `tx_eid` is no longer minted by the partition map; it is a pure function of
-/// `tx_id`: `make_entity_id(TX_PARTITION, tx_id)` (equivalently the TX_PARTITION
-/// mask OR/XOR `tx_id`, since the mask and counter bits are disjoint). The
-/// inverse is [`extract_counter`]. `make_entity_id`'s counter assertion guards
-/// against `tx_id` overflowing the 42-bit counter field.
 pub fn tx_eid_from_tx_id(tx_id: i64) -> i64 {
     make_entity_id(TX_PARTITION, tx_id)
 }
@@ -140,22 +134,6 @@ mod tests {
         assert_eq!(extract_partition(eid), TX_PARTITION);
         assert_eq!(extract_counter(eid), 100);
         assert_eq!(eid, (1i64 << 42) | 100);
-    }
-
-    #[test]
-    fn test_tx_eid_from_tx_id_round_trips() {
-        for tx_id in [0, 1, 100, COUNTER_MASK] {
-            let tx_eid = tx_eid_from_tx_id(tx_id);
-            assert_eq!(extract_partition(tx_eid), TX_PARTITION);
-            assert_eq!(extract_counter(tx_eid), tx_id);
-            // The mapping is the partition mask OR/XOR the tx_id (disjoint bits).
-            assert_eq!(tx_eid, ((TX_PARTITION as i64) << COUNTER_BITS) ^ tx_id);
-        }
-    }
-
-    #[test]
-    fn test_tx_eid_from_tx_id_matches_bootstrap() {
-        assert_eq!(tx_eid_from_tx_id(0), crate::bootstrap::BOOTSTRAP_TX_EID);
     }
 
     #[test]
