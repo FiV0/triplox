@@ -22,12 +22,10 @@ class WireCodecTest {
     void testEncodeOpenDbBodyNull() throws IOException {
         byte[] body = WireCodec.encodeOpenDbBody(null);
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
-            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             unpacker.unpackNil();
             assertEquals("system_time", unpacker.unpackString());
-            unpacker.unpackNil();
-            assertEquals("tx_eid", unpacker.unpackString());
             unpacker.unpackNil();
             assertFalse(unpacker.hasNext());
         }
@@ -36,39 +34,34 @@ class WireCodecTest {
     @Test
     void testEncodeOpenDbBodyWithTxId() throws IOException {
         Instant now = Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
-        byte[] body = WireCodec.encodeOpenDbBody(new TxBasis(42L, now, 100L));
+        byte[] body = WireCodec.encodeOpenDbBody(new TxKey(42L, now));
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
-            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(42L, unpacker.unpackLong());
             assertEquals("system_time", unpacker.unpackString());
             assertEquals(now, unpacker.unpackTimestamp());
-            assertEquals("tx_eid", unpacker.unpackString());
-            assertEquals(100L, unpacker.unpackLong());
         }
     }
 
     @Test
     void testEncodeOpenDbBodyRejectsPartialTxKey() {
-        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(42L, null, null));
-        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(null, Instant.EPOCH, null));
-        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(42L, Instant.EPOCH, null));
+        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(42L, null));
+        assertThrows(IOException.class, () -> WireCodec.encodeOpenDbBody(null, Instant.EPOCH));
     }
 
     @Test
     void testEncodeQueryBody() throws IOException {
         Instant now = Instant.ofEpochSecond(1_700_000_000L);
-        byte[] body = WireCodec.encodeQueryBody(new TxBasis(42L, now, 100L), "{:find [?e]}", List.of());
+        byte[] body = WireCodec.encodeQueryBody(new TxKey(42L, now), "{:find [?e]}", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(3, unpacker.unpackMapHeader());
             assertEquals("db", unpacker.unpackString());
-            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(42L, unpacker.unpackLong());
             assertEquals("system_time", unpacker.unpackString());
             assertEquals(now, unpacker.unpackTimestamp());
-            assertEquals("tx_eid", unpacker.unpackString());
-            assertEquals(100L, unpacker.unpackLong());
             assertEquals("query", unpacker.unpackString());
             assertEquals("{:find [?e]}", unpacker.unpackString());
             assertEquals("args", unpacker.unpackString());
@@ -97,24 +90,6 @@ class WireCodecTest {
     // ---------------------------------------------------------------
 
     @Test
-    void testDecodeDbOpened() throws IOException {
-        Instant now = Instant.ofEpochSecond(1_700_000_000L);
-        byte[] body;
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(3);
-            packer.packString("tx_id"); packer.packLong(5);
-            packer.packString("system_time"); packer.packTimestamp(now);
-            packer.packString("tx_eid"); packer.packLong(42);
-            body = packer.toByteArray();
-        }
-        var opened = WireCodec.decodeDbOpened(body);
-        assertEquals(5L, opened.txId());
-        assertEquals(now, opened.systemTime());
-        assertEquals(42L, opened.txEid());
-        assertEquals(new TxBasis(5L, now, 42L), opened.basis());
-    }
-
-    @Test
     void testDecodeTxKey() throws IOException {
         Instant now = Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
         byte[] body;
@@ -134,18 +109,16 @@ class WireCodecTest {
         Instant now = Instant.ofEpochSecond(1_700_000_000L);
         byte[] body;
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(5);
+            packer.packMapHeader(4);
             packer.packString("status"); packer.packLong(0);
             packer.packString("tx_id"); packer.packLong(42);
             packer.packString("system_time"); packer.packTimestamp(now);
-            packer.packString("tx_eid"); packer.packLong(100);
             packer.packString("error_message"); packer.packNil();
             body = packer.toByteArray();
         }
         var result = WireCodec.decodeTxResult(body);
         assertEquals((byte) 0, result.status());
         assertEquals(42L, result.txId());
-        assertEquals(100L, result.txEid());
         assertEquals(now, result.systemTime());
         assertNull(result.errorMessage());
     }
@@ -155,17 +128,15 @@ class WireCodecTest {
         Instant now = Instant.ofEpochSecond(1_700_000_000L);
         byte[] body;
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(5);
+            packer.packMapHeader(4);
             packer.packString("status"); packer.packLong(1);
             packer.packString("tx_id"); packer.packLong(42);
             packer.packString("system_time"); packer.packTimestamp(now);
-            packer.packString("tx_eid"); packer.packLong(101);
             packer.packString("error_message"); packer.packString("constraint violation");
             body = packer.toByteArray();
         }
         var result = WireCodec.decodeTxResult(body);
         assertEquals((byte) 1, result.status());
-        assertEquals(101L, result.txEid());
         assertEquals("constraint violation", result.errorMessage());
     }
 
@@ -256,17 +227,15 @@ class WireCodecTest {
     @Test
     void testEncodeSubscribeBodyWithDb() throws IOException {
         Instant now = Instant.ofEpochSecond(1_700_000_000L);
-        byte[] body = WireCodec.encodeSubscribeBody(new TxBasis(7L, now, 42L), "[:find ?n]", List.of());
+        byte[] body = WireCodec.encodeSubscribeBody(new TxKey(7L, now), "[:find ?n]", List.of());
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
             assertEquals(3, unpacker.unpackMapHeader());
             assertEquals("db", unpacker.unpackString());
-            assertEquals(3, unpacker.unpackMapHeader());
+            assertEquals(2, unpacker.unpackMapHeader());
             assertEquals("tx_id", unpacker.unpackString());
             assertEquals(7L, unpacker.unpackLong());
             assertEquals("system_time", unpacker.unpackString());
             assertEquals(now, unpacker.unpackTimestamp());
-            assertEquals("tx_eid", unpacker.unpackString());
-            assertEquals(42L, unpacker.unpackLong());
         }
     }
 
@@ -277,14 +246,14 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("open");
-            packer.packString("basis"); packBasis(packer, 7L, now, 42L);
+            packer.packString("basis"); packBasis(packer, 7L, now);
             packer.packString("columns");
             packer.packArrayHeader(1);
             packColumn(packer, "?name", (byte) 255);
             body = packer.toByteArray();
         }
         var open = assertInstanceOf(SubscriptionFrame.Open.class, decodeFrame(body));
-        assertEquals(new TxBasis(7L, now, 42L), open.basis());
+        assertEquals(new TxKey(7L, now), open.basis());
         assertEquals(1, open.columns().size());
         assertEquals("?name", open.columns().get(0).name());
     }
@@ -296,7 +265,7 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packBasis(packer, 7L, now, 42L);
+            packer.packString("basis"); packBasis(packer, 7L, now);
             packer.packString("rows");
             packer.packArrayHeader(2);
             packDeltaRow(packer, "Ivan", 1);
@@ -304,7 +273,7 @@ class WireCodecTest {
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertEquals(new TxBasis(7L, now, 42L), delta.basis());
+        assertEquals(new TxKey(7L, now), delta.basis());
         assertEquals(2, delta.rows().size());
         assertEquals(List.of("Ivan"), delta.rows().get(0).values());
         assertEquals(1L, delta.rows().get(0).weight());
@@ -368,11 +337,11 @@ class WireCodecTest {
             packer.packArrayHeader(1);
             packDeltaRow(packer, "Ann", 1);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packBasis(packer, 3L, now, 42L);
+            packer.packString("basis"); packBasis(packer, 3L, now);
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertEquals(new TxBasis(3L, now, 42L), delta.basis());
+        assertEquals(new TxKey(3L, now), delta.basis());
         assertEquals(List.of("Ann"), delta.rows().get(0).values());
     }
 
@@ -392,11 +361,10 @@ class WireCodecTest {
         }
     }
 
-    private static void packBasis(MessagePacker packer, long txId, Instant systemTime, long txEid) throws IOException {
-        packer.packMapHeader(3);
+    private static void packBasis(MessagePacker packer, long txId, Instant systemTime) throws IOException {
+        packer.packMapHeader(2);
         packer.packString("tx_id"); packer.packLong(txId);
         packer.packString("system_time"); packer.packTimestamp(systemTime);
-        packer.packString("tx_eid"); packer.packLong(txEid);
     }
 
     private static void packDeltaRow(MessagePacker packer, String value, long weight) throws IOException {

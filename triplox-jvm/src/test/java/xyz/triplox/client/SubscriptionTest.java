@@ -164,18 +164,16 @@ class SubscriptionTest {
         packer.packNil();
     }
 
-    private static TxBasis sampleBasis() {
-        return new TxBasis(7L, Instant.ofEpochSecond(1_700_000_000L), 42L);
+    private static TxKey sampleBasis() {
+        return new TxKey(7L, Instant.ofEpochSecond(1_700_000_000L));
     }
 
     private static void packBasis(MessagePacker packer) throws IOException {
-        packer.packMapHeader(3);
+        packer.packMapHeader(2);
         packer.packString("tx_id");
         packer.packLong(7L);
         packer.packString("system_time");
         packer.packTimestamp(Instant.ofEpochSecond(1_700_000_000L));
-        packer.packString("tx_eid");
-        packer.packLong(42L);
     }
 
     private static Request request(String path) {

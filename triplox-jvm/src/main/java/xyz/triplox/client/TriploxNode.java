@@ -61,15 +61,15 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Open a DB value at a specific indexed transaction basis.
      */
-    public Db openDbAsOf(TxBasis basis) throws IOException {
+    public Db openDbAsOf(TxKey basis) throws IOException {
         return openDbInternal(basis);
     }
 
-    private Db openDbInternal(TxBasis basis) throws IOException {
+    private Db openDbInternal(TxKey basis) throws IOException {
         byte[] body = WireCodec.encodeOpenDbBody(basis);
         byte[] responseBody = postBinary("/db/open", body);
-        var opened = WireCodec.decodeDbOpened(responseBody);
-        return new Db(this, opened.basis());
+        var opened = WireCodec.decodeTxKey(responseBody);
+        return new Db(this, new TxKey(opened.txId(), opened.systemTime()));
     }
 
     /**
@@ -106,7 +106,7 @@ public class TriploxNode implements AutoCloseable {
         byte[] responseBody = postBinary("/tx/execute", body);
         var txResult = WireCodec.decodeTxResult(responseBody);
         return new TxResult(txResult.status(), txResult.txId(),
-                txResult.systemTime(), txResult.txEid(), txResult.errorMessage());
+                txResult.systemTime(), txResult.errorMessage());
     }
 
     /**

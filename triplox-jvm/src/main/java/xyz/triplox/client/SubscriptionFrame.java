@@ -12,7 +12,7 @@ public sealed interface SubscriptionFrame
         permits SubscriptionFrame.Open, Delta, SubscriptionFrame.Error {
 
     /** First frame: registration basis and (internal) column schema. */
-    record Open(TxBasis basis, List<ColumnDesc> columns) implements SubscriptionFrame {}
+    record Open(TxKey basis, List<ColumnDesc> columns) implements SubscriptionFrame {}
 
     /** Terminal error raised after the stream has started. */
     record Error(BackendMessage.ErrorResponse error) implements SubscriptionFrame {}

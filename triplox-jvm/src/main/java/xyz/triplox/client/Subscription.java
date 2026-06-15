@@ -26,7 +26,7 @@ public final class Subscription implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 128;
     private static final short INTERNAL_ERROR = 4000;
 
-    private final TxBasis basis;
+    private final TxKey basis;
     private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<QueueEvent> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
@@ -43,7 +43,7 @@ public final class Subscription implements AutoCloseable {
         }
     }
 
-    Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
+    Subscription(TxKey basis, Closeable closeable, MessageUnpacker unpacker) {
         this.basis = basis;
         this.closeable = closeable;
         this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
@@ -73,7 +73,7 @@ public final class Subscription implements AutoCloseable {
     }
 
     /** The registration basis. Deltas describe transactions strictly after it. */
-    public TxBasis basis() {
+    public TxKey basis() {
         return basis;
     }
 

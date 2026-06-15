@@ -25,44 +25,40 @@ public final class WireCodec {
     // ---------------------------------------------------------------
 
     /**
-     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}}.
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
      */
-    public static byte[] encodeOpenDbBody(TxBasis basis) throws IOException {
+    public static byte[] encodeOpenDbBody(TxKey basis) throws IOException {
         return encodeOpenDbBody(
                 basis == null ? null : basis.txId(),
-                basis == null ? null : basis.systemTime(),
-                basis == null ? null : basis.txEid());
+                basis == null ? null : basis.systemTime());
     }
 
     /**
-     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil, "tx_eid": int|nil}}.
+     * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
      */
-    public static byte[] encodeOpenDbBody(Long txId, Instant systemTime, Long txEid) throws IOException {
-        if (!((txId == null) == (systemTime == null) && (txId == null) == (txEid == null))) {
-            throw new IOException("tx_id, system_time, and tx_eid must all be set, or all be nil");
+    public static byte[] encodeOpenDbBody(Long txId, Instant systemTime) throws IOException {
+        if ((txId == null) != (systemTime == null)) {
+            throw new IOException("tx_id and system_time must both be set, or both be nil");
         }
         try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packer.packMapHeader(3);
+            packer.packMapHeader(2);
             packer.packString("tx_id");
             if (txId == null) packer.packNil();
             else packer.packLong(txId);
             packer.packString("system_time");
             if (systemTime == null) packer.packNil();
             else packer.packTimestamp(systemTime);
-            packer.packString("tx_eid");
-            if (txEid == null) packer.packNil();
-            else packer.packLong(txEid);
             return packer.toByteArray();
         }
     }
 
     /**
-     * {@code POST /db/query} body: {@code {"db": TxBasis, "query": str, "args": [QueryArg, ...]}}.
+     * {@code POST /db/query} body: {@code {"db": TxKey, "query": str, "args": [QueryArg, ...]}}.
      */
-    public static byte[] encodeQueryBody(TxBasis basis, String query, List<QueryArg> args) throws IOException {
+    public static byte[] encodeQueryBody(TxKey basis, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
-            packer.packString("db"); packTxBasis(packer, basis);
+            packer.packString("db"); packTxKey(packer, basis);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -81,14 +77,14 @@ public final class WireCodec {
     }
 
     /**
-     * {@code POST /db/subscribe} body: {@code {"db": TxBasis|nil, "query": str, "args": [QueryArg, ...]}}.
+     * {@code POST /db/subscribe} body: {@code {"db": TxKey|nil, "query": str, "args": [QueryArg, ...]}}.
      */
-    public static byte[] encodeSubscribeBody(TxBasis db, String query, List<QueryArg> args) throws IOException {
+    public static byte[] encodeSubscribeBody(TxKey db, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("db");
             if (db == null) packer.packNil();
-            else packTxBasis(packer, db);
+            else packTxKey(packer, db);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -98,14 +94,6 @@ public final class WireCodec {
     // ---------------------------------------------------------------
     // Response bodies (server → client)
     // ---------------------------------------------------------------
-
-    public static BackendMessage.DbOpened decodeDbOpened(byte[] body) throws IOException {
-        var fields = readFields(body);
-        long txId = expectLong(fields, "tx_id");
-        Instant systemTime = expectInstant(fields, "system_time");
-        long txEid = expectLong(fields, "tx_eid");
-        return new BackendMessage.DbOpened(txId, systemTime, txEid);
-    }
 
     public static QueryResult decodeQueryResponse(byte[] body) throws IOException {
         try (var unpacker = MessagePack.newDefaultUnpacker(body)) {
@@ -177,9 +165,8 @@ public final class WireCodec {
         byte status = toU8(expectLong(fields, "status"), "status");
         long txId = expectLong(fields, "tx_id");
         Instant systemTime = expectInstant(fields, "system_time");
-        long txEid = expectLong(fields, "tx_eid");
         String err = optionalString(fields, "error_message");
-        return new BackendMessage.TxResult(status, txId, systemTime, txEid, err);
+        return new BackendMessage.TxResult(status, txId, systemTime, err);
     }
 
     public static BackendMessage.ErrorResponse decodeErrorResponse(byte[] body) throws IOException {
@@ -207,7 +194,7 @@ public final class WireCodec {
     public static SubscriptionFrame decodeSubscriptionFrame(MessageUnpacker unpacker) throws IOException {
         int n = unpacker.unpackMapHeader();
         String kind = null;
-        TxBasis basis = null;
+        TxKey basis = null;
         List<ColumnDesc> columns = null;
         List<Row> rows = null;
         String severity = null, message = null, detail = null, hint = null;
@@ -216,7 +203,7 @@ public final class WireCodec {
             String key = unpacker.unpackString();
             switch (key) {
                 case "kind" -> kind = unpacker.unpackString();
-                case "basis" -> basis = unpackTxBasis(unpacker, "basis");
+                case "basis" -> basis = unpackTxKey(unpacker, "basis");
                 case "columns" -> columns = decodeColumns(unpacker);
                 case "rows" -> rows = decodeDeltaRows(unpacker);
                 case "severity" -> severity = unpacker.unpackString();
@@ -250,26 +237,24 @@ public final class WireCodec {
         };
     }
 
-    private static TxBasis unpackTxBasis(MessageUnpacker unpacker, String field) throws IOException {
+    private static TxKey unpackTxKey(MessageUnpacker unpacker, String field) throws IOException {
         if (unpacker.tryUnpackNil()) throw new IOException(field + " cannot be nil");
-        return unpackTxBasisMap(unpacker);
+        return unpackTxKeyMap(unpacker);
     }
 
-    private static TxBasis unpackTxBasisMap(MessageUnpacker unpacker) throws IOException {
+    private static TxKey unpackTxKeyMap(MessageUnpacker unpacker) throws IOException {
         int n = unpacker.unpackMapHeader();
         long txId = 0;
-        long txEid = 0;
         Instant systemTime = null;
         for (int i = 0; i < n; i++) {
             String key = unpacker.unpackString();
             switch (key) {
                 case "tx_id" -> txId = unpacker.unpackLong();
                 case "system_time" -> systemTime = unpacker.unpackTimestamp();
-                case "tx_eid" -> txEid = unpacker.unpackLong();
                 default -> unpacker.skipValue();
             }
         }
-        return new TxBasis(txId, systemTime, txEid);
+        return new TxKey(txId, systemTime);
     }
 
     private static String unpackNullableString(MessageUnpacker unpacker) throws IOException {
@@ -295,11 +280,10 @@ public final class WireCodec {
     // Field-map helpers
     // ---------------------------------------------------------------
 
-    private static void packTxBasis(MessagePacker packer, TxBasis basis) throws IOException {
-        packer.packMapHeader(3);
+    private static void packTxKey(MessagePacker packer, TxKey basis) throws IOException {
+        packer.packMapHeader(2);
         packer.packString("tx_id"); packer.packLong(basis.txId());
         packer.packString("system_time"); packer.packTimestamp(basis.systemTime());
-        packer.packString("tx_eid"); packer.packLong(basis.txEid());
     }
 
     private static Map<String, Object> readFields(byte[] body) throws IOException {
