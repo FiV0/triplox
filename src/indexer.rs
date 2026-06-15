@@ -627,9 +627,7 @@ impl TxWaiter {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
-                    // Our notification may have been dropped; check storage. Not
-                    // found means the tx is still pending or left no entity — a
-                    // later tx's message will resolve it via the Greater branch.
+                    // Our notification may have been dropped. Check storage. If no completion was found, continue.
                     if let Some(completion) =
                         tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await?
                     {
