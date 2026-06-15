@@ -51,14 +51,12 @@ All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body)
 
 ### 1.2 DB Values
 
-DB values are immutable read bases. A DB value is the transaction log key
-(`tx_id` + `system_time`); the transaction entity ID that bounds temporal reads
-is derived from `tx_id` (`tx_eid = make_entity_id(TX_PARTITION, tx_id)`) and so
+DB values are immutable read bases. A DB value is pinned by the transaction log key
+(`tx_id` + `system_time`). The transaction entity ID that bounds temporal reads
+on a db value is derived from `tx_id` (`tx_eid = TX_PARTITION_MASK | tx_id`) and so
 never travels on the wire. The server does not allocate or retain per-DB
 resources. Query requests carry the DB value, and the server creates a transient
-read view from that basis when the query executes.
-
-DB values do not need to be closed.
+read view from that basis when the query executes. DB values do not need to be closed.
 
 ---
 
