@@ -151,9 +151,6 @@ pub(crate) fn write_index_entries(
 /// restricting the scan to TX_PARTITION entities. With descending entity encoding,
 /// the first TX_PARTITION entity is the latest.
 ///
-/// Derives tx_id from the tx entity's id (its counter is the tx_id, the inverse
-/// of `tx_eid_from_tx_id`) and reads system_time from `db/txInstant`.
-///
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
 /// bootstrap tx) or if the latest tx entity is missing `:db/txInstant`.
 pub async fn latest_tx_key_from_sdb<D>(sdb: &D) -> Result<TxKey>
@@ -177,6 +174,7 @@ where
             Some(first) if first != eid => break,
             _ => {}
         }
+        // extract system-time
         if attribute == crate::schema::DB_TX_INSTANT {
             if let DataType::Instant(st) = value {
                 system_time = Some(st);
@@ -184,8 +182,9 @@ where
         }
     }
     match (first_eid, system_time) {
-        (Some(eid), Some(system_time)) => Ok(TxKey {
-            tx_id: extract_counter(eid),
+        (Some(tx_eid), Some(system_time)) => Ok(TxKey {
+            // extract tx_id from tx_eid
+            tx_id: extract_counter(tx_eid),
             system_time,
         }),
         (None, _) => bail!("TX_PARTITION is empty; database not initialized"),
