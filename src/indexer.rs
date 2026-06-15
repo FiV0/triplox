@@ -619,9 +619,7 @@ impl TxWaiter {
                                 result,
                             });
                         }
-                        // The indexer broadcasts exactly one message per log
-                        // record in order, so seeing a later tx first means our
-                        // message was dropped during a lag.
+                        // Seeing a later tx first means we were lagging at some point.
                         std::cmp::Ordering::Greater => {
                             return self.completion_from_storage(tx_key).await;
                         }
