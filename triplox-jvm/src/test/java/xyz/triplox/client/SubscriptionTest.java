@@ -128,7 +128,7 @@ class SubscriptionTest {
         packer.packMapHeader(3);
         packer.packString("kind");
         packer.packString("open");
-        packer.packString("basis");
+        packer.packString("tx_key");
         packBasis(packer);
         packer.packString("columns");
         packer.packArrayHeader(0);
@@ -138,7 +138,7 @@ class SubscriptionTest {
         packer.packMapHeader(3);
         packer.packString("kind");
         packer.packString("delta");
-        packer.packString("basis");
+        packer.packString("tx_key");
         packBasis(packer);
         packer.packString("rows");
         packer.packArrayHeader(1);

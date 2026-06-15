@@ -325,18 +325,18 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
 
 ```
 {"kind": "open",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>},
+ "tx_key":  {"tx_id": <int>, "system_time": <Timestamp>},
  "columns": [<ColumnDescription>, ...]}
 ```
 
-`basis` is the registration basis; deltas describe transactions strictly after
+`tx_key` is the registration basis; deltas describe transactions strictly after
 it. `columns` matches [QueryResponse](#46-queryresponse).
 
 #### `delta` frame — zero or more, one per affecting transaction
 
 ```
 {"kind": "delta",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>},
+ "tx_key":  {"tx_id": <int>, "system_time": <Timestamp>},
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
@@ -344,7 +344,7 @@ Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
 `DataType` per column (positional, per the `open` frame), `weight` is a **raw
 signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
 `delta` frame is emitted only for a transaction that produces a non-empty change
-(`rows` is never empty). `basis` is the transaction basis that produced the
+(`rows` is never empty). `tx_key` is the transaction basis that produced the
 delta.
 
 #### `error` frame — terminal

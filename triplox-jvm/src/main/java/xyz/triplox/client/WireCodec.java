@@ -203,7 +203,7 @@ public final class WireCodec {
             String key = unpacker.unpackString();
             switch (key) {
                 case "kind" -> kind = unpacker.unpackString();
-                case "basis" -> basis = unpackTxKey(unpacker, "basis");
+                case "tx_key" -> basis = unpackTxKey(unpacker, "tx_key");
                 case "columns" -> columns = decodeColumns(unpacker);
                 case "rows" -> rows = decodeDeltaRows(unpacker);
                 case "severity" -> severity = unpacker.unpackString();
@@ -217,11 +217,11 @@ public final class WireCodec {
         if (kind == null) throw new IOException("subscription frame missing \"kind\"");
         return switch (kind) {
             case "open" -> {
-                if (basis == null) throw new IOException("open frame missing \"basis\"");
+                if (basis == null) throw new IOException("open frame missing \"tx_key\"");
                 yield new SubscriptionFrame.Open(basis, columns == null ? List.of() : columns);
             }
             case "delta" -> {
-                if (basis == null) throw new IOException("delta frame missing \"basis\"");
+                if (basis == null) throw new IOException("delta frame missing \"tx_key\"");
                 yield new Delta(basis, rows == null ? List.of() : rows);
             }
             case "error" -> {

@@ -246,7 +246,7 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("open");
-            packer.packString("basis"); packBasis(packer, 7L, now);
+            packer.packString("tx_key"); packBasis(packer, 7L, now);
             packer.packString("columns");
             packer.packArrayHeader(1);
             packColumn(packer, "?name", (byte) 255);
@@ -265,7 +265,7 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packBasis(packer, 7L, now);
+            packer.packString("tx_key"); packBasis(packer, 7L, now);
             packer.packString("rows");
             packer.packArrayHeader(2);
             packDeltaRow(packer, "Ivan", 1);
@@ -287,13 +287,13 @@ class WireCodecTest {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packer.packNil();
+            packer.packString("tx_key"); packer.packNil();
             packer.packString("rows");
             packer.packArrayHeader(0);
             body = packer.toByteArray();
         }
         var err = assertThrows(IOException.class, () -> decodeFrame(body));
-        assertTrue(err.getMessage().contains("basis cannot be nil"));
+        assertTrue(err.getMessage().contains("tx_key cannot be nil"));
     }
 
     @Test
@@ -337,7 +337,7 @@ class WireCodecTest {
             packer.packArrayHeader(1);
             packDeltaRow(packer, "Ann", 1);
             packer.packString("kind"); packer.packString("delta");
-            packer.packString("basis"); packBasis(packer, 3L, now);
+            packer.packString("tx_key"); packBasis(packer, 3L, now);
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
