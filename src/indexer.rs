@@ -1109,7 +1109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deserialization_failure_notifies_without_basis() -> Result<(), Error> {
+    async fn test_deserialization_failure_notifies_failed() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
@@ -1134,8 +1134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transact_failure_writes_aborted_tx_and_notifies_with_basis() -> Result<(), Error>
-    {
+    async fn test_transact_failure_writes_aborted_tx_and_notifies_aborted() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let mut indexer = bootstrapped_indexer(&components).await;
         let tx_key = TxKey {
@@ -1165,7 +1164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transact_node_failure_notifies_without_basis() -> Result<(), Error> {
+    async fn test_transact_node_failure_notifies_failed() -> Result<(), Error> {
         let components = in_memory_slate().await;
         let mut indexer = Indexer::new(
             components.db.clone(),
