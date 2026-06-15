@@ -599,23 +599,6 @@ impl TxWaiter {
     // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
     // await_indexed answers "Are we there yet?" without knowing anything about the result.
 
-    /// Recover an already-indexed transaction's outcome from storage. Missing
-    /// tx entity means the tx failed without persisting an outcome (technical
-    /// abort, deserialize failure); mirror the live notification shape for
-    /// those: no basis, an error result.
-    async fn completion_from_storage(&self, tx_key: TxKey) -> Result<TxCompletion, Error> {
-        match tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
-            Some(completion) => Ok(completion),
-            None => Ok(TxCompletion {
-                basis: None,
-                result: Err(Arc::new(anyhow::anyhow!(
-                    "Transaction {} left no tx entity; it failed with a non-recoverable error whose details were lost",
-                    tx_key.tx_id
-                ))),
-            }),
-        }
-    }
-
     /// Wait until `tx_key` has been indexed. Returns the indexed basis and status,
     /// `Err` on abort or if the indexer shuts down.
     pub async fn await_tx(mut self, tx_key: TxKey) -> Result<TxCompletion, Error> {
@@ -686,6 +669,19 @@ impl TxWaiter {
                         tx_key.tx_id
                     ));
                 }
+            }
+        }
+    }
+
+    /// Recover an already-indexed transaction's outcome from storage. 
+    /// A missing tx entity means a technical failure. 
+    async fn completion_from_storage(&self, tx_key: TxKey) -> Result<TxCompletion, Error> {
+        match tx::lookup_tx_completion(self.slatedb.as_ref(), tx_key).await? {
+            Some(completion) => Ok(completion),
+            // TODO: Deal with proper error escalation here. See #118.
+            None => { 
+                error!("Transaction {} failed or could not be recovered!", tx_key.tx_id);
+                Err(anyhow::anyhow!("Transaction {} failed or could not be recovered!", tx_key.tx_id))
             }
         }
     }
@@ -1384,13 +1380,13 @@ mod tests {
             .await;
         indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
 
-        let completion = waiter.await_tx(tx_key_1).await?;
-        assert_eq!(completion.basis, None);
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("left no tx entity"));
+        // No tx entity persisted: completion can't be recovered, so await_tx
+        // itself errors rather than returning a completion with an error result.
+        let err = match waiter.await_tx(tx_key_1).await {
+            Ok(_) => panic!("expected await_tx to error for an unrecoverable tx"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("failed or could not be recovered"));
 
         Ok(())
     }
@@ -1445,13 +1441,13 @@ mod tests {
             .await;
         indexer.transact_tx(test_tx_key(2), add_op("bob")).await?;
 
-        let completion = indexer.tx_waiter().await_tx(tx_key_1).await?;
-        assert_eq!(completion.basis, None);
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("left no tx entity"));
+        // Fast path over an earlier tx that left no entity: await_tx errors
+        // because the outcome can't be recovered from storage.
+        let err = match indexer.tx_waiter().await_tx(tx_key_1).await {
+            Ok(_) => panic!("expected await_tx to error for an unrecoverable tx"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("failed or could not be recovered"));
 
         Ok(())
     }
