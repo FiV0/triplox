@@ -31,14 +31,6 @@ impl PartitionMap {
     }
 
     /// Record an externally-assigned transaction id in `TX_PARTITION`.
-    ///
-    /// Transaction entity IDs are not minted by the partition map; they are
-    /// derived from the log-assigned `tx_id` (see
-    /// [`crate::partition::tx_eid_from_tx_id`]). This advances the `TX_PARTITION`
-    /// high-water mark to `tx_id + 1` so that `contains_entid` keeps working,
-    /// and enforces that `tx_id` is strictly greater than every previously
-    /// assigned one (tx_eids must be strictly increasing). Gaps are allowed
-    /// (e.g. file-log byte offsets).
     pub fn set_tx_counter(&mut self, tx_id: i64) -> Result<()> {
         let next = self.0.entry(TX_PARTITION).or_insert(0);
         if tx_id < *next {
@@ -110,12 +102,11 @@ mod tests {
     #[test]
     fn set_tx_counter_advances_high_water_mark_and_allows_gaps() {
         let mut pm = PartitionMap::new();
-        // Consecutive tx_ids (memory/Kafka style).
         pm.set_tx_counter(0).unwrap();
         assert!(pm.contains_entid(tx_eid_from_tx_id(0)));
         pm.set_tx_counter(1).unwrap();
         assert!(pm.contains_entid(tx_eid_from_tx_id(1)));
-        // Gaps are allowed (file-log byte offsets).
+        // Gaps are allowed
         pm.set_tx_counter(5000).unwrap();
         assert!(pm.contains_entid(tx_eid_from_tx_id(5000)));
         assert_eq!(pm[&TX_PARTITION], 5001);
