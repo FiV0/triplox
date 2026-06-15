@@ -51,11 +51,12 @@ All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body)
 
 ### 1.2 DB Values
 
-DB values are immutable read bases. A DB value contains the transaction log key
-(`tx_id` + `system_time`) plus the transaction entity ID (`tx_eid`) that bounds
-temporal reads. The server does not allocate or retain per-DB resources. Query
-requests carry the DB value, and the server creates a transient read view from
-that basis when the query executes.
+DB values are immutable read bases. A DB value is the transaction log key
+(`tx_id` + `system_time`); the transaction entity ID that bounds temporal reads
+is derived from `tx_id` (`tx_eid = make_entity_id(TX_PARTITION, tx_id)`) and so
+never travels on the wire. The server does not allocate or retain per-DB
+resources. Query requests carry the DB value, and the server creates a transient
+read view from that basis when the query executes.
 
 DB values do not need to be closed.
 
@@ -195,25 +196,26 @@ than a single-member union.
 ### 4.2 OpenDb Request — `POST /db/open`
 
 ```
-{"tx_id": <int>|nil, "system_time": <Timestamp>|nil, "tx_eid": <int>|nil}
+{"tx_id": <int>|nil, "system_time": <Timestamp>|nil}
 ```
 
-Either all three fields are present (pinned transaction basis) or all three are
+Either both fields are present (pinned transaction basis) or both are
 `nil` (latest indexed). Mixing `nil` with a value is rejected with HTTP 400.
 
 ### 4.3 DbOpened Response
 
 ```
-{"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>}
+{"tx_id": <int>, "system_time": <Timestamp>}
 ```
 
-The response is the immutable DB read basis. `tx_eid` is the transaction entity
-ID that bounds temporal reads.
+The response is the immutable DB read basis. The bounding transaction entity ID
+is derived from `tx_id` (`tx_eid = make_entity_id(TX_PARTITION, tx_id)`) and is
+not carried on the wire.
 
 ### 4.4 Query Request — `POST /db/query`
 
 ```
-{"db": {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+{"db": {"tx_id": <int>, "system_time": <Timestamp>},
  "query": <str>,
  "args": [<QueryArg>, ...]}
 ```
@@ -323,7 +325,7 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
 
 ```
 {"kind": "open",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "basis":   {"tx_id": <int>, "system_time": <Timestamp>},
  "columns": [<ColumnDescription>, ...]}
 ```
 
@@ -334,7 +336,7 @@ it. `columns` matches [QueryResponse](#46-queryresponse).
 
 ```
 {"kind": "delta",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "basis":   {"tx_id": <int>, "system_time": <Timestamp>},
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
