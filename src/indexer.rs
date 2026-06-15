@@ -18,7 +18,7 @@ use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
-use crate::partition::{partition_entity_prefix, tx_eid_from_tx_id, TX_PARTITION};
+use crate::partition::{extract_counter, partition_entity_prefix, tx_eid_from_tx_id, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
@@ -151,12 +151,11 @@ pub(crate) fn write_index_entries(
 /// restricting the scan to TX_PARTITION entities. With descending entity encoding,
 /// the first TX_PARTITION entity is the latest.
 ///
-/// Collects tx_id from the `db/txId` value and system_time from `db/txInstant`.
-/// (The tx entity's id is `tx_eid_from_tx_id(tx_id)`, so it is not read separately.)
+/// Derives tx_id from the tx entity's id (its counter is the tx_id, the inverse
+/// of `tx_eid_from_tx_id`) and reads system_time from `db/txInstant`.
 ///
 /// Errors if no TX_PARTITION entity exists (an initialized DB always has the
-/// bootstrap tx) or if the latest tx entity is missing `:db/txId` or
-/// `:db/txInstant`.
+/// bootstrap tx) or if the latest tx entity is missing `:db/txInstant`.
 pub async fn latest_tx_key_from_sdb<D>(sdb: &D) -> Result<TxKey>
 where
     D: DbReadOps + Sync,
@@ -166,7 +165,6 @@ where
         .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut first_eid: Option<i64> = None;
-    let mut tx_id: Option<i64> = None;
     let mut system_time: Option<crate::clock::Instant> = None;
     while let Some(kv) = iter.next().await? {
         let (entity_dt, attribute, value, _tx_eid, _op) = eav_key_to_parts(kv.key)?;
@@ -179,23 +177,19 @@ where
             Some(first) if first != eid => break,
             _ => {}
         }
-        if attribute == crate::schema::DB_TX_ID {
-            if let DataType::Long(id) = value {
-                tx_id = Some(id);
-            }
-        }
         if attribute == crate::schema::DB_TX_INSTANT {
             if let DataType::Instant(st) = value {
                 system_time = Some(st);
             }
         }
     }
-    match (first_eid, tx_id, system_time) {
-        (Some(_eid), Some(tx_id), Some(system_time)) => Ok(TxKey { tx_id, system_time }),
-        (None, _, _) => bail!("TX_PARTITION is empty; database not initialized"),
-        (Some(eid), tid, st) => {
-            bail!("Tx entity {eid} missing required attributes (tx_id={tid:?}, system_time={st:?})")
-        }
+    match (first_eid, system_time) {
+        (Some(eid), Some(system_time)) => Ok(TxKey {
+            tx_id: extract_counter(eid),
+            system_time,
+        }),
+        (None, _) => bail!("TX_PARTITION is empty; database not initialized"),
+        (Some(eid), None) => bail!("Tx entity {eid} missing required :db/txInstant"),
     }
 }
 
