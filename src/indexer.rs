@@ -627,8 +627,8 @@ impl TxWaiter {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_count)) => {
-                    // Our notification may have been dropped. We just continue because 
-                    // we deal with the correct resolution in the branch above eventually. 
+                    // Our notification may have been dropped. We just continue because
+                    // we deal with the correct resolution in the branch above eventually.
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
