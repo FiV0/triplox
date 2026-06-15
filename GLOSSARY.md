@@ -28,17 +28,22 @@ concerned with identifying a transaction on the log. Every TxKey gives you a sta
 
 A client's handle to a [node](#node), returned by `connect`. You submit [transactions](#transaction) through it and call `db` on it to obtain a [database value](#database-value) to query.
 
-## Covering index
+## Covering indexes
+
+The four primary index permuations EAV, AVE, AEV and VAE.
 
 An [index](#index) — [AE](#ae) or [AV](#av) — that stores enough of the datom to answer certain queries directly, without consulting a temporal index. These omit the transaction suffix and record only [assertions](#assertion).
 
 ## Datalog
 
-The declarative query language used to read from the database. You describe the data you want with [variables](#variable) and [patterns](#pattern) rather than how to fetch it. See [query](#query).
+The declarative query language used to read from the system. You describe the data you want with [variables](#variable) and [patterns](#pattern) rather than how to fetch it. See [query](#query).
 
 ## Database
 
-The collection of [datoms](#datom) managed by a [node](#node). Read access is always through an immutable [database value](#database-value). In certain context we also
+An overloaded term. In most database systems "database" refers to the system as a whole. Datomic pioneered the concept of
+[database value](#database-value) where database means a immutable snapshot view of facts at a certain point in time. In most cases
+we mean database in this sense, but try to keep the terminology system for the more traditional database meaning. Later we might
+also add the concept of database mapping to a object store bucket. Here database than refers to the
 
 ## Database value
 
