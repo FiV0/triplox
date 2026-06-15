@@ -1,10 +1,6 @@
 # Triplox Glossary
 
-Short definitions of the core concepts in Triplox. Terms are alphabetized; cross-referenced terms link to their own entry.
-
-## AE
-
-The Attribute-Entity [covering index](#covering-index) view, ordered by attribute then entity. Atemporal — it omits the transaction suffix, so some queries can be answered without a temporal lookup.
+Short definitions of some core concepts in Triplox. This list is not authoritative and might be stale.
 
 ## AEV
 
@@ -16,15 +12,11 @@ An operation that adds a fact — a `:db/add` in [transaction data](#transaction
 
 ## Attribute
 
-Something that can be said about an [entity](#entity), named by a [keyword](#keyword) such as `:user/name`. In the [schema](#schema) an attribute has a [value type](#value-type), a cardinality, and an optional uniqueness constraint.
-
-## AV
-
-The Attribute-Value [covering index](#covering-index) view, ordered by attribute then value. Atemporal, like [AE](#ae).
+Something that can be said about an [entity](#entity), named by a [keyword](#keyword) such as `:user/name`.
 
 ## AVE
 
-The Attribute-Value-Entity [index](#index) view, ordered by attribute, then value, then entity. Ideal for finding entities by a known attribute-value combination.
+The Attribute-Value-Entity [index](#index) view, ordered by attribute, then value, then entity.
 
 ## Basis
 
@@ -44,7 +36,7 @@ The declarative query language used to read from the database. You describe the 
 
 ## Database
 
-The collection of [datoms](#datom) managed by a [node](#node). Read access is always through an immutable [database value](#database-value).
+The collection of [datoms](#datom) managed by a [node](#node). Read access is always through an immutable [database value](#database-value). In certain context we also
 
 ## Database value
 
@@ -52,7 +44,7 @@ An immutable snapshot of the [database](#database) at a [basis](#basis), obtaine
 
 ## Datom
 
-The atomic unit of data: a fact of the form (entity, attribute, value, op), where op marks it an [assertion](#assertion) or [retraction](#retraction). The [transaction](#transaction) is tracked separately, not stored in the datom itself.
+The atomic unit of data: a fact of the form (entity, attribute, value, tx, op), where op marks it an [assertion](#assertion) or [retraction](#retraction). The [transaction](#transaction) is tracked separately, not stored in the datom itself.
 
 ## EAV
 
@@ -164,11 +156,14 @@ See [Log](#log).
 
 ## Triple
 
-The entity-attribute-value core of a [datom](#datom), without the operation or [transaction](#transaction). "Datom" is the term used through most of the system; "triple" refers to the underlying E-A-V structure.
+The entity-attribute-value core of a [datom](#datom), without the operation or [transaction](#transaction).
+"Datom" is the term used to identify the triple plus the tx and operation. "triple" refers to the underlying E-A-V structure.
+In most cases we are interested in the triple part of a Datom when doing queries, so it can happen that
 
 ## Tx
 
-An overloaded abbreviation that, depending on context, means a [transaction](#transaction), its [TxKey](#txkey) or numeric transaction id, the entity id of the transaction itself (used for [basis](#basis) and as-of filtering), the `tx` module that expands transaction operations, or the reserved `:db.tx/*` attributes that record each transaction's outcome.
+A quite overloaded abbreviation for transaction in Triplox. Depending on context it can mean a
+- [transaction](#transaction), its [TxKey](#txkey) or numeric transaction id, the entity id of the transaction itself (used for [basis](#basis) and as-of filtering), the `tx` module that expands transaction operations, or the reserved `:db.tx/*` attributes that record each transaction's outcome.
 
 ## TxKey
 
@@ -193,7 +188,3 @@ The declared type of an [attribute](#attribute)'s values, set with `:db/valueTyp
 ## Variable
 
 A placeholder in a [query](#query), prefixed with `?`, that represents an unknown value to find.
-
-## Where clause
-
-A [query](#query) constraint on the data. Where clauses combine [patterns](#pattern) with negation (Not), conjunction (And), disjunction (Or), and the specialized joins NotJoin and OrJoin.
