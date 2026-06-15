@@ -43,6 +43,7 @@ pub enum StorageConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteStorageConfig {
     pub endpoint: String,
     pub bucket: String,
@@ -66,6 +67,7 @@ pub enum LogConfig {
 
 #[cfg(feature = "kafka")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KafkaLogConfig {
     pub bootstrap_servers: String,
     #[serde(default = "default_kafka_topic")]
