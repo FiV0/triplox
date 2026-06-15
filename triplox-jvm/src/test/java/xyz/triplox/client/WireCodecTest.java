@@ -253,7 +253,7 @@ class WireCodecTest {
             body = packer.toByteArray();
         }
         var open = assertInstanceOf(SubscriptionFrame.Open.class, decodeFrame(body));
-        assertEquals(new TxKey(7L, now), open.basis());
+        assertEquals(new TxKey(7L, now), open.txKey());
         assertEquals(1, open.columns().size());
         assertEquals("?name", open.columns().get(0).name());
     }
@@ -273,7 +273,7 @@ class WireCodecTest {
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertEquals(new TxKey(7L, now), delta.basis());
+        assertEquals(new TxKey(7L, now), delta.txKey());
         assertEquals(2, delta.rows().size());
         assertEquals(List.of("Ivan"), delta.rows().get(0).values());
         assertEquals(1L, delta.rows().get(0).weight());
@@ -341,7 +341,7 @@ class WireCodecTest {
             body = packer.toByteArray();
         }
         var delta = assertInstanceOf(Delta.class, decodeFrame(body));
-        assertEquals(new TxKey(3L, now), delta.basis());
+        assertEquals(new TxKey(3L, now), delta.txKey());
         assertEquals(List.of("Ann"), delta.rows().get(0).values());
     }
 

@@ -405,7 +405,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
             anyhow::anyhow!("Indexer did not return a TxKey for tx {}", tx_key.tx_id)
         })?;
         match completion.result {
-            Ok(()) => Ok(TransactionResult::TxCommited(indexed)),
+            Ok(()) => Ok(TransactionResult::TxCommitted(indexed)),
             Err(e) => Ok(TransactionResult::TxAborted(
                 indexed,
                 // TODO: Assure identical errors on live and reconstruction path. See #393.
@@ -460,7 +460,7 @@ mod tests {
     /// Define common test attributes (name, age, email, follows) through the standard tx path.
     async fn define_test_schema(node: &impl SubmitNode) {
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
     }
 
     fn assert_aborted_with_error_matching(result: TransactionResult, pattern: &str) {
@@ -530,7 +530,7 @@ mod tests {
         }];
 
         let result = node.execute_tx(tx_ops).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -578,7 +578,7 @@ mod tests {
                 }])
                 .await
                 .unwrap();
-            assert!(matches!(result, TransactionResult::TxCommited(_)));
+            assert!(matches!(result, TransactionResult::TxCommitted(_)));
         }
 
         let db = node.db().await.unwrap();
@@ -1140,7 +1140,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             _ => panic!("Tx1 should commit"),
         };
 
@@ -1153,7 +1153,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             _ => panic!("Tx2 should commit"),
         };
 
@@ -1255,7 +1255,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let results = db
@@ -1286,7 +1286,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let results = db
@@ -1316,7 +1316,7 @@ mod tests {
         .await
         .expect("first log transaction after bootstrap-only restart should not be skipped")
         .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let result = node
             .execute_tx(vec![TxOp::Add {
@@ -1326,7 +1326,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         node.close().await.unwrap();
     }
@@ -1373,7 +1373,7 @@ mod tests {
             .await
             .unwrap();
         let basis = match result {
-            TransactionResult::TxCommited(k) => k,
+            TransactionResult::TxCommitted(k) => k,
             _ => panic!("expected commit"),
         };
 
@@ -1442,7 +1442,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         node.close().await.unwrap();
     }
@@ -1462,8 +1462,8 @@ mod tests {
             .await
             .unwrap();
         let basis1 = match result1 {
-            TransactionResult::TxCommited(tk) => tk,
-            _ => panic!("Expected TxCommited"),
+            TransactionResult::TxCommitted(tk) => tk,
+            _ => panic!("Expected TxCommitted"),
         };
 
         // Second transaction: insert bob
@@ -2013,7 +2013,7 @@ mod tests {
 
     async fn execute_and_flush(node: &Node<MemoryLog>, tx_ops: Vec<TxOp>) -> TxKey {
         let basis = match node.execute_tx(tx_ops).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         flush_wal(node).await;
@@ -2100,7 +2100,7 @@ mod tests {
             .await
             .unwrap();
         let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         flush_wal(&node).await;
@@ -2132,7 +2132,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let mut subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
@@ -2157,7 +2157,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let mut subscription = node
             .register_incremental_query(
@@ -2175,7 +2175,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         flush_wal(&node).await;
@@ -2209,7 +2209,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
 
@@ -2237,7 +2237,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         let mut subscription = node
@@ -2258,7 +2258,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
         flush_wal(&node).await;
@@ -2299,7 +2299,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
 
@@ -2329,7 +2329,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
         flush_wal(&node).await;
         let mut subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
@@ -2344,7 +2344,7 @@ mod tests {
             .await
             .unwrap()
         {
-            TransactionResult::TxCommited(basis) => basis,
+            TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
         };
 
@@ -2813,14 +2813,14 @@ mod tests {
                     msg
                 );
             }
-            TransactionResult::TxCommited(_) => panic!("Expected TxAborted, got TxCommited"),
+            TransactionResult::TxCommitted(_) => panic!("Expected TxAborted, got TxCommitted"),
         }
 
         // Define schema and submit a valid tx — indexer should still be alive
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
         assert!(
-            matches!(result, TransactionResult::TxCommited(_)),
-            "Expected TxCommited for schema tx, got: {:?}",
+            matches!(result, TransactionResult::TxCommitted(_)),
+            "Expected TxCommitted for schema tx, got: {:?}",
             result
         );
 
@@ -2837,8 +2837,8 @@ mod tests {
         .expect("execute_tx should not return Err");
 
         assert!(
-            matches!(result, TransactionResult::TxCommited(_)),
-            "Expected TxCommited for valid tx, got: {:?}",
+            matches!(result, TransactionResult::TxCommitted(_)),
+            "Expected TxCommitted for valid tx, got: {:?}",
             result
         );
     }
@@ -2905,7 +2905,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result1, TransactionResult::TxCommited(_)));
+        assert!(matches!(result1, TransactionResult::TxCommitted(_)));
 
         // tx2: insert with unknown attribute — should fail
         let result2 = node
@@ -2927,7 +2927,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result3, TransactionResult::TxCommited(_)));
+        assert!(matches!(result3, TransactionResult::TxCommitted(_)));
 
         // Query all (entity, name) pairs and verify contiguous counter values
         let db = node.db().await.unwrap();
@@ -2967,7 +2967,7 @@ mod tests {
             .await
             .unwrap();
         let basis = match result {
-            TransactionResult::TxCommited(k) => k,
+            TransactionResult::TxCommitted(k) => k,
             _ => panic!("Expected committed"),
         };
 
@@ -3052,7 +3052,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         // Verify both :name and :age are on the same entity
         let db = node.db().await.unwrap();
@@ -3100,7 +3100,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         // Verify the follow relationship
         let db = node.db().await.unwrap();
@@ -3155,7 +3155,7 @@ mod tests {
             ])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -3192,7 +3192,7 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -3242,7 +3242,7 @@ mod tests {
             )])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         // Verify :age was added to the same entity as :name
         let db = node.db().await.unwrap();
@@ -3302,7 +3302,7 @@ mod tests {
             ])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -3345,7 +3345,7 @@ mod tests {
             ])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -3365,7 +3365,7 @@ mod tests {
             node.execute_tx(vec![unique_identity_schema_attribute(kw!(:ref-id), "ref")])
                 .await
                 .unwrap(),
-            TransactionResult::TxCommited(_)
+            TransactionResult::TxCommitted(_)
         ));
 
         node.execute_tx(vec![TxOp::put(vec![
@@ -3411,7 +3411,7 @@ mod tests {
             ])
             .await
             .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let db = node.db().await.unwrap();
         let result = db
@@ -3536,7 +3536,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(result, TransactionResult::TxCommited(_)),
+            matches!(result, TransactionResult::TxCommitted(_)),
             "expected commit, got {:?}",
             result
         );
@@ -3623,7 +3623,7 @@ mod tests {
                     msg
                 );
             }
-            TransactionResult::TxCommited(_) => panic!("expected TxAborted, got TxCommited"),
+            TransactionResult::TxCommitted(_) => panic!("expected TxAborted, got TxCommitted"),
         }
     }
 
@@ -3680,7 +3680,7 @@ mod tests {
                     msg
                 );
             }
-            TransactionResult::TxCommited(_) => panic!("expected TxAborted, got TxCommited"),
+            TransactionResult::TxCommitted(_) => panic!("expected TxAborted, got TxCommitted"),
         }
     }
 
@@ -3766,7 +3766,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(result, TransactionResult::TxCommited(_)),
+            matches!(result, TransactionResult::TxCommitted(_)),
             "expected in-tx transfer to succeed, got: {:?}",
             result
         );
@@ -3780,7 +3780,7 @@ mod tests {
             node.execute_tx(vec![unique_value_schema_attribute(kw!(:ssn), "string")])
                 .await
                 .unwrap(),
-            TransactionResult::TxCommited(_)
+            TransactionResult::TxCommitted(_)
         ));
 
         node.execute_tx(vec![TxOp::Add {
@@ -3860,7 +3860,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(result, TransactionResult::TxCommited(_)),
+            matches!(result, TransactionResult::TxCommitted(_)),
             "expected in-tx transfer to succeed, got: {:?}",
             result
         );

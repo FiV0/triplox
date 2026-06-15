@@ -16,9 +16,9 @@
   "Open a DB value. Returns a Db."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn {:keys [tx-basis] :as _opts}]
-   (if tx-basis
-     (.openDbAsOf ^TriploxNode conn (TxKey. (long (:tx-id tx-basis)) (:system-time tx-basis)))
+  (^Db [conn {:keys [tx-key] :as _opts}]
+   (if tx-key
+     (.openDbAsOf ^TriploxNode conn (TxKey. (long (:tx-id tx-key)) (:system-time tx-key)))
      (.openDb ^TriploxNode conn))))
 
 (defn q
@@ -82,9 +82,9 @@
        (.isDone ^Subscription sub) nil
        :else ::timeout))))
 
-(defn basis
-  "The registration basis of a subscription, as a map."
+(defn tx-key
+  "The registration tx_key of a subscription, as a map."
   [^Subscription sub]
-  (let [b (.basis ^Subscription sub)]
+  (let [b (.txKey ^Subscription sub)]
     {:tx-id (.txId b)
      :system-time (.systemTime b)}))

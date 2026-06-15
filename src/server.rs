@@ -257,7 +257,7 @@ async fn execute_tx<L: TxLog + 'static>(
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
     let resp = match result {
-        TransactionResult::TxCommited(tx_key) => TxResultResponse {
+        TransactionResult::TxCommitted(tx_key) => TxResultResponse {
             status: 0,
             tx_id: tx_key.tx_id,
             system_time: tx_key.system_time,

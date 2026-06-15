@@ -65,11 +65,11 @@
 (def user-entity-ids (range first-user-entity-id (+ first-user-entity-id 100)))
 
 
-(deftest subscribe-returns-basis-and-times-out
+(deftest subscribe-returns-tx-key-and-times-out
   (with-open [conn (connect)]
     (api/transact conn name-schema)
     (with-open [sub (api/subscribe conn names-query)]
-      (is (some? (:tx-id (api/basis sub))))
+      (is (some? (:tx-id (api/tx-key sub))))
       ;; No transaction after the subscription -> bounded take! times out.
       (is (= ::api/timeout (api/take! sub 200))))))
 

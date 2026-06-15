@@ -40,7 +40,7 @@ public final class SimpleExample {
             System.out.println("Data inserted (tx_id=" + dataResult.txId() + ").");
 
             var db = node.openDb();
-            System.out.println("Opened DB value (tx_eid=" + db.txEid() + ").");
+            System.out.println("Opened DB value (tx_id=" + db.txKey().txId() + ").");
             var rows = db.query("{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}");
 
             System.out.println("Query returned " + rows.size() + " row(s):");

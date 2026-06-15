@@ -56,7 +56,7 @@ class SubscriptionTest {
 
         var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(body));
         var first = assertInstanceOf(SubscriptionFrame.Open.class, WireCodec.decodeSubscriptionFrame(unpacker));
-        try (Subscription sub = new Subscription(first.basis(), () -> {}, unpacker)) {
+        try (Subscription sub = new Subscription(first.txKey(), () -> {}, unpacker)) {
             var ex = assertThrows(IllegalStateException.class, () -> sub.poll(5, TimeUnit.SECONDS));
             assertTrue(ex.getMessage().contains("unexpected open frame mid-stream"));
         }

@@ -15,7 +15,7 @@ use triplox::{TransactionResult, TxKey};
 
 async fn define_base_schema(client: &ClientNode) {
     let result = client.execute_tx(test_schema_tx()).await.unwrap();
-    assert!(matches!(result, TransactionResult::TxCommited(_)));
+    assert!(matches!(result, TransactionResult::TxCommitted(_)));
 }
 
 /// Start an in-memory HTTP server on a free port.
@@ -59,7 +59,7 @@ async fn test_execute_tx_and_query() {
         }])
         .await
         .unwrap();
-    assert!(matches!(result, TransactionResult::TxCommited(_)));
+    assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
     // Open a DB and query
     let db = client.db().await.unwrap();
@@ -88,7 +88,7 @@ async fn test_execute_tx_with_string_ops() {
         ])
         .await
         .unwrap();
-    assert!(matches!(result, TransactionResult::TxCommited(_)));
+    assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
     let db = client.db().await.unwrap();
     let result = db
@@ -183,8 +183,8 @@ async fn test_multiple_stateless_dbs_for_same_basis() {
         .await
         .unwrap();
     let basis = match result {
-        TransactionResult::TxCommited(basis) => basis,
-        _ => panic!("Expected TxCommited"),
+        TransactionResult::TxCommitted(basis) => basis,
+        _ => panic!("Expected TxCommitted"),
     };
 
     // Open two DB values for the same basis.
@@ -256,10 +256,10 @@ async fn test_execute_tx_returns_tx_key() {
         .unwrap();
 
     match result {
-        TransactionResult::TxCommited(tx_key) => {
+        TransactionResult::TxCommitted(tx_key) => {
             assert!(tx_key.tx_id > 0, "tx_id should be positive after indexing");
         }
-        _ => panic!("Expected TxCommited"),
+        _ => panic!("Expected TxCommitted"),
     }
 
     token.cancel();
@@ -281,8 +281,8 @@ async fn test_db_as_of() {
         .await
         .unwrap();
     let basis1 = match result1 {
-        TransactionResult::TxCommited(basis) => basis,
-        _ => panic!("Expected TxCommited"),
+        TransactionResult::TxCommitted(basis) => basis,
+        _ => panic!("Expected TxCommitted"),
     };
 
     // Second transaction
@@ -323,8 +323,8 @@ async fn test_open_latest_db_value_stays_pinned_after_later_tx() {
         .await
         .unwrap();
     let basis1 = match result1 {
-        TransactionResult::TxCommited(basis) => basis,
-        _ => panic!("Expected TxCommited"),
+        TransactionResult::TxCommitted(basis) => basis,
+        _ => panic!("Expected TxCommitted"),
     };
 
     let db = client.db().await.unwrap();

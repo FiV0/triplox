@@ -27,10 +27,10 @@ public final class WireCodec {
     /**
      * {@code POST /db/open} body: {@code {"tx_id": int|nil, "system_time": Timestamp|nil}}.
      */
-    public static byte[] encodeOpenDbBody(TxKey basis) throws IOException {
+    public static byte[] encodeOpenDbBody(TxKey txKey) throws IOException {
         return encodeOpenDbBody(
-                basis == null ? null : basis.txId(),
-                basis == null ? null : basis.systemTime());
+                txKey == null ? null : txKey.txId(),
+                txKey == null ? null : txKey.systemTime());
     }
 
     /**
@@ -55,10 +55,10 @@ public final class WireCodec {
     /**
      * {@code POST /db/query} body: {@code {"tx_key": TxKey, "query": str, "args": [QueryArg, ...]}}.
      */
-    public static byte[] encodeQueryBody(TxKey basis, String query, List<QueryArg> args) throws IOException {
+    public static byte[] encodeQueryBody(TxKey txKey, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
-            packer.packString("tx_key"); packTxKey(packer, basis);
+            packer.packString("tx_key"); packTxKey(packer, txKey);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -79,12 +79,12 @@ public final class WireCodec {
     /**
      * {@code POST /db/subscribe} body: {@code {"tx_key": TxKey|nil, "query": str, "args": [QueryArg, ...]}}.
      */
-    public static byte[] encodeSubscribeBody(TxKey db, String query, List<QueryArg> args) throws IOException {
+    public static byte[] encodeSubscribeBody(TxKey txKey, String query, List<QueryArg> args) throws IOException {
         try (var packer = MessagePack.newDefaultBufferPacker()) {
             packer.packMapHeader(3);
             packer.packString("tx_key");
-            if (db == null) packer.packNil();
-            else packTxKey(packer, db);
+            if (txKey == null) packer.packNil();
+            else packTxKey(packer, txKey);
             packer.packString("query"); packer.packString(query);
             packer.packString("args"); QueryArg.packAll(packer, args);
             return packer.toByteArray();
@@ -194,7 +194,7 @@ public final class WireCodec {
     public static SubscriptionFrame decodeSubscriptionFrame(MessageUnpacker unpacker) throws IOException {
         int n = unpacker.unpackMapHeader();
         String kind = null;
-        TxKey basis = null;
+        TxKey txKey = null;
         List<ColumnDesc> columns = null;
         List<Row> rows = null;
         String severity = null, message = null, detail = null, hint = null;
@@ -203,7 +203,7 @@ public final class WireCodec {
             String key = unpacker.unpackString();
             switch (key) {
                 case "kind" -> kind = unpacker.unpackString();
-                case "tx_key" -> basis = unpackTxKey(unpacker, "tx_key");
+                case "tx_key" -> txKey = unpackTxKey(unpacker, "tx_key");
                 case "columns" -> columns = decodeColumns(unpacker);
                 case "rows" -> rows = decodeDeltaRows(unpacker);
                 case "severity" -> severity = unpacker.unpackString();
@@ -217,12 +217,12 @@ public final class WireCodec {
         if (kind == null) throw new IOException("subscription frame missing \"kind\"");
         return switch (kind) {
             case "open" -> {
-                if (basis == null) throw new IOException("open frame missing \"tx_key\"");
-                yield new SubscriptionFrame.Open(basis, columns == null ? List.of() : columns);
+                if (txKey == null) throw new IOException("open frame missing \"tx_key\"");
+                yield new SubscriptionFrame.Open(txKey, columns == null ? List.of() : columns);
             }
             case "delta" -> {
-                if (basis == null) throw new IOException("delta frame missing \"tx_key\"");
-                yield new Delta(basis, rows == null ? List.of() : rows);
+                if (txKey == null) throw new IOException("delta frame missing \"tx_key\"");
+                yield new Delta(txKey, rows == null ? List.of() : rows);
             }
             case "error" -> {
                 byte sev = switch (severity == null ? "" : severity) {
@@ -281,10 +281,10 @@ public final class WireCodec {
     // ---------------------------------------------------------------
 
     // Package-private so test fixtures reuse the canonical tx_key encoding.
-    static void packTxKey(MessagePacker packer, TxKey basis) throws IOException {
+    static void packTxKey(MessagePacker packer, TxKey txKey) throws IOException {
         packer.packMapHeader(2);
-        packer.packString("tx_id"); packer.packLong(basis.txId());
-        packer.packString("system_time"); packer.packTimestamp(basis.systemTime());
+        packer.packString("tx_id"); packer.packLong(txKey.txId());
+        packer.packString("system_time"); packer.packTimestamp(txKey.systemTime());
     }
 
     private static Map<String, Object> readFields(byte[] body) throws IOException {

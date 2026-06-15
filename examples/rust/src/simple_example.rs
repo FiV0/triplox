@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
+        TransactionResult::TxCommitted(tx_key) => {
             println!("Schema defined (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(data_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
+        TransactionResult::TxCommitted(tx_key) => {
             println!("Data inserted (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {

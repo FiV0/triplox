@@ -161,7 +161,7 @@ impl SubmitNode for ClientNode {
         };
 
         if tx_result.status == 0 {
-            Ok(TransactionResult::TxCommited(tx_key))
+            Ok(TransactionResult::TxCommitted(tx_key))
         } else {
             let err_msg = tx_result
                 .error_message

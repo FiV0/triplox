@@ -73,7 +73,7 @@ async fn test_remote_node_with_s3_storage() {
 
     // Define schema
     let result = node.execute_tx(test_schema_tx()).await.unwrap();
-    assert!(matches!(result, TransactionResult::TxCommited(_)));
+    assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
     // Insert data
     let result = node
@@ -91,7 +91,7 @@ async fn test_remote_node_with_s3_storage() {
         ])
         .await
         .unwrap();
-    assert!(matches!(result, TransactionResult::TxCommited(_)));
+    assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
     // Query
     let db = node.db().await.unwrap();
