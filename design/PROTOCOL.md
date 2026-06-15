@@ -301,6 +301,7 @@ The same `query`/`args` shape as a [Query Request](#44-query-request--post-dbque
 except `tx_key` is optional. In this version it **MUST be `nil`/omitted** (a non-nil
 value is rejected with HTTP 400 / `InvalidQuery`; it is reserved for future historical
 replay) and `args` **MUST be empty** (reserved for future incremental `:in` bindings).
+At some point it might make sense to unify Query Request and Subscribe Request.
 Queries or args the incremental engine does not yet support mirror one-shot query
 failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
