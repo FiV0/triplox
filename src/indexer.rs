@@ -26,7 +26,19 @@ use crate::transaction::TxKey;
 use crate::tx;
 use crate::util::concat_bytes;
 
-type TxCompletionMessage = (TxKey, Option<TxKey>, Result<(), Arc<Error>>);
+#[derive(Clone, Debug)]
+enum TxOutcome {
+    Committed,           // Standard committed tx
+    Aborted(Arc<Error>), // A semantic tx error like a schema violation
+    Failed(Arc<Error>),  // A hard technical indexer failure (shouldn't happen)
+}
+
+/// A transaction's `TxOutcome` paired with the `TxKey` it applies to.
+#[derive(Clone, Debug)]
+struct TxCompletionMessage {
+    tx_key: TxKey,
+    outcome: TxOutcome,
+}
 
 pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
 
@@ -270,10 +282,10 @@ impl Indexer {
             Err(e) => match self.write_aborted_tx(tx_key, format!("{:#}", e)).await {
                 // semantic error
                 Ok(indexed) => {
-                    let err = Arc::new(e);
-                    let _ =
-                        self.tx_completion_sender
-                            .send((tx_key, Some(indexed), Err(err.clone())));
+                    let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                        tx_key,
+                        outcome: TxOutcome::Aborted(Arc::new(e)),
+                    });
                     Ok(indexed)
                 }
                 // technical error
@@ -285,9 +297,10 @@ impl Indexer {
                         e
                     ));
                     error!("{:#}", err);
-                    let _ = self
-                        .tx_completion_sender
-                        .send((tx_key, None, Err(err.clone())));
+                    let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                        tx_key,
+                        outcome: TxOutcome::Failed(err.clone()),
+                    });
                     Err(anyhow::anyhow!("{:#}", err))
                 }
             },
@@ -367,10 +380,10 @@ impl Indexer {
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = tx_key;
 
-        if let Err(e) = self
-            .tx_completion_sender
-            .send((tx_key, Some(tx_key), Ok(())))
-        {
+        if let Err(e) = self.tx_completion_sender.send(TxCompletionMessage {
+            tx_key,
+            outcome: TxOutcome::Committed,
+        }) {
             trace!(
                 "No receivers for indexed transaction {}: {}",
                 tx_key.tx_id,
@@ -589,6 +602,27 @@ pub(crate) struct TxCompletion {
     pub result: Result<(), Arc<anyhow::Error>>,
 }
 
+impl TxOutcome {
+    /// Resolve into a `TxCompletion` for `tx_key`. `Failed` wrote no entity, so
+    /// its completion carries `tx_key: None`.
+    fn into_completion(self, tx_key: TxKey) -> TxCompletion {
+        match self {
+            TxOutcome::Committed => TxCompletion {
+                tx_key: Some(tx_key),
+                result: Ok(()),
+            },
+            TxOutcome::Aborted(err) => TxCompletion {
+                tx_key: Some(tx_key),
+                result: Err(err),
+            },
+            TxOutcome::Failed(err) => TxCompletion {
+                tx_key: None,
+                result: Err(err),
+            },
+        }
+    }
+}
+
 impl TxWaiter {
     // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
     // await_indexed answers "Are we there yet?" without knowing anything about the result.
@@ -604,14 +638,14 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok((completed_tx_key, indexed_tx_key, result)) => {
+                Ok(TxCompletionMessage {
+                    tx_key: completed_tx_key,
+                    outcome,
+                }) => {
                     match completed_tx_key.cmp(&tx_key) {
                         std::cmp::Ordering::Less => continue,
                         std::cmp::Ordering::Equal => {
-                            return Ok(TxCompletion {
-                                tx_key: indexed_tx_key,
-                                result,
-                            });
+                            return Ok(outcome.into_completion(completed_tx_key));
                         }
                         // Seeing a later tx first means we were lagging at some point.
                         std::cmp::Ordering::Greater => {
@@ -643,7 +677,10 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok((completed_tx_key, _indexed_tx_key, _result)) => {
+                Ok(TxCompletionMessage {
+                    tx_key: completed_tx_key,
+                    ..
+                }) => {
                     if completed_tx_key.tx_id >= tx_key.tx_id {
                         return Ok(());
                     }
@@ -687,9 +724,10 @@ impl Subscriber for Indexer {
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
-                let _ = self
-                    .tx_completion_sender
-                    .send((record.tx_key, None, Err(Arc::new(err))));
+                let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                    tx_key: record.tx_key,
+                    outcome: TxOutcome::Failed(Arc::new(err)),
+                });
                 return;
             }
         };
