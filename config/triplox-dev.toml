@@ -1,4 +1,4 @@
-dev = true
+type = "dev"
 
 [server]
 host = "127.0.0.1"

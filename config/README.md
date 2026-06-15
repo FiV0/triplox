@@ -22,12 +22,12 @@ combination is rejected at startup:
 | kafka | `remote` | `kafka` |
 
 The dev server (a fresh in-memory node per connection) is selected with the
-top-level `dev = true` flag instead of a `[storage]`/`[log]` pair.
+top-level `type = "dev"` setting instead of a `[storage]`/`[log]` pair.
 
 | File | Mode | Notes |
 |---|---|---|
 | `triplox.toml` | memory | In-process, no persistence. Default. |
-| `triplox-dev.toml` | `dev = true` | Dev-only: a fresh in-memory node per connection. |
+| `triplox-dev.toml` | `type = "dev"` | Dev-only: a fresh in-memory node per connection. |
 | `triplox-local.toml` | local | Persistent local FS at `./data/`. |
 | `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
 

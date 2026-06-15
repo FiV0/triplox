@@ -6,16 +6,23 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Selects the per-connection ephemeral `DevServer`. When `true`, `storage`
-    /// and `log` are ignored.
-    #[serde(default)]
-    pub dev: bool,
+    /// Top-level node selector. `type = "dev"` runs the per-connection
+    /// ephemeral `DevServer` and ignores `storage`/`log`; omit it for a normal
+    /// node configured via `[storage]` and `[log]`.
+    #[serde(rename = "type", default)]
+    pub node_type: Option<NodeType>,
     #[serde(default)]
     pub storage: Option<StorageConfig>,
     #[serde(default)]
     pub log: Option<LogConfig>,
     #[serde(default)]
     pub server: ServerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeType {
+    Dev,
 }
 
 #[cfg(feature = "kafka")]
@@ -134,19 +141,19 @@ fn log_kind(log: &LogConfig) -> &'static str {
 
 impl Config {
     /// Validate the configured (log, storage) pair and resolve it to a
-    /// [`ResolvedNode`]. `dev = true` short-circuits to [`ResolvedNode::Dev`]
+    /// [`ResolvedNode`]. `type = "dev"` short-circuits to [`ResolvedNode::Dev`]
     /// and ignores storage/log. Any combination other than the four supported
     /// ones is rejected.
     pub fn resolve(self) -> Result<ResolvedNode> {
-        if self.dev {
+        if matches!(self.node_type, Some(NodeType::Dev)) {
             return Ok(ResolvedNode::Dev);
         }
 
         let storage = self.storage.ok_or_else(|| {
-            anyhow!("configuration must specify a [storage] section (or set dev = true)")
+            anyhow!("configuration must specify a [storage] section (or set type = \"dev\")")
         })?;
         let log = self.log.ok_or_else(|| {
-            anyhow!("configuration must specify a [log] section (or set dev = true)")
+            anyhow!("configuration must specify a [log] section (or set type = \"dev\")")
         })?;
 
         match (log, storage) {
@@ -281,16 +288,16 @@ mod tests {
     }
 
     #[test]
-    fn dev_flag_short_circuits_without_storage_or_log() {
-        let config: Config = toml::from_str("dev = true\n").unwrap();
+    fn dev_type_short_circuits_without_storage_or_log() {
+        let config: Config = toml::from_str("type = \"dev\"\n").unwrap();
         assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
     }
 
     #[test]
-    fn dev_flag_ignores_present_storage_and_log() {
+    fn dev_type_ignores_present_storage_and_log() {
         let config: Config = toml::from_str(
             r#"
-            dev = true
+            type = "dev"
 
             [storage]
             type = "memory"
