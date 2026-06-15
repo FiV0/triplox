@@ -30,9 +30,8 @@ A client's handle to a [node](#node), returned by `connect`. You submit [transac
 
 ## Covering indexes
 
-The four primary index permuations EAV, AVE, AEV and VAE.
-
-An [index](#index) — [AE](#ae) or [AV](#av) — that stores enough of the datom to answer certain queries directly, without consulting a temporal index. These omit the transaction suffix and record only [assertions](#assertion).
+The four primary [index](#index) permutation EAV, AVE, AEV and VAE. The different permutations are used for different access patterns
+and joins.
 
 ## Datalog
 
