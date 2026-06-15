@@ -20,7 +20,9 @@ The Attribute-Value-Entity [index](#index) view, ordered by attribute, then valu
 
 ## Basis
 
-The point in time a [database value](#database-value) is as-of, captured as a `TxBasis` made of a [TxKey](#txkey) and the entity id of the transaction itself. Querying a basis returns the state of the database as of that [transaction](#transaction).
+A point in time a [database value](#database-value) is as-of. A basis is identified by a [TxKey](#txkey), so sometimes
+these are used interchangeably. The basis is more about a stable database value identifier where as the TxKey is
+concerned with identifying a transaction on the log. Every TxKey gives you a stable basis.
 
 ## Connection
 
