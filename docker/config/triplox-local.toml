@@ -2,6 +2,10 @@
 type = "local"
 path = "/var/lib/triplox/data"
 
+[log]
+type = "file"
+path = "/var/lib/triplox/data/log"
+
 [server]
 host = "0.0.0.0"
 port = 5490

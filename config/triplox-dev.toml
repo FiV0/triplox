@@ -1,5 +1,4 @@
-[storage]
-type = "dev"
+dev = true
 
 [server]
 host = "127.0.0.1"

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use triplox::config::{Config, StorageConfig};
+use triplox::config::{Config, ResolvedNode};
 use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
@@ -19,9 +19,7 @@ fn load_config() -> Result<Config> {
     Ok(config)
 }
 
-async fn run_server(config: Config) -> Result<()> {
-    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-
+async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
 
@@ -48,35 +46,32 @@ async fn run_server(config: Config) -> Result<()> {
         shutdown_token.cancel();
     });
 
-    match &config.storage {
-        StorageConfig::Dev => {
+    match resolved {
+        ResolvedNode::Dev => {
             let server = DevServer::new();
             server.listen(&bind_addr, token).await
         }
-        StorageConfig::Memory => {
+        ResolvedNode::Memory => {
             let node = Arc::new(Node::memory_node().await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
-        StorageConfig::Local { path } => {
-            let node = Arc::new(Node::local_node(path).await?);
+        ResolvedNode::Local {
+            storage_path,
+            log_path,
+        } => {
+            let node = Arc::new(Node::local_node(&storage_path, &log_path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
-        StorageConfig::Remote(remote_config) => {
-            let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
-                bail!("remote storage requires local_disk_storage.path");
-            };
-            let node = Arc::new(Node::remote_node(remote_config, &local_disk_storage_path).await?);
+        ResolvedNode::Remote { storage, log_path } => {
+            let node = Arc::new(Node::remote_node(&storage, &log_path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         #[cfg(feature = "kafka")]
-        StorageConfig::Kafka(kafka_config) => {
-            let Some(local_disk_storage_path) = config.local_disk_storage_path() else {
-                bail!("kafka storage requires local_disk_storage.path");
-            };
-            let node = Arc::new(Node::kafka_node(kafka_config, &local_disk_storage_path).await?);
+        ResolvedNode::Kafka { storage, log } => {
+            let node = Arc::new(Node::kafka_node(&storage, &log).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -88,7 +83,22 @@ async fn main() -> Result<()> {
     triplox::logging::init_with_default_info();
 
     let config = load_config()?;
-    info!("Starting triplox with {:?} storage", config.storage);
+    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+    let resolved = config.resolve()?;
+    info!("Starting triplox in {} mode", node_mode(&resolved));
 
-    run_server(config).await
+    run_server(bind_addr, resolved).await
+}
+
+/// A coarse, secret-free label for the resolved node (avoids logging the full
+/// `ResolvedNode`, which embeds S3 credentials).
+fn node_mode(resolved: &ResolvedNode) -> &'static str {
+    match resolved {
+        ResolvedNode::Dev => "dev",
+        ResolvedNode::Memory => "memory",
+        ResolvedNode::Local { .. } => "local",
+        ResolvedNode::Remote { .. } => "remote",
+        #[cfg(feature = "kafka")]
+        ResolvedNode::Kafka { .. } => "kafka",
+    }
 }

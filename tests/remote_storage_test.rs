@@ -65,9 +65,9 @@ async fn test_remote_node_with_s3_storage() {
         access_key: "minioadmin".to_string(),
         secret_key: "minioadmin".to_string(),
         region: "us-east-1".to_string(),
-        file_log_path: log_dir.path().join("log"),
+        cache_path: disk_dir.path().to_path_buf(),
     };
-    let node = Node::remote_node(&remote_config, disk_dir.path())
+    let node = Node::remote_node(&remote_config, &log_dir.path().join("log"))
         .await
         .unwrap();
 

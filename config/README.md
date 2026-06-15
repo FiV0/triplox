@@ -10,12 +10,26 @@ cargo run -- config/triplox.toml
 If no argument is passed, triplox loads `config/triplox.toml` by default (see
 `src/main.rs`).
 
-| File | `storage.type` | Notes |
+Storage and log are configured independently via the `[storage]` and `[log]`
+sections. Only four (log, storage) pairings are supported; any other
+combination is rejected at startup:
+
+| Mode | `[storage].type` | `[log].type` |
 |---|---|---|
-| `triplox.toml` | `memory` | In-process, no persistence. Default. |
-| `triplox-dev.toml` | `dev` | Dev-only SlateDB backed by an in-memory object store. |
-| `triplox-local.toml` | `local` | Persistent local FS at `./data/`. |
-| `triplox-remote.toml` | `remote` | S3-compatible (MinIO) at `http://localhost:9000`. |
+| memory | `memory` | `memory` |
+| local | `local` | `file` |
+| remote | `remote` | `file` |
+| kafka | `remote` | `kafka` |
+
+The dev server (a fresh in-memory node per connection) is selected with the
+top-level `dev = true` flag instead of a `[storage]`/`[log]` pair.
+
+| File | Mode | Notes |
+|---|---|---|
+| `triplox.toml` | memory | In-process, no persistence. Default. |
+| `triplox-dev.toml` | `dev = true` | Dev-only: a fresh in-memory node per connection. |
+| `triplox-local.toml` | local | Persistent local FS at `./data/`. |
+| `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
 
 ## Running locally against MinIO in Docker
 
@@ -47,13 +61,12 @@ cargo run -- config/triplox-remote.toml              # debug build
 cargo run --release -- config/triplox-remote.toml    # release build
 ```
 
-The local transaction log is `/tmp/triplox-log/log` (configured as
-`storage.file_log_path` in `triplox-remote.toml`). SlateDB's disk-backed
-object-store cache lives at `/tmp/triplox-disk/cache/`, and DBSP incremental
-query storage lives at `/tmp/triplox-disk/dbsp/` (both derived from
-`local_disk_storage.path`). The SlateDB cache is capped at SlateDB's default
-16 GiB. It grows across restarts and must be wiped manually when you want a
-cold read path.
+The local transaction log is `/tmp/triplox-log/log` (configured as `[log].path`
+in `triplox-remote.toml`). SlateDB's disk-backed object-store cache lives at
+`/tmp/triplox-disk/cache/`, and DBSP incremental query storage lives at
+`/tmp/triplox-disk/dbsp/` (both derived from `[storage].cache_path`). The
+SlateDB cache is capped at SlateDB's default 16 GiB. It grows across restarts
+and must be wiped manually when you want a cold read path.
 
 ### 4. Reset
 

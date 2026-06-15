@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 
 use crate::clock;
 #[cfg(feature = "kafka")]
-use crate::config::KafkaStorageConfig;
+use crate::config::KafkaLogConfig;
 use crate::config::RemoteStorageConfig;
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
@@ -261,63 +261,63 @@ impl Node<FileLog> {
         Self::from_slate_and_tx_log(slate, log, incremental_storage_path).await
     }
 
-    pub async fn local_node(root_path: &Path) -> Result<Self, Error> {
-        std::fs::create_dir_all(root_path.join("db"))?;
-        let db_path = root_path.join("db");
+    pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
+        std::fs::create_dir_all(storage_path.join("db"))?;
+        let db_path = storage_path.join("db");
         let slate = local_slate(&db_path).await;
-        Self::from_slate_and_log(slate, &root_path.join("log"), root_path.join("dbsp")).await
-    }
-
-    pub async fn remote_node(
-        config: &RemoteStorageConfig,
-        local_disk_storage_path: &Path,
-    ) -> Result<Self, Error> {
-        if let Some(parent) = config
-            .file_log_path
+        if let Some(parent) = log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
         {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::create_dir_all(local_disk_storage_path)?;
-        let cache_path = local_disk_storage_path.join("cache");
+        Self::from_slate_and_log(slate, log_path, storage_path.join("dbsp")).await
+    }
+
+    pub async fn remote_node(
+        storage: &RemoteStorageConfig,
+        log_path: &Path,
+    ) -> Result<Self, Error> {
+        if let Some(parent) = log_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::create_dir_all(&storage.cache_path)?;
+        let cache_path = storage.cache_path.join("cache");
         let slate = remote_slate(
-            &config.endpoint,
-            &config.bucket,
-            &config.access_key,
-            &config.secret_key,
-            &config.region,
+            &storage.endpoint,
+            &storage.bucket,
+            &storage.access_key,
+            &storage.secret_key,
+            &storage.region,
             &cache_path,
         )
         .await?;
-        Self::from_slate_and_log(
-            slate,
-            &config.file_log_path,
-            local_disk_storage_path.join("dbsp"),
-        )
-        .await
+        Self::from_slate_and_log(slate, log_path, storage.cache_path.join("dbsp")).await
     }
 }
 
 #[cfg(feature = "kafka")]
 impl Node<KafkaLog> {
     pub async fn kafka_node(
-        config: &KafkaStorageConfig,
-        local_disk_storage_path: &Path,
+        storage: &RemoteStorageConfig,
+        log: &KafkaLogConfig,
     ) -> Result<Self, Error> {
-        std::fs::create_dir_all(local_disk_storage_path)?;
-        let cache_path = local_disk_storage_path.join("cache");
+        std::fs::create_dir_all(&storage.cache_path)?;
+        let cache_path = storage.cache_path.join("cache");
         let slate = remote_slate(
-            &config.endpoint,
-            &config.bucket,
-            &config.access_key,
-            &config.secret_key,
-            &config.region,
+            &storage.endpoint,
+            &storage.bucket,
+            &storage.access_key,
+            &storage.secret_key,
+            &storage.region,
             &cache_path,
         )
         .await?;
-        let log = Arc::new(KafkaLog::new(&config.bootstrap_servers, config.topic.clone()).await?);
-        Self::from_slate_and_tx_log(slate, log, local_disk_storage_path.join("dbsp")).await
+        let log = Arc::new(KafkaLog::new(&log.bootstrap_servers, log.topic.clone()).await?);
+        Self::from_slate_and_tx_log(slate, log, storage.cache_path.join("dbsp")).await
     }
 }
 
@@ -1251,7 +1251,7 @@ mod tests {
         let root_path = dir.path().to_path_buf();
 
         // First node: insert data
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         define_test_schema(&node).await;
 
         let result = node
@@ -1275,7 +1275,7 @@ mod tests {
         node.close().await.unwrap();
 
         // Second node: reopen at same path, verify data persisted, add more
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
 
         let db = node.db().await.unwrap();
         let results = db
@@ -1312,10 +1312,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
 
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         node.close().await.unwrap();
 
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             node.execute_tx(test_schema_tx()),
@@ -1343,11 +1343,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().to_path_buf();
 
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         define_test_schema(&node).await;
         node.close().await.unwrap();
 
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         let db = node.db().await.unwrap();
         let txs = db
             .query("[:find ?tx :where [?tx :db/txId 0]]")
@@ -1368,7 +1368,7 @@ mod tests {
         let root_path = dir.path().to_path_buf();
 
         // First node: bootstrap schema + insert data
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         define_test_schema(&node).await;
 
         let result = node
@@ -1387,7 +1387,7 @@ mod tests {
         node.close().await.unwrap();
 
         // Second node: reopen — no new transactions
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
 
         // A waiter obtained after restart should resolve immediately for the
         // already-indexed tx_key. Without the fix this hangs forever.
@@ -1416,7 +1416,7 @@ mod tests {
 
         // First node: bootstrap + define schema, then shut down cleanly so the
         // schema tx is indexed into SlateDB.
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         define_test_schema(&node).await;
         node.close().await.unwrap();
 
@@ -1437,7 +1437,7 @@ mod tests {
         // record. The node must still come up.
         let node = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            Node::local_node(&root_path),
+            Node::local_node(&root_path, &root_path.join("log")),
         )
         .await
         .expect("restart should not hang")
@@ -2780,7 +2780,7 @@ mod tests {
     #[tokio::test]
     async fn test_close_removes_incremental_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let node = Node::local_node(dir.path()).await.unwrap();
+        let node = Node::local_node(dir.path(), &dir.path().join("log")).await.unwrap();
         define_test_schema(&node).await;
         let storage_path = dir.path().join("dbsp").join("query-1");
 
@@ -3882,7 +3882,7 @@ mod tests {
         let root_path = dir.path().to_path_buf();
 
         // Fresh local node — bootstrap only, no user transactions yet
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         {
             let indexer = node.indexer.read().await;
             let pm = &indexer.metadata().partition_map;
@@ -3908,7 +3908,7 @@ mod tests {
         node.close().await.unwrap();
 
         // After restart, all partitions should be present with correct counters
-        let node = Node::local_node(&root_path).await.unwrap();
+        let node = Node::local_node(&root_path, &root_path.join("log")).await.unwrap();
         {
             let indexer = node.indexer.read().await;
             let pm = &indexer.metadata().partition_map;

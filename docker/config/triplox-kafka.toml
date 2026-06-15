@@ -1,14 +1,15 @@
 [storage]
-type = "kafka"
-bootstrap_servers = "automq:9092"
-topic = "triplox-tx-log"
+type = "remote"
 endpoint = "http://minio:9000"
 bucket = "triplox-kafka"
 access_key = "triplox"
 secret_key = "triplox123"
+cache_path = "/var/lib/triplox"
 
-[local_disk_storage]
-path = "/var/lib/triplox"
+[log]
+type = "kafka"
+bootstrap_servers = "automq:9092"
+topic = "triplox-tx-log"
 
 [server]
 host = "0.0.0.0"

@@ -1,20 +1,19 @@
 use std::path::PathBuf;
 
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
-const DBSP_STORAGE_DIR: &str = "dbsp";
-const REMOTE_CACHE_DIR: &str = "cache";
-
-#[derive(Debug, Default, Deserialize)]
-pub struct LocalDiskStorageConfig {
-    pub path: Option<PathBuf>,
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    pub storage: StorageConfig,
+    /// Selects the per-connection ephemeral `DevServer`. When `true`, `storage`
+    /// and `log` are ignored.
     #[serde(default)]
-    pub local_disk_storage: LocalDiskStorageConfig,
+    pub dev: bool,
+    #[serde(default)]
+    pub storage: Option<StorageConfig>,
+    #[serde(default)]
+    pub log: Option<LogConfig>,
     #[serde(default)]
     pub server: ServerConfig,
 }
@@ -29,6 +28,14 @@ fn default_region() -> String {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum StorageConfig {
+    Memory,
+    Local { path: PathBuf },
+    Remote(RemoteStorageConfig),
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RemoteStorageConfig {
     pub endpoint: String,
     pub bucket: String,
@@ -36,34 +43,26 @@ pub struct RemoteStorageConfig {
     pub secret_key: String,
     #[serde(default = "default_region")]
     pub region: String,
-    pub file_log_path: PathBuf,
-}
-
-#[cfg(feature = "kafka")]
-#[derive(Debug, Deserialize)]
-pub struct KafkaStorageConfig {
-    pub bootstrap_servers: String,
-    #[serde(default = "default_kafka_topic")]
-    pub topic: String,
-    pub endpoint: String,
-    pub bucket: String,
-    pub access_key: String,
-    pub secret_key: String,
-    #[serde(default = "default_region")]
-    pub region: String,
+    /// On-disk root for the SlateDB object-store cache and the dbsp scratch
+    /// directory (`{cache_path}/cache`, `{cache_path}/dbsp`).
+    pub cache_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum StorageConfig {
-    Dev,
+pub enum LogConfig {
     Memory,
-    Local {
-        path: PathBuf,
-    },
-    Remote(RemoteStorageConfig),
+    File { path: PathBuf },
     #[cfg(feature = "kafka")]
-    Kafka(KafkaStorageConfig),
+    Kafka(KafkaLogConfig),
+}
+
+#[cfg(feature = "kafka")]
+#[derive(Debug, Deserialize)]
+pub struct KafkaLogConfig {
+    pub bootstrap_servers: String,
+    #[serde(default = "default_kafka_topic")]
+    pub topic: String,
 }
 
 fn default_host() -> String {
@@ -95,47 +94,83 @@ pub fn default_ephemeral_dbsp_storage_path() -> PathBuf {
     std::env::temp_dir().join(format!("triplox-dbsp-{}", crate::util::random_string(10)))
 }
 
+/// A validated (log, storage) pairing ready to construct a node. Produced by
+/// [`Config::resolve`]; only the four supported combinations are representable.
+#[derive(Debug)]
+pub enum ResolvedNode {
+    Dev,
+    Memory,
+    Local {
+        storage_path: PathBuf,
+        log_path: PathBuf,
+    },
+    Remote {
+        storage: RemoteStorageConfig,
+        log_path: PathBuf,
+    },
+    #[cfg(feature = "kafka")]
+    Kafka {
+        storage: RemoteStorageConfig,
+        log: KafkaLogConfig,
+    },
+}
+
+fn storage_kind(storage: &StorageConfig) -> &'static str {
+    match storage {
+        StorageConfig::Memory => "memory",
+        StorageConfig::Local { .. } => "local",
+        StorageConfig::Remote(_) => "remote",
+    }
+}
+
+fn log_kind(log: &LogConfig) -> &'static str {
+    match log {
+        LogConfig::Memory => "memory",
+        LogConfig::File { .. } => "file",
+        #[cfg(feature = "kafka")]
+        LogConfig::Kafka(_) => "kafka",
+    }
+}
+
 impl Config {
-    pub fn dbsp_storage_path(&self) -> PathBuf {
-        match &self.storage {
-            StorageConfig::Dev => default_ephemeral_dbsp_storage_path(),
-
-            StorageConfig::Memory => default_ephemeral_dbsp_storage_path(),
-
-            StorageConfig::Local { path } => path.join(DBSP_STORAGE_DIR),
-
-            StorageConfig::Remote(_) => self
-                .local_disk_storage_path()
-                .expect("remote storage requires local_disk_storage.path")
-                .join(DBSP_STORAGE_DIR),
-
-            #[cfg(feature = "kafka")]
-            StorageConfig::Kafka(_) => self
-                .local_disk_storage_path()
-                .expect("kafka storage requires local_disk_storage.path")
-                .join(DBSP_STORAGE_DIR),
+    /// Validate the configured (log, storage) pair and resolve it to a
+    /// [`ResolvedNode`]. `dev = true` short-circuits to [`ResolvedNode::Dev`]
+    /// and ignores storage/log. Any combination other than the four supported
+    /// ones is rejected.
+    pub fn resolve(self) -> Result<ResolvedNode> {
+        if self.dev {
+            return Ok(ResolvedNode::Dev);
         }
-    }
 
-    pub fn remote_cache_path(&self) -> Option<PathBuf> {
-        match &self.storage {
-            StorageConfig::Remote(_) => self
-                .local_disk_storage_path()
-                .map(|path| path.join(REMOTE_CACHE_DIR)),
-            #[cfg(feature = "kafka")]
-            StorageConfig::Kafka(_) => self
-                .local_disk_storage_path()
-                .map(|path| path.join(REMOTE_CACHE_DIR)),
-            _ => None,
-        }
-    }
+        let storage = self.storage.ok_or_else(|| {
+            anyhow!("configuration must specify a [storage] section (or set dev = true)")
+        })?;
+        let log = self.log.ok_or_else(|| {
+            anyhow!("configuration must specify a [log] section (or set dev = true)")
+        })?;
 
-    pub fn local_disk_storage_path(&self) -> Option<PathBuf> {
-        match &self.storage {
-            StorageConfig::Remote(_) => self.local_disk_storage.path.clone(),
+        match (log, storage) {
+            (LogConfig::Memory, StorageConfig::Memory) => Ok(ResolvedNode::Memory),
+            (LogConfig::File { path }, StorageConfig::Local { path: storage_path }) => {
+                Ok(ResolvedNode::Local {
+                    storage_path,
+                    log_path: path,
+                })
+            }
+            (LogConfig::File { path }, StorageConfig::Remote(storage)) => Ok(ResolvedNode::Remote {
+                storage,
+                log_path: path,
+            }),
             #[cfg(feature = "kafka")]
-            StorageConfig::Kafka(_) => self.local_disk_storage.path.clone(),
-            _ => None,
+            (LogConfig::Kafka(log), StorageConfig::Remote(storage)) => {
+                Ok(ResolvedNode::Kafka { storage, log })
+            }
+            (log, storage) => Err(anyhow!(
+                "unsupported (log, storage) combination: log={}, storage={}. \
+                 Valid: (memory,memory), (file,local), (file,remote), (kafka,remote)",
+                log_kind(&log),
+                storage_kind(&storage)
+            )),
         }
     }
 }
@@ -145,134 +180,210 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_remote_file_log_and_local_disk_storage_paths() {
+    fn resolves_memory() {
         let config: Config = toml::from_str(
             r#"
             [storage]
-            type = "remote"
-            endpoint = "http://localhost:9000"
-            bucket = "triplox"
-            access_key = "triplox"
-            secret_key = "triplox123"
-            file_log_path = "/tmp/triplox-log/log"
+            type = "memory"
 
-            [local_disk_storage]
-            path = "/tmp/triplox-disk"
+            [log]
+            type = "memory"
             "#,
         )
         .unwrap();
-
-        let StorageConfig::Remote(remote_storage) = &config.storage else {
-            panic!("expected remote storage");
-        };
-        assert_eq!(
-            remote_storage.file_log_path,
-            PathBuf::from("/tmp/triplox-log/log")
-        );
-        assert_eq!(
-            config.remote_cache_path().unwrap(),
-            PathBuf::from("/tmp/triplox-disk/cache")
-        );
-        assert_eq!(
-            config.dbsp_storage_path(),
-            PathBuf::from("/tmp/triplox-disk/dbsp")
-        );
+        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Memory));
     }
 
     #[test]
-    fn remote_without_local_disk_storage_has_no_local_disk_storage_path() {
-        let config: Config = toml::from_str(
-            r#"
-            [storage]
-            type = "remote"
-            endpoint = "http://localhost:9000"
-            bucket = "triplox"
-            access_key = "triplox"
-            secret_key = "triplox123"
-            file_log_path = "/tmp/triplox-log/log"
-            "#,
-        )
-        .unwrap();
-
-        assert_eq!(config.local_disk_storage_path(), None);
-        assert_eq!(config.remote_cache_path(), None);
-    }
-
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn parses_kafka_storage_with_local_disk_storage_paths() {
-        let config: Config = toml::from_str(
-            r#"
-            [storage]
-            type = "kafka"
-            bootstrap_servers = "automq:9092"
-            endpoint = "http://localhost:9000"
-            bucket = "triplox-kafka"
-            access_key = "triplox"
-            secret_key = "triplox123"
-
-            [local_disk_storage]
-            path = "/tmp/triplox-disk"
-            "#,
-        )
-        .unwrap();
-
-        let StorageConfig::Kafka(kafka_storage) = &config.storage else {
-            panic!("expected kafka storage");
-        };
-        assert_eq!(kafka_storage.topic, "triplox-tx-log");
-        assert_eq!(
-            config.local_disk_storage_path().unwrap(),
-            PathBuf::from("/tmp/triplox-disk")
-        );
-        assert_eq!(
-            config.remote_cache_path().unwrap(),
-            PathBuf::from("/tmp/triplox-disk/cache")
-        );
-        assert_eq!(
-            config.dbsp_storage_path(),
-            PathBuf::from("/tmp/triplox-disk/dbsp")
-        );
-    }
-
-    #[test]
-    fn local_node_derives_dbsp_storage_from_single_storage_path() {
+    fn resolves_local_with_explicit_log_path() {
         let config: Config = toml::from_str(
             r#"
             [storage]
             type = "local"
             path = "./data"
 
-            [local_disk_storage]
-            path = "/ignored-for-local"
+            [log]
+            type = "file"
+            path = "./data/log"
             "#,
         )
         .unwrap();
-
-        assert_eq!(config.remote_cache_path(), None);
-        assert_eq!(config.dbsp_storage_path(), PathBuf::from("./data/dbsp"));
+        let ResolvedNode::Local {
+            storage_path,
+            log_path,
+        } = config.resolve().unwrap()
+        else {
+            panic!("expected local node");
+        };
+        assert_eq!(storage_path, PathBuf::from("./data"));
+        assert_eq!(log_path, PathBuf::from("./data/log"));
+        assert_eq!(storage_path.join("dbsp"), PathBuf::from("./data/dbsp"));
     }
 
     #[test]
-    fn memory_node_uses_default_dbsp_storage_when_local_disk_storage_is_present() {
+    fn resolves_remote_with_cache_path_and_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "remote"
+            endpoint = "http://localhost:9000"
+            bucket = "triplox"
+            access_key = "triplox"
+            secret_key = "triplox123"
+            cache_path = "/tmp/triplox-disk"
+
+            [log]
+            type = "file"
+            path = "/tmp/triplox-log/log"
+            "#,
+        )
+        .unwrap();
+        let ResolvedNode::Remote { storage, log_path } = config.resolve().unwrap() else {
+            panic!("expected remote node");
+        };
+        assert_eq!(storage.region, "eu-central-1");
+        assert_eq!(storage.cache_path, PathBuf::from("/tmp/triplox-disk"));
+        assert_eq!(
+            storage.cache_path.join("cache"),
+            PathBuf::from("/tmp/triplox-disk/cache")
+        );
+        assert_eq!(
+            storage.cache_path.join("dbsp"),
+            PathBuf::from("/tmp/triplox-disk/dbsp")
+        );
+        assert_eq!(log_path, PathBuf::from("/tmp/triplox-log/log"));
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn resolves_kafka_with_topic_default() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "remote"
+            endpoint = "http://localhost:9000"
+            bucket = "triplox-kafka"
+            access_key = "triplox"
+            secret_key = "triplox123"
+            cache_path = "/tmp/triplox-disk"
+
+            [log]
+            type = "kafka"
+            bootstrap_servers = "automq:9092"
+            "#,
+        )
+        .unwrap();
+        let ResolvedNode::Kafka { storage, log } = config.resolve().unwrap() else {
+            panic!("expected kafka node");
+        };
+        assert_eq!(storage.bucket, "triplox-kafka");
+        assert_eq!(log.topic, "triplox-tx-log");
+    }
+
+    #[test]
+    fn dev_flag_short_circuits_without_storage_or_log() {
+        let config: Config = toml::from_str("dev = true\n").unwrap();
+        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
+    }
+
+    #[test]
+    fn dev_flag_ignores_present_storage_and_log() {
+        let config: Config = toml::from_str(
+            r#"
+            dev = true
+
+            [storage]
+            type = "memory"
+
+            [log]
+            type = "memory"
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
+    }
+
+    #[test]
+    fn rejects_memory_log_with_local_storage() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "local"
+            path = "./data"
+
+            [log]
+            type = "memory"
+            "#,
+        )
+        .unwrap();
+        let err = config.resolve().unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported (log, storage) combination"),
+            "got: {err}"
+        );
+        assert!(err.contains("(memory,memory)"), "got: {err}");
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn rejects_kafka_log_with_local_storage() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "local"
+            path = "./data"
+
+            [log]
+            type = "kafka"
+            bootstrap_servers = "automq:9092"
+            "#,
+        )
+        .unwrap();
+        assert!(config.resolve().is_err());
+    }
+
+    #[test]
+    fn rejects_missing_storage_when_not_dev() {
+        let config: Config = toml::from_str(
+            r#"
+            [log]
+            type = "memory"
+            "#,
+        )
+        .unwrap();
+        let err = config.resolve().unwrap_err().to_string();
+        assert!(err.contains("[storage]"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_missing_log_when_not_dev() {
         let config: Config = toml::from_str(
             r#"
             [storage]
             type = "memory"
-
-            [local_disk_storage]
-            path = "/tmp/triplox-disk"
             "#,
         )
         .unwrap();
+        let err = config.resolve().unwrap_err().to_string();
+        assert!(err.contains("[log]"), "got: {err}");
+    }
 
-        let dbsp_storage_path = config.dbsp_storage_path();
-        assert_ne!(dbsp_storage_path, PathBuf::from("/tmp/triplox-disk/dbsp"));
-        assert!(dbsp_storage_path.starts_with(std::env::temp_dir()));
-        assert!(dbsp_storage_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("triplox-dbsp-"));
+    #[test]
+    fn remote_storage_missing_cache_path_fails_to_parse() {
+        let result: std::result::Result<Config, _> = toml::from_str(
+            r#"
+            [storage]
+            type = "remote"
+            endpoint = "http://localhost:9000"
+            bucket = "triplox"
+            access_key = "triplox"
+            secret_key = "triplox123"
+
+            [log]
+            type = "file"
+            path = "/tmp/triplox-log/log"
+            "#,
+        );
+        assert!(result.is_err());
     }
 }

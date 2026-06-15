@@ -4,10 +4,11 @@ endpoint = "http://localhost:9000"
 bucket = "triplox"
 access_key = "triplox"
 secret_key = "triplox123"
-file_log_path = "/tmp/triplox-log/log"
+cache_path = "/tmp/triplox-disk"
 
-[local_disk_storage]
-path = "/tmp/triplox-disk"
+[log]
+type = "file"
+path = "/tmp/triplox-log/log"
 
 [server]
 host = "127.0.0.1"
