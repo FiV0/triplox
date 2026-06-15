@@ -81,19 +81,10 @@ pure function of the log-assigned `tx_id`:
 tx_eid = make_entity_id(TX_PARTITION, tx_id) = (1 << 42) | tx_id   (== mask ^ tx_id)
 tx_id  = extract_counter(tx_eid)
 ```
-
-So a `TxKey { tx_id, system_time }` immediately identifies a database value: its
-`tx_eid` (the temporal read coordinate) is recovered by masking, with no storage
-lookup. A DB opened at a given `TxKey` sees datoms whose transaction entity is at or
-before `tx_eid`. Transaction entities appear in the E-leading indices like any other
-entity, enabling queries such as "find all transactions after time T" through the
-standard query engine.
-
-The indexer *sets* (rather than allocates) the `TX_PARTITION` counter from each
-incoming `tx_id`, asserting it is strictly greater than the previous one so `tx_eid`
-is strictly increasing. `tx_id` need not be dense — e.g. the file log uses byte
-offsets, so `tx_eid`s have gaps. `db/txId` is stored for queryability but is
-redundant with the entity id (`db/txId == extract_counter(tx_eid)`).
+This has the nice property that we don't need to do a lookup any `tx_eid` for a given `TxKey` when
+querying, but simply derive a tx_eid via a mask. The indexer *sets* (rather than allocates) the `TX_PARTITION` counter
+from each incoming `tx_key.tx_id`. The semantics of the log assure that these ids are strictly increasing.
+`db/txId` is stored for queryability.
 
 ### 2.3 :db.part/user (partition 2)
 
