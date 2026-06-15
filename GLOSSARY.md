@@ -1,93 +1,199 @@
 # Triplox Glossary
 
-This glossary explains the high-level concepts in Triplox to help you understand the system architecture.
+Short definitions of the core concepts in Triplox. Terms are alphabetized; cross-referenced terms link to their own entry.
 
----
+## AE
 
-## Datalog Query Concepts
+The Attribute-Entity [covering index](#covering-index) view, ordered by attribute then entity. Atemporal — it omits the transaction suffix, so some queries can be answered without a temporal lookup.
 
-Triplox uses a Datalog-inspired query language to retrieve data from the database. Queries are declarative, meaning you describe what data you want rather than how to fetch it.
+## AEV
 
-The query language uses **variables** (prefixed with `?`) to represent unknown values you want to find, and **patterns** that match against entity-attribute-value triples in the database. Queries consist of a **find specification** (which variables to return) and **where clauses** that constrain the data.
+The Attribute-Entity-Value [index](#index) view, ordered by attribute, then entity, then value.
 
-Where clauses can express complex logic through triple patterns, negation (Not), conjunction (And), disjunction (Or), and specialized joins (NotJoin, OrJoin). The query compiler analyzes these patterns to determine the most efficient execution plan, selecting appropriate indices and join strategies to retrieve the requested data.
+## Assertion
 
----
+An operation that adds a fact — a `:db/add` in [transaction data](#transaction-data) — that becomes an asserted [datom](#datom). Contrast [retraction](#retraction).
 
-## Index Types
+## Attribute
 
-To enable efficient queries from different perspectives, Triplox maintains five different index views of the same data: **EAV** (Entity-Attribute-Value), **AVE** (Attribute-Value-Entity), **AEV** (Attribute-Entity-Value), **AE** (Attribute-Entity), and **AV** (Attribute-Value).
+Something that can be said about an [entity](#entity), named by a [keyword](#keyword) such as `:user/name`. In the [schema](#schema) an attribute has a [value type](#value-type), a cardinality, and an optional uniqueness constraint.
 
-Each index orders the data differently, optimizing for specific query patterns. For example, EAV is ideal when you know the entity and want to look up its attributes, while AVE is perfect when searching for entities by a specific attribute-value combination.
+## AV
 
-This multi-index strategy represents a classic database trade-off: write amplification (storing data in five different ways) in exchange for read performance (always having an optimized index for your query pattern). The query compiler automatically selects the best index based on which parts of your query pattern are known versus unknown.
+The Attribute-Value [covering index](#covering-index) view, ordered by attribute then value. Atemporal, like [AE](#ae).
 
----
+## AVE
+
+The Attribute-Value-Entity [index](#index) view, ordered by attribute, then value, then entity. Ideal for finding entities by a known attribute-value combination.
+
+## Basis
+
+The point in time a [database value](#database-value) is as-of, captured as a `TxBasis` made of a [TxKey](#txkey) and the entity id of the transaction itself. Querying a basis returns the state of the database as of that [transaction](#transaction).
+
+## Connection
+
+A client's handle to a [node](#node). Triplox has no distinct connection type (unlike Datomic); a client connects to a node and obtains a [database value](#database-value) to query.
+
+## Covering index
+
+An [index](#index) — [AE](#ae) or [AV](#av) — that stores enough of the datom to answer certain queries directly, without consulting a temporal index. These omit the transaction suffix and record only [assertions](#assertion).
+
+## Datalog
+
+The declarative query language used to read from the database. You describe the data you want with [variables](#variable) and [patterns](#pattern) rather than how to fetch it. See [query](#query).
+
+## Database
+
+The collection of [datoms](#datom) managed by a [node](#node). Read access is always through an immutable [database value](#database-value).
+
+## Database value
+
+An immutable snapshot of the [database](#database) at a [basis](#basis), obtained from a [node](#node). Queries always run against a database value, never a mutable handle.
+
+## Datom
+
+The atomic unit of data: a fact of the form (entity, attribute, value, op), where op marks it an [assertion](#assertion) or [retraction](#retraction). The [transaction](#transaction) is tracked separately, not stored in the datom itself.
+
+## EAV
+
+The Entity-Attribute-Value [index](#index) view, ordered by entity, then attribute, then value. Ideal for looking up the attributes of a known entity.
+
+## EDN
+
+Extensible Data Notation — the textual data format used for [queries](#query) and [transaction data](#transaction-data).
+
+## Entity
+
+A thing the database holds facts about; the first component of a [datom](#datom). Referenced in [transaction data](#transaction-data) by [entity id](#entity-id), [ident](#ident), temporary id, or [lookup-ref](#lookup-ref).
+
+## Entity id
+
+The 64-bit integer that uniquely identifies an [entity](#entity). Allocated from a [partition](#partition), which the id encodes alongside a counter.
+
+## Find specification
+
+The part of a [query](#query) that names which [variables](#variable) to return.
+
+## Ident
+
+A [keyword](#keyword) that names an [entity](#entity), assigned with `:db/ident`. Idents resolve to their [entity id](#entity-id), letting schema entities and enumerated values be referred to by name.
+
+## Index
+
+One of six ordered views of the same data — [EAV](#eav), [AVE](#ave), [AEV](#aev), and [VAE](#vae) (temporal, carrying the transaction in the key for [basis](#basis)/as-of queries), plus the atemporal [covering indexes](#covering-index) [AE](#ae) and [AV](#av) — each optimized for a different query pattern. The system trades write amplification for read performance. Built and maintained by the [indexer](#indexer).
 
 ## Indexer
 
-The indexer is the write-side component responsible for transforming transaction data into queryable structures. It subscribes to the log to receive transactions asynchronously and materializes them across all five index views simultaneously.
+The write-side component that turns [transactions](#transaction) into queryable structures. It [subscribes](#subscriber) to the [log](#log) and materializes each transaction across all the [index](#index) views.
 
-The indexer takes incoming transaction operations, determines how they affect each index view, and writes the appropriate key-value pairs to storage. This process ensures that no matter what kind of query you run later, there's always an optimized index available to serve it efficiently.
+## Indexing
 
-The indexer enables the system's query performance—without it, querying would require scanning through the entire transaction log to find relevant data. By using the subscriber pattern to consume transactions asynchronously, the indexer can operate independently from the write path, allowing for more flexible scaling and deployment strategies.
+The [indexer](#indexer)'s work of turning a [transaction](#transaction) into entries across the [index](#index) views. It is asynchronous: submitting a transaction returns a [TxKey](#txkey) before indexing finishes.
 
----
+## Keyword
+
+A name-like value, optionally namespaced, written with a leading colon — e.g. `:age` or `:user/name`. Keywords name [attributes](#attribute), serve as [idents](#ident) and enumerated values, and are themselves a [value type](#value-type).
 
 ## Log
 
-The log is an append-only record of all transactions that have modified the database. It implements an event sourcing pattern where every change is captured as an immutable event with a unique transaction ID and timestamp.
+An append-only, totally ordered record of every [transaction](#transaction). Each entry is an immutable record with a [TxKey](#txkey), and can be replayed to reconstruct any database state. Implementations include in-memory, file-based, and Kafka-based. Also called the [transaction log](#transaction-log).
 
-The log serves multiple purposes: it provides a complete audit trail of all database modifications, enables time-travel queries to see historical states, and allows new consumers to catch up by replaying the transaction history. It also supports live subscriptions, where consumers can stream new transactions as they arrive.
+## Lookup-ref
 
-Different implementations of the log exist for different deployment scenarios—in-memory for testing and development, file-based for single-machine persistence, and Kafka-based for distributed systems. Regardless of implementation, the log guarantees that transactions are totally ordered and can be replayed to reconstruct any database state.
-
----
+A reference to an [entity](#entity) by a unique attribute and value — an `[attribute value]` pair — instead of its [entity id](#entity-id). The attribute must be `:db.unique/identity`.
 
 ## Node
 
-The node is the central component that applications interact with, acting as the "database instance" that provides a unified interface for both submitting transactions and running queries.
+The database instance an application talks to. It accepts [transaction](#transaction) submissions, appends them to the [log](#log), and hands out [database values](#database-value) to query.
 
-When you submit a transaction to a node, it appends the transaction to the log where it receives a unique ID and timestamp. Subscribers then asynchronously consume the transaction from the log to update indices and perform other processing. When you query a node, it uses the query compiler to analyze your Datalog query and execute it against the indexed data.
+## Partition
 
-The node design allows for different deployment topologies—you can have multiple nodes reading from the same shared log for read scaling, or a single node combining all functionality for simplicity. It encapsulates the complexity of the underlying components and presents a clean database-like API.
+A region of the [entity id](#entity-id) space. Triplox has three — one for [schema](#schema) entities, one for [transaction](#transaction) metadata, and one for user data — and each entity id encodes its partition plus a counter.
 
----
+## Pattern
 
-## Query Compiler
+A [where clause](#where-clause) element that matches against entity-attribute-value triples in the database.
 
-The query compiler is the read-side component that transforms declarative Datalog queries into efficient execution plans. It analyzes query patterns to understand which parts are known (constants) and which parts are unknown (variables), then selects the optimal index view to use.
+## Query
 
-Beyond index selection, the query compiler also determines the best join order when queries involve multiple patterns. It considers which variables are shared between patterns and chooses strategies to minimize the amount of data that needs to be processed. The compiler uses sophisticated multi-way join algorithms like leapfrog trie-join to efficiently navigate the indexed data.
+A declarative request for data, made up of a [find specification](#find-specification) and [where clauses](#where-clause). Compiled and executed by the [query compiler](#query-compiler).
 
-The query compiler's job is to make queries fast without requiring users to understand the underlying index structure. You write declarative queries expressing what you want, and the compiler figures out the best way to get it.
+## Query compiler
 
----
+The read-side component that turns a [Datalog](#datalog) [query](#query) into an execution plan. It picks the best [index](#index) view, chooses join order, and uses multi-way join algorithms such as leapfrog trie-join.
 
-## Storage Layer
+## Reference
 
-The storage layer provides persistent key-value storage for the indexed data. Triplox uses SlateDB, an embedded database that handles the low-level details of writing data to disk and reading it back efficiently.
+An [attribute](#attribute) whose [value type](#value-type) is `ref`: its [value](#value) is the [entity id](#entity-id) of another [entity](#entity). References connect entities into a graph.
 
-The storage layer supports both in-memory and persistent backends, allowing you to choose between performance and durability based on your needs. In-memory storage is useful for testing or scenarios where data can be regenerated from the log, while persistent storage ensures data survives across restarts.
+## Retraction
 
-All indexed data created by the indexer is ultimately stored in this layer. When the query compiler executes a query, it reads from the storage layer using the chosen index view. The storage layer serves as the foundation that makes the entire query system possible.
+An operation that removes a specific fact — a `:db/retract` in [transaction data](#transaction-data) — that becomes a retracted [datom](#datom). The fact stops appearing in current queries but remains in history.
 
----
+## Schema
+
+The set of [attribute](#attribute) definitions known to the database, mapping [idents](#ident) to [entity ids](#entity-id) and recording each attribute's [value type](#value-type), cardinality, and uniqueness. Bootstrapped before any user [transaction](#transaction) and used to validate every later one.
+
+## Schema attribute
+
+A built-in attribute used to define other attributes: `:db/ident`, `:db/valueType`, `:db/cardinality`, and `:db/unique`. Asserting these on an [entity](#entity) registers it in the [schema](#schema).
+
+## Storage layer
+
+The persistent key-value store holding all [indexed](#index) data, backed by SlateDB. Supports in-memory and on-disk backends.
 
 ## Subscriber
 
-A subscriber is a component that consumes transactions from the log using an event-driven pattern. Subscribers enable the asynchronous, decoupled architecture where multiple independent consumers can process the same transaction stream without interfering with each other.
+A component that consumes [transactions](#transaction) from the [log](#log). It first catches up on historical transactions, then streams live ones as they arrive. Multiple subscribers (e.g. the [indexer](#indexer)) consume the same stream independently.
 
-When a component subscribes to the log, it goes through two phases: first, it catches up on historical transactions starting from any point in the log's history (or from the beginning). Then it transitions to receiving live transactions as they're appended to the log. This two-phase approach allows new subscribers to join at any time and rebuild their state by replaying the transaction history.
+## System
 
-The subscriber pattern is the mechanism that makes the log the single source of truth. Multiple subscribers can independently consume transactions—the indexer subscribing to update query indices, analytics systems subscribing to track metrics, auditing systems subscribing to monitor changes. If a subscriber falls behind, it automatically catches up by reading historical batches. This pattern enables flexible deployment topologies where components can be scaled, restarted, or added without affecting other parts of the system.
-
----
+The running set of components — a [node](#node) with its [log](#log), [indexer](#indexer), and [storage layer](#storage-layer) — that together make up a Triplox deployment.
 
 ## Transaction
 
-A transaction is a unit of change submitted to the database. It represents a batch of operations that modify data—adding new facts, updating existing information, or removing data. Each transaction is atomic, meaning all operations within it succeed or fail together.
+An atomic batch of operations that modifies data — all succeed or fail together. Submitted to a [node](#node) as [transaction data](#transaction-data), appended to the [log](#log) with a [TxKey](#txkey), then turned into [datoms](#datom) by the [indexer](#indexer).
 
-When you submit a transaction to a node, it begins a journey through the system: first, it's appended to the log where it receives a unique transaction ID and timestamp. Next, subscribers (such as the indexer) consume the transaction from the log to update their respective views—the indexer updates all relevant index views, while other subscribers might perform analytics, auditing, or other processing. Finally, the changes are persisted to the storage layer. This event-driven pipeline ensures that every modification is recorded, asynchronously processed by interested consumers, and made queryable.
+## Transaction data
 
-Transactions enable ordered, consistent changes to the database state. The transaction ID creates a total ordering of all modifications, allowing the system to reconstruct any historical state and reason about the sequence of changes over time.
+The user-facing input of a [transaction](#transaction): a list of operations — [assertions](#assertion), [retractions](#retraction), and entity deletes — written as [EDN](#edn) and resolved against the [schema](#schema) during [indexing](#indexing).
+
+## Transaction log
+
+See [Log](#log).
+
+## Triple
+
+The entity-attribute-value core of a [datom](#datom), without the operation or [transaction](#transaction). "Datom" is the term used through most of the system; "triple" refers to the underlying E-A-V structure.
+
+## Tx
+
+An overloaded abbreviation that, depending on context, means a [transaction](#transaction), its [TxKey](#txkey) or numeric transaction id, the entity id of the transaction itself (used for [basis](#basis) and as-of filtering), the `tx` module that expands transaction operations, or the reserved `:db.tx/*` attributes that record each transaction's outcome.
+
+## TxKey
+
+The unique identifier assigned to a [transaction](#transaction) when it is submitted: a monotonic transaction id plus a system timestamp. Returned immediately, before [indexing](#indexing) completes.
+
+## Upsert
+
+Automatic unification of a temporary id with an existing [entity](#entity) when an [assertion](#assertion) on a `:db.unique/identity` attribute matches a value already in the database. Prevents duplicate entities for the same unique value.
+
+## VAE
+
+The Value-Attribute-Entity [index](#index) view, written only for attributes with a uniqueness constraint. Used for uniqueness checks, [lookup-ref](#lookup-ref) resolution, and [upsert](#upsert).
+
+## Value
+
+The third component of a [datom](#datom) — what is asserted about the [entity](#entity) for an [attribute](#attribute). May be a scalar (long, string, boolean, double, instant, uuid, keyword), a [reference](#reference) to another entity, or a collection.
+
+## Value type
+
+The declared type of an [attribute](#attribute)'s values, set with `:db/valueType` — one of long, string, boolean, double, float, instant, uuid, keyword, bytes, [ref](#reference), and others.
+
+## Variable
+
+A placeholder in a [query](#query), prefixed with `?`, that represents an unknown value to find.
+
+## Where clause
+
+A [query](#query) constraint on the data. Where clauses combine [patterns](#pattern) with negation (Not), conjunction (And), disjunction (Or), and the specialized joins NotJoin and OrJoin.
