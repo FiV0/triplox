@@ -7,7 +7,9 @@ use edn::symbols::Keyword;
 use slatedb::DbReadOps;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
-use crate::indexer::{ave_key_to_parts, eav_key_to_parts, vae_key_to_parts, TxCompletion};
+use crate::indexer::{
+    ave_key_to_parts, eav_key_to_parts, vae_key_to_parts, TxCompletion, TxOutcome,
+};
 use crate::iterator::slate_key_iterator::SlateKeyIterator;
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
@@ -528,20 +530,17 @@ where
         }
     }
 
-    let result = match tx_result {
-        Some(DB_TX_COMMITTED) => Ok(()),
+    let outcome = match tx_result {
+        Some(DB_TX_COMMITTED) => TxOutcome::Committed,
         // TODO: Assure identical errors on live and reconstruction path. See #393.
-        Some(DB_TX_ABORTED) => Err(Arc::new(anyhow::anyhow!(
+        Some(DB_TX_ABORTED) => TxOutcome::Aborted(Arc::new(anyhow::anyhow!(
             "{}",
             tx_error.unwrap_or_else(|| format!("Transaction {} aborted", tx_key.tx_id))
         ))),
         Some(other) => bail!("Tx entity {tx_eid} has unknown :db/txResult {other}"),
         None => bail!("Tx entity {tx_eid} missing :db/txResult"),
     };
-    Ok(Some(TxCompletion {
-        tx_key: Some(tx_key),
-        result,
-    }))
+    Ok(Some(TxCompletion { tx_key, outcome }))
 }
 
 #[cfg(test)]

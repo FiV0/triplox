@@ -27,17 +27,20 @@ use crate::tx;
 use crate::util::concat_bytes;
 
 #[derive(Clone, Debug)]
-enum TxOutcome {
+pub(crate) enum TxOutcome {
     Committed,           // Standard committed tx
     Aborted(Arc<Error>), // A semantic tx error like a schema violation
     Failed(Arc<Error>),  // A hard technical indexer failure (shouldn't happen)
 }
 
 /// A transaction's `TxOutcome` paired with the `TxKey` it applies to.
+///
+/// Broadcast by the indexer as each tx is indexed, and returned by
+/// `TxWaiter::await_tx` / `lookup_tx_completion` as a tx's resolved outcome.
 #[derive(Clone, Debug)]
-struct TxCompletionMessage {
-    tx_key: TxKey,
-    outcome: TxOutcome,
+pub(crate) struct TxCompletion {
+    pub tx_key: TxKey,
+    pub outcome: TxOutcome,
 }
 
 pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
@@ -46,7 +49,7 @@ pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
     latest_indexed_tx: TxKey,
-    tx_completion_sender: broadcast::Sender<TxCompletionMessage>,
+    tx_completion_sender: broadcast::Sender<TxCompletion>,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -275,7 +278,7 @@ impl Indexer {
             Err(e) => match self.write_aborted_tx(tx_key, format!("{:#}", e)).await {
                 // semantic error
                 Ok(indexed) => {
-                    let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                    let _ = self.tx_completion_sender.send(TxCompletion {
                         tx_key,
                         outcome: TxOutcome::Aborted(Arc::new(e)),
                     });
@@ -290,7 +293,7 @@ impl Indexer {
                         e
                     ));
                     error!("{:#}", err);
-                    let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                    let _ = self.tx_completion_sender.send(TxCompletion {
                         tx_key,
                         outcome: TxOutcome::Failed(err.clone()),
                     });
@@ -305,9 +308,7 @@ impl Indexer {
         tx_key: TxKey,
         tx_ops: Vec<TxOp>,
     ) -> Result<TxKey, Error> {
-        // 1. Clone PartitionMap + derive the tx entity id from the log-assigned
-        //    tx_id (not minted). Advancing the TX_PARTITION counter enforces that
-        //    tx_eids are strictly increasing.
+        // 1. Clone PartitionMap + derive the tx entity id from the log-assigned tx_id
         let mut pending_pm = self.metadata.partition_map.clone();
         let tx_eid = tx_eid_from_tx_id(tx_key.tx_id);
         pending_pm.set_tx_counter(tx_key.tx_id)?;
@@ -373,7 +374,7 @@ impl Indexer {
         // Update latest indexed tx and broadcast completion
         self.latest_indexed_tx = tx_key;
 
-        if let Err(e) = self.tx_completion_sender.send(TxCompletionMessage {
+        if let Err(e) = self.tx_completion_sender.send(TxCompletion {
             tx_key,
             outcome: TxOutcome::Committed,
         }) {
@@ -585,35 +586,8 @@ impl Indexer {
 pub(crate) struct TxWaiter {
     /// Latest indexed tx captured when this waiter subscribed.
     baseline: TxKey,
-    rx: broadcast::Receiver<TxCompletionMessage>,
+    rx: broadcast::Receiver<TxCompletion>,
     slatedb: Arc<Db>,
-}
-
-pub(crate) struct TxCompletion {
-    /// The indexed `TxKey`, present iff a tx entity was written for it.
-    pub tx_key: Option<TxKey>,
-    pub result: Result<(), Arc<anyhow::Error>>,
-}
-
-impl TxOutcome {
-    /// Resolve into a `TxCompletion` for `tx_key`. `Failed` wrote no entity, so
-    /// its completion carries `tx_key: None`.
-    fn into_completion(self, tx_key: TxKey) -> TxCompletion {
-        match self {
-            TxOutcome::Committed => TxCompletion {
-                tx_key: Some(tx_key),
-                result: Ok(()),
-            },
-            TxOutcome::Aborted(err) => TxCompletion {
-                tx_key: Some(tx_key),
-                result: Err(err),
-            },
-            TxOutcome::Failed(err) => TxCompletion {
-                tx_key: None,
-                result: Err(err),
-            },
-        }
-    }
 }
 
 impl TxWaiter {
@@ -631,15 +605,10 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok(TxCompletionMessage {
-                    tx_key: completed_tx_key,
-                    outcome,
-                }) => {
-                    match completed_tx_key.cmp(&tx_key) {
+                Ok(completion) => {
+                    match completion.tx_key.cmp(&tx_key) {
                         std::cmp::Ordering::Less => continue,
-                        std::cmp::Ordering::Equal => {
-                            return Ok(outcome.into_completion(completed_tx_key));
-                        }
+                        std::cmp::Ordering::Equal => return Ok(completion),
                         // Seeing a later tx first means we were lagging at some point.
                         std::cmp::Ordering::Greater => {
                             return self.completion_from_storage(tx_key).await;
@@ -670,11 +639,8 @@ impl TxWaiter {
 
         loop {
             match self.rx.recv().await {
-                Ok(TxCompletionMessage {
-                    tx_key: completed_tx_key,
-                    ..
-                }) => {
-                    if completed_tx_key.tx_id >= tx_key.tx_id {
+                Ok(completion) => {
+                    if completion.tx_key.tx_id >= tx_key.tx_id {
                         return Ok(());
                     }
                 }
@@ -717,7 +683,7 @@ impl Subscriber for Indexer {
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
-                let _ = self.tx_completion_sender.send(TxCompletionMessage {
+                let _ = self.tx_completion_sender.send(TxCompletion {
                     tx_key: record.tx_key,
                     outcome: TxOutcome::Failed(Arc::new(err)),
                 });
@@ -1163,12 +1129,9 @@ mod tests {
             .await;
 
         let completion = waiter.await_tx(tx_key).await?;
-        assert_eq!(completion.tx_key, None);
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to deserialize TxOps"));
+        assert_eq!(completion.tx_key, tx_key);
+        assert!(matches!(completion.outcome, TxOutcome::Failed(_)));
+        assert_outcome_err(&completion.outcome, "Failed to deserialize TxOps");
 
         Ok(())
     }
@@ -1197,12 +1160,9 @@ mod tests {
 
         assert_eq!(indexed, tx_key);
         let completion = waiter.await_tx(tx_key).await?;
-        assert_eq!(completion.tx_key, Some(tx_key));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown attribute"));
+        assert_eq!(completion.tx_key, tx_key);
+        assert!(matches!(completion.outcome, TxOutcome::Aborted(_)));
+        assert_outcome_err(&completion.outcome, "Unknown attribute");
 
         Ok(())
     }
@@ -1238,12 +1198,9 @@ mod tests {
             .to_string()
             .contains("Failed to write aborted tx entity"));
         let completion = waiter.await_tx(tx_key).await?;
-        assert_eq!(completion.tx_key, None);
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to write aborted tx entity"));
+        assert_eq!(completion.tx_key, tx_key);
+        assert!(matches!(completion.outcome, TxOutcome::Failed(_)));
+        assert_outcome_err(&completion.outcome, "Failed to write aborted tx entity");
 
         Ok(())
     }
@@ -1270,8 +1227,8 @@ mod tests {
         let completion = tx::lookup_tx_completion(components.db.as_ref(), tx_key)
             .await?
             .expect("tx entity should exist");
-        assert_eq!(completion.tx_key, Some(basis));
-        assert!(completion.result.is_ok());
+        assert_eq!(completion.tx_key, basis);
+        assert!(matches!(completion.outcome, TxOutcome::Committed));
 
         Ok(())
     }
@@ -1298,12 +1255,9 @@ mod tests {
         let completion = tx::lookup_tx_completion(components.db.as_ref(), tx_key)
             .await?
             .expect("aborted tx entity should exist");
-        assert_eq!(completion.tx_key, Some(basis));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown attribute"));
+        assert_eq!(completion.tx_key, basis);
+        assert!(matches!(completion.outcome, TxOutcome::Aborted(_)));
+        assert_outcome_err(&completion.outcome, "Unknown attribute");
 
         Ok(())
     }
@@ -1346,6 +1300,20 @@ mod tests {
         }]
     }
 
+    /// Unwrap an error outcome (`Aborted` or `Failed`), asserting its message
+    /// contains `needle`.
+    #[track_caller]
+    fn assert_outcome_err(outcome: &TxOutcome, needle: &str) {
+        let err = match outcome {
+            TxOutcome::Aborted(e) | TxOutcome::Failed(e) => e,
+            TxOutcome::Committed => panic!("expected an error outcome, got Committed"),
+        };
+        assert!(
+            err.to_string().contains(needle),
+            "outcome error {err:?} should contain {needle:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_await_tx_lagged_aborted_tx_recovers_from_storage() -> Result<(), Error> {
         let components = in_memory_slate().await;
@@ -1358,12 +1326,9 @@ mod tests {
         indexer.transact_tx(test_tx_key(3), add_op("bob")).await?;
 
         let completion = waiter.await_tx(tx_key_1).await?;
-        assert_eq!(completion.tx_key, Some(basis_1));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown attribute"));
+        assert_eq!(completion.tx_key, basis_1);
+        assert!(matches!(completion.outcome, TxOutcome::Aborted(_)));
+        assert_outcome_err(&completion.outcome, "Unknown attribute");
 
         Ok(())
     }
@@ -1651,11 +1616,7 @@ mod tests {
             )
             .await?;
         let completion = waiter.await_tx(tx2).await?;
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot both assert and retract"));
+        assert_outcome_err(&completion.outcome, "cannot both assert and retract");
 
         // The stored value must survive: 1 ADD, no RETRACTs
         let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
@@ -1719,11 +1680,7 @@ mod tests {
             )
             .await?;
         let completion = waiter.await_tx(tx2).await?;
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot assert multiple values"));
+        assert_outcome_err(&completion.outcome, "cannot assert multiple values");
 
         // Storage unchanged: only the original ADD, no "bob", no RETRACTs
         let (add_count, retract_count) = count_eav_ops(&slate, entity_id, name_id).await?;
@@ -1770,12 +1727,8 @@ mod tests {
 
         assert_eq!(indexed, tx);
         let completion = waiter.await_tx(tx).await?;
-        assert_eq!(completion.tx_key, Some(tx));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("Cannot modify schema entity"));
+        assert_eq!(completion.tx_key, tx);
+        assert_outcome_err(&completion.outcome, "Cannot modify schema entity");
         let (_name_id, attr) = indexer
             .metadata()
             .schema
@@ -2137,12 +2090,8 @@ mod tests {
         let indexed = indexer.transact_tx(tx_key, tx_ops).await?;
         assert_eq!(indexed, tx_key);
         let completion = waiter.await_tx(tx_key).await?;
-        assert_eq!(completion.tx_key, Some(tx_key));
-        assert!(completion
-            .result
-            .unwrap_err()
-            .to_string()
-            .contains("No entity found for lookup ref"));
+        assert_eq!(completion.tx_key, tx_key);
+        assert_outcome_err(&completion.outcome, "No entity found for lookup ref");
         Ok(())
     }
 

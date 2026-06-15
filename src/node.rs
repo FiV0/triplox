@@ -15,7 +15,7 @@ use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
-use crate::indexer::{latest_tx_key_from_sdb, Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
+use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
@@ -401,16 +401,15 @@ impl<L: TxLog> SubmitNode for Node<L> {
         let tx_key = self.log.append_tx(serialized).await?;
 
         let completion = waiter.await_tx(tx_key).await?;
-        let indexed = completion.tx_key.ok_or_else(|| {
-            anyhow::anyhow!("Indexer did not return a TxKey for tx {}", tx_key.tx_id)
-        })?;
-        match completion.result {
-            Ok(()) => Ok(TransactionResult::TxCommitted(indexed)),
-            Err(e) => Ok(TransactionResult::TxAborted(
-                indexed,
-                // TODO: Assure identical errors on live and reconstruction path. See #393.
+        match completion.outcome {
+            TxOutcome::Committed => Ok(TransactionResult::TxCommitted(completion.tx_key)),
+            // TODO: Assure identical errors on live and reconstruction path. See #393.
+            TxOutcome::Aborted(e) => Ok(TransactionResult::TxAborted(
+                completion.tx_key,
                 anyhow::anyhow!("{:#}", e).into(),
             )),
+            // A technical indexer failure wrote no tx entity; surface it as an error.
+            TxOutcome::Failed(e) => Err(anyhow::anyhow!("{:#}", e)),
         }
     }
 }
