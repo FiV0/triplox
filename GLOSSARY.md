@@ -58,7 +58,7 @@ The Entity-Attribute-Value [index](#index) view, ordered by entity, then attribu
 
 ## EDN
 
-Extensible Data Notation — the textual data format used for [queries](#query) and [transaction data](#transaction-data).
+Extensible Data Notation — the textual data format used for [queries](#query) and [transaction data](#transaction-data) in Clojure. It currently is not used on the wire.
 
 ## Entity
 
