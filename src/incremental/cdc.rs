@@ -206,7 +206,7 @@ mod tests {
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
-    use crate::indexer::Indexer;
+    use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::schema::{Attribute, Schema, ValueType};
 
@@ -217,6 +217,7 @@ mod tests {
             slate.db.clone(),
             Metadata::new(test_schema(), PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_BASIS,
+            DEFAULT_TX_COMPLETION_CAPACITY,
         )));
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
