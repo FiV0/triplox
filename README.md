@@ -153,6 +153,7 @@ If you are building something more involved it's likely better to discuss it fir
 ### Acknowledgements
 
 The primary inspiration is Datomic and you will see it's impact throughout the project. [Mentat](https://github.com/mozilla/mentat) (from which the edn crate is copied) has been a great inspiration and help in designing the transaction pipeline of Triplox.
+The folks at [Feldera](https://github.com/feldera/feldera) have created the very clean and elegant DBSP theory without the incremental queries would not be possible.
 
 ### Compatibility
 
