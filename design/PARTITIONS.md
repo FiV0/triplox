@@ -67,12 +67,12 @@ Because partition 0 places no bits above the counter, entity IDs in this partiti
 
 Each transaction is reified as an entity in this partition. The transaction entity carries the following attributes:
 
-| Attribute      | Value Type | Description                                                    |
-|----------------|------------|----------------------------------------------------------------|
-| `db/txInstant`  | instant    | Wall-clock time of the transaction                             |
-| `db/txResult`   | ref        | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)      |
-| `db/txId`       | long       | The sequential tx_id assigned by the log                       |
-| `db/txError`    | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
+| Attribute      | Value Type | Description                                                         |
+|----------------|------------|---------------------------------------------------------------------|
+| `db/txInstant` | instant    | Wall-clock time of the transaction                                  |
+| `db/txResult`  | ref        | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)            |
+| `db/txId`      | long       | The sequential tx_id assigned by the log                            |
+| `db/txError`   | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
 
 The transaction entity ID (`tx_eid`) is **not minted** by the partition map; it is a
 pure function of the log-assigned `tx_id`:
