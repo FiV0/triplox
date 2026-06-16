@@ -24,7 +24,7 @@ fn default_region() -> String {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum StorageConfig {
     /// Per-connection ephemeral `DevServer`; ignores `[log]`.
     Dev,
@@ -50,7 +50,7 @@ pub struct RemoteStorageConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum LogConfig {
     Memory,
     File {
@@ -78,6 +78,7 @@ fn default_port() -> u16 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -113,6 +114,20 @@ pub enum NodeConfig {
         storage: RemoteStorageConfig,
         log: KafkaLogConfig,
     },
+}
+
+impl NodeConfig {
+    /// The node kind as a static string. Safe to log (carries no secrets).
+    pub fn mode(&self) -> &'static str {
+        match self {
+            NodeConfig::Dev => "dev",
+            NodeConfig::Memory => "memory",
+            NodeConfig::Local { .. } => "local",
+            NodeConfig::Remote { .. } => "remote",
+            #[cfg(feature = "kafka")]
+            NodeConfig::Kafka { .. } => "kafka",
+        }
+    }
 }
 
 fn storage_kind(storage: &StorageConfig) -> &'static str {

@@ -78,26 +78,14 @@ async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
     }
 }
 
-/// Avoid logging the full config (potentially leaking secrets)
-fn node_mode(resolved: &NodeConfig) -> &'static str {
-    match resolved {
-        NodeConfig::Dev => "dev",
-        NodeConfig::Memory => "memory",
-        NodeConfig::Local { .. } => "local",
-        NodeConfig::Remote { .. } => "remote",
-        #[cfg(feature = "kafka")]
-        NodeConfig::Kafka { .. } => "kafka",
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     triplox::logging::init_with_default_info();
 
     let config = load_config()?;
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-    let resolved = config.resolve()?;
-    info!("Starting triplox in {} mode", node_mode(&resolved));
+    let node_config = config.resolve()?;
+    info!("Starting triplox in {} mode", node_config.mode());
 
-    run_server(bind_addr, resolved).await
+    run_server(bind_addr, node_config).await
 }
