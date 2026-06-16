@@ -29,7 +29,9 @@ pub enum StorageConfig {
     /// Per-connection ephemeral `DevServer`; ignores `[log]`.
     Dev,
     Memory,
-    Local { path: PathBuf },
+    Local {
+        path: PathBuf,
+    },
     Remote(RemoteStorageConfig),
 }
 
@@ -132,7 +134,7 @@ fn log_kind(log: &LogConfig) -> &'static str {
 }
 
 impl Config {
-    /// Validate the configured (log, storage) pair and resolve it to a [`NodeConfig`]. 
+    /// Validate the configured (log, storage) pair and resolve it to a [`NodeConfig`].
     pub fn resolve(self) -> Result<NodeConfig> {
         if matches!(self.storage, StorageConfig::Dev) {
             return Ok(NodeConfig::Dev);
@@ -150,12 +152,10 @@ impl Config {
                     log_path: path,
                 })
             }
-            (LogConfig::File { path }, StorageConfig::Remote(storage)) => {
-                Ok(NodeConfig::Remote {
-                    storage,
-                    log_path: path,
-                })
-            }
+            (LogConfig::File { path }, StorageConfig::Remote(storage)) => Ok(NodeConfig::Remote {
+                storage,
+                log_path: path,
+            }),
             #[cfg(feature = "kafka")]
             (LogConfig::Kafka(log), StorageConfig::Remote(storage)) => {
                 Ok(NodeConfig::Kafka { storage, log })
