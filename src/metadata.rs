@@ -42,6 +42,9 @@ impl PartitionMap {
 
     /// Check if an entity ID has been allocated (counter < next_counter for its partition).
     /// Used to validate explicit db/id values in transactions.
+    /// 
+    /// TODO: As tx_eid is derived from tx_id. tx_eids for a file-log might have gaps. 
+    /// This is not considered in this function.
     pub fn contains_entid(&self, eid: i64) -> bool {
         let partition = extract_partition(eid);
         let counter = extract_counter(eid);
