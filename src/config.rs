@@ -60,7 +60,9 @@ pub struct RemoteStorageConfig {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum LogConfig {
     Memory,
-    File { path: PathBuf },
+    File {
+        path: PathBuf,
+    },
     #[cfg(feature = "kafka")]
     Kafka(KafkaLogConfig),
 }
@@ -166,10 +168,12 @@ impl Config {
                     log_path: path,
                 })
             }
-            (LogConfig::File { path }, StorageConfig::Remote(storage)) => Ok(ResolvedNode::Remote {
-                storage,
-                log_path: path,
-            }),
+            (LogConfig::File { path }, StorageConfig::Remote(storage)) => {
+                Ok(ResolvedNode::Remote {
+                    storage,
+                    log_path: path,
+                })
+            }
             #[cfg(feature = "kafka")]
             (LogConfig::Kafka(log), StorageConfig::Remote(storage)) => {
                 Ok(ResolvedNode::Kafka { storage, log })
