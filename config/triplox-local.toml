@@ -2,6 +2,10 @@
 type = "local"
 path = "./data"
 
+[log]
+type = "file"
+path = "./data/log"
+
 [server]
 host = "127.0.0.1"
 port = 5490
