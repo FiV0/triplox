@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use triplox::config::{Config, ResolvedNode};
+use triplox::config::{Config, NodeConfig};
 use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
@@ -19,7 +19,7 @@ fn load_config() -> Result<Config> {
     Ok(config)
 }
 
-async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
+async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
 
@@ -47,16 +47,16 @@ async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
     });
 
     match resolved {
-        ResolvedNode::Dev => {
+        NodeConfig::Dev => {
             let server = DevServer::new();
             server.listen(&bind_addr, token).await
         }
-        ResolvedNode::Memory => {
+        NodeConfig::Memory => {
             let node = Arc::new(Node::memory_node().await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
-        ResolvedNode::Local {
+        NodeConfig::Local {
             storage_path,
             log_path,
         } => {
@@ -64,13 +64,13 @@ async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
-        ResolvedNode::Remote { storage, log_path } => {
+        NodeConfig::Remote { storage, log_path } => {
             let node = Arc::new(Node::remote_node(&storage, &log_path).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         #[cfg(feature = "kafka")]
-        ResolvedNode::Kafka { storage, log } => {
+        NodeConfig::Kafka { storage, log } => {
             let node = Arc::new(Node::kafka_node(&storage, &log).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
@@ -79,14 +79,14 @@ async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
 }
 
 /// Avoid logging the full config (potentially leaking secrets)
-fn node_mode(resolved: &ResolvedNode) -> &'static str {
+fn node_mode(resolved: &NodeConfig) -> &'static str {
     match resolved {
-        ResolvedNode::Dev => "dev",
-        ResolvedNode::Memory => "memory",
-        ResolvedNode::Local { .. } => "local",
-        ResolvedNode::Remote { .. } => "remote",
+        NodeConfig::Dev => "dev",
+        NodeConfig::Memory => "memory",
+        NodeConfig::Local { .. } => "local",
+        NodeConfig::Remote { .. } => "remote",
         #[cfg(feature = "kafka")]
-        ResolvedNode::Kafka { .. } => "kafka",
+        NodeConfig::Kafka { .. } => "kafka",
     }
 }
 

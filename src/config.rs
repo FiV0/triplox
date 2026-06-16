@@ -95,7 +95,7 @@ impl Default for ServerConfig {
 /// A validated (log, storage) pairing ready to construct a node. Produced by
 /// [`Config::resolve`]; only the four supported combinations are representable.
 #[derive(Debug)]
-pub enum ResolvedNode {
+pub enum NodeConfig {
     Dev,
     Memory,
     Local {
@@ -133,12 +133,12 @@ fn log_kind(log: &LogConfig) -> &'static str {
 
 impl Config {
     /// Validate the configured (log, storage) pair and resolve it to a
-    /// [`ResolvedNode`]. `[storage] type = "dev"` short-circuits to
-    /// [`ResolvedNode::Dev`] and ignores `[log]`. Any other (log, storage)
+    /// [`NodeConfig`]. `[storage] type = "dev"` short-circuits to
+    /// [`NodeConfig::Dev`] and ignores `[log]`. Any other (log, storage)
     /// combination is rejected.
-    pub fn resolve(self) -> Result<ResolvedNode> {
+    pub fn resolve(self) -> Result<NodeConfig> {
         if matches!(self.storage, StorageConfig::Dev) {
-            return Ok(ResolvedNode::Dev);
+            return Ok(NodeConfig::Dev);
         }
 
         let log = self
@@ -146,22 +146,22 @@ impl Config {
             .ok_or_else(|| anyhow!("configuration must specify a [log] section"))?;
 
         match (log, self.storage) {
-            (LogConfig::Memory, StorageConfig::Memory) => Ok(ResolvedNode::Memory),
+            (LogConfig::Memory, StorageConfig::Memory) => Ok(NodeConfig::Memory),
             (LogConfig::File { path }, StorageConfig::Local { path: storage_path }) => {
-                Ok(ResolvedNode::Local {
+                Ok(NodeConfig::Local {
                     storage_path,
                     log_path: path,
                 })
             }
             (LogConfig::File { path }, StorageConfig::Remote(storage)) => {
-                Ok(ResolvedNode::Remote {
+                Ok(NodeConfig::Remote {
                     storage,
                     log_path: path,
                 })
             }
             #[cfg(feature = "kafka")]
             (LogConfig::Kafka(log), StorageConfig::Remote(storage)) => {
-                Ok(ResolvedNode::Kafka { storage, log })
+                Ok(NodeConfig::Kafka { storage, log })
             }
             (log, storage) => Err(anyhow!(
                 "unsupported (log, storage) combination: log={}, storage={}. \
@@ -189,7 +189,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Memory));
+        assert!(matches!(config.resolve().unwrap(), NodeConfig::Memory));
     }
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let ResolvedNode::Local {
+        let NodeConfig::Local {
             storage_path,
             log_path,
         } = config.resolve().unwrap()
@@ -236,7 +236,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let ResolvedNode::Remote { storage, log_path } = config.resolve().unwrap() else {
+        let NodeConfig::Remote { storage, log_path } = config.resolve().unwrap() else {
             panic!("expected remote node");
         };
         assert_eq!(storage.region, "eu-central-1");
@@ -271,7 +271,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let ResolvedNode::Kafka { storage, log } = config.resolve().unwrap() else {
+        let NodeConfig::Kafka { storage, log } = config.resolve().unwrap() else {
             panic!("expected kafka node");
         };
         assert_eq!(storage.bucket, "triplox-kafka");
@@ -287,7 +287,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
+        assert!(matches!(config.resolve().unwrap(), NodeConfig::Dev));
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
+        assert!(matches!(config.resolve().unwrap(), NodeConfig::Dev));
     }
 
     #[test]
