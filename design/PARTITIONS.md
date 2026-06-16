@@ -81,8 +81,8 @@ pure function of the log-assigned `tx_id`:
 tx_eid = make_entity_id(TX_PARTITION, tx_id) = (1 << 42) | tx_id   (== mask ^ tx_id)
 tx_id  = extract_counter(tx_eid)
 ```
-This has the nice property that we don't need to do a lookup any `tx_eid` for a given `TxKey` when
-querying, but simply derive a tx_eid via a mask. The indexer *sets* (rather than allocates) the `TX_PARTITION` counter
+This has the nice property that we don't need to look up a `tx_eid` for a given `TxKey` when
+querying; we can derive it with a mask instead. The indexer *sets* (rather than allocates) the `TX_PARTITION` counter
 from each incoming `tx_key.tx_id`. The semantics of the log assure that these ids are strictly increasing.
 `db/txId` is stored for queryability.
 
