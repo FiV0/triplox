@@ -38,19 +38,19 @@ The goals of Triplox are roughly the following (in no particular order):
 
 The easiest way to test Triplox is to just pull the docker image and start an in-memory or local node.
 ```bash
-docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.2
-docker run -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.2
+docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.5
+docker run -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.5
 ```
 This will start a Triplox server with an in-memory DB to which you can connect at 5490. If you want an persistent local node, you start the image with
 ```bash
-docker run -p 5490:5490 -e TRIPLOX_STORAGE=local -v triplox-data:/var/lib/triplox  ghcr.io/fiv0/triplox:0.1.0-alpha.2
+docker run -p 5490:5490 -e TRIPLOX_STORAGE=local -v triplox-data:/var/lib/triplox  ghcr.io/fiv0/triplox:0.1.0-alpha.5
 ```
 In case you are already convinced and want to deploy Triplox in a distributed setting I suggest you have a look at the
 [Operations](https://triplox.xyz/operations/overview/) section on the website.
 
 There is also the option to run Triplox in `dev` mode which is particular useful for testing.
 ```bash
-docker run -p 5490:5490 -e TRIPLOX_STORAGE=dev ghcr.io/fiv0/triplox:0.1.0-alpha.2
+docker run -p 5490:5490 -e TRIPLOX_STORAGE=dev ghcr.io/fiv0/triplox:0.1.0-alpha.5
 ```
 In this case a new in-memory DB is created on every connection.
 
