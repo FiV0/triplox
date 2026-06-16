@@ -171,12 +171,6 @@ docker run -p 5490:5490 \
   triplox:latest /etc/triplox/custom.toml
 ```
 
-Config files use independent `[storage]` and `[log]` sections (see
-`docker/config/` for examples). Only the pairings (memory, memory),
-(file, local), (file, remote), and (kafka, remote) are supported — any other
-combination is rejected at startup. The dev server uses a top-level
-`type = "dev"` setting instead.
-
 ## Environment Variables
 
 | Variable | Default | Description |
