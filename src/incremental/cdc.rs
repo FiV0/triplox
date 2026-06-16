@@ -199,7 +199,7 @@ mod tests {
     use crate::clock::st_from_unix_epoch;
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
-    use crate::partition::{make_entity_id, tx_eid_from_tx_id, USER_PARTITION};
+    use crate::partition::tx_eid_from_tx_id;
     use crate::schema::{Attribute, Schema, ValueType};
 
     #[tokio::test]
