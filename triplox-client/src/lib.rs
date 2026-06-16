@@ -17,4 +17,4 @@ pub use node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitN
 pub use ops::{DataType, Entid, EntityRef, QueryArg, TxOp};
 pub use query::QueryResult;
 pub use subscription::{Delta, Subscription};
-pub use transaction::{TransactionResult, TxBasis, TxKey};
+pub use transaction::{TransactionResult, TxKey};

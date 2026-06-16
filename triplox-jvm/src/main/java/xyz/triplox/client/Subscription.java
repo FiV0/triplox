@@ -26,7 +26,7 @@ public final class Subscription implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 128;
     private static final short INTERNAL_ERROR = 4000;
 
-    private final TxBasis basis;
+    private final TxKey txKey;
     private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<QueueEvent> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
@@ -43,8 +43,8 @@ public final class Subscription implements AutoCloseable {
         }
     }
 
-    Subscription(TxBasis basis, Closeable closeable, MessageUnpacker unpacker) {
-        this.basis = basis;
+    Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker) {
+        this.txKey = txKey;
         this.closeable = closeable;
         this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
         this.reader.setDaemon(true);
@@ -53,7 +53,7 @@ public final class Subscription implements AutoCloseable {
 
     /**
      * Wrap a streaming subscription response: read the leading {@code open} frame
-     * for {@link #basis()}, then start the reader thread.
+     * for {@link #txKey()}, then start the reader thread.
      */
     static Subscription open(InputStream stream) throws IOException {
         return open(stream, stream);
@@ -63,7 +63,7 @@ public final class Subscription implements AutoCloseable {
         MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(stream);
         SubscriptionFrame first = WireCodec.decodeSubscriptionFrame(unpacker);
         if (first instanceof SubscriptionFrame.Open open) {
-            return new Subscription(open.basis(), closeable, unpacker);
+            return new Subscription(open.txKey(), closeable, unpacker);
         }
         closeable.close();
         if (first instanceof SubscriptionFrame.Error error) {
@@ -72,9 +72,9 @@ public final class Subscription implements AutoCloseable {
         throw new IOException("expected open frame, got " + first);
     }
 
-    /** The registration basis. Deltas describe transactions strictly after it. */
-    public TxBasis basis() {
-        return basis;
+    /** The registration tx_key. Deltas describe transactions strictly after it. */
+    public TxKey txKey() {
+        return txKey;
     }
 
     /** True once the stream has ended or the subscription has been closed. */

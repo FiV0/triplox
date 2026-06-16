@@ -51,13 +51,12 @@ All non-200 responses carry an [ErrorResponse](#410-errorresponse--non-200-body)
 
 ### 1.2 DB Values
 
-DB values are immutable read bases. A DB value contains the transaction log key
-(`tx_id` + `system_time`) plus the transaction entity ID (`tx_eid`) that bounds
-temporal reads. The server does not allocate or retain per-DB resources. Query
-requests carry the DB value, and the server creates a transient read view from
-that basis when the query executes.
-
-DB values do not need to be closed.
+DB values are immutable read bases. A DB value is pinned by the transaction log key
+(`tx_id` + `system_time`). The transaction entity ID that bounds temporal reads
+on a db value is derived from `tx_id` (`tx_eid = TX_PARTITION_MASK | tx_id`) and so
+never travels on the wire. The server does not allocate or retain per-DB
+resources. Query requests carry the DB value, and the server creates a transient
+read view from that basis when the query executes. DB values do not need to be closed.
 
 ---
 
@@ -146,6 +145,18 @@ form as the ext-3 Keyword payload.
 
 > **Note**: Only Scalar bindings are currently implemented in the query engine.
 
+### 2.4 TxKey
+
+A `TxKey` identifies a transaction and the immutable DB read basis it pins:
+
+```
+{"tx_id": <int>, "system_time": <Timestamp>}
+```
+
+`tx_id` is the log-assigned sequence position and `system_time` its wall-clock
+timestamp. The transaction entity ID that bounds temporal reads is derived from
+`tx_id` (see [§1.2](#12-db-values)) and is not carried on the wire.
+
 ---
 
 ## 3. Data Type Tags
@@ -195,30 +206,25 @@ than a single-member union.
 ### 4.2 OpenDb Request — `POST /db/open`
 
 ```
-{"tx_id": <int>|nil, "system_time": <Timestamp>|nil, "tx_eid": <int>|nil}
+{"tx_id": <int>|nil, "system_time": <Timestamp>|nil}
 ```
 
-Either all three fields are present (pinned transaction basis) or all three are
+Either both fields are present (pinned transaction basis) or both are
 `nil` (latest indexed). Mixing `nil` with a value is rejected with HTTP 400.
 
-### 4.3 DbOpened Response
+### 4.3 OpenDb Response
 
-```
-{"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>}
-```
-
-The response is the immutable DB read basis. `tx_eid` is the transaction entity
-ID that bounds temporal reads.
+The response body is a [`TxKey`](#24-txkey): the immutable DB read basis.
 
 ### 4.4 Query Request — `POST /db/query`
 
 ```
-{"db": {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+{"tx_key": <TxKey>,
  "query": <str>,
  "args": [<QueryArg>, ...]}
 ```
 
-`db` is a DB read basis returned by `DbOpened` or a previous transaction result.
+`tx_key` is a [`TxKey`](#24-txkey) DB read basis, as returned by the `OpenDb` response or a previous transaction result.
 `query` is a Datalog query in EDN text. `args` provides values for variables
 declared in the query's `:in` clause; the number and order must match. For
 queries without `:in`, pass an empty array.
@@ -245,12 +251,9 @@ Both endpoints take the same body. They differ in semantics:
 
 ### 4.8 TxKey Response
 
-```
-{"tx_id": <int>, "system_time": <Timestamp>}
-```
-
-Returned for `/tx/submit`. The server has accepted the transaction and will
-durably log it; `system_time` is its assigned timestamp.
+The response body is a [`TxKey`](#24-txkey). Returned for `/tx/submit`: the server
+has accepted the transaction and will durably log it; `system_time` is its
+assigned timestamp.
 
 ### 4.9 TxResult Response
 
@@ -291,15 +294,16 @@ the server remains healthy.
 ### 4.11 Subscribe Request — `POST /db/subscribe`
 
 ```
-{"db": <DbBasis>|nil, "query": <str>, "args": [<QueryArg>, ...]}
+{"tx_key": <TxKey>|nil, "query": <str>, "args": [<QueryArg>, ...]}
 ```
 
-Registers an incremental query and streams its result deltas. `db` is reserved
-for future historical replay and **MUST be `nil`/omitted** in this version (a
-non-nil `db` is rejected with HTTP 400 / `InvalidQuery`). `args` is reserved for
-future incremental `:in` bindings and **MUST be empty** in this version. Queries
-or args the incremental engine does not yet support currently mirror one-shot
-query failures and are rejected with HTTP 500 / `QueryError` (code 2001).
+The same `query`/`args` shape as a [Query Request](#44-query-request--post-dbquery),
+except `tx_key` is optional. In this version it **MUST be `nil`/omitted** (a non-nil
+value is rejected with HTTP 400 / `InvalidQuery`; it is reserved for future historical
+replay) and `args` **MUST be empty** (reserved for future incremental `:in` bindings).
+At some point it might make sense to unify Query Request and Subscribe Request.
+Queries or args the incremental engine does not yet support mirror one-shot query
+failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
@@ -323,18 +327,18 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
 
 ```
 {"kind": "open",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "tx_key":  <TxKey>,
  "columns": [<ColumnDescription>, ...]}
 ```
 
-`basis` is the registration basis; deltas describe transactions strictly after
+`tx_key` is the registration basis; deltas describe transactions strictly after
 it. `columns` matches [QueryResponse](#46-queryresponse).
 
 #### `delta` frame — zero or more, one per affecting transaction
 
 ```
 {"kind": "delta",
- "basis":   {"tx_id": <int>, "system_time": <Timestamp>, "tx_eid": <int>},
+ "tx_key":  <TxKey>,
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
@@ -342,7 +346,7 @@ Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
 `DataType` per column (positional, per the `open` frame), `weight` is a **raw
 signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
 `delta` frame is emitted only for a transaction that produces a non-empty change
-(`rows` is never empty). `basis` is the transaction basis that produced the
+(`rows` is never empty). `tx_key` is the transaction basis that produced the
 delta.
 
 #### `error` frame — terminal

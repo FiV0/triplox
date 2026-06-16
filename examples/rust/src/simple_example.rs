@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(schema_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
+        TransactionResult::TxCommitted(tx_key) => {
             println!("Schema defined (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     ];
     let result = node.execute_tx(data_ops).await?;
     match &result {
-        TransactionResult::TxCommited(tx_key) => {
+        TransactionResult::TxCommitted(tx_key) => {
             println!("Data inserted (tx_id={}).", tx_key.tx_id);
         }
         TransactionResult::TxAborted(_, err) => {
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 
     // 3. Open a DB value and query
     let db = node.db().await?;
-    println!("Opened DB value (tx_eid={}).", db.tx_basis().tx_eid);
+    println!("Opened DB value (tx_id={}).", db.tx_key().tx_id);
 
     let rows = db
         .query(r#"{:find [?e ?name ?age] :where [[?e :name ?name] [?e :age ?age]]}"#)

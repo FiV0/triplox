@@ -836,7 +836,7 @@ mod tests {
     async fn setup_node_with_schema() -> Node<MemoryLog> {
         let node = Node::memory_node().await;
         let result = node.execute_tx(test_schema_tx()).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
         node
     }
 
@@ -898,7 +898,7 @@ mod tests {
         doc.insert(kw!(:name), DataType::String("alice".to_string()));
         doc.insert(kw!(:age), DataType::Long(30));
         let result = node.execute_tx(vec![TxOp::Put(doc)]).await.unwrap();
-        assert!(matches!(result, TransactionResult::TxCommited(_)));
+        assert!(matches!(result, TransactionResult::TxCommitted(_)));
 
         let all_tx_datoms = collect_cdc_datoms(&node).await;
 

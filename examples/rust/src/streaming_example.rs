@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         .execute_tx(vec![schema_attribute("name", "string")])
         .await?
     {
-        TransactionResult::TxCommited(_) => println!("Schema defined."),
+        TransactionResult::TxCommitted(_) => println!("Schema defined."),
         TransactionResult::TxAborted(_, err) => anyhow::bail!("Schema aborted: {err}"),
     }
 
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     let mut sub = node
         .subscribe("[:find ?name :where [?e :name ?name]]", &[])
         .await?;
-    println!("Subscribed at tx_id={}.", sub.basis().tx_key.tx_id);
+    println!("Subscribed at tx_id={}.", sub.tx_key().tx_id);
 
     // Transact three names; each produces a delta on the subscription.
     for name in ["alice", "bob", "carol"] {

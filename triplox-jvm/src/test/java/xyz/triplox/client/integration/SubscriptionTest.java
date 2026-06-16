@@ -34,7 +34,7 @@ class SubscriptionTest {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
             try (Subscription sub = node.subscribe(NAMES_QUERY)) {
-                assertNotNull(sub.basis());
+                assertNotNull(sub.txKey());
 
                 node.executeTx(List.of(new TxOp.Put(map(":name", "Ivan"))));
 

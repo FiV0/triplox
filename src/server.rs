@@ -39,14 +39,14 @@ use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
     decode_execute_request, decode_open_db_request, decode_query_request, decode_subscribe_request,
-    encode_db_opened_response, encode_error_body, encode_query_response, encode_subscription_frame,
-    encode_tx_key_response, encode_tx_result_response, DbOpenedResponse, ErrorResponseBody,
-    QueryResponse, SubscriptionFrame, TxKeyResponse, TxResultResponse,
+    encode_error_body, encode_query_response, encode_subscription_frame, encode_tx_key,
+    encode_tx_result_response, ErrorResponseBody, QueryResponse, SubscriptionFrame,
+    TxResultResponse,
 };
 use triplox_client::protocol::{
     ColumnDescription, ErrorCode, DEFAULT_MAX_MESSAGE_SIZE, SEVERITY_ERROR, TAG_UNKNOWN,
 };
-use triplox_client::transaction::{TxBasis, TxKey};
+use triplox_client::transaction::TxKey;
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -138,44 +138,33 @@ async fn open_db<L: TxLog + 'static>(
         )
     })?;
 
-    let basis = match (
-        open_request.tx_id,
-        open_request.system_time,
-        open_request.tx_eid,
-    ) {
-        (None, None, None) => {
+    let tx_key = match (open_request.tx_id, open_request.system_time) {
+        (None, None) => {
             let db = state
                 .node
                 .db()
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            *db.tx_basis()
+            *db.tx_key()
         }
-        (Some(tid), Some(system_time), Some(tx_eid)) => {
-            let basis = TxBasis {
-                tx_key: TxKey {
-                    tx_id: tid,
-                    system_time,
-                },
-                tx_eid,
+        (Some(tid), Some(system_time)) => {
+            let tx_key = TxKey {
+                tx_id: tid,
+                system_time,
             };
-            state.node.db_as_of(basis).await.map_err(open_db_error)?;
-            basis
+            state.node.db_as_of(tx_key).await.map_err(open_db_error)?;
+            tx_key
         }
         _ => {
             return Err(ApiError::bad_request(
                 ErrorCode::InvalidStartup,
-                "OpenDb requires tx_id, system_time, and tx_eid, or none of them",
+                "OpenDb requires both tx_id and system_time, or neither",
             ))
         }
     };
 
-    let body = encode_db_opened_response(&DbOpenedResponse {
-        tx_id: basis.tx_key.tx_id,
-        system_time: basis.tx_key.system_time,
-        tx_eid: basis.tx_eid,
-    })
-    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    let body = encode_tx_key(&tx_key)
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
 }
 
@@ -191,7 +180,7 @@ async fn query<L: TxLog + 'static>(
     })?;
     let db = state
         .node
-        .db_as_of(query_request.db)
+        .db_as_of(query_request.tx_key)
         .await
         .map_err(open_db_error)?;
 
@@ -245,11 +234,8 @@ async fn submit_tx<L: TxLog + 'static>(
         .await
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
-    let body = encode_tx_key_response(&TxKeyResponse {
-        tx_id: tx_key.tx_id,
-        system_time: tx_key.system_time,
-    })
-    .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    let body = encode_tx_key(&tx_key)
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
     Ok(ok_response(body))
 }
 
@@ -271,18 +257,16 @@ async fn execute_tx<L: TxLog + 'static>(
         .map_err(|e| ApiError::internal(ErrorCode::TxError, e.to_string()))?;
 
     let resp = match result {
-        TransactionResult::TxCommited(basis) => TxResultResponse {
+        TransactionResult::TxCommitted(tx_key) => TxResultResponse {
             status: 0,
-            tx_id: basis.tx_key.tx_id,
-            system_time: basis.tx_key.system_time,
-            tx_eid: basis.tx_eid,
+            tx_id: tx_key.tx_id,
+            system_time: tx_key.system_time,
             error_message: None,
         },
-        TransactionResult::TxAborted(basis, err) => TxResultResponse {
+        TransactionResult::TxAborted(tx_key, err) => TxResultResponse {
             status: 1,
-            tx_id: basis.tx_key.tx_id,
-            system_time: basis.tx_key.system_time,
-            tx_eid: basis.tx_eid,
+            tx_id: tx_key.tx_id,
+            system_time: tx_key.system_time,
             error_message: Some(err.to_string()),
         },
     };
@@ -303,10 +287,10 @@ async fn subscribe<L: TxLog + 'static>(
     })?;
 
     // subscriptions start at the latest indexed basis only (for now).
-    if request.db.is_some() {
+    if request.tx_key.is_some() {
         return Err(ApiError::bad_request(
             ErrorCode::InvalidQuery,
-            "Subscriptions must start at the latest indexed basis; `db` must be nil",
+            "Subscriptions must start at the latest indexed basis; `tx_key` must be nil",
         ));
     }
 
@@ -339,7 +323,7 @@ async fn subscribe<L: TxLog + 'static>(
         .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
 
     let open_frame = encode_subscription_frame(&SubscriptionFrame::Open {
-        basis: subscription.basis,
+        tx_key: subscription.tx_key,
         columns,
     })
     .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
@@ -398,7 +382,7 @@ fn subscription_body(
                         delta = deltas.recv() => match delta {
                             Some(delta) => {
                                 let frame = SubscriptionFrame::Delta {
-                                    basis: delta.basis,
+                                    tx_key: delta.tx_key,
                                     rows: delta
                                         .rows
                                         .into_iter()
@@ -637,14 +621,14 @@ mod tests {
         decode_subscription_frame, encode_subscribe_request, SubscribeRequest,
     };
 
-    fn subscribe_body(query: &str, db: Option<TxBasis>) -> Bytes {
+    fn subscribe_body(query: &str, db: Option<TxKey>) -> Bytes {
         subscribe_body_with_args(query, db, vec![])
     }
 
-    fn subscribe_body_with_args(query: &str, db: Option<TxBasis>, args: Vec<QueryArg>) -> Bytes {
+    fn subscribe_body_with_args(query: &str, db: Option<TxKey>, args: Vec<QueryArg>) -> Bytes {
         Bytes::from(
             encode_subscribe_request(&SubscribeRequest {
-                db,
+                tx_key: db,
                 query: query.to_string(),
                 args,
             })
@@ -655,16 +639,13 @@ mod tests {
     #[tokio::test]
     async fn subscribe_rejects_non_nil_db() {
         let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
-        let basis = TxBasis {
-            tx_key: TxKey {
-                tx_id: 0,
-                system_time: chrono::Utc::now(),
-            },
-            tx_eid: 0,
+        let tx_key = TxKey {
+            tx_id: 0,
+            system_time: chrono::Utc::now(),
         };
         let err = subscribe(
             State(server),
-            subscribe_body("[:find ?n :where [?e :name ?n]]", Some(basis)),
+            subscribe_body("[:find ?n :where [?e :name ?n]]", Some(tx_key)),
         )
         .await
         .unwrap_err();
@@ -725,7 +706,7 @@ mod tests {
         node.execute_tx(crate::schema::test_schema_tx())
             .await
             .expect("schema tx");
-        let expected_basis = *node.db().await.unwrap().tx_basis();
+        let expected_tx_key = *node.db().await.unwrap().tx_key();
         let server = Arc::new(Server::new(node));
 
         let resp = subscribe(
@@ -750,8 +731,8 @@ mod tests {
             .expect("open frame chunk")
             .expect("chunk should be ok");
         match decode_subscription_frame(&chunk).expect("decode open frame") {
-            SubscriptionFrame::Open { basis, columns } => {
-                assert_eq!(basis, expected_basis);
+            SubscriptionFrame::Open { tx_key, columns } => {
+                assert_eq!(tx_key, expected_tx_key);
                 assert_eq!(columns.len(), 1);
             }
             other => panic!("expected open frame, got {other:?}"),

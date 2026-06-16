@@ -52,6 +52,12 @@ pub fn partition_entity_prefix(partition: u32) -> Vec<u8> {
     prefix
 }
 
+/// Map a `tx_id` (the log-assigned transaction sequence number) to its
+/// transaction entity ID in `TX_PARTITION`.
+pub fn tx_eid_from_tx_id(tx_id: i64) -> i64 {
+    make_entity_id(TX_PARTITION, tx_id)
+}
+
 /// Construct an entity ID from a partition number and counter value.
 ///
 /// For partition 0, the result equals the counter (small, readable IDs).

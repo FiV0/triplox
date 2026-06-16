@@ -92,7 +92,7 @@ Node::register_incremental_query
     delegates to IncrementalQueryService::register_query
 
 IncrementalQueryService::register_query
-    captures the latest indexed TxBasis and schema from the indexer
+    captures the latest indexed TxKey and schema from the indexer
     plans the query
     scans the initial triples
     captures the WAL cursor
@@ -160,7 +160,7 @@ CDC loop holds the same gate around each `apply_triples`. This makes the
 snapshot/register cutover atomic with respect to CDC application: a transaction
 after the registration basis cannot be consumed by the global CDC loop before the
 new query is present in the service registry. The cutover boundary itself is the
-registration `TxBasis` — the global CDC loop reads the WAL from the beginning and
+registration `TxKey` — the global CDC loop reads the WAL from the beginning and
 each query skips transactions at or before its own `tx_id`. I think in the future
 this serialization across WAL application, basis capture and circuit initialization
 is too restrictive and we need to built something more multi-threaded.
@@ -221,7 +221,7 @@ For each transaction:
 
 1. `CdcStream` yields one grouped WAL transaction.
 2. EAV entries are decoded into datoms.
-3. Transaction metadata is converted into a `TxBasis` when possible.
+3. Transaction metadata is converted into a `TxKey` when possible.
 4. Datoms become a weighted batch of encoded triples.
 5. The incremental service steps each registered query circuit that has not
    already advanced past this transaction.
@@ -235,7 +235,7 @@ For each transaction:
 Each registration returns:
 
 - a query handle,
-- the registration `TxBasis`, and
+- the registration `TxKey`, and
 - a bounded Tokio channel of result deltas.
 
 Queries can be explicitly unregistered. They are also cleaned up when their
@@ -266,7 +266,7 @@ The current tuning knobs:
 ## Direction
 
 Currently the incremental query API is very bare bones. There is no way to
-specify the `TxBasis` that a query should start at. There is now way
+specify the `TxKey` that a query should start at. There is now way
 to stop and restart a query without reinitializing the circuit. All these
 things are possible, but need more thought and careful analysis for the
 state management.

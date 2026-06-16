@@ -1,7 +1,8 @@
+use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
-use crate::partition::{extract_counter, extract_partition, make_entity_id};
+use crate::partition::{extract_counter, extract_partition, make_entity_id, TX_PARTITION};
 use crate::schema::Schema;
 
 /// Newtype wrapping partition counters. Deref/DerefMut to inner HashMap
@@ -29,8 +30,21 @@ impl PartitionMap {
         make_entity_id(partition, counter)
     }
 
+    /// Record an externally-assigned transaction id in `TX_PARTITION`.
+    pub fn set_tx_counter(&mut self, tx_id: i64) -> Result<()> {
+        let next = self.0.entry(TX_PARTITION).or_insert(0);
+        if tx_id < *next {
+            bail!("non-monotonic tx_id {tx_id}: TX_PARTITION counter is already at {next}");
+        }
+        *next = tx_id + 1;
+        Ok(())
+    }
+
     /// Check if an entity ID has been allocated (counter < next_counter for its partition).
     /// Used to validate explicit db/id values in transactions.
+    ///
+    /// TODO: As tx_eid is derived from tx_id. tx_eids for a file-log might have gaps.
+    /// This is not considered in this function.
     pub fn contains_entid(&self, eid: i64) -> bool {
         let partition = extract_partition(eid);
         let counter = extract_counter(eid);
@@ -80,5 +94,36 @@ impl Metadata {
 
     pub fn advance_generation(&mut self) {
         self.generation += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::partition::tx_eid_from_tx_id;
+
+    #[test]
+    fn set_tx_counter_advances_high_water_mark_and_allows_gaps() {
+        let mut pm = PartitionMap::new();
+        pm.set_tx_counter(0).unwrap();
+        assert!(pm.contains_entid(tx_eid_from_tx_id(0)));
+        pm.set_tx_counter(1).unwrap();
+        assert!(pm.contains_entid(tx_eid_from_tx_id(1)));
+        // Gaps are allowed
+        pm.set_tx_counter(5000).unwrap();
+        assert!(pm.contains_entid(tx_eid_from_tx_id(5000)));
+        assert_eq!(pm[&TX_PARTITION], 5001);
+    }
+
+    #[test]
+    fn set_tx_counter_rejects_non_monotonic_tx_id() {
+        let mut pm = PartitionMap::new();
+        pm.set_tx_counter(10).unwrap();
+        // Re-using the same tx_id (next is 11, so 10 < 11) must fail.
+        assert!(pm.set_tx_counter(10).is_err());
+        // Going backwards must fail.
+        assert!(pm.set_tx_counter(3).is_err());
+        // Resuming forward succeeds.
+        pm.set_tx_counter(11).unwrap();
     }
 }

@@ -7,13 +7,15 @@ use edn::symbols::Keyword;
 use slatedb::DbReadOps;
 
 use crate::codec::{self, encode_datatype, encode_i64_bytes, Encode};
-use crate::indexer::{ave_key_to_parts, eav_key_to_parts, vae_key_to_parts, TxCompletion};
+use crate::indexer::{
+    ave_key_to_parts, eav_key_to_parts, vae_key_to_parts, TxCompletion, TxOutcome,
+};
 use crate::iterator::slate_key_iterator::SlateKeyIterator;
 use crate::metadata::PartitionMap;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::schema::{Schema, Unique, ValueType, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
-use crate::transaction::{TxBasis, TxKey};
+use crate::transaction::TxKey;
 use crate::util::{concat_bytes, next_prefix};
 
 // ---------------------------------------------------------------------------
@@ -466,7 +468,7 @@ pub(crate) fn validate_allocated_entity_ids(
 /// failed without persisting an outcome (technical abort, deserialize failure).
 ///
 /// TODO: I think this function can be replaced by an entity API call once we have
-/// simplified TxKey/TxBasis and an actual entity API.
+/// simplified TxKey and an actual entity API.
 pub(crate) async fn lookup_tx_completion<D>(
     sdb: &D,
     tx_key: TxKey,
@@ -528,20 +530,17 @@ where
         }
     }
 
-    let result = match tx_result {
-        Some(DB_TX_COMMITTED) => Ok(()),
+    let outcome = match tx_result {
+        Some(DB_TX_COMMITTED) => TxOutcome::Committed,
         // TODO: Assure identical errors on live and reconstruction path. See #393.
-        Some(DB_TX_ABORTED) => Err(Arc::new(anyhow::anyhow!(
+        Some(DB_TX_ABORTED) => TxOutcome::Aborted(Arc::new(anyhow::anyhow!(
             "{}",
             tx_error.unwrap_or_else(|| format!("Transaction {} aborted", tx_key.tx_id))
         ))),
         Some(other) => bail!("Tx entity {tx_eid} has unknown :db/txResult {other}"),
         None => bail!("Tx entity {tx_eid} missing :db/txResult"),
     };
-    Ok(Some(TxCompletion {
-        basis: Some(TxBasis { tx_key, tx_eid }),
-        result,
-    }))
+    Ok(Some(TxCompletion { tx_key, outcome }))
 }
 
 #[cfg(test)]

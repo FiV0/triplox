@@ -56,7 +56,7 @@ class SubscriptionTest {
 
         var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(body));
         var first = assertInstanceOf(SubscriptionFrame.Open.class, WireCodec.decodeSubscriptionFrame(unpacker));
-        try (Subscription sub = new Subscription(first.basis(), () -> {}, unpacker)) {
+        try (Subscription sub = new Subscription(first.txKey(), () -> {}, unpacker)) {
             var ex = assertThrows(IllegalStateException.class, () -> sub.poll(5, TimeUnit.SECONDS));
             assertTrue(ex.getMessage().contains("unexpected open frame mid-stream"));
         }
@@ -128,7 +128,7 @@ class SubscriptionTest {
         packer.packMapHeader(3);
         packer.packString("kind");
         packer.packString("open");
-        packer.packString("basis");
+        packer.packString("tx_key");
         packBasis(packer);
         packer.packString("columns");
         packer.packArrayHeader(0);
@@ -138,7 +138,7 @@ class SubscriptionTest {
         packer.packMapHeader(3);
         packer.packString("kind");
         packer.packString("delta");
-        packer.packString("basis");
+        packer.packString("tx_key");
         packBasis(packer);
         packer.packString("rows");
         packer.packArrayHeader(1);
@@ -164,18 +164,16 @@ class SubscriptionTest {
         packer.packNil();
     }
 
-    private static TxBasis sampleBasis() {
-        return new TxBasis(7L, Instant.ofEpochSecond(1_700_000_000L), 42L);
+    private static TxKey sampleBasis() {
+        return new TxKey(7L, Instant.ofEpochSecond(1_700_000_000L));
     }
 
     private static void packBasis(MessagePacker packer) throws IOException {
-        packer.packMapHeader(3);
+        packer.packMapHeader(2);
         packer.packString("tx_id");
         packer.packLong(7L);
         packer.packString("system_time");
         packer.packTimestamp(Instant.ofEpochSecond(1_700_000_000L));
-        packer.packString("tx_eid");
-        packer.packLong(42L);
     }
 
     private static Request request(String path) {

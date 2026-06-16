@@ -10,15 +10,14 @@ import java.util.List;
  */
 public class Db {
     private final TriploxNode node;
-    private final TxBasis basis;
+    private final TxKey txKey;
 
-    Db(TriploxNode node, TxBasis basis) {
+    Db(TriploxNode node, TxKey txKey) {
         this.node = node;
-        this.basis = basis;
+        this.txKey = txKey;
     }
 
-    public TxBasis basis() { return basis; }
-    public long txEid() { return basis.txEid(); }
+    public TxKey txKey() { return txKey; }
 
     /**
      * Execute a Datalog query against this DB read basis.

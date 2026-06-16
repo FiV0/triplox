@@ -59,17 +59,17 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
-     * Open a DB value at a specific indexed transaction basis.
+     * Open a DB value at a specific indexed transaction key.
      */
-    public Db openDbAsOf(TxBasis basis) throws IOException {
-        return openDbInternal(basis);
+    public Db openDbAsOf(TxKey txKey) throws IOException {
+        return openDbInternal(txKey);
     }
 
-    private Db openDbInternal(TxBasis basis) throws IOException {
-        byte[] body = WireCodec.encodeOpenDbBody(basis);
+    private Db openDbInternal(TxKey txKey) throws IOException {
+        byte[] body = WireCodec.encodeOpenDbBody(txKey);
         byte[] responseBody = postBinary("/db/open", body);
-        var opened = WireCodec.decodeDbOpened(responseBody);
-        return new Db(this, opened.basis());
+        var opened = WireCodec.decodeTxKey(responseBody);
+        return new Db(this, new TxKey(opened.txId(), opened.systemTime()));
     }
 
     /**
@@ -83,7 +83,7 @@ public class TriploxNode implements AutoCloseable {
      * Execute a Datalog query with input binding arguments.
      */
     QueryResult queryInternal(Db db, String edn, List<QueryArg> args) throws IOException {
-        byte[] body = WireCodec.encodeQueryBody(db.basis(), edn, args);
+        byte[] body = WireCodec.encodeQueryBody(db.txKey(), edn, args);
         byte[] responseBody = postBinary("/db/query", body);
         return WireCodec.decodeQueryResponse(responseBody);
     }
@@ -106,7 +106,7 @@ public class TriploxNode implements AutoCloseable {
         byte[] responseBody = postBinary("/tx/execute", body);
         var txResult = WireCodec.decodeTxResult(responseBody);
         return new TxResult(txResult.status(), txResult.txId(),
-                txResult.systemTime(), txResult.txEid(), txResult.errorMessage());
+                txResult.systemTime(), txResult.errorMessage());
     }
 
     /**

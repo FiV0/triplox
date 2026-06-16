@@ -145,7 +145,7 @@ async fn subscription_deltas_match_one_shot_query() {
         .await
         .unwrap();
     let last_basis = match last {
-        TransactionResult::TxCommited(basis) => basis,
+        TransactionResult::TxCommitted(basis) => basis,
         TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
     };
 

@@ -12,10 +12,9 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 
 ```
 1. Clone PartitionMap           pending_pm = self.metadata.partition_map.clone()
-   Allocate tx entity           tx_eid = pending_pm.allocate_entid(TX_PARTITION)
-                                (pipeline reads go directly against slatedb;
-                                 index writes are buffered in a WriteBatch
-                                 committed atomically in step 9)
+   Derive tx entity id          tx_eid = tx_eid_from_tx_id(tx_key.tx_id)
+                                pending_pm.set_tx_counter(tx_key.tx_id)?
+                                (pipeline reads work directly against slatedb)
                                 ↓
 2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomExpanded>
    - TxOp::Put -> N DatomExpanded (one per attr)

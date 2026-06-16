@@ -5,7 +5,7 @@
    [xyz.triplox.types :as types])
   (:import
    [java.util.concurrent TimeUnit]
-   [xyz.triplox.client Db QueryArg$Collection QueryArg$Scalar Subscription TriploxNode TxBasis TxKey TxResult]))
+   [xyz.triplox.client Db QueryArg$Collection QueryArg$Scalar Subscription TriploxNode TxKey TxResult]))
 
 (defn connect
   "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
@@ -16,9 +16,9 @@
   "Open a DB value. Returns a Db."
   (^Db [conn]
    (db conn nil))
-  (^Db [conn {:keys [tx-basis] :as _opts}]
-   (if tx-basis
-     (.openDbAsOf ^TriploxNode conn (TxBasis. (long (:tx-id tx-basis)) (:system-time tx-basis) (long (:tx-eid tx-basis))))
+  (^Db [conn {:keys [tx-id system-time] :as tx-key}]
+   (if tx-key
+     (.openDbAsOf ^TriploxNode conn (TxKey. (long tx-id) system-time))
      (.openDb ^TriploxNode conn))))
 
 (defn q
@@ -41,7 +41,6 @@
   (let [^TxResult result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
     (cond-> {:tx-id (.txId result)
              :system-time (.systemTime result)
-             :tx-eid (.txEid result)
              :committed? (.isCommitted result)}
       (not (.isCommitted result))
       (assoc :error-message (.errorMessage result)))))
@@ -83,10 +82,9 @@
        (.isDone ^Subscription sub) nil
        :else ::timeout))))
 
-(defn basis
-  "The registration basis of a subscription, as a map."
+(defn tx-key
+  "The registration tx_key of a subscription, as a map."
   [^Subscription sub]
-  (let [b (.basis ^Subscription sub)]
+  (let [b (.txKey ^Subscription sub)]
     {:tx-id (.txId b)
-     :system-time (.systemTime b)
-     :tx-eid (.txEid b)}))
+     :system-time (.systemTime b)}))
