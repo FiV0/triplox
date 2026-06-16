@@ -78,6 +78,18 @@ async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
     }
 }
 
+/// Avoid logging the full config (potentially leaking secrets) 
+fn node_mode(resolved: &ResolvedNode) -> &'static str {
+    match resolved {
+        ResolvedNode::Dev => "dev",
+        ResolvedNode::Memory => "memory",
+        ResolvedNode::Local { .. } => "local",
+        ResolvedNode::Remote { .. } => "remote",
+        #[cfg(feature = "kafka")]
+        ResolvedNode::Kafka { .. } => "kafka",
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     triplox::logging::init_with_default_info();
@@ -88,17 +100,4 @@ async fn main() -> Result<()> {
     info!("Starting triplox in {} mode", node_mode(&resolved));
 
     run_server(bind_addr, resolved).await
-}
-
-/// A coarse, secret-free label for the resolved node (avoids logging the full
-/// `ResolvedNode`, which embeds S3 credentials).
-fn node_mode(resolved: &ResolvedNode) -> &'static str {
-    match resolved {
-        ResolvedNode::Dev => "dev",
-        ResolvedNode::Memory => "memory",
-        ResolvedNode::Local { .. } => "local",
-        ResolvedNode::Remote { .. } => "remote",
-        #[cfg(feature = "kafka")]
-        ResolvedNode::Kafka { .. } => "kafka",
-    }
 }
