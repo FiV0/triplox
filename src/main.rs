@@ -78,7 +78,7 @@ async fn run_server(bind_addr: String, resolved: ResolvedNode) -> Result<()> {
     }
 }
 
-/// Avoid logging the full config (potentially leaking secrets) 
+/// Avoid logging the full config (potentially leaking secrets)
 fn node_mode(resolved: &ResolvedNode) -> &'static str {
     match resolved {
         ResolvedNode::Dev => "dev",
