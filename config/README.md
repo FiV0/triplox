@@ -11,25 +11,26 @@ If no argument is passed, triplox loads `config/triplox.toml` by default (see
 `src/main.rs`).
 
 Storage and log are configured independently via the `[storage]` and `[log]`
-sections. Only four (log, storage) pairings are supported; any other
-combination is rejected at startup:
+sections. The supported combinations are:
 
 | Mode   | `[storage].type` | `[log].type` |
 |--------|------------------|--------------|
+| dev    | `dev`            | *(ignored)*  |
 | memory | `memory`         | `memory`     |
 | local  | `local`          | `file`       |
 | remote | `remote`         | `file`       |
 | kafka  | `remote`         | `kafka`      |
 
-The dev server (a fresh in-memory node per connection) is selected with the
-top-level `type = "dev"` setting instead of a `[storage]`/`[log]` pair.
+`dev` runs a fresh in-memory node per connection and ignores `[log]`; every
+other mode requires the matching `[log]` shown above. Any other (log, storage)
+combination is rejected at startup.
 
-| File                  | Mode           | Notes                                             |
-|-----------------------|----------------|---------------------------------------------------|
-| `triplox.toml`        | memory         | In-process, no persistence. Default.              |
-| `triplox-dev.toml`    | `type = "dev"` | Dev-only: a fresh in-memory node per connection.  |
-| `triplox-local.toml`  | local          | Persistent local FS at `./data/`.                 |
-| `triplox-remote.toml` | remote         | S3-compatible (MinIO) at `http://localhost:9000`. |
+| File                  | Mode   | Notes                                             |
+|-----------------------|--------|---------------------------------------------------|
+| `triplox.toml`        | memory | In-process, no persistence. Default.              |
+| `triplox-dev.toml`    | dev    | Dev-only: a fresh in-memory node per connection.  |
+| `triplox-local.toml`  | local  | Persistent local FS at `./data/`.                 |
+| `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
 
 ## Running locally against MinIO in Docker
 

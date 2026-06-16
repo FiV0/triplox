@@ -6,23 +6,12 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Top-level node selector. `type = "dev"` runs the per-connection
-    /// ephemeral `DevServer` and ignores `storage`/`log`; omit it for a normal
-    /// node configured via `[storage]` and `[log]`.
-    #[serde(rename = "type", default)]
-    pub node_type: Option<NodeType>,
-    #[serde(default)]
-    pub storage: Option<StorageConfig>,
+    pub storage: StorageConfig,
+    /// Required for every storage type except `dev`, which ignores it.
     #[serde(default)]
     pub log: Option<LogConfig>,
     #[serde(default)]
     pub server: ServerConfig,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeType {
-    Dev,
 }
 
 #[cfg(feature = "kafka")]
@@ -37,6 +26,8 @@ fn default_region() -> String {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StorageConfig {
+    /// Per-connection ephemeral `DevServer`; ignores `[log]`.
+    Dev,
     Memory,
     Local { path: PathBuf },
     Remote(RemoteStorageConfig),
@@ -124,6 +115,7 @@ pub enum ResolvedNode {
 
 fn storage_kind(storage: &StorageConfig) -> &'static str {
     match storage {
+        StorageConfig::Dev => "dev",
         StorageConfig::Memory => "memory",
         StorageConfig::Local { .. } => "local",
         StorageConfig::Remote(_) => "remote",
@@ -141,22 +133,19 @@ fn log_kind(log: &LogConfig) -> &'static str {
 
 impl Config {
     /// Validate the configured (log, storage) pair and resolve it to a
-    /// [`ResolvedNode`]. `type = "dev"` short-circuits to [`ResolvedNode::Dev`]
-    /// and ignores storage/log. Any combination other than the four supported
-    /// ones is rejected.
+    /// [`ResolvedNode`]. `[storage] type = "dev"` short-circuits to
+    /// [`ResolvedNode::Dev`] and ignores `[log]`. Any other (log, storage)
+    /// combination is rejected.
     pub fn resolve(self) -> Result<ResolvedNode> {
-        if matches!(self.node_type, Some(NodeType::Dev)) {
+        if matches!(self.storage, StorageConfig::Dev) {
             return Ok(ResolvedNode::Dev);
         }
 
-        let storage = self.storage.ok_or_else(|| {
-            anyhow!("configuration must specify a [storage] section (or set type = \"dev\")")
-        })?;
-        let log = self.log.ok_or_else(|| {
-            anyhow!("configuration must specify a [log] section (or set type = \"dev\")")
-        })?;
+        let log = self
+            .log
+            .ok_or_else(|| anyhow!("configuration must specify a [log] section"))?;
 
-        match (log, storage) {
+        match (log, self.storage) {
             (LogConfig::Memory, StorageConfig::Memory) => Ok(ResolvedNode::Memory),
             (LogConfig::File { path }, StorageConfig::Local { path: storage_path }) => {
                 Ok(ResolvedNode::Local {
@@ -290,19 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn dev_type_short_circuits_without_storage_or_log() {
-        let config: Config = toml::from_str("type = \"dev\"\n").unwrap();
+    fn dev_storage_resolves_without_log() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "dev"
+            "#,
+        )
+        .unwrap();
         assert!(matches!(config.resolve().unwrap(), ResolvedNode::Dev));
     }
 
     #[test]
-    fn dev_type_ignores_present_storage_and_log() {
+    fn dev_storage_ignores_present_log() {
         let config: Config = toml::from_str(
             r#"
-            type = "dev"
-
             [storage]
-            type = "memory"
+            type = "dev"
 
             [log]
             type = "memory"
@@ -352,20 +345,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_storage_when_not_dev() {
-        let config: Config = toml::from_str(
+    fn missing_storage_fails_to_parse() {
+        let result: std::result::Result<Config, _> = toml::from_str(
             r#"
             [log]
             type = "memory"
             "#,
-        )
-        .unwrap();
-        let err = config.resolve().unwrap_err().to_string();
-        assert!(err.contains("[storage]"), "got: {err}");
+        );
+        assert!(result.is_err());
     }
 
     #[test]
-    fn rejects_missing_log_when_not_dev() {
+    fn rejects_missing_log_for_non_dev_storage() {
         let config: Config = toml::from_str(
             r#"
             [storage]
