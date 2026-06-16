@@ -14,22 +14,22 @@ Storage and log are configured independently via the `[storage]` and `[log]`
 sections. Only four (log, storage) pairings are supported; any other
 combination is rejected at startup:
 
-| Mode | `[storage].type` | `[log].type` |
-|---|---|---|
-| memory | `memory` | `memory` |
-| local | `local` | `file` |
-| remote | `remote` | `file` |
-| kafka | `remote` | `kafka` |
+| Mode   | `[storage].type` | `[log].type` |
+|--------|------------------|--------------|
+| memory | `memory`         | `memory`     |
+| local  | `local`          | `file`       |
+| remote | `remote`         | `file`       |
+| kafka  | `remote`         | `kafka`      |
 
 The dev server (a fresh in-memory node per connection) is selected with the
 top-level `type = "dev"` setting instead of a `[storage]`/`[log]` pair.
 
-| File | Mode | Notes |
-|---|---|---|
-| `triplox.toml` | memory | In-process, no persistence. Default. |
-| `triplox-dev.toml` | `type = "dev"` | Dev-only: a fresh in-memory node per connection. |
-| `triplox-local.toml` | local | Persistent local FS at `./data/`. |
-| `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
+| File                  | Mode           | Notes                                             |
+|-----------------------|----------------|---------------------------------------------------|
+| `triplox.toml`        | memory         | In-process, no persistence. Default.              |
+| `triplox-dev.toml`    | `type = "dev"` | Dev-only: a fresh in-memory node per connection.  |
+| `triplox-local.toml`  | local          | Persistent local FS at `./data/`.                 |
+| `triplox-remote.toml` | remote         | S3-compatible (MinIO) at `http://localhost:9000`. |
 
 ## Running locally against MinIO in Docker
 
