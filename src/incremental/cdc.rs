@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
+use edn::kw;
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
@@ -17,6 +18,7 @@ use crate::incremental::{EncodedTriple, IncrementalQueryService};
 use crate::indexer::eav_key_to_parts;
 use crate::node::SchemaProvider;
 use crate::ops::{DataType, Datom, DatomOp};
+use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
 use crate::schema::Schema;
 use crate::slate::cdc::{CdcCursor, CdcStream};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -107,28 +109,20 @@ where
     Ok(())
 }
 
+/// Recover the `TxKey` for a CDC-streamed transaction from its datoms.
 pub(crate) fn tx_key_from_datoms(datoms: &[Datom]) -> Result<TxKey> {
-    let mut by_entity: HashMap<i64, (Option<i64>, Option<crate::clock::Instant>)> = HashMap::new();
-    for datom in datoms {
-        let entry = by_entity.entry(datom.entity).or_default();
-        match &datom.value {
-            DataType::Long(tx_id) if datom.attribute == edn::kw!(:db/txId) => {
-                entry.0 = Some(*tx_id);
+    datoms
+        .iter()
+        .find_map(|datom| match &datom.value {
+            DataType::Instant(instant)
+                if datom.attribute == kw!(:db/txInstant)
+                    && extract_partition(datom.entity) == TX_PARTITION =>
+            {
+                Some(TxKey {
+                    tx_id: extract_counter(datom.entity),
+                    system_time: *instant,
+                })
             }
-            DataType::Instant(instant) if datom.attribute == edn::kw!(:db/txInstant) => {
-                entry.1 = Some(*instant);
-            }
-            _ => {}
-        }
-    }
-
-    by_entity
-        .into_values()
-        .find_map(|(tx_id, instant)| match (tx_id, instant) {
-            (Some(tx_id), Some(instant)) => Some(TxKey {
-                tx_id,
-                system_time: instant,
-            }),
             _ => None,
         })
         .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction key"))
@@ -205,6 +199,7 @@ mod tests {
     use crate::clock::st_from_unix_epoch;
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
+    use crate::partition::{make_entity_id, tx_eid_from_tx_id, USER_PARTITION};
     use crate::schema::{Attribute, Schema, ValueType};
 
     #[tokio::test]
@@ -278,15 +273,18 @@ mod tests {
     #[test]
     fn tx_key_from_datoms_extracts_transaction_key() {
         let instant = st_from_unix_epoch(123);
+        // A real tx entity's id is `tx_eid_from_tx_id(tx_id)`, so `tx_id` is
+        // recovered by masking the entity id rather than reading `db/txId`.
+        let tx_eid = tx_eid_from_tx_id(42);
         let datoms = [
             Datom {
-                entity: 99,
+                entity: tx_eid,
                 attribute: kw!(:db/txId),
                 value: DataType::Long(42),
                 op: DatomOp::Assert,
             },
             Datom {
-                entity: 99,
+                entity: tx_eid,
                 attribute: kw!(:db/txInstant),
                 value: DataType::Instant(instant),
                 op: DatomOp::Assert,
