@@ -132,10 +132,7 @@ fn log_kind(log: &LogConfig) -> &'static str {
 }
 
 impl Config {
-    /// Validate the configured (log, storage) pair and resolve it to a
-    /// [`NodeConfig`]. `[storage] type = "dev"` short-circuits to
-    /// [`NodeConfig::Dev`] and ignores `[log]`. Any other (log, storage)
-    /// combination is rejected.
+    /// Validate the configured (log, storage) pair and resolve it to a [`NodeConfig`]. 
     pub fn resolve(self) -> Result<NodeConfig> {
         if matches!(self.storage, StorageConfig::Dev) {
             return Ok(NodeConfig::Dev);
