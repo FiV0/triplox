@@ -49,13 +49,14 @@ fi
 perl -0pi -e 's/(?m)^version = "[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta)\.[0-9]+)?"$/version = "'"$version"'"/' Cargo.toml
 perl -0pi -e 's/(edn = \{ package = "triplox-edn", path = "edn", version = ")[^"]+(")/${1}'"$version"'${2}/' Cargo.toml
 perl -0pi -e 's/(triplox-client = \{ path = "triplox-client", version = ")[^"]+(")/${1}'"$version"'${2}/' Cargo.toml
+perl -0pi -e 's{(ghcr\.io/fiv0/triplox:)[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta)\.[0-9]+)?}{${1}'"$version"'}g' README.md
 
 cargo metadata --format-version 1 >/dev/null
 cargo fmt --check
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock README.md
 git commit -m "Release $tag"
 git tag -a "$tag" -m "Release $tag"
 
