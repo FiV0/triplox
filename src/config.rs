@@ -101,10 +101,6 @@ impl Default for ServerConfig {
     }
 }
 
-pub fn default_ephemeral_dbsp_storage_path() -> PathBuf {
-    std::env::temp_dir().join(format!("triplox-dbsp-{}", crate::util::random_string(10)))
-}
-
 /// A validated (log, storage) pairing ready to construct a node. Produced by
 /// [`Config::resolve`]; only the four supported combinations are representable.
 #[derive(Debug)]
