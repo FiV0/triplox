@@ -84,7 +84,7 @@
   [weights]
   (case (count weights)
     0 nil
-    1 1
+    1 (fn [_rng] 0)
     (let [total (reduce + weights)
           normalized-weights (mapv (fn [weight] (double (/ weight total))) weights)
           len (count normalized-weights)
@@ -422,7 +422,7 @@
   "Read item details for an open item."
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
-    (with-open [db (tc/db conn)]
+    (let [db (tc/db conn)]
       (tc/q db
             '{:find [?name ?desc ?price ?nbids ?status ?start ?end]
               :in [?item-id]
@@ -448,7 +448,7 @@
           item-id (:item-id item)
           ;; read current state
           [current-price num-bids]
-          (with-open [db (tc/db conn)]
+          (let [db (tc/db conn)]
             (first (tc/q db
                          '{:find [?price ?nbids]
                            :in [?item-id]
@@ -527,7 +527,7 @@
                   :item/status :open}]
     (tc/transact conn (into [item-doc] image-docs))
     ;; apply seller fee — read current balance then decrement
-    (let [balance (with-open [db (tc/db conn)]
+    (let [balance (let [db (tc/db conn)]
                     (or (ffirst (tc/q db
                                       '{:find [?b]
                                         :in [?uid]
@@ -549,7 +549,7 @@
   "Read user profile."
   [conn ^Random rng state]
   (when-let [uid (pick-random-user rng state)]
-    (with-open [db (tc/db conn)]
+    (let [db (tc/db conn)]
       (tc/q db
             '{:find [?rating ?balance ?created]
               :in [?uid]
@@ -592,7 +592,7 @@
   "Get items being watched by a user."
   [conn ^Random rng state]
   (when-let [uid (pick-random-user rng state)]
-    (with-open [db (tc/db conn)]
+    (let [db (tc/db conn)]
       (tc/q db
             '{:find [?item-name ?price ?status]
               :in [?uid]
@@ -632,7 +632,7 @@
   (when-let [item (.poll ^ConcurrentLinkedQueue (:items-waiting state))]
     (let [item-id (:item-id item)]
       ;; find the highest bid for this item
-      (let [bids (with-open [db (tc/db conn)]
+      (let [bids (let [db (tc/db conn)]
                    (tc/q db
                          '{:find [?bid-id ?bid-amount]
                            :in [?item-id]
@@ -695,7 +695,7 @@
   "Read comments for an item."
   [conn ^Random rng state]
   (when-let [item (pick-random-item rng state)]
-    (with-open [db (tc/db conn)]
+    (let [db (tc/db conn)]
       (tc/q db
             '{:find [?cid ?question ?response ?created]
               :in [?item-id]
@@ -715,7 +715,7 @@
   "Seller responds to a question."
   [conn ^Random _rng state]
   (let [unanswered
-        (with-open [db (tc/db conn)]
+        (let [db (tc/db conn)]
           (tc/q db
                 '{:find [?comment-id]
                   :where [[?c :item-comment/response ""]
@@ -737,7 +737,7 @@
   [conn _rng state]
   (let [now-ms (instant->millis (now-instant))
         expired
-        (with-open [db (tc/db conn)]
+        (let [db (tc/db conn)]
           (tc/q db
                 '{:find [?item-id ?seller-id]
                   :in [?now]
