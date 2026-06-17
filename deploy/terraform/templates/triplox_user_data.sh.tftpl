@@ -49,7 +49,9 @@ mkdir -p "$CACHE_PATH/cache" "$CACHE_PATH/dbsp"
 # Container runs as uid 20000 (the image's triplox user).
 chown -R 20000:20000 "$CACHE_PATH"
 
-# --- Static S3 credentials from SSM (kept out of plaintext user_data) ---
+# --- Static S3 credentials from SSM (kept out of plaintext user_data). xtrace
+#     off so `set -x` never echoes the keys (or the rendered config) to the log. ---
+set +x
 S3_ACCESS_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_access_key_name}' --with-decryption --query Parameter.Value --output text)"
 S3_SECRET_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_secret_key_name}' --with-decryption --query Parameter.Value --output text)"
 
@@ -74,6 +76,7 @@ topic = "${kafka_topic}"
 host = "0.0.0.0"
 port = ${triplox_port}
 EOF
+set -x
 chown 20000:20000 /etc/triplox/triplox.toml
 chmod 600 /etc/triplox/triplox.toml
 

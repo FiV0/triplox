@@ -18,9 +18,12 @@ REGION="${region}"
 TOKEN="$(curl -sX PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
 PRIVATE_IP="$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
 
-# Static S3 credentials from SSM (same keys Triplox uses).
+# Static S3 credentials from SSM (same keys Triplox uses). xtrace off around the
+# secrets so `set -x` never echoes the keys into the user-data log.
+set +x
 S3_ACCESS_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_access_key_name}' --with-decryption --query Parameter.Value --output text)"
 S3_SECRET_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_secret_key_name}' --with-decryption --query Parameter.Value --output text)"
+set -x
 S3_ENDPOINT="https://s3.${region}.amazonaws.com"
 
 docker pull '${automq_image}'
@@ -28,6 +31,8 @@ docker pull '${automq_image}'
 # Real-S3 deltas vs the dev compose: https endpoint, NO pathStyle (virtual-hosted),
 # real bucket names, advertised/controller on the host private IP. Runtime values
 # are passed via -e and expanded by the container shell (single-quoted body).
+# xtrace off: the -e flags would otherwise echo the S3 keys into the log.
+set +x
 docker run -d --name automq --restart unless-stopped --network host \
   -e KAFKA_S3_ACCESS_KEY="$S3_ACCESS_KEY" \
   -e KAFKA_S3_SECRET_KEY="$S3_SECRET_KEY" \
@@ -62,6 +67,7 @@ docker run -d --name automq --restart unless-stopped --network host \
       --override offsets.topic.num.partitions=1 \
       --override autobalancer.reporter.metrics.reporting.interval.ms=5000
   '
+set -x
 
 # Wait for the broker to accept API requests, then pre-create the tx-log topic
 # with the exact settings Triplox's ensure_tx_log_topic() validates.
