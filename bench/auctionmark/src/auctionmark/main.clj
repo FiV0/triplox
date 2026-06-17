@@ -195,7 +195,7 @@
                       :db/valueType :db.type/long
                       :db/cardinality :db.cardinality/one}])
 
-  (with-open [db (tc/db conn)]
+  (let [db (tc/db conn)]
     (tc/q db '{:find [?ident, ?value-type, ?cardinality]
                :where [[?attr :db/ident ?ident]
                        [?attr :db/valueType ?value-ref]
