@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + AWS CLI v2 (not preinstalled on AL2023) ---
+dnf -y update
+dnf -y install docker unzip
+systemctl enable --now docker
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+# The AuctionMark image is on an unmerged branch, so we don't run it here — just
+# drop a ready-to-run helper wired to this rig's Triplox host and knobs.
+cat > /usr/local/bin/run-loadgen.sh <<'LOADGEN_SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+REGION="${region}"
+IMAGE="$${LOADGEN_IMAGE:-${loadgen_image}}"
+if [ -z "$IMAGE" ]; then
+  echo "No load-gen image set. Re-run with the AuctionMark image, e.g.:"
+  echo "  LOADGEN_IMAGE=ghcr.io/fiv0/triplox-auctionmark:latest $0"
+  exit 1
+fi
+# Log in if the image lives in ECR (GHCR/Docker Hub public images need no login).
+case "$IMAGE" in
+  *.dkr.ecr.*.amazonaws.com/*)
+    aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$${IMAGE%%/*}"
+    ;;
+esac
+docker pull "$IMAGE"
+docker run --rm \
+  -e TRIPLOX_HOST="${triplox_private_ip}" \
+  -e TRIPLOX_PORT="${triplox_port}" \
+  -e SCALE_FACTOR="${scale_factor}" \
+  -e THREADS="${threads}" \
+  -e DURATION="${duration}" \
+  "$IMAGE"
+LOADGEN_SCRIPT
+chmod +x /usr/local/bin/run-loadgen.sh
+
+echo "Load-gen host ready. Set LOADGEN_IMAGE and run: /usr/local/bin/run-loadgen.sh"

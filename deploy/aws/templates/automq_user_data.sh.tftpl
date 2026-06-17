@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + AWS CLI v2 (not preinstalled on AL2023) ---
+dnf -y update
+dnf -y install docker unzip
+systemctl enable --now docker
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+REGION="${region}"
+
+# Own private IP (IMDSv2) — used for advertised.listeners / controller quorum.
+TOKEN="$(curl -sX PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+PRIVATE_IP="$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
+
+# Static S3 credentials from SSM (same keys Triplox uses). xtrace off around the
+# secrets so `set -x` never echoes the keys into the user-data log.
+set +x
+S3_ACCESS_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_access_key_name}' --with-decryption --query Parameter.Value --output text)"
+S3_SECRET_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_secret_key_name}' --with-decryption --query Parameter.Value --output text)"
+set -x
+S3_ENDPOINT="https://s3.${region}.amazonaws.com"
+
+docker pull '${automq_image}'
+
+# Real-S3 deltas vs the dev compose: https endpoint, NO pathStyle (virtual-hosted),
+# real bucket names, advertised/controller on the host private IP. Runtime values
+# are passed via -e and expanded by the container shell (single-quoted body).
+# xtrace off: the -e flags would otherwise echo the S3 keys into the log.
+set +x
+docker run -d --name automq --restart unless-stopped --network host \
+  -e KAFKA_S3_ACCESS_KEY="$S3_ACCESS_KEY" \
+  -e KAFKA_S3_SECRET_KEY="$S3_SECRET_KEY" \
+  -e KAFKA_HEAP_OPTS='${automq_heap_opts}' \
+  -e KAFKA_OPTS='-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:ErrorFile=/tmp/hs_err_pid%p.log -Dio.netty.allocator.maxOrder=11' \
+  -e CLUSTER_ID='${cluster_id}' \
+  -e LOG_DIR=/tmp/kafka-logs \
+  -e PRIVATE_IP="$PRIVATE_IP" \
+  -e S3_ENDPOINT="$S3_ENDPOINT" \
+  -e DATA_BUCKET='${automq_data_bucket}' \
+  -e OPS_BUCKET='${automq_ops_bucket}' \
+  -e AWS_REGION='${region}' \
+  '${automq_image}' \
+  bash -c '
+    cp /opt/kafka/config/log4j.properties /tmp/kafka-log4j.properties
+    printf "%s\n" "log4j.logger.kafka.network.Processor=ERROR" >> /tmp/kafka-log4j.properties
+    export KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:/tmp/kafka-log4j.properties"
+    /opt/kafka/bin/kafka-server-start.sh \
+      /opt/kafka/config/kraft/server.properties \
+      --override cluster.id="$CLUSTER_ID" \
+      --override node.id=0 \
+      --override process.roles=broker,controller \
+      --override controller.quorum.voters="0@$PRIVATE_IP:9093" \
+      --override controller.quorum.bootstrap.servers="$PRIVATE_IP:9093" \
+      --override listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+      --override advertised.listeners="PLAINTEXT://$PRIVATE_IP:9092" \
+      --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+      --override s3.data.buckets="0@s3://$DATA_BUCKET?region=$AWS_REGION&endpoint=$S3_ENDPOINT" \
+      --override s3.ops.buckets="1@s3://$OPS_BUCKET?region=$AWS_REGION&endpoint=$S3_ENDPOINT" \
+      --override s3.wal.path="0@s3://$DATA_BUCKET?region=$AWS_REGION&endpoint=$S3_ENDPOINT" \
+      --override log.message.timestamp.type=LogAppendTime \
+      --override offsets.topic.num.partitions=1 \
+      --override autobalancer.reporter.metrics.reporting.interval.ms=5000
+  '
+set -x
+
+# Wait for the broker to accept API requests, then pre-create the tx-log topic
+# with the exact settings Triplox's ensure_tx_log_topic() validates.
+echo "Waiting for AutoMQ to accept API requests..."
+healthy=0
+for i in $(seq 1 60); do
+  if docker exec automq /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
+    echo "Broker healthy."
+    healthy=1
+    break
+  fi
+  sleep 5
+done
+if [ "$healthy" != "1" ]; then
+  echo "ERROR: AutoMQ broker did not become healthy within 300s; aborting before topic creation." >&2
+  docker logs --tail 50 automq || true
+  exit 1
+fi
+
+docker exec automq /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create --if-not-exists \
+  --topic '${kafka_topic}' \
+  --partitions 1 \
+  --replication-factor 1 \
+  --config retention.ms=-1 \
+  --config retention.bytes=-1 \
+  --config message.timestamp.type=LogAppendTime
+
+echo "AutoMQ provisioning complete."

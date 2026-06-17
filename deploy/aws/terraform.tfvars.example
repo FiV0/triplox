@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+# Region (default eu-central-1).
+# region = "eu-central-1"
+
+# Optional direct access to port 5490. Leave commented to keep 5490 CLOSED
+# (default) and reach Triplox via SSM port forwarding instead. The wire protocol
+# is unauthenticated, so only ever set a tight CIDR (your own IP/32).
+# admin_cidr = "203.0.113.10/32"
+
+# Triplox image to deploy. The published image includes the kafka feature.
+# Pin to a version for reproducible stress runs.
+triplox_image = "ghcr.io/fiv0/triplox:snapshot"
+
+# --- Instance sizing (x86_64; Graviton swap is a later change) ---
+# automq_instance_type  = "r6i.large"    # memory-leaning broker
+# triplox_instance_type = "m6id.xlarge"  # NVMe instance-store for the cache
+# triplox_disk_mode     = "nvme"         # or "ebs" for a dedicated gp3 cache volume
+
+# --- Load generator (default off; image added later) ---
+# enable_load_gen      = true
+# loadgen_image        = "ghcr.io/fiv0/triplox-auctionmark:latest"
+# loadgen_scale_factor = 0.1
+# loadgen_threads      = 8
+# loadgen_duration     = 120
