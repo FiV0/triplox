@@ -96,45 +96,22 @@ jobs:
             type=raw,value=${{ steps.version.outputs.minor }},enable=${{ steps.version.outputs.stable == 'true' }}
             type=sha,prefix=sha-
 
+      # The published image is always built with the kafka feature enabled
+      # (rdkafka, which needs cmake). Kafka support is purely additive, so this
+      # single image is a superset that serves every storage mode, kafka
+      # included -- there is no separate -kafka variant.
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Kafka-enabled variant (rdkafka feature needs cmake). Tagged with a -kafka
-      # suffix so it lives alongside the default image; used by the AWS deployment.
-      - name: Extract metadata (kafka)
-        id: meta-kafka
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: suffix=-kafka
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=snapshot,enable=${{ steps.version.outputs.snapshot == 'true' }}
-            type=raw,value=${{ steps.version.outputs.minor }},enable=${{ steps.version.outputs.stable == 'true' }}
-            type=sha,prefix=sha-
-
-      - name: Build and push (kafka)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta-kafka.outputs.tags }}
-          labels: ${{ steps.meta-kafka.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GIT_SHA=${{ github.sha }}
             BUILD_PACKAGES=cmake
             CARGO_FEATURES=kafka
-          cache-from: type=gha,scope=kafka
-          cache-to: type=gha,mode=max,scope=kafka
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
