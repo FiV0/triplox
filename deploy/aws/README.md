@@ -29,7 +29,7 @@ Works with OpenTofu (`tofu`) or Terraform (`terraform`) — plain HCL, no Cloud-
 ## Run
 
 ```bash
-cd deploy/terraform
+cd deploy/aws
 cp terraform.tfvars.example terraform.tfvars   # set triplox_image (admin_cidr is optional)
 
 tofu init
