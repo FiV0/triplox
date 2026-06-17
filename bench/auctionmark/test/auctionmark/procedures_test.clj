@@ -34,19 +34,16 @@
 
 (use-fixtures :each with-node)
 
-(defn sync!
-  "Fence: an empty synchronous tx forces all prior fire-and-forget submit-tx
-  calls (issued by the generators) to be indexed before we read."
-  []
-  (tc/transact *conn* []))
-
-(defn- db [] (tc/db *conn*))
+(defn- db
+  ([] (tc/db *conn*))
+  ([tx-key] (tc/db *conn* tx-key)))
 
 (defn- count-of
-  "Number of entities asserting `attr`."
-  [attr]
-  (ffirst (tc/q (db) {:find [(list 'count '?e)]
-                      :where [['?e attr '?id]]})))
+  "Number of entities asserting `attr`, optionally as-of a generator's tx-key."
+  ([attr] (count-of attr nil))
+  ([attr tx-key]
+   (ffirst (tc/q (db tx-key) {:find [(list 'count '?e)]
+                              :where [['?e attr '?id]]}))))
 
 (defn- single-category
   "Parsed-category data (as `generate-categories!` expects) with `n` entries."
@@ -59,64 +56,56 @@
 
 (deftest generate-user-test
   (proc/generate-regions! *conn* *state* *rng* 1)
-  (proc/generate-users! *conn* *state* *rng* 1)
-  (sync!)
-  (is (= 1 (count-of :user/id)))
-  (is (= 0 (proc/pick-random-user *rng* *state*))))
+  (let [tx (proc/generate-users! *conn* *state* *rng* 1)]
+    (is (= 1 (count-of :user/id tx)))
+    (is (= 0 (proc/pick-random-user *rng* *state*)))))
 
 (deftest generate-categories-test
-  (proc/generate-categories! *conn* *state* (single-category 1))
-  (sync!)
-  (is (= 1 (count-of :category/id)))
-  (is (= [0] @(:category-ids *state*))))
+  (let [tx (proc/generate-categories! *conn* *state* (single-category 1))]
+    (is (= 1 (count-of :category/id tx)))
+    (is (= [0] @(:category-ids *state*)))))
 
 (deftest generate-region-test
-  (proc/generate-regions! *conn* *state* *rng* 1)
-  (sync!)
-  (is (= 1 (count-of :region/id)))
-  (is (= [0] @(:regions *state*))))
+  (let [tx (proc/generate-regions! *conn* *state* *rng* 1)]
+    (is (= 1 (count-of :region/id tx)))
+    (is (= [0] @(:regions *state*)))))
 
 (deftest generate-global-attribute-group-test
   (proc/generate-categories! *conn* *state* (single-category 1))
-  (proc/generate-gags! *conn* *state* *rng* 1)
-  (sync!)
-  (is (= 1 (count-of :gag/id)))
-  (is (= [0] @(:gag-ids *state*))))
+  (let [tx (proc/generate-gags! *conn* *state* *rng* 1)]
+    (is (= 1 (count-of :gag/id tx)))
+    (is (= [0] @(:gag-ids *state*)))))
 
 (deftest generate-global-attribute-value-test
   (proc/generate-categories! *conn* *state* (single-category 1))
   (proc/generate-gags! *conn* *state* *rng* 1)
-  (proc/generate-gavs! *conn* *state* *rng* 1)
-  (sync!)
-  (is (= 1 (count-of :gav/id)))
-  (is (= [0] @(:gav-ids *state*))))
+  (let [tx (proc/generate-gavs! *conn* *state* *rng* 1)]
+    (is (= 1 (count-of :gav/id tx)))
+    (is (= [0] @(:gav-ids *state*)))))
 
 (deftest generate-user-attributes-test
   (proc/generate-regions! *conn* *state* *rng* 1)
   (proc/generate-users! *conn* *state* *rng* 1)
-  (proc/generate-user-attributes! *conn* *state* *rng* 1)
-  (sync!)
-  (is (= 1 (count-of :user-attribute/id))))
+  (let [tx (proc/generate-user-attributes! *conn* *state* *rng* 1)]
+    (is (= 1 (count-of :user-attribute/id tx)))))
 
 (deftest generate-item-test
   (with-redefs [proc/sample-status (constantly :open)]
     (proc/generate-regions! *conn* *state* *rng* 1)
     (proc/generate-users! *conn* *state* *rng* 1)
     (proc/generate-categories! *conn* *state* (single-category 1))
-    (proc/generate-items! *conn* *state* *rng* 1)
-    (sync!)
+    (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
+      (is (= 1 (count-of :item/id tx)))
+      (let [item (proc/pick-random-open *rng* *state*)]
+        (is (= 0 (:item-id item)))
+        (is (= 0 (:seller-id item))))
 
-    (is (= 1 (count-of :item/id)))
-    (let [item (proc/pick-random-open *rng* *state*)]
-      (is (= 0 (:item-id item)))
-      (is (= 0 (:seller-id item))))
-
-    (testing "item update"
-      (let [desc-q '{:find [?d] :where [[?e :item/description ?d]]}
-            old-description (ffirst (tc/q (db) desc-q))]
-        (proc/proc-update-item *conn* *rng* *state*)
-        (let [new-description (ffirst (tc/q (db) desc-q))]
-          (is (not= old-description new-description)))))))
+      (testing "item update"
+        (let [desc-q '{:find [?d] :where [[?e :item/description ?d]]}
+              old-description (ffirst (tc/q (db tx) desc-q))]
+          (proc/proc-update-item *conn* *rng* *state*)
+          (let [new-description (ffirst (tc/q (db) desc-q))]
+            (is (not= old-description new-description))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedures
@@ -127,14 +116,15 @@
     (proc/generate-regions! *conn* *state* *rng* 1)
     (proc/generate-users! *conn* *state* *rng* 1)
     (proc/generate-categories! *conn* *state* (single-category 1))
-    (proc/generate-items! *conn* *state* *rng* 1)
-    (sync!)
-    (is (some? (first (proc/proc-get-item *conn* *rng* *state*))))))
+    (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
+      ;; opening as-of tx awaits indexing, so proc-get-item's own latest read sees the item
+      (db tx)
+      (is (some? (first (proc/proc-get-item *conn* *rng* *state*)))))))
 
 (deftest proc-new-user-test
   (proc/generate-regions! *conn* *state* *rng* 1)
+  ;; proc-new-user transacts synchronously, so the new user is already indexed
   (proc/proc-new-user *conn* *rng* *state*)
-  (sync!)
   (is (= 1 (count-of :user/id)))
   (is (= 0 (proc/pick-random-user *rng* *state*))))
 
@@ -143,36 +133,37 @@
     (proc/generate-regions! *conn* *state* *rng* 1)
     (proc/generate-users! *conn* *state* *rng* 2)
     (proc/generate-categories! *conn* *state* (single-category 1))
-    (proc/generate-items! *conn* *state* *rng* 1)
-    (sync!)
+    (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
+      ;; await indexing before proc-new-bid reads the item's current price
+      (db tx)
+      (proc/proc-new-bid *conn* *rng* *state*)
 
-    (proc/proc-new-bid *conn* *rng* *state*)
+      (testing "a bid exists, referencing item 0"
+        (is (= 1 (count-of :item-bid/id)))
+        (is (= [[0]] (tc/q (db) '{:find [?item-id]
+                                  :where [[?b :item-bid/id 0]
+                                          [?b :item-bid/item-id ?i]
+                                          [?i :item/id ?item-id]]}))))
 
-    (testing "a bid exists, referencing item 0"
-      (is (= 1 (count-of :item-bid/id)))
-      (is (= [[0]] (tc/q (db) '{:find [?item-id]
-                                :where [[?b :item-bid/id 0]
-                                        [?b :item-bid/item-id ?i]
-                                        [?i :item/id ?item-id]]}))))
+      (testing "a max-bid record exists for item 0"
+        (is (= 1 (count-of :item-max-bid/id)))
+        (is (= [[0]] (tc/q (db) '{:find [?item-id]
+                                  :where [[?m :item-max-bid/id 0]
+                                          [?m :item-max-bid/item-id ?i]
+                                          [?i :item/id ?item-id]]}))))
 
-    (testing "a max-bid record exists for item 0"
-      (is (= 1 (count-of :item-max-bid/id)))
-      (is (= [[0]] (tc/q (db) '{:find [?item-id]
-                                :where [[?m :item-max-bid/id 0]
-                                        [?m :item-max-bid/item-id ?i]
-                                        [?i :item/id ?item-id]]}))))
-
-    ;; NOTE: the XTDB suite also asserts "new bid but does not exceed max" and
-    ;; "new exceeds max bid". This Triplox `proc-new-bid` always inserts a fresh
-    ;; max-bid record (no read-compare-against-current-max, no `random-price`
-    ;; hook), so those scenarios have no equivalent here and are not ported.
-    ))
+      ;; NOTE: the XTDB suite also asserts "new bid but does not exceed max" and
+      ;; "new exceeds max bid". This Triplox `proc-new-bid` always inserts a fresh
+      ;; max-bid record (no read-compare-against-current-max, no `random-price`
+      ;; hook), so those scenarios have no equivalent here and are not ported.
+      )))
 
 (deftest proc-new-item-test
   (proc/generate-regions! *conn* *state* *rng* 1)
   (proc/generate-users! *conn* *state* *rng* 1)
   (proc/generate-categories! *conn* *state* (single-category 10))
-  (sync!)
+  ;; proc-new-item transacts synchronously; its lookup refs resolve because txs
+  ;; are indexed in submission order (the generators were submitted first)
   (proc/proc-new-item *conn* *rng* *state*)
 
   (testing "new item is owned by user 0"
@@ -196,8 +187,8 @@
       (proc/generate-users! *conn* *state* *rng* 1)
       (proc/generate-categories! *conn* *state* (single-category 1))
       (proc/generate-items! *conn* *state* *rng* 1)
-      (sync!)
 
+      ;; proc-new-comment transacts synchronously (item resolves by tx ordering)
       (proc/proc-new-comment *conn* *rng* *state*)
       (is (= [[""]] (tc/q (db) resp-q)) "comment created with an empty response")
 
@@ -212,12 +203,10 @@
       (proc/generate-regions! *conn* *state* *rng* 1)
       (proc/generate-users! *conn* *state* *rng* 1)
       (proc/generate-categories! *conn* *state* (single-category 1))
-      (proc/generate-items! *conn* *state* *rng* 1)
-      (sync!)
-
-      (is (= [[0 :waiting-for-purchase]] (tc/q (db) status-q)))
-      (proc/proc-new-purchase *conn* *rng* *state*)
-      (is (= [[0 :closed]] (tc/q (db) status-q))))))
+      (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
+        (is (= [[0 :waiting-for-purchase]] (tc/q (db tx) status-q)))
+        (proc/proc-new-purchase *conn* *rng* *state*)
+        (is (= [[0 :closed]] (tc/q (db) status-q)))))))
 
 (deftest proc-new-feedback-test
   (with-redefs [proc/sample-status (constantly :closed)]
@@ -225,35 +214,33 @@
     (proc/generate-users! *conn* *state* *rng* 1)
     (proc/generate-categories! *conn* *state* (single-category 1))
     (proc/generate-items! *conn* *state* *rng* 1)
-    (sync!)
 
+    ;; proc-new-feedback transacts synchronously (item resolves by tx ordering)
     (proc/proc-new-feedback *conn* *rng* *state*)
     (is (= [[0]] (tc/q (db) '{:find [?id] :where [[?f :item-feedback/id ?id]]})))))
 
 (deftest proc-check-winning-bid-test
   (with-redefs [proc/sample-status (constantly :open)]
-    (let [open-q   '{:find [?id] :where [[?e :item/status :open] [?e :item/id ?id]]}
-          wait-q   '{:find [?id] :where [[?e :item/status :waiting-for-purchase] [?e :item/id ?id]]}]
+    (let [open-q '{:find [?id] :where [[?e :item/status :open] [?e :item/id ?id]]}
+          wait-q '{:find [?id] :where [[?e :item/status :waiting-for-purchase] [?e :item/id ?id]]}]
       (proc/generate-regions! *conn* *state* *rng* 1)
       (proc/generate-users! *conn* *state* *rng* 2)
       (proc/generate-categories! *conn* *state* (single-category 1))
-      (proc/generate-items! *conn* *state* *rng* 2)
-      (sync!)
+      (let [tx (proc/generate-items! *conn* *state* *rng* 2)]
+        (is (= 2 (count (tc/q (db tx) open-q))) "both items start open")
 
-      (is (= 2 (count (tc/q (db) open-q))) "both items start open")
+        ;; NOTE: the XTDB `proc-check-winning-bids` both closes won items and moves
+        ;; others to waiting. This Triplox `proc-check-winning-bid` only transitions
+        ;; *expired* open items to :waiting-for-purchase (closing happens later in
+        ;; proc-new-purchase / proc-post-auction). We force expiry by running it
+        ;; from far in the future so all open auctions have ended.
+        (with-redefs [proc/now-instant (constantly (Instant/parse "2100-01-01T00:00:00Z"))]
+          (proc/proc-check-winning-bid *conn* *rng* *state*))
 
-      ;; NOTE: the XTDB `proc-check-winning-bids` both closes won items and moves
-      ;; others to waiting. This Triplox `proc-check-winning-bid` only transitions
-      ;; *expired* open items to :waiting-for-purchase (closing happens later in
-      ;; proc-new-purchase / proc-post-auction). We force expiry by running it
-      ;; from far in the future so all open auctions have ended.
-      (with-redefs [proc/now-instant (constantly (Instant/parse "2100-01-01T00:00:00Z"))]
-        (proc/proc-check-winning-bid *conn* *rng* *state*))
-
-      (is (= 0 (count (tc/q (db) open-q))) "no open items remain")
-      (is (= 2 (count (tc/q (db) wait-q))) "both items now waiting-for-purchase")
-      (is (= 2 (.size ^ConcurrentLinkedQueue (:items-waiting *state*)))
-          "and tracked in the waiting queue"))))
+        (is (= 0 (count (tc/q (db) open-q))) "no open items remain")
+        (is (= 2 (count (tc/q (db) wait-q))) "both items now waiting-for-purchase")
+        (is (= 2 (.size ^ConcurrentLinkedQueue (:items-waiting *state*)))
+            "and tracked in the waiting queue")))))
 
 (deftest proc-get-comment-test
   (with-redefs [proc/sample-status (constantly :open)
@@ -264,7 +251,8 @@
     (proc/generate-users! *conn* *state* *rng* 1)
     (proc/generate-categories! *conn* *state* (single-category 1))
     (proc/generate-items! *conn* *state* *rng* 1)
-    (sync!)
+    ;; proc-new-comment transacts synchronously, so the comment is indexed before
+    ;; proc-get-comment reads it
     (proc/proc-new-comment *conn* *rng* *state*)
 
     (is (= [0] (map first (proc/proc-get-comment *conn* *rng* *state*)))
@@ -274,8 +262,9 @@
   ;; The XTDB `get-user-info` takes seller/buyer/feedback options; this Triplox
   ;; `proc-get-user-info` is the simpler "read the user's profile" variant.
   (proc/generate-regions! *conn* *state* *rng* 1)
-  (proc/generate-users! *conn* *state* *rng* 1)
-  (sync!)
-  (let [res (proc/proc-get-user-info *conn* *rng* *state*)]
-    (is (= 1 (count res)))
-    (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0")))
+  (let [tx (proc/generate-users! *conn* *state* *rng* 1)]
+    ;; await indexing before proc-get-user-info reads at latest
+    (db tx)
+    (let [res (proc/proc-get-user-info *conn* *rng* *state*)]
+      (is (= 1 (count res)))
+      (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0"))))
