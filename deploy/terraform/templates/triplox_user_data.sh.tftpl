@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + AWS CLI v2 (not preinstalled on AL2023) ---
+dnf -y update
+dnf -y install docker unzip
+systemctl enable --now docker
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+REGION="${region}"
+CACHE_PATH="${cache_path}"
+
+# --- Mount fast storage at $CACHE_PATH ---
+%{ if disk_mode == "nvme" ~}
+# Instance-store NVMe device name is not stable on Nitro; pick the first
+# unmounted, non-root NVMe disk. Ephemeral (wiped on stop/start) — no fstab.
+ROOT_DEV="$(findmnt -no SOURCE / | sed 's/p\?[0-9]*$//')"
+DISK=""
+for d in /dev/nvme*n1; do
+  [ "$d" = "$ROOT_DEV" ] && continue
+  if ! lsblk -no MOUNTPOINT "$d" | grep -q .; then
+    DISK="$d"
+    break
+  fi
+done
+if [ -n "$DISK" ]; then
+  mkfs.xfs -f "$DISK"
+  mkdir -p "$CACHE_PATH"
+  mount "$DISK" "$CACHE_PATH"
+else
+  echo "WARN: no instance-store NVMe found; using root volume for cache"
+  mkdir -p "$CACHE_PATH"
+fi
+%{ else ~}
+# Dedicated gp3 cache volume attached at /dev/sdf (Nitro renames to /dev/nvme1n1).
+EBS_DEV="$(readlink -f /dev/sdf 2>/dev/null || echo /dev/nvme1n1)"
+for i in $(seq 1 30); do [ -b "$EBS_DEV" ] && break; sleep 2; done
+if ! blkid "$EBS_DEV" >/dev/null 2>&1; then mkfs.xfs -f "$EBS_DEV"; fi
+mkdir -p "$CACHE_PATH"
+mount "$EBS_DEV" "$CACHE_PATH"
+echo "$EBS_DEV $CACHE_PATH xfs defaults,nofail 0 2" >> /etc/fstab
+%{ endif ~}
+mkdir -p "$CACHE_PATH/cache" "$CACHE_PATH/dbsp"
+# Container runs as uid 20000 (the image's triplox user).
+chown -R 20000:20000 "$CACHE_PATH"
+
+# --- Static S3 credentials from SSM (kept out of plaintext user_data) ---
+S3_ACCESS_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_access_key_name}' --with-decryption --query Parameter.Value --output text)"
+S3_SECRET_KEY="$(aws ssm get-parameter --region "$REGION" --name '${ssm_secret_key_name}' --with-decryption --query Parameter.Value --output text)"
+
+# --- Render the Triplox config (only the fields config.rs accepts) ---
+mkdir -p /etc/triplox
+cat > /etc/triplox/triplox.toml <<EOF
+[storage]
+type = "remote"
+endpoint = "https://s3.${region}.amazonaws.com"
+bucket = "${triplox_bucket}"
+access_key = "$S3_ACCESS_KEY"
+secret_key = "$S3_SECRET_KEY"
+region = "${region}"
+cache_path = "${cache_path}"
+
+[log]
+type = "kafka"
+bootstrap_servers = "${automq_private_ip}:9092"
+topic = "${kafka_topic}"
+
+[server]
+host = "0.0.0.0"
+port = ${triplox_port}
+EOF
+chown 20000:20000 /etc/triplox/triplox.toml
+chmod 600 /etc/triplox/triplox.toml
+
+# --- Pull + run Triplox (public GHCR image, no login). Restart loops until
+#     AutoMQ + the topic are ready (no cross-host depends_on). ---
+docker pull '${triplox_image}'
+docker run -d --name triplox --restart unless-stopped \
+  -p ${triplox_port}:${triplox_port} \
+  -v /etc/triplox/triplox.toml:/etc/triplox/triplox.toml:ro \
+  -v "$CACHE_PATH":"$CACHE_PATH" \
+  '${triplox_image}' /etc/triplox/triplox.toml
+
+echo "Triplox provisioning complete."
