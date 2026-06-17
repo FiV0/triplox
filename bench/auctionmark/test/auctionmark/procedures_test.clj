@@ -116,9 +116,8 @@
     (proc/generate-regions! *conn* *state* *rng* 1)
     (proc/generate-users! *conn* *state* *rng* 1)
     (proc/generate-categories! *conn* *state* (single-category 1))
-    (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
-      ;; opening as-of tx awaits indexing, so proc-get-item's own latest read sees the item
-      (db tx)
+    (let [tx (proc/generate-items! *conn* *state* *rng* 1)
+          _db (db tx)]
       (is (some? (first (proc/proc-get-item *conn* *rng* *state*)))))))
 
 (deftest proc-new-user-test
@@ -133,9 +132,8 @@
     (proc/generate-regions! *conn* *state* *rng* 1)
     (proc/generate-users! *conn* *state* *rng* 2)
     (proc/generate-categories! *conn* *state* (single-category 1))
-    (let [tx (proc/generate-items! *conn* *state* *rng* 1)]
-      ;; await indexing before proc-new-bid reads the item's current price
-      (db tx)
+    (let [tx (proc/generate-items! *conn* *state* *rng* 1)
+          _db (db tx)]
       (proc/proc-new-bid *conn* *rng* *state*)
 
       (testing "a bid exists, referencing item 0"
@@ -262,9 +260,8 @@
   ;; The XTDB `get-user-info` takes seller/buyer/feedback options; this Triplox
   ;; `proc-get-user-info` is the simpler "read the user's profile" variant.
   (proc/generate-regions! *conn* *state* *rng* 1)
-  (let [tx (proc/generate-users! *conn* *state* *rng* 1)]
-    ;; await indexing before proc-get-user-info reads at latest
-    (db tx)
+  (let [tx (proc/generate-users! *conn* *state* *rng* 1)
+        _db (db tx)]
     (let [res (proc/proc-get-user-info *conn* *rng* *state*)]
       (is (= 1 (count res)))
       (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0"))))
