@@ -109,10 +109,13 @@
           (if (< (.nextDouble rng) (double split)) small large))))))
 
 (defn batch-transact!
-  "Submit tx-data in batches of batch-size. Uses submit-tx (fire-and-forget)."
+  "Submit tx-data in batches of batch-size. Uses submit-tx (fire-and-forget).
+  Returns the TxKey of the last submitted batch (nil if there were no docs)."
   [conn docs batch-size]
-  (doseq [chunk (partition-all batch-size docs)]
-    (tc/submit-tx conn (vec chunk))))
+  (let [chunks (partition-all batch-size docs)]
+    (doseq [chunk (butlast chunks)]
+      (tc/submit-tx conn (vec chunk)))
+    (tc/submit-tx conn (last chunks))))
 
 (defn now-instant []
   (Instant/now))
@@ -146,17 +149,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defn generate-regions!
-  "Generate region entities. Returns vector of region app-ids."
+  "Generate region entities."
   [conn state ^Random rng n]
-  (let [ids (mapv (fn [_]
-                    (let [id (next-id (:region-counter state))]
-                      {:region/id id
-                       :region/name (str "Region-" id)}))
-                  (range n))]
-    (batch-transact! conn ids 512)
-    (let [region-ids (mapv :region/id ids)]
-      (reset! (:regions state) region-ids)
-      region-ids)))
+  (let [docs (mapv (fn [_]
+                     (let [id (next-id (:region-counter state))]
+                       {:region/id id
+                        :region/name (str "Region-" id)}))
+                   (range n))
+        tx-key (batch-transact! conn docs 512)]
+    (reset! (:regions state) (mapv :region/id docs))
+    tx-key))
 
 (defn generate-categories!
   "Generate category entities from parsed TSV data."
@@ -165,14 +167,13 @@
                      (let [id (next-id (:category-counter state))]
                        {:category/id id
                         :category/name (:name cat)}))
-                   categories)]
-    (batch-transact! conn docs 512)
-    (let [cat-ids (mapv :category/id docs)]
-      (reset! (:category-ids state) cat-ids)
-      (reset! (:categories state)
-              (mapv (fn [cat doc] (assoc cat :id (:category/id doc)))
-                    categories docs))
-      cat-ids)))
+                   categories)
+        tx-key (batch-transact! conn docs 512)]
+    (reset! (:category-ids state) (mapv :category/id docs))
+    (reset! (:categories state)
+            (mapv (fn [cat doc] (assoc cat :id (:category/id doc)))
+                  categories docs))
+    tx-key))
 
 (defn generate-gags!
   "Generate global attribute groups."
@@ -183,11 +184,10 @@
                        {:gag/id id
                         :gag/category-id [:category/id (rand-nth-vec rng cat-ids)]
                         :gag/name (str "GAG-" id)}))
-                   (range n))]
-    (batch-transact! conn docs 512)
-    (let [ids (mapv :gag/id docs)]
-      (reset! (:gag-ids state) ids)
-      ids)))
+                   (range n))
+        tx-key (batch-transact! conn docs 512)]
+    (reset! (:gag-ids state) (mapv :gag/id docs))
+    tx-key))
 
 (defn generate-gavs!
   "Generate global attribute values."
@@ -198,11 +198,10 @@
                        {:gav/id id
                         :gav/gag-id [:gag/id (rand-nth-vec rng gag-ids)]
                         :gav/name (str "GAV-" id)}))
-                   (range n))]
-    (batch-transact! conn docs 512)
-    (let [ids (mapv :gav/id docs)]
-      (reset! (:gav-ids state) ids)
-      ids)))
+                   (range n))
+        tx-key (batch-transact! conn docs 512)]
+    (reset! (:gav-ids state) (mapv :gav/id docs))
+    tx-key))
 
 (defn generate-users!
   "Generate user entities."
@@ -224,11 +223,10 @@
                         :user/sattr5 (rand-string rng 16)
                         :user/sattr6 (rand-string rng 16)
                         :user/sattr7 (rand-string rng 16)}))
-                   (range n))]
-    (batch-transact! conn docs 512)
-    (let [ids (mapv :user/id docs)]
-      (reset! (:users state) ids)
-      ids)))
+                   (range n))
+        tx-key (batch-transact! conn docs 512)]
+    (reset! (:users state) (mapv :user/id docs))
+    tx-key))
 
 (defn generate-user-attributes!
   "Generate user attribute entities."
@@ -263,53 +261,55 @@
         cat-idx-fn (weighted-sample-fn cat-weights)
         now-ms (instant->millis (now-instant))
         day-ms (* 24 60 60 1000)]
-    ;; generate in chunks to avoid holding all docs in memory
-    (doseq [chunk-start (range 0 n 512)]
-      (let [chunk-end (min n (+ chunk-start 512))
-            chunk-docs
-            (reduce
-             (fn [acc _]
-               (let [item-id (next-id (:item-counter state))
-                     item-tempid (str "item-" item-id)
-                     seller-id (nth user-ids (rand-gaussian rng (count user-ids)))
-                     cat-idx (cat-idx-fn rng)
-                     cat-id (:id (nth categories cat-idx))
-                     status (sample-status rng)
-                     num-images (inc (.nextInt rng 5))
-                     initial-price (+ 1.0 (* (.nextDouble rng) 100.0))
-                     duration-days (+ 1 (.nextInt rng 43))
-                     start-ms (- now-ms (* (.nextInt rng 30) day-ms))
-                     end-ms (+ start-ms (* duration-days day-ms))
-                     item-doc {:db/id item-tempid
-                               :item/id item-id
-                               :item/user-id [:user/id seller-id]
-                               :item/category-id [:category/id cat-id]
-                               :item/name (str "Item-" item-id)
-                               :item/description (str "Description for item " item-id)
-                               :item/initial-price initial-price
-                               :item/current-price initial-price
-                               :item/num-bids 0
-                               :item/num-images num-images
-                               :item/start-date (millis->instant start-ms)
-                               :item/end-date (millis->instant end-ms)
-                               :item/status status}
-                     image-docs (mapv (fn [i]
-                                        (let [img-id (next-id (:image-counter state))]
-                                          {:item-image/id img-id
-                                           :item-image/item-id item-tempid
-                                           :item-image/user-id [:user/id seller-id]
-                                           :item-image/path (str "/img/" item-id "/" i ".jpg")}))
-                                      (range num-images))
-                     sample (->ItemSample item-id seller-id)]
-                 ;; track in status queues
-                 (case status
-                   :open (.add ^ConcurrentLinkedQueue (:items-open state) sample)
-                   :waiting-for-purchase (.add ^ConcurrentLinkedQueue (:items-waiting state) sample)
-                   :closed (.add ^ConcurrentLinkedQueue (:items-closed state) sample))
-                 (into (conj acc item-doc) image-docs)))
-             []
-             (range chunk-start chunk-end))]
-        (tc/submit-tx conn chunk-docs)))))
+    (reduce
+     (fn [_ chunk-start]
+       (let [chunk-end (min n (+ chunk-start 512))
+             chunk-docs
+             (reduce
+              (fn [acc _]
+                (let [item-id (next-id (:item-counter state))
+                      item-tempid (str "item-" item-id)
+                      seller-id (nth user-ids (rand-gaussian rng (count user-ids)))
+                      cat-idx (cat-idx-fn rng)
+                      cat-id (:id (nth categories cat-idx))
+                      status (sample-status rng)
+                      num-images (inc (.nextInt rng 5))
+                      initial-price (+ 1.0 (* (.nextDouble rng) 100.0))
+                      duration-days (+ 1 (.nextInt rng 43))
+                      start-ms (- now-ms (* (.nextInt rng 30) day-ms))
+                      end-ms (+ start-ms (* duration-days day-ms))
+                      item-doc {:db/id item-tempid
+                                :item/id item-id
+                                :item/user-id [:user/id seller-id]
+                                :item/category-id [:category/id cat-id]
+                                :item/name (str "Item-" item-id)
+                                :item/description (str "Description for item " item-id)
+                                :item/initial-price initial-price
+                                :item/current-price initial-price
+                                :item/num-bids 0
+                                :item/num-images num-images
+                                :item/start-date (millis->instant start-ms)
+                                :item/end-date (millis->instant end-ms)
+                                :item/status status}
+                      image-docs (mapv (fn [i]
+                                         (let [img-id (next-id (:image-counter state))]
+                                           {:item-image/id img-id
+                                            :item-image/item-id item-tempid
+                                            :item-image/user-id [:user/id seller-id]
+                                            :item-image/path (str "/img/" item-id "/" i ".jpg")}))
+                                       (range num-images))
+                      sample (->ItemSample item-id seller-id)]
+                  ;; track in status queues
+                  (case status
+                    :open (.add ^ConcurrentLinkedQueue (:items-open state) sample)
+                    :waiting-for-purchase (.add ^ConcurrentLinkedQueue (:items-waiting state) sample)
+                    :closed (.add ^ConcurrentLinkedQueue (:items-closed state) sample))
+                  (into (conj acc item-doc) image-docs)))
+              []
+              (range chunk-start chunk-end))]
+         (tc/submit-tx conn chunk-docs)))
+     nil
+     (range 0 n 512))))
 
 (defn generate-user-watches!
   "Each user watches 0-5 random open items."
