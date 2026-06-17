@@ -1,19 +1,5 @@
 (ns auctionmark.procedures-test
-  "Ported from xtdb.bench.auctionmark-test.
-
-  Each test runs against a Triplox *dev node* — connecting to a server started
-  with `TRIPLOX_STORAGE=dev` gives every connection its own fresh, ephemeral
-  in-memory database. The `with-node` fixture opens one connection per test, so
-  tests are isolated the same way XTDB's `tu/with-node` isolates them.
-
-  Differences from the XTDB suite:
-  - Entity ids are plain longs from `state` counters (0, 1, 2, ...), not UUIDs.
-  - The generators submit fire-and-forget txs (`submit-tx`), so a test must
-    `(sync!)` before reading. `sync!` issues an empty synchronous tx; because
-    `transact` waits for indexing and txs are indexed in submission order, that
-    fences all prior submits.
-  - A few procedures diverge from the XTDB implementation; those tests are
-    adapted to the Triplox behaviour and the divergence is noted inline."
+  "Ported from xtdb.bench.auctionmark-test."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [xyz.triplox.api :as tc]
             [auctionmark.schema :as schema]
