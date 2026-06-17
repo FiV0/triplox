@@ -8,7 +8,17 @@
         com.google.guava/guava {:mvn/version "33.6.0-jre"}
 
         xyz.triplox/triplox {:mvn/version "0.1.0-alpha.5"}}
- :aliases {:run {:main-opts ["-m" "auctionmark.main"]}}
+ :aliases {:run {:main-opts ["-m" "auctionmark.main"]}
+
+           ;; Tests run against a Triplox dev node (per-connection ephemeral
+           ;; in-memory database). Start one first, e.g.:
+           ;;   docker run -p 5490:5490 -e TRIPLOX_STORAGE=dev ghcr.io/fiv0/triplox:0.1.0-alpha.5
+           ;; then: clojure -X:test
+           ;; Host/port overridable via -Dtriplox.host / -Dtriplox.port.
+           :test {:extra-paths ["test"]
+                  :extra-deps {io.github.cognitect-labs/test-runner
+                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                  :exec-fn cognitect.test-runner.api/test}}
 
  :mvn/repos {"clojars" {:url "https://repo.clojars.org/"
                         :snapshots {:update :always}}}}
