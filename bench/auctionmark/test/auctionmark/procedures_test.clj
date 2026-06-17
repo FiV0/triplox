@@ -261,7 +261,7 @@
   ;; `proc-get-user-info` is the simpler "read the user's profile" variant.
   (proc/generate-regions! *conn* *state* *rng* 1)
   (let [tx (proc/generate-users! *conn* *state* *rng* 1)
-        _db (db tx)]
-    (let [res (proc/proc-get-user-info *conn* *rng* *state*)]
-      (is (= 1 (count res)))
-      (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0"))))
+        _db (db tx)
+        res (proc/proc-get-user-info *conn* *rng* *state*)]
+    (is (= 1 (count res)))
+    (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0")))
