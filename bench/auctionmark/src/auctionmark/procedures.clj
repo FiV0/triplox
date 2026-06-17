@@ -422,19 +422,18 @@
   "Read item details for an open item."
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
-    (let [db (tc/db conn)]
-      (tc/q db
-            '{:find [?name ?desc ?price ?nbids ?status ?start ?end]
-              :in [?item-id]
-              :where [[?e :item/id ?item-id]
-                      [?e :item/name ?name]
-                      [?e :item/description ?desc]
-                      [?e :item/current-price ?price]
-                      [?e :item/num-bids ?nbids]
-                      [?e :item/status ?status]
-                      [?e :item/start-date ?start]
-                      [?e :item/end-date ?end]]}
-            (:item-id item)))))
+    (tc/q (tc/db conn)
+          '{:find [?name ?desc ?price ?nbids ?status ?start ?end]
+            :in [?item-id]
+            :where [[?e :item/id ?item-id]
+                    [?e :item/name ?name]
+                    [?e :item/description ?desc]
+                    [?e :item/current-price ?price]
+                    [?e :item/num-bids ?nbids]
+                    [?e :item/status ?status]
+                    [?e :item/start-date ?start]
+                    [?e :item/end-date ?end]]}
+          (:item-id item))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 2: new-bid (18%)
@@ -448,15 +447,14 @@
           item-id (:item-id item)
           ;; read current state
           [current-price num-bids]
-          (let [db (tc/db conn)]
-            (first (tc/q db
-                         '{:find [?price ?nbids]
-                           :in [?item-id]
-                           :where [[?e :item/id ?item-id]
-                                   [?e :item/current-price ?price]
-                                   [?e :item/num-bids ?nbids]
-                                   [?e :item/status :open]]}
-                         item-id)))]
+          (first (tc/q (tc/db conn)
+                       '{:find [?price ?nbids]
+                         :in [?item-id]
+                         :where [[?e :item/id ?item-id]
+                                 [?e :item/current-price ?price]
+                                 [?e :item/num-bids ?nbids]
+                                 [?e :item/status :open]]}
+                       item-id))]
       (when current-price
         (let [new-price (* (double current-price) (+ 1.0 (* (.nextDouble rng) 0.1)))
               bid-id (next-id (:bid-counter state))
@@ -527,14 +525,13 @@
                   :item/status :open}]
     (tc/transact conn (into [item-doc] image-docs))
     ;; apply seller fee — read current balance then decrement
-    (let [balance (let [db (tc/db conn)]
-                    (or (ffirst (tc/q db
-                                      '{:find [?b]
-                                        :in [?uid]
-                                        :where [[?e :user/id ?uid]
-                                                [?e :user/balance ?b]]}
-                                      seller-id))
-                        0.0))]
+    (let [balance (or (ffirst (tc/q (tc/db conn)
+                                    '{:find [?b]
+                                      :in [?uid]
+                                      :where [[?e :user/id ?uid]
+                                              [?e :user/balance ?b]]}
+                                    seller-id))
+                      0.0)]
       (tc/transact conn
                    [{:db/id [:user/id seller-id]
                      :user/balance (- (double balance) 1.0)}]))
@@ -549,15 +546,14 @@
   "Read user profile."
   [conn ^Random rng state]
   (when-let [uid (pick-random-user rng state)]
-    (let [db (tc/db conn)]
-      (tc/q db
-            '{:find [?rating ?balance ?created]
-              :in [?uid]
-              :where [[?e :user/id ?uid]
-                      [?e :user/rating ?rating]
-                      [?e :user/balance ?balance]
-                      [?e :user/created ?created]]}
-            uid))))
+    (tc/q (tc/db conn)
+          '{:find [?rating ?balance ?created]
+            :in [?uid]
+            :where [[?e :user/id ?uid]
+                    [?e :user/rating ?rating]
+                    [?e :user/balance ?balance]
+                    [?e :user/created ?created]]}
+          uid)))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 5: new-user (5%)
@@ -569,19 +565,19 @@
   (let [uid (next-id (:user-counter state))
         region-ids @(:regions state)]
     (tc/transact conn
-      [{:user/id uid
-        :user/region-id [:region/id (rand-nth-vec rng region-ids)]
-        :user/rating 0
-        :user/balance 0.0
-        :user/created (now-instant)
-        :user/sattr0 (rand-string rng 16)
-        :user/sattr1 (rand-string rng 16)
-        :user/sattr2 (rand-string rng 16)
-        :user/sattr3 (rand-string rng 16)
-        :user/sattr4 (rand-string rng 16)
-        :user/sattr5 (rand-string rng 16)
-        :user/sattr6 (rand-string rng 16)
-        :user/sattr7 (rand-string rng 16)}])
+                 [{:user/id uid
+                   :user/region-id [:region/id (rand-nth-vec rng region-ids)]
+                   :user/rating 0
+                   :user/balance 0.0
+                   :user/created (now-instant)
+                   :user/sattr0 (rand-string rng 16)
+                   :user/sattr1 (rand-string rng 16)
+                   :user/sattr2 (rand-string rng 16)
+                   :user/sattr3 (rand-string rng 16)
+                   :user/sattr4 (rand-string rng 16)
+                   :user/sattr5 (rand-string rng 16)
+                   :user/sattr6 (rand-string rng 16)
+                   :user/sattr7 (rand-string rng 16)}])
     (swap! (:users state) conj uid)))
 
 ;; ---------------------------------------------------------------------------
@@ -630,31 +626,29 @@
   "Complete a purchase for a waiting item."
   [conn ^Random rng state]
   (when-let [item (.poll ^ConcurrentLinkedQueue (:items-waiting state))]
-    (let [item-id (:item-id item)]
-      ;; find the highest bid for this item
-      (let [bids (let [db (tc/db conn)]
-                   (tc/q db
-                         '{:find [?bid-id ?bid-amount]
-                           :in [?item-id]
-                           :where [[?b :item-bid/item-id ?i]
-                                   [?i :item/id ?item-id]
-                                   [?b :item-bid/id ?bid-id]
-                                   [?b :item-bid/bid ?bid-amount]]
-                           :order [[?bid-amount :desc]]
-                           :limit 1}
-                         item-id))
-            winning-bid-id (ffirst bids)]
-        (tc/transact conn
-          [(merge
-            {:item-purchase/id (next-id (:purchase-counter state))
-             :item-purchase/item-id [:item/id item-id]
-             :item-purchase/user-id [:user/id (:seller-id item)]
-             :item-purchase/date (now-instant)}
-            (when winning-bid-id
-              {:item-purchase/bid-id [:item-bid/id winning-bid-id]}))
-           {:db/id [:item/id item-id]
-            :item/status :closed}])
-        (.add ^ConcurrentLinkedQueue (:items-closed state) item)))))
+    (let [item-id (:item-id item)
+          bids (tc/q (tc/db conn)
+                     '{:find [?bid-id ?bid-amount]
+                       :in [?item-id]
+                       :where [[?b :item-bid/item-id ?i]
+                               [?i :item/id ?item-id]
+                               [?b :item-bid/id ?bid-id]
+                               [?b :item-bid/bid ?bid-amount]]
+                       :order [[?bid-amount :desc]]
+                       :limit 1}
+                     item-id)
+          winning-bid-id (ffirst bids)]
+      (tc/transact conn
+                   [(merge
+                     {:item-purchase/id (next-id (:purchase-counter state))
+                      :item-purchase/item-id [:item/id item-id]
+                      :item-purchase/user-id [:user/id (:seller-id item)]
+                      :item-purchase/date (now-instant)}
+                     (when winning-bid-id
+                       {:item-purchase/bid-id [:item-bid/id winning-bid-id]}))
+                    {:db/id [:item/id item-id]
+                     :item/status :closed}])
+      (.add ^ConcurrentLinkedQueue (:items-closed state) item))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 9: new-comment (2%)
@@ -666,14 +660,14 @@
   (when-let [item (pick-random-open rng state)]
     (let [buyer-id (pick-random-user rng state)]
       (tc/transact conn
-        [{:item-comment/id (next-id (:comment-counter state))
-          :item-comment/item-id [:item/id (:item-id item)]
-          :item-comment/user-id [:user/id (:seller-id item)]
-          :item-comment/buyer-id [:user/id buyer-id]
-          :item-comment/question (str "Question about item " (:item-id item))
-          :item-comment/response ""
-          :item-comment/created (now-instant)
-          :item-comment/updated (now-instant)}]))))
+                   [{:item-comment/id (next-id (:comment-counter state))
+                     :item-comment/item-id [:item/id (:item-id item)]
+                     :item-comment/user-id [:user/id (:seller-id item)]
+                     :item-comment/buyer-id [:user/id buyer-id]
+                     :item-comment/question (str "Question about item " (:item-id item))
+                     :item-comment/response ""
+                     :item-comment/created (now-instant)
+                     :item-comment/updated (now-instant)}]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 10: update-item (2%)
@@ -695,17 +689,16 @@
   "Read comments for an item."
   [conn ^Random rng state]
   (when-let [item (pick-random-item rng state)]
-    (let [db (tc/db conn)]
-      (tc/q db
-            '{:find [?cid ?question ?response ?created]
-              :in [?item-id]
-              :where [[?c :item-comment/item-id ?i]
-                      [?i :item/id ?item-id]
-                      [?c :item-comment/id ?cid]
-                      [?c :item-comment/question ?question]
-                      [?c :item-comment/response ?response]
-                      [?c :item-comment/created ?created]]}
-            (:item-id item)))))
+    (tc/q (tc/db conn)
+          '{:find [?cid ?question ?response ?created]
+            :in [?item-id]
+            :where [[?c :item-comment/item-id ?i]
+                    [?i :item/id ?item-id]
+                    [?c :item-comment/id ?cid]
+                    [?c :item-comment/question ?question]
+                    [?c :item-comment/response ?response]
+                    [?c :item-comment/created ?created]]}
+          (:item-id item))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 12: new-comment-response (1%)
@@ -715,18 +708,17 @@
   "Seller responds to a question."
   [conn ^Random _rng state]
   (let [unanswered
-        (let [db (tc/db conn)]
-          (tc/q db
-                '{:find [?comment-id]
-                  :where [[?c :item-comment/response ""]
-                          [?c :item-comment/id ?comment-id]]
-                  :limit 10}))]
+        (tc/q (tc/db conn)
+              '{:find [?comment-id]
+                :where [[?c :item-comment/response ""]
+                        [?c :item-comment/id ?comment-id]]
+                :limit 10})]
     (when (seq unanswered)
       (let [comment-id (first (rand-nth unanswered))]
         (tc/transact conn
-          [{:db/id [:item-comment/id comment-id]
-            :item-comment/response "Thanks for asking!"
-            :item-comment/updated (now-instant)}])))))
+                     [{:db/id [:item-comment/id comment-id]
+                       :item-comment/response "Thanks for asking!"
+                       :item-comment/updated (now-instant)}])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 13: check-winning-bid (periodic)
@@ -737,18 +729,17 @@
   [conn _rng state]
   (let [now-ms (instant->millis (now-instant))
         expired
-        (let [db (tc/db conn)]
-          (tc/q db
-                '{:find [?item-id ?seller-id]
-                  :in [?now]
-                  :where [[?e :item/status :open]
-                          [?e :item/end-date ?end]
-                          [(< ?end ?now)]
-                          [?e :item/id ?item-id]
-                          [?e :item/user-id ?seller]
-                          [?seller :user/id ?seller-id]]
-                  :limit 100}
-                (millis->instant now-ms)))]
+        (tc/q (tc/db conn)
+              '{:find [?item-id ?seller-id]
+                :in [?now]
+                :where [[?e :item/status :open]
+                        [?e :item/end-date ?end]
+                        [(< ?end ?now)]
+                        [?e :item/id ?item-id]
+                        [?e :item/user-id ?seller]
+                        [?seller :user/id ?seller-id]]
+                :limit 100}
+              (millis->instant now-ms))]
     (when (seq expired)
       (let [tx-data (mapv (fn [[item-id _]]
                             {:db/id [:item/id item-id]
