@@ -32,10 +32,10 @@ To publish only the Docker image for an existing release tag, run the
 `mode` to `release`. To publish a SNAPSHOT Docker image from a branch, run the
 same workflow on the branch ref with `mode` set to `snapshot`.
 
-## Required GitHub variables and secrets
+## Required GitHub secrets
 
 - `CARGO_REGISTRY_TOKEN` for crates.io.
-- `CENTRAL_USERNAME` as a repository variable.
+- `CENTRAL_USERNAME` for Maven Central.
 - `CENTRAL_PASSWORD` for Maven Central.
 - `SIGNING_KEY` as an ASCII-armored GPG private key for Maven Central.
 - `SIGNING_PASSWORD` for the GPG private key.
