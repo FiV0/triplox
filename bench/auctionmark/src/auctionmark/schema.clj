@@ -1,125 +1,302 @@
 (ns auctionmark.schema
-  "AuctionMark schema attribute definitions for Triplox.")
+  "AuctionMark schema attribute definitions for Triplox.
 
-(defn- attr
-  ([ident value-type]
-   (attr ident value-type :db.cardinality/one))
-  ([ident value-type cardinality]
-   {:db/ident ident
-    :db/valueType value-type
-    :db/cardinality cardinality}))
+  Primary entity ids (`:*/id`) are declared `:db.unique/identity`. That constraint
+  is required for an attribute to be usable in lookup refs (e.g. `[:user/id 0]`)
+  and identity upserts (e.g. `{:db/id [:item/id 0] ...}`), both of which the
+  procedures rely on. All other attributes are cardinality-one.")
 
 (def schema-tx
-  [
-   ;; --- Region ---
-   (attr :region/id :db.type/long)
-   (attr :region/name :db.type/string)
+  [;; --- Region ---
+   {:db/ident :region/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :region/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Category ---
-   (attr :category/id :db.type/long)
-   (attr :category/name :db.type/string)
-   (attr :category/parent-id :db.type/ref)
+   {:db/ident :category/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :category/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :category/parent-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Global Attribute Group ---
-   (attr :gag/id :db.type/long)
-   (attr :gag/category-id :db.type/ref)
-   (attr :gag/name :db.type/string)
+   {:db/ident :gag/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :gag/category-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :gag/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Global Attribute Value ---
-   (attr :gav/id :db.type/long)
-   (attr :gav/gag-id :db.type/ref)
-   (attr :gav/name :db.type/string)
+   {:db/ident :gav/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :gav/gag-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :gav/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    ;; --- User ---
-   (attr :user/id :db.type/long)
-   (attr :user/region-id :db.type/ref)
-   (attr :user/rating :db.type/long)
-   (attr :user/balance :db.type/double)
-   (attr :user/created :db.type/instant)
-   (attr :user/sattr0 :db.type/string)
-   (attr :user/sattr1 :db.type/string)
-   (attr :user/sattr2 :db.type/string)
-   (attr :user/sattr3 :db.type/string)
-   (attr :user/sattr4 :db.type/string)
-   (attr :user/sattr5 :db.type/string)
-   (attr :user/sattr6 :db.type/string)
-   (attr :user/sattr7 :db.type/string)
+   {:db/ident :user/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :user/region-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/rating
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/balance
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/created
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr0
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr1
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr2
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr3
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr4
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr5
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr6
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user/sattr7
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    ;; --- User Attribute ---
-   (attr :user-attribute/id :db.type/long)
-   (attr :user-attribute/user-id :db.type/ref)
-   (attr :user-attribute/name :db.type/string)
-   (attr :user-attribute/value :db.type/string)
-   (attr :user-attribute/created :db.type/instant)
+   {:db/ident :user-attribute/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :user-attribute/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user-attribute/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user-attribute/value
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user-attribute/created
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item ---
-   (attr :item/id :db.type/long)
-   (attr :item/user-id :db.type/ref)
-   (attr :item/category-id :db.type/ref)
-   (attr :item/name :db.type/string)
-   (attr :item/description :db.type/string)
-   (attr :item/initial-price :db.type/double)
-   (attr :item/current-price :db.type/double)
-   (attr :item/num-bids :db.type/long)
-   (attr :item/num-images :db.type/long)
-   (attr :item/start-date :db.type/instant)
-   (attr :item/end-date :db.type/instant)
-   (attr :item/status :db.type/keyword)
+   {:db/ident :item/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/category-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/description
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/initial-price
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/current-price
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/num-bids
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/num-images
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/start-date
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/end-date
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Image ---
-   (attr :item-image/id :db.type/long)
-   (attr :item-image/item-id :db.type/ref)
-   (attr :item-image/user-id :db.type/ref)
-   (attr :item-image/path :db.type/string)
+   {:db/ident :item-image/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-image/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-image/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-image/path
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Bid ---
-   (attr :item-bid/id :db.type/long)
-   (attr :item-bid/item-id :db.type/ref)
-   (attr :item-bid/user-id :db.type/ref)
-   (attr :item-bid/buyer-id :db.type/ref)
-   (attr :item-bid/bid :db.type/double)
-   (attr :item-bid/max-bid :db.type/double)
-   (attr :item-bid/created-at :db.type/instant)
-   (attr :item-bid/updated :db.type/instant)
+   {:db/ident :item-bid/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-bid/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/buyer-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/bid
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/max-bid
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/created-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-bid/updated
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Max Bid ---
-   (attr :item-max-bid/id :db.type/long)
-   (attr :item-max-bid/item-id :db.type/ref)
-   (attr :item-max-bid/user-id :db.type/ref)
-   (attr :item-max-bid/bid-id :db.type/ref)
-   (attr :item-max-bid/buyer-id :db.type/ref)
-   (attr :item-max-bid/created :db.type/instant)
-   (attr :item-max-bid/updated :db.type/instant)
-
+   {:db/ident :item-max-bid/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-max-bid/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-max-bid/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-max-bid/bid-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-max-bid/buyer-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-max-bid/created
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-max-bid/updated
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Comment ---
-   (attr :item-comment/id :db.type/long)
-   (attr :item-comment/item-id :db.type/ref)
-   (attr :item-comment/user-id :db.type/ref)
-   (attr :item-comment/buyer-id :db.type/ref)
-   (attr :item-comment/question :db.type/string)
-   (attr :item-comment/response :db.type/string)
-   (attr :item-comment/created :db.type/instant)
-   (attr :item-comment/updated :db.type/instant)
+   {:db/ident :item-comment/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-comment/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/buyer-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/question
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/response
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/created
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-comment/updated
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Feedback ---
-   (attr :item-feedback/id :db.type/long)
-   (attr :item-feedback/item-id :db.type/ref)
-   (attr :item-feedback/user-id :db.type/ref)
-   (attr :item-feedback/buyer-id :db.type/ref)
-   (attr :item-feedback/rating :db.type/long)
-   (attr :item-feedback/comment :db.type/string)
-   (attr :item-feedback/date :db.type/instant)
+   {:db/ident :item-feedback/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-feedback/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-feedback/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-feedback/buyer-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-feedback/rating
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-feedback/comment
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-feedback/date
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- Item Purchase ---
-   (attr :item-purchase/id :db.type/long)
-   (attr :item-purchase/bid-id :db.type/ref)
-   (attr :item-purchase/item-id :db.type/ref)
-   (attr :item-purchase/user-id :db.type/ref)
-   (attr :item-purchase/date :db.type/instant)
+   {:db/ident :item-purchase/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :item-purchase/bid-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-purchase/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-purchase/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :item-purchase/date
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
 
    ;; --- User Watch ---
-   (attr :user-watch/id :db.type/long)
-   (attr :user-watch/user-id :db.type/ref)
-   (attr :user-watch/item-id :db.type/ref)
-   (attr :user-watch/created :db.type/instant)])
+   {:db/ident :user-watch/id
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :user-watch/user-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user-watch/item-id
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :user-watch/created
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}])
