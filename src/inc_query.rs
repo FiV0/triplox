@@ -198,69 +198,6 @@ fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
         .collect()
 }
 
-fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermPlan> {
-    match clause {
-        WhereClause::Pattern(pattern) => Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?)),
-        WhereClause::OrJoin(or) => plan_or_join(or, schema),
-        _ => unreachable!("unsupported clauses are rejected before planning"),
-    }
-}
-
-fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
-    let branches = or
-        .clauses
-        .iter()
-        .map(|branch| plan_or_branch(branch, schema))
-        .collect::<Result<Vec<_>>>()?;
-    let output_vars = branches
-        .first()
-        .map(|branch| branch.output_vars().to_vec())
-        .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
-
-    Ok(WhereTermPlan::Or(OrPlan {
-        branches,
-        output_vars,
-    }))
-}
-
-fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPlan> {
-    match branch {
-        OrWhereClause::Clause(WhereClause::Pattern(pattern)) => {
-            Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?))
-        }
-        OrWhereClause::Clause(WhereClause::OrJoin(or)) => plan_or_join(or, schema),
-        OrWhereClause::Clause(_) | OrWhereClause::And(_) => {
-            bail!("Incremental query or branches currently support only triple patterns or nested or clauses")
-        }
-    }
-}
-
-fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
-    let attribute = match &pattern.attribute {
-        PatternNonValuePlace::Ident(ident) => {
-            schema
-                .get_attribute(ident.as_ref())
-                .ok_or_else(|| anyhow!("Unknown attribute: {}", ident))?
-                .0
-        }
-        PatternNonValuePlace::Entid(entid) => *entid,
-        PatternNonValuePlace::Variable(_) | PatternNonValuePlace::Placeholder => {
-            unreachable!("variable and placeholder attributes are rejected before planning")
-        }
-    };
-
-    let entity = non_value_slot(&pattern.entity);
-    let value = value_slot(&pattern.value)?;
-    let output_vars = pattern_output_vars(&entity, &value);
-
-    Ok(PatternPlan {
-        attribute,
-        entity,
-        value,
-        output_vars,
-    })
-}
-
 fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
     match place {
         PatternNonValuePlace::Variable(var) => PatternSlot::Variable(var.clone()),
@@ -308,6 +245,69 @@ fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Vec<Variabl
     }
     vars
 }
+
+fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
+    let attribute = match &pattern.attribute {
+        PatternNonValuePlace::Ident(ident) => {
+            schema
+                .get_attribute(ident.as_ref())
+                .ok_or_else(|| anyhow!("Unknown attribute: {}", ident))?
+                .0
+        }
+        PatternNonValuePlace::Entid(entid) => *entid,
+        PatternNonValuePlace::Variable(_) | PatternNonValuePlace::Placeholder => {
+            unreachable!("variable and placeholder attributes are rejected before planning")
+        }
+    };
+
+    let entity = non_value_slot(&pattern.entity);
+    let value = value_slot(&pattern.value)?;
+    let output_vars = pattern_output_vars(&entity, &value);
+
+    Ok(PatternPlan {
+        attribute,
+        entity,
+        value,
+        output_vars,
+    })
+}
+
+fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
+    let branches = or
+        .clauses
+        .iter()
+        .map(|branch| plan_or_branch(branch, schema))
+        .collect::<Result<Vec<_>>>()?;
+    let output_vars = branches
+        .first()
+        .map(|branch| branch.output_vars().to_vec())
+        .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
+
+    Ok(WhereTermPlan::Or(OrPlan {
+        branches,
+        output_vars,
+    }))
+}
+
+fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+    match branch {
+        OrWhereClause::Clause(clause) => {
+            plan_where_clause(clause, schema)
+        }
+        OrWhereClause::And(_) => {
+            unreachable!("Incremental querys currently do not support `and` patterns!")
+        }
+    }
+}
+
+fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+    match clause {
+        WhereClause::Pattern(pattern) => Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?)),
+        WhereClause::OrJoin(or) => plan_or_join(or, schema),
+        _ => unreachable!("unsupported clauses are rejected before planning"),
+    }
+}
+
 
 fn collect_variables(terms: &[WhereTermPlan]) -> Vec<Variable> {
     let mut variables = Vec::new();
@@ -640,7 +640,7 @@ mod tests {
         );
         assert_plan_err(
             r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
-            "do not support `and` patterns",
+            "or branches currently support only triple patterns or nested or clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
