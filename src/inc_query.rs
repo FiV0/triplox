@@ -47,9 +47,9 @@ impl WhereTermPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct OrPlan {
-    pub branches: Vec<WhereTermPlan>,
-    pub output_vars: Vec<Variable>,
+pub(crate) enum PatternSlot {
+    Variable(Variable),
+    Constant(EncodedValue),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,11 +60,13 @@ pub(crate) struct PatternPlan {
     pub output_vars: Vec<Variable>,
 }
 
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PatternSlot {
-    Variable(Variable),
-    Constant(EncodedValue),
+pub(crate) struct OrPlan {
+    pub branches: Vec<WhereTermPlan>,
+    pub output_vars: Vec<Variable>,
 }
+
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JoinPlan {
@@ -110,6 +112,54 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     })
 }
 
+
+fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
+    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
+        bail!("Incremental queries do not support explicit or-join");
+    }
+    for branch in &or.clauses {
+        reject_unsupported_or_branch(branch)?;
+    }
+    Ok(())
+}
+
+fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
+    match branch {
+        OrWhereClause::Clause(clause) => {
+            reject_unsupported_where_clause(clause)
+        }
+        OrWhereClause::And(_) => {
+            bail!("Incremental querys currently do not support `and` patterns!")
+        }
+    }
+}
+
+fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
+    if pattern.source.is_some() {
+        bail!("Incremental query patterns do not support source variables");
+    }
+    if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
+        bail!("Incremental query patterns do not support tx positions");
+    }
+    if !matches!(
+        pattern.attribute,
+        PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
+    ) {
+        bail!("Incremental query pattern attributes must be constant idents or entids");
+    }
+    Ok(())
+}
+
+fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
+    match clause {
+        WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
+        WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
+        _ => bail!(
+            "Incremental queries currently support only triple patterns and or clauses in :where"
+        ),
+    }
+}
+
 // TODO: Delete this when incremental queries reach one-shot query parity.
 fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if !query.with.is_empty() {
@@ -130,53 +180,6 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     Ok(())
 }
 
-fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
-    match clause {
-        WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
-        WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
-        _ => bail!(
-            "Incremental queries currently support only triple patterns and or clauses in :where"
-        ),
-    }
-}
-
-fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
-    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
-        bail!("Incremental queries do not support explicit or-join");
-    }
-    for branch in &or.clauses {
-        reject_unsupported_or_branch(branch)?;
-    }
-    Ok(())
-}
-
-fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
-    match branch {
-        OrWhereClause::Clause(WhereClause::Pattern(pattern)) => {
-            reject_unsupported_pattern_shape(pattern)
-        }
-        OrWhereClause::Clause(WhereClause::OrJoin(or)) => reject_unsupported_or_join(or),
-        OrWhereClause::Clause(_) | OrWhereClause::And(_) => {
-            bail!("Incremental query or branches currently support only triple patterns or nested or clauses")
-        }
-    }
-}
-
-fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
-    if pattern.source.is_some() {
-        bail!("Incremental query patterns do not support source variables");
-    }
-    if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
-        bail!("Incremental query patterns do not support tx positions");
-    }
-    if !matches!(
-        pattern.attribute,
-        PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
-    ) {
-        bail!("Incremental query pattern attributes must be constant idents or entids");
-    }
-    Ok(())
-}
 
 fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
     let elements = match find_spec {
