@@ -207,10 +207,6 @@ fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermP
 }
 
 fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
-    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
-        bail!("Incremental queries do not support explicit or-join");
-    }
-
     let branches = or
         .clauses
         .iter()
