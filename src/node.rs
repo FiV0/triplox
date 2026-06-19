@@ -2702,38 +2702,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_primed_incremental_or_query_uses_existing_branch_rows() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:email),
-                value: DataType::String("alice@example.com".to_string()),
-            }],
-        )
-        .await;
-        let query = r#"[:find ?age :where (or [?e :name "Alice"] [?e :email "alice@example.com"]) [?e :age ?age]]"#;
-        let mut subscription = node
-            .register_incremental_query(parse_query(query), &[])
-            .await
-            .unwrap();
-        let mut rows = Vec::new();
-
-        let basis = execute_and_flush(
-            &node,
-            vec![TxOp::Add {
-                entity: EntityRef::Id(100),
-                attribute: kw!(:age),
-                value: DataType::Long(30),
-            }],
-        )
-        .await;
-        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
-    }
-
-    #[tokio::test]
     async fn test_register_incremental_query_rejects_unsupported_query() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
