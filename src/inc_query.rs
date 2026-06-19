@@ -19,31 +19,28 @@ use crate::schema::Schema;
 pub(crate) struct IncrementalQueryPlan {
     pub find_vars: Vec<Variable>,
     pub variables: Vec<Variable>,
-    pub where_terms: Vec<WhereTermPlan>,
-    pub joins: Vec<JoinPlan>,
+    pub where_plan: RelPlan,
 }
 
 impl IncrementalQueryPlan {
     pub(crate) fn leaf_patterns(&self) -> Vec<&PatternPlan> {
         let mut patterns = Vec::new();
-        collect_leaf_patterns(&self.where_terms, &mut patterns);
+        collect_leaf_patterns(&self.where_plan, &mut patterns);
         patterns
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum WhereTermPlan {
-    Pattern(PatternPlan),
-    Or(OrPlan),
+pub(crate) struct RelPlan {
+    pub output_vars: Vec<Variable>,
+    pub kind: RelPlanKind,
 }
 
-impl WhereTermPlan {
-    pub(crate) fn output_vars(&self) -> &[Variable] {
-        match self {
-            WhereTermPlan::Pattern(pattern) => &pattern.output_vars,
-            WhereTermPlan::Or(or) => &or.output_vars,
-        }
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RelPlanKind {
+    Pattern(PatternPlan),
+    Join(JoinPlan),
+    Union(UnionPlan),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,14 +58,19 @@ pub(crate) struct PatternPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct OrPlan {
-    pub branches: Vec<WhereTermPlan>,
-    pub output_vars: Vec<Variable>,
+pub(crate) struct UnionPlan {
+    pub branches: Vec<RelPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JoinPlan {
-    pub right_term_index: usize,
+    pub inputs: Vec<RelPlan>,
+    pub steps: Vec<JoinStep>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct JoinStep {
+    pub right_input_index: usize,
     pub left_vars: Vec<Variable>,
     pub right_vars: Vec<Variable>,
     pub key_vars: Vec<Variable>,
@@ -80,17 +82,8 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     let find_vars = find_vars(&query.find_spec)?;
     validate_query(query, &[])?;
 
-    let where_terms = query
-        .where_clauses
-        .iter()
-        .map(|clause| plan_where_clause(clause, schema))
-        .collect::<Result<Vec<_>>>()?;
-
-    if where_terms.is_empty() {
-        bail!("Incremental queries require at least one triple pattern");
-    }
-
-    let variables = collect_variables(&where_terms);
+    let where_plan = plan_where_clauses(&query.where_clauses, schema)?;
+    let variables = collect_variables(&where_plan);
     for var in &find_vars {
         if !variables.contains(var) {
             bail!(
@@ -100,13 +93,10 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
         }
     }
 
-    let joins = plan_joins(&where_terms);
-
     Ok(IncrementalQueryPlan {
         find_vars,
         variables,
-        where_terms,
-        joins,
+        where_plan,
     })
 }
 
@@ -266,7 +256,7 @@ fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
     })
 }
 
-fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
+fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<RelPlan> {
     let branches = or
         .clauses
         .iter()
@@ -274,16 +264,16 @@ fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
         .collect::<Result<Vec<_>>>()?;
     let output_vars = branches
         .first()
-        .map(|branch| branch.output_vars().to_vec())
+        .map(|branch| branch.output_vars.clone())
         .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
 
-    Ok(WhereTermPlan::Or(OrPlan {
-        branches,
+    Ok(RelPlan {
         output_vars,
-    }))
+        kind: RelPlanKind::Union(UnionPlan { branches }),
+    })
 }
 
-fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<RelPlan> {
     match branch {
         OrWhereClause::Clause(clause) => plan_where_clause(clause, schema),
         OrWhereClause::And(_) => {
@@ -292,43 +282,84 @@ fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPl
     }
 }
 
-fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermPlan> {
+fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<RelPlan> {
     match clause {
-        WhereClause::Pattern(pattern) => Ok(WhereTermPlan::Pattern(plan_pattern(pattern, schema)?)),
+        WhereClause::Pattern(pattern) => {
+            let pattern = plan_pattern(pattern, schema)?;
+            Ok(RelPlan {
+                output_vars: pattern.output_vars.clone(),
+                kind: RelPlanKind::Pattern(pattern),
+            })
+        }
         WhereClause::OrJoin(or) => plan_or_join(or, schema),
         _ => unreachable!("unsupported clauses are rejected before planning"),
     }
 }
 
-fn collect_variables(terms: &[WhereTermPlan]) -> Vec<Variable> {
+fn plan_where_clauses(clauses: &[WhereClause], schema: &Schema) -> Result<RelPlan> {
+    let inputs = clauses
+        .iter()
+        .map(|clause| plan_where_clause(clause, schema))
+        .collect::<Result<Vec<_>>>()?;
+    plan_inputs(inputs)
+}
+
+fn plan_inputs(mut inputs: Vec<RelPlan>) -> Result<RelPlan> {
+    if inputs.is_empty() {
+        bail!("Incremental queries require at least one triple pattern");
+    }
+    if inputs.len() == 1 {
+        return Ok(inputs.remove(0));
+    }
+
+    let steps = plan_join_steps(&inputs);
+    let output_vars = steps
+        .last()
+        .map(|step| step.output_vars.clone())
+        .expect("multi-input join plan must have at least one step");
+
+    Ok(RelPlan {
+        output_vars,
+        kind: RelPlanKind::Join(JoinPlan { inputs, steps }),
+    })
+}
+
+fn collect_variables(plan: &RelPlan) -> Vec<Variable> {
     let mut variables = Vec::new();
     let mut seen = HashSet::new();
-    for term in terms {
-        for var in term.output_vars() {
-            if seen.insert(var.clone()) {
-                variables.push(var.clone());
-            }
+    for var in &plan.output_vars {
+        if seen.insert(var.clone()) {
+            variables.push(var.clone());
         }
     }
     variables
 }
 
-fn collect_leaf_patterns<'a>(terms: &'a [WhereTermPlan], patterns: &mut Vec<&'a PatternPlan>) {
-    for term in terms {
-        match term {
-            WhereTermPlan::Pattern(pattern) => patterns.push(pattern),
-            WhereTermPlan::Or(or) => collect_leaf_patterns(&or.branches, patterns),
+fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'a PatternPlan>) {
+    match &plan.kind {
+        RelPlanKind::Pattern(pattern) => patterns.push(pattern),
+        RelPlanKind::Join(join) => {
+            for input in &join.inputs {
+                collect_leaf_patterns(input, patterns);
+            }
+        }
+        RelPlanKind::Union(union) => {
+            for branch in &union.branches {
+                collect_leaf_patterns(branch, patterns);
+            }
         }
     }
 }
 
-fn plan_joins(terms: &[WhereTermPlan]) -> Vec<JoinPlan> {
-    let mut joins = Vec::new();
-    let mut left_vars = terms[0].output_vars().to_vec();
+// This plans a very naive left-deep join plan, always joining on the intersection
+// of left (the accumulate so far) and right.
+fn plan_join_steps(inputs: &[RelPlan]) -> Vec<JoinStep> {
+    let mut steps = Vec::new();
+    let mut left_vars = inputs[0].output_vars.clone();
     let mut bound: HashSet<Variable> = left_vars.iter().cloned().collect();
 
-    for (right_term_index, term) in terms.iter().enumerate().skip(1) {
-        let right_vars = term.output_vars().to_vec();
+    for (right_input_index, input) in inputs.iter().enumerate().skip(1) {
+        let right_vars = input.output_vars.clone();
         let right_set: HashSet<Variable> = right_vars.iter().cloned().collect();
         // Note: Not using intersection to preserve ordering from left_vars
         let key_vars = left_vars
@@ -344,8 +375,8 @@ fn plan_joins(terms: &[WhereTermPlan]) -> Vec<JoinPlan> {
             }
         }
 
-        joins.push(JoinPlan {
-            right_term_index,
+        steps.push(JoinStep {
+            right_input_index,
             left_vars,
             right_vars,
             key_vars,
@@ -354,7 +385,7 @@ fn plan_joins(terms: &[WhereTermPlan]) -> Vec<JoinPlan> {
         left_vars = output_vars;
     }
 
-    joins
+    steps
 }
 
 #[cfg(test)]
@@ -411,6 +442,27 @@ mod tests {
         );
     }
 
+    fn pattern_rel(plan: &RelPlan) -> &PatternPlan {
+        let RelPlanKind::Pattern(pattern) = &plan.kind else {
+            panic!("expected pattern plan, got {:?}", plan.kind);
+        };
+        pattern
+    }
+
+    fn join_rel(plan: &RelPlan) -> &JoinPlan {
+        let RelPlanKind::Join(join) = &plan.kind else {
+            panic!("expected join plan, got {:?}", plan.kind);
+        };
+        join
+    }
+
+    fn union_rel(plan: &RelPlan) -> &UnionPlan {
+        let RelPlanKind::Union(union) = &plan.kind else {
+            panic!("expected union plan, got {:?}", plan.kind);
+        };
+        union
+    }
+
     #[test]
     fn plans_single_fixed_attribute_pattern() {
         let schema = test_schema();
@@ -429,7 +481,7 @@ mod tests {
             &leaf_patterns[0].output_vars,
             &vec!["?e".to_var(), "?name".to_var()]
         );
-        assert!(plan.joins.is_empty());
+        assert_eq!(pattern_rel(&plan.where_plan).attribute, 10);
     }
 
     #[test]
@@ -441,11 +493,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].right_term_index, 1);
-        assert_eq!(plan.joins[0].key_vars, vec!["?e".to_var()]);
+        let join = join_rel(&plan.where_plan);
+        assert_eq!(join.inputs.len(), 2);
+        assert_eq!(join.steps.len(), 1);
+        assert_eq!(join.steps[0].right_input_index, 1);
+        assert_eq!(join.steps[0].key_vars, vec!["?e".to_var()]);
         assert_eq!(
-            plan.joins[0].output_vars,
+            join.steps[0].output_vars,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
         );
     }
@@ -461,8 +515,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins[0].right_term_index, 1);
-        assert_eq!(plan.joins[0].key_vars, vec!["?friend".to_var()]);
+        let join = join_rel(&plan.where_plan);
+        assert_eq!(join.steps[0].right_input_index, 1);
+        assert_eq!(join.steps[0].key_vars, vec!["?friend".to_var()]);
     }
 
     #[test]
@@ -474,10 +529,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins.len(), 3);
-        assert_eq!(plan.joins[0].key_vars, vec!["?e".to_var()]);
-        assert_eq!(plan.joins[1].key_vars, vec!["?friend".to_var()]);
-        assert_eq!(plan.joins[2].key_vars, vec!["?friend".to_var()]);
+        let join = join_rel(&plan.where_plan);
+        assert_eq!(join.steps.len(), 3);
+        assert_eq!(join.steps[0].key_vars, vec!["?e".to_var()]);
+        assert_eq!(join.steps[1].key_vars, vec!["?friend".to_var()]);
+        assert_eq!(join.steps[2].key_vars, vec!["?friend".to_var()]);
     }
 
     #[test]
@@ -507,9 +563,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.joins.len(), 1);
-        assert_eq!(plan.joins[0].right_term_index, 1);
-        assert!(plan.joins[0].key_vars.is_empty());
+        let join = join_rel(&plan.where_plan);
+        assert_eq!(join.steps.len(), 1);
+        assert_eq!(join.steps[0].right_input_index, 1);
+        assert!(join.steps[0].key_vars.is_empty());
     }
 
     #[test]
@@ -523,6 +580,10 @@ mod tests {
 
         assert_eq!(plan.find_vars, vec!["?e".to_var()]);
         assert_eq!(plan.variables, vec!["?e".to_var()]);
+        let union = union_rel(&plan.where_plan);
+        assert_eq!(union.branches.len(), 2);
+        assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
+        assert!(matches!(union.branches[1].kind, RelPlanKind::Pattern(_)));
         let leaf_patterns = plan.leaf_patterns();
         assert_eq!(leaf_patterns.len(), 2);
         assert_eq!(leaf_patterns[0].attribute, 10);
@@ -544,8 +605,10 @@ mod tests {
 
         assert_eq!(plan.variables, vec!["?e".to_var()]);
         assert_eq!(plan.leaf_patterns().len(), 3);
-        assert!(plan.joins.is_empty());
-        assert!(matches!(plan.where_terms[0], WhereTermPlan::Or(_)));
+        let union = union_rel(&plan.where_plan);
+        assert_eq!(union.branches.len(), 2);
+        assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
+        assert!(matches!(union.branches[1].kind, RelPlanKind::Union(_)));
     }
 
     #[test]
@@ -558,18 +621,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.variables, vec!["?e".to_var(), "?v".to_var()]);
-        let WhereTermPlan::Or(or) = &plan.where_terms[0] else {
-            panic!("expected or term");
-        };
-        assert_eq!(or.output_vars, vec!["?e".to_var(), "?v".to_var()]);
+        let or = union_rel(&plan.where_plan);
         assert_eq!(
-            or.branches[0].output_vars(),
-            &["?e".to_var(), "?v".to_var()]
+            plan.where_plan.output_vars,
+            vec!["?e".to_var(), "?v".to_var()]
         );
-        assert_eq!(
-            or.branches[1].output_vars(),
-            &["?v".to_var(), "?e".to_var()]
-        );
+        assert_eq!(or.branches[0].output_vars, &["?e".to_var(), "?v".to_var()]);
+        assert_eq!(or.branches[1].output_vars, &["?v".to_var(), "?e".to_var()]);
     }
 
     #[test]

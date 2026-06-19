@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Error, bail};
+use anyhow::{bail, Error};
 use edn::query::{
-    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, UnifyVars, Variable, WhereClause
+    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
+    PatternValuePlace, UnifyVars, Variable, WhereClause,
 };
 
 use crate::expr::expr_variables;
