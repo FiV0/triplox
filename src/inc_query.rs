@@ -640,7 +640,7 @@ mod tests {
         );
         assert_plan_err(
             r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
-            "or branches currently support only triple patterns or nested or clauses",
+            "do not support `and` patterns",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
