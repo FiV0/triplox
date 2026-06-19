@@ -60,13 +60,11 @@ pub(crate) struct PatternPlan {
     pub output_vars: Vec<Variable>,
 }
 
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OrPlan {
     pub branches: Vec<WhereTermPlan>,
     pub output_vars: Vec<Variable>,
 }
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JoinPlan {
@@ -112,7 +110,6 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     })
 }
 
-
 fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
     if !matches!(&or.unify_vars, UnifyVars::Implicit) {
         bail!("Incremental queries do not support explicit or-join");
@@ -125,9 +122,7 @@ fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
 
 fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
     match branch {
-        OrWhereClause::Clause(clause) => {
-            reject_unsupported_where_clause(clause)
-        }
+        OrWhereClause::Clause(clause) => reject_unsupported_where_clause(clause),
         OrWhereClause::And(_) => {
             bail!("Incremental querys currently do not support `and` patterns!")
         }
@@ -179,7 +174,6 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     }
     Ok(())
 }
-
 
 fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
     let elements = match find_spec {
@@ -291,9 +285,7 @@ fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<WhereTermPlan> {
 
 fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<WhereTermPlan> {
     match branch {
-        OrWhereClause::Clause(clause) => {
-            plan_where_clause(clause, schema)
-        }
+        OrWhereClause::Clause(clause) => plan_where_clause(clause, schema),
         OrWhereClause::And(_) => {
             unreachable!("Incremental querys currently do not support `and` patterns!")
         }
@@ -308,12 +300,12 @@ fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<WhereTermP
     }
 }
 
-
 fn collect_variables(terms: &[WhereTermPlan]) -> Vec<Variable> {
     let mut variables = Vec::new();
+    let mut seen = HashSet::new();
     for term in terms {
         for var in term.output_vars() {
-            if !variables.contains(var) {
+            if seen.insert(var.clone()) {
                 variables.push(var.clone());
             }
         }
