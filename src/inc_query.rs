@@ -442,27 +442,6 @@ mod tests {
         );
     }
 
-    fn pattern_rel(plan: &RelPlan) -> &PatternPlan {
-        let RelPlanKind::Pattern(pattern) = &plan.kind else {
-            panic!("expected pattern plan, got {:?}", plan.kind);
-        };
-        pattern
-    }
-
-    fn join_rel(plan: &RelPlan) -> &JoinPlan {
-        let RelPlanKind::Join(join) = &plan.kind else {
-            panic!("expected join plan, got {:?}", plan.kind);
-        };
-        join
-    }
-
-    fn union_rel(plan: &RelPlan) -> &UnionPlan {
-        let RelPlanKind::Union(union) = &plan.kind else {
-            panic!("expected union plan, got {:?}", plan.kind);
-        };
-        union
-    }
-
     #[test]
     fn plans_single_fixed_attribute_pattern() {
         let schema = test_schema();
@@ -481,7 +460,10 @@ mod tests {
             &leaf_patterns[0].output_vars,
             &vec!["?e".to_var(), "?name".to_var()]
         );
-        assert_eq!(pattern_rel(&plan.where_plan).attribute, 10);
+        let RelPlanKind::Pattern(pattern) = &plan.where_plan.kind else {
+            panic!("expected pattern plan, got {:?}", &plan.where_plan.kind);
+        };
+        assert_eq!(pattern.attribute, 10);
     }
 
     #[test]
@@ -493,7 +475,9 @@ mod tests {
         )
         .unwrap();
 
-        let join = join_rel(&plan.where_plan);
+        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
+            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(join.inputs.len(), 2);
         assert_eq!(join.steps.len(), 1);
         assert_eq!(join.steps[0].right_input_index, 1);
@@ -515,7 +499,9 @@ mod tests {
         )
         .unwrap();
 
-        let join = join_rel(&plan.where_plan);
+        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
+            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(join.steps[0].right_input_index, 1);
         assert_eq!(join.steps[0].key_vars, vec!["?friend".to_var()]);
     }
@@ -529,7 +515,9 @@ mod tests {
         )
         .unwrap();
 
-        let join = join_rel(&plan.where_plan);
+        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
+            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(join.steps.len(), 3);
         assert_eq!(join.steps[0].key_vars, vec!["?e".to_var()]);
         assert_eq!(join.steps[1].key_vars, vec!["?friend".to_var()]);
@@ -563,7 +551,9 @@ mod tests {
         )
         .unwrap();
 
-        let join = join_rel(&plan.where_plan);
+        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
+            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(join.steps.len(), 1);
         assert_eq!(join.steps[0].right_input_index, 1);
         assert!(join.steps[0].key_vars.is_empty());
@@ -580,7 +570,9 @@ mod tests {
 
         assert_eq!(plan.find_vars, vec!["?e".to_var()]);
         assert_eq!(plan.variables, vec!["?e".to_var()]);
-        let union = union_rel(&plan.where_plan);
+        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(union.branches.len(), 2);
         assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
         assert!(matches!(union.branches[1].kind, RelPlanKind::Pattern(_)));
@@ -605,7 +597,9 @@ mod tests {
 
         assert_eq!(plan.variables, vec!["?e".to_var()]);
         assert_eq!(plan.leaf_patterns().len(), 3);
-        let union = union_rel(&plan.where_plan);
+        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(union.branches.len(), 2);
         assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
         assert!(matches!(union.branches[1].kind, RelPlanKind::Union(_)));
@@ -621,7 +615,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.variables, vec!["?e".to_var(), "?v".to_var()]);
-        let or = union_rel(&plan.where_plan);
+        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
+            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
+        };
         assert_eq!(
             plan.where_plan.output_vars,
             vec!["?e".to_var(), "?v".to_var()]
