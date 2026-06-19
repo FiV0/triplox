@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Error;
+use anyhow::{Error, bail};
 use edn::query::{
-    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Variable, WhereClause,
+    Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, UnifyVars, Variable, WhereClause
 };
 
 use crate::expr::expr_variables;
@@ -37,6 +36,9 @@ where
     validate_clause(clause)?;
     match clause {
         WhereClause::OrJoin(oj) => {
+            if !matches!(&oj.unify_vars, UnifyVars::Implicit) {
+                bail!("Incremental queries do not support explicit or-join");
+            }
             for branch in &oj.clauses {
                 validate_or_branch_recursively(branch, validate_clause)?;
             }
