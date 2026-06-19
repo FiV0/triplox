@@ -37,7 +37,7 @@ where
     match clause {
         WhereClause::OrJoin(oj) => {
             if !matches!(&oj.unify_vars, UnifyVars::Implicit) {
-                bail!("Incremental queries do not support explicit or-join");
+                bail!("Queries (currently) do not support explicit or-join");
             }
             for branch in &oj.clauses {
                 validate_or_branch_recursively(branch, validate_clause)?;
