@@ -145,6 +145,7 @@ pub(crate) async fn scan_current_triples<D>(
 where
     D: slatedb::DbReadOps + Sync,
 {
+    // TODO: maybe this should be become a function on IncrementalQueryPlan
     let attributes = plan
         .leaf_patterns()
         .into_iter()
