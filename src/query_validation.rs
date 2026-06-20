@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Error;
+use anyhow::{bail, Error};
 use edn::query::{
     Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Variable, WhereClause,
+    PatternValuePlace, UnifyVars, Variable, WhereClause,
 };
 
 use crate::expr::expr_variables;
@@ -37,6 +37,9 @@ where
     validate_clause(clause)?;
     match clause {
         WhereClause::OrJoin(oj) => {
+            if !matches!(&oj.unify_vars, UnifyVars::Implicit) {
+                bail!("Queries (currently) do not support explicit or-join");
+            }
             for branch in &oj.clauses {
                 validate_or_branch_recursively(branch, validate_clause)?;
             }
@@ -402,6 +405,18 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Repeated variable ?x in a single pattern is not supported"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_explicit_or_join() {
+        let parsed =
+            parse_query(r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#);
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("explicit or-join"),
             "unexpected error: {}",
             err
         );

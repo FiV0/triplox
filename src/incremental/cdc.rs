@@ -136,9 +136,10 @@ pub(crate) async fn scan_current_triples<D>(
 where
     D: slatedb::DbReadOps + Sync,
 {
+    // TODO: maybe this should be become a function on IncrementalQueryPlan
     let attributes = plan
-        .patterns
-        .iter()
+        .leaf_patterns()
+        .into_iter()
         .map(|pattern| pattern.attribute)
         .collect::<HashSet<_>>();
     let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();

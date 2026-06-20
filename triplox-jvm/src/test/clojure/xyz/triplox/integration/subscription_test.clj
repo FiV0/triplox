@@ -225,6 +225,37 @@
         (api/transact conn [[:db/retract alice-id :city "NYC"]])
         (is (= [[["NYC"] -1]] (take-delta! sub)))))))
 
+(deftest test-or-retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "Alice"}
+                        {:name "Bob"}
+                        {:name "Carol"}])
+    (let [bob-id (single-value conn '{:find [?e]
+                                      :where [[?e :name "Bob"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?e]
+                                            :where [(or [?e :name "Alice"]
+                                                        [?e :name "Bob"])]})]
+        (api/transact conn [[:db/retract bob-id :name "Bob"]])
+        (is (= [[[bob-id] -1]]
+               (take-delta! sub)))))))
+
+(deftest test-or-joined-with-outer-pattern-retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "Alice" :city "Berlin"}
+                        {:name "Bob" :city "Berlin"}
+                        {:name "Carol" :city "Rome"}])
+    (let [bob-id (single-value conn '{:find [?e]
+                                      :where [[?e :name "Bob"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?city]
+                                            :where [(or [?e :name "Alice"]
+                                                        [?e :name "Bob"])
+                                                    [?e :city ?city]]})]
+        (api/transact conn [[:db/retract bob-id :name "Bob"]])
+        (is (= [[["Berlin"] -1]]
+               (take-delta! sub)))))))
+
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)

@@ -11,7 +11,9 @@ use dbsp::{
 use edn::query::Variable;
 
 use crate::codec::Decode;
-use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternPlan, PatternSlot};
+use crate::inc_query::{
+    IncrementalQueryPlan, JoinStep, PatternPlan, PatternSlot, RelPlan, RelPlanKind,
+};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 
@@ -97,7 +99,7 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
 fn join_rows(
     left: Stream<RootCircuit, RowZSet>,
     right: Stream<RootCircuit, RowZSet>,
-    join: &JoinPlan,
+    join: &JoinStep,
 ) -> Stream<RootCircuit, RowZSet> {
     let left_key_positions = positions(&join.left_vars, &join.key_vars);
     let right_key_positions = positions(&join.right_vars, &join.key_vars);
@@ -144,21 +146,62 @@ pub(crate) struct PlannedWhereStream {
     vars: Vec<Variable>,
 }
 
+fn project_stream(
+    rows: Stream<RootCircuit, RowZSet>,
+    source_vars: &[Variable],
+    target_vars: &[Variable],
+) -> Stream<RootCircuit, RowZSet> {
+    let selected_positions = positions(source_vars, target_vars);
+    rows.map(move |row| select_row_positions(row, &selected_positions))
+}
+
+fn rel_stream(
+    input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
+    plan: &RelPlan,
+) -> PlannedWhereStream {
+    match &plan.kind {
+        RelPlanKind::Pattern(pattern) => PlannedWhereStream {
+            rows: pattern_stream(input, pattern.clone()),
+            vars: pattern.output_vars.clone(),
+        },
+        RelPlanKind::Join(join) => {
+            let first = rel_stream(input, &join.inputs[0]);
+            let mut rows = first.rows;
+            let mut vars = first.vars;
+
+            for step in &join.steps {
+                let right = rel_stream(input, &join.inputs[step.right_input_index]);
+                rows = join_rows(rows, right.rows, step);
+                vars = step.output_vars.clone();
+            }
+
+            PlannedWhereStream { rows, vars }
+        }
+        RelPlanKind::Union(union) => {
+            let mut branches = union
+                .branches
+                .iter()
+                .map(|branch| {
+                    let branch = rel_stream(input, branch);
+                    project_stream(branch.rows, &branch.vars, &plan.output_vars)
+                })
+                .collect::<Vec<_>>();
+            let first = branches.remove(0);
+            let rows = first.sum(branches.iter()).distinct();
+            PlannedWhereStream {
+                rows,
+                vars: plan.output_vars.clone(),
+            }
+        }
+    }
+}
+
 // Creates the DBSP stream of joined where rows for the whole incremental query plan.
 pub(crate) fn query_where_stream(
     input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: &IncrementalQueryPlan,
 ) -> PlannedWhereStream {
-    let mut rows = pattern_stream(input, plan.patterns[0].clone());
-    let mut vars = plan.patterns[0].output_vars.clone();
-
-    for join in &plan.joins {
-        let right = pattern_stream(input, plan.patterns[join.right_pattern_index].clone());
-        rows = join_rows(rows, right, join);
-        vars = join.output_vars.clone();
-    }
-
-    PlannedWhereStream { rows, vars }
+    rel_stream(input, &plan.where_plan)
 }
 
 // Creates the DBSP stream of rows projected to the query find variables.
@@ -261,12 +304,15 @@ mod tests {
     use dbsp::{
         utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
     };
+    use edn::kw;
     use edn::query::ToVariable;
     use tempfile::TempDir;
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::{IncrementalQueryPlan, JoinPlan, PatternSlot};
+    use crate::inc_query::{
+        IncrementalQueryPlan, JoinPlan, JoinStep, PatternSlot, RelPlan, RelPlanKind, UnionPlan,
+    };
     use crate::ops::DataType;
 
     fn build_pattern_circuit(
@@ -356,86 +402,40 @@ mod tests {
         }
     }
 
-    fn entity_join_plan() -> IncrementalQueryPlan {
-        let patterns = vec![
-            PatternPlan {
-                attribute: 10,
-                entity: PatternSlot::Variable("?e".to_var()),
-                value: PatternSlot::Variable("?name".to_var()),
-                output_vars: vec!["?e".to_var(), "?name".to_var()],
-            },
-            PatternPlan {
-                attribute: 11,
-                entity: PatternSlot::Variable("?e".to_var()),
-                value: PatternSlot::Variable("?age".to_var()),
-                output_vars: vec!["?e".to_var(), "?age".to_var()],
-            },
-        ];
-        IncrementalQueryPlan {
-            find_vars: vec!["?name".to_var(), "?age".to_var()],
-            variables: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
-                left_vars: patterns[0].output_vars.clone(),
-                right_vars: patterns[1].output_vars.clone(),
-                key_vars: vec!["?e".to_var()],
-                output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
-            }],
-            patterns,
+    fn pattern_rel(pattern: PatternPlan) -> RelPlan {
+        RelPlan {
+            output_vars: pattern.output_vars.clone(),
+            kind: RelPlanKind::Pattern(pattern),
         }
     }
 
-    fn reordered_join_plan() -> IncrementalQueryPlan {
-        let patterns = vec![
-            PatternPlan {
-                attribute: 10,
-                entity: PatternSlot::Variable("?e".to_var()),
-                value: PatternSlot::Variable("?name".to_var()),
-                output_vars: vec!["?e".to_var(), "?name".to_var()],
-            },
-            PatternPlan {
-                attribute: 11,
-                entity: PatternSlot::Variable("?e".to_var()),
-                value: PatternSlot::Variable("?age".to_var()),
-                output_vars: vec!["?e".to_var(), "?age".to_var()],
-            },
-            PatternPlan {
-                attribute: 12,
-                entity: PatternSlot::Variable("?e".to_var()),
-                value: PatternSlot::Variable("?friend".to_var()),
-                output_vars: vec!["?e".to_var(), "?friend".to_var()],
-            },
-        ];
+    fn join_rel(inputs: Vec<RelPlan>, steps: Vec<JoinStep>) -> RelPlan {
+        RelPlan {
+            output_vars: steps
+                .last()
+                .expect("join plan must have at least one step")
+                .output_vars
+                .clone(),
+            kind: RelPlanKind::Join(JoinPlan { inputs, steps }),
+        }
+    }
+
+    fn union_rel(output_vars: Vec<Variable>, branches: Vec<RelPlan>) -> RelPlan {
+        RelPlan {
+            output_vars,
+            kind: RelPlanKind::Union(UnionPlan { branches }),
+        }
+    }
+
+    fn query_plan(
+        find_vars: Vec<Variable>,
+        variables: Vec<Variable>,
+        where_plan: RelPlan,
+    ) -> IncrementalQueryPlan {
         IncrementalQueryPlan {
-            find_vars: vec!["?friend".to_var(), "?age".to_var()],
-            variables: vec![
-                "?e".to_var(),
-                "?name".to_var(),
-                "?age".to_var(),
-                "?friend".to_var(),
-            ],
-            joins: vec![
-                JoinPlan {
-                    right_pattern_index: 2,
-                    left_vars: patterns[0].output_vars.clone(),
-                    right_vars: patterns[2].output_vars.clone(),
-                    key_vars: vec!["?e".to_var()],
-                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
-                },
-                JoinPlan {
-                    right_pattern_index: 1,
-                    left_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
-                    right_vars: patterns[1].output_vars.clone(),
-                    key_vars: vec!["?e".to_var()],
-                    output_vars: vec![
-                        "?e".to_var(),
-                        "?name".to_var(),
-                        "?friend".to_var(),
-                        "?age".to_var(),
-                    ],
-                },
-            ],
-            patterns,
+            find_vars,
+            variables,
+            where_plan,
         }
     }
 
@@ -445,8 +445,39 @@ mod tests {
         let storage_path = dir.path().join("query-1");
         std::fs::create_dir_all(&storage_path).unwrap();
         std::fs::write(storage_path.join("stale"), b"stale").unwrap();
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                }],
+            ),
+        );
 
-        let mut circuit = QueryCircuit::build(entity_join_plan(), &storage_path).unwrap();
+        let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         circuit
             .prime(vec![
                 Tup2(triple(42, 10, DataType::String("Alice".to_string())), 1),
@@ -534,8 +565,39 @@ mod tests {
 
     #[test]
     fn joins_two_patterns_on_entity() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                }],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_where_circuit(circuit, entity_join_plan()));
+            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -562,8 +624,65 @@ mod tests {
 
     #[test]
     fn query_rows_follow_join_plan_order() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+            PatternPlan {
+                attribute: 12,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?friend".to_var()),
+                output_vars: vec!["?e".to_var(), "?friend".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?friend".to_var(), "?age".to_var()],
+            vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
+                "?friend".to_var(),
+            ],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                    pattern_rel(patterns[2].clone()),
+                ],
+                vec![
+                    JoinStep {
+                        right_input_index: 2,
+                        left_vars: patterns[0].output_vars.clone(),
+                        right_vars: patterns[2].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                    },
+                    JoinStep {
+                        right_input_index: 1,
+                        left_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                        right_vars: patterns[1].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec![
+                            "?e".to_var(),
+                            "?name".to_var(),
+                            "?friend".to_var(),
+                            "?age".to_var(),
+                        ],
+                    },
+                ],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_where_circuit(circuit, reordered_join_plan()));
+            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -591,8 +710,65 @@ mod tests {
 
     #[test]
     fn find_projection_uses_planned_output_order() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+            PatternPlan {
+                attribute: 12,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?friend".to_var()),
+                output_vars: vec!["?e".to_var(), "?friend".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?friend".to_var(), "?age".to_var()],
+            vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?age".to_var(),
+                "?friend".to_var(),
+            ],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                    pattern_rel(patterns[2].clone()),
+                ],
+                vec![
+                    JoinStep {
+                        right_input_index: 2,
+                        left_vars: patterns[0].output_vars.clone(),
+                        right_vars: patterns[2].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                    },
+                    JoinStep {
+                        right_input_index: 1,
+                        left_vars: vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                        right_vars: patterns[1].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec![
+                            "?e".to_var(),
+                            "?name".to_var(),
+                            "?friend".to_var(),
+                            "?age".to_var(),
+                        ],
+                    },
+                ],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, reordered_join_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -611,8 +787,157 @@ mod tests {
     }
 
     #[test]
+    fn or_stream_emits_disjoint_union() {
+        let alice = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let bob = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Bob".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var()],
+                vec![pattern_rel(alice), pattern_rel(bob)],
+            ),
+        };
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(2, 10, DataType::String("Bob".to_string())), 1),
+                (triple(3, 10, DataType::String("Charlie".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(1)], 1), (vec![DataType::Long(2)], 1),]
+        );
+    }
+
+    #[test]
+    fn or_stream_collapses_overlapping_branches() {
+        let named = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let typed = PatternPlan {
+            attribute: 13,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::Keyword(kw!(:person)).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var()],
+                vec![pattern_rel(named), pattern_rel(typed)],
+            ),
+        };
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(1, 13, DataType::Keyword(kw!(:person))), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1)], 1)]
+        );
+
+        append(
+            &handle,
+            [(triple(1, 10, DataType::String("Alice".to_string())), -1)],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(
+            &handle,
+            [(triple(1, 13, DataType::Keyword(kw!(:person))), -1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1)], -1)]
+        );
+    }
+
+    #[test]
+    fn or_stream_normalizes_branch_row_order() {
+        let name = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Variable("?v".to_var()),
+            output_vars: vec!["?e".to_var(), "?v".to_var()],
+        };
+        let follows = PatternPlan {
+            attribute: 12,
+            entity: PatternSlot::Variable("?v".to_var()),
+            value: PatternSlot::Variable("?e".to_var()),
+            output_vars: vec!["?v".to_var(), "?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var(), "?v".to_var()],
+            variables: vec!["?e".to_var(), "?v".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var(), "?v".to_var()],
+                vec![pattern_rel(name), pattern_rel(follows)],
+            ),
+        };
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(2, 12, DataType::Long(1)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![
+                (vec![DataType::Long(1), DataType::Long(2)], 1),
+                (
+                    vec![DataType::Long(1), DataType::String("Alice".to_string())],
+                    1,
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn joins_through_ref_value() {
-        let patterns = vec![
+        let patterns = [
             PatternPlan {
                 attribute: 12,
                 entity: PatternSlot::Variable("?e".to_var()),
@@ -626,18 +951,23 @@ mod tests {
                 output_vars: vec!["?friend".to_var(), "?friend-name".to_var()],
             },
         ];
-        let plan = IncrementalQueryPlan {
-            find_vars: vec!["?friend-name".to_var()],
-            variables: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
-                left_vars: patterns[0].output_vars.clone(),
-                right_vars: patterns[1].output_vars.clone(),
-                key_vars: vec!["?friend".to_var()],
-                output_vars: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
-            }],
-            patterns,
-        };
+        let plan = query_plan(
+            vec!["?friend-name".to_var()],
+            vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?friend".to_var()],
+                    output_vars: vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()],
+                }],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
@@ -665,26 +995,63 @@ mod tests {
 
     #[test]
     fn joins_three_pattern_chain() {
-        let mut plan = entity_join_plan();
-        plan.patterns.push(PatternPlan {
-            attribute: 12,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Variable("?friend".to_var()),
-            output_vars: vec!["?e".to_var(), "?friend".to_var()],
-        });
-        plan.joins.push(JoinPlan {
-            right_pattern_index: 2,
-            left_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
-            right_vars: vec!["?e".to_var(), "?friend".to_var()],
-            key_vars: vec!["?e".to_var()],
-            output_vars: vec![
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+            PatternPlan {
+                attribute: 12,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?friend".to_var()),
+                output_vars: vec!["?e".to_var(), "?friend".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var(), "?friend".to_var()],
+            vec![
                 "?e".to_var(),
                 "?name".to_var(),
                 "?age".to_var(),
                 "?friend".to_var(),
             ],
-        });
-        plan.variables.push("?friend".to_var());
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                    pattern_rel(patterns[2].clone()),
+                ],
+                vec![
+                    JoinStep {
+                        right_input_index: 1,
+                        left_vars: patterns[0].output_vars.clone(),
+                        right_vars: patterns[1].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                    },
+                    JoinStep {
+                        right_input_index: 2,
+                        left_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                        right_vars: patterns[2].output_vars.clone(),
+                        key_vars: vec!["?e".to_var()],
+                        output_vars: vec![
+                            "?e".to_var(),
+                            "?name".to_var(),
+                            "?age".to_var(),
+                            "?friend".to_var(),
+                        ],
+                    },
+                ],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
@@ -714,7 +1081,7 @@ mod tests {
 
     #[test]
     fn cartesian_product_when_patterns_share_no_variables() {
-        let patterns = vec![
+        let patterns = [
             PatternPlan {
                 attribute: 10,
                 entity: PatternSlot::Variable("?e".to_var()),
@@ -728,28 +1095,33 @@ mod tests {
                 output_vars: vec!["?other".to_var(), "?age".to_var()],
             },
         ];
-        let plan = IncrementalQueryPlan {
-            find_vars: vec!["?name".to_var(), "?age".to_var()],
-            variables: vec![
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec![
                 "?e".to_var(),
                 "?name".to_var(),
                 "?other".to_var(),
                 "?age".to_var(),
             ],
-            joins: vec![JoinPlan {
-                right_pattern_index: 1,
-                left_vars: patterns[0].output_vars.clone(),
-                right_vars: patterns[1].output_vars.clone(),
-                key_vars: vec![],
-                output_vars: vec![
-                    "?e".to_var(),
-                    "?name".to_var(),
-                    "?other".to_var(),
-                    "?age".to_var(),
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
                 ],
-            }],
-            patterns,
-        };
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec![],
+                    output_vars: vec![
+                        "?e".to_var(),
+                        "?name".to_var(),
+                        "?other".to_var(),
+                        "?age".to_var(),
+                    ],
+                }],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
@@ -790,8 +1162,39 @@ mod tests {
 
     #[test]
     fn projects_rows_to_find_order_and_decodes() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                }],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -813,8 +1216,39 @@ mod tests {
 
     #[test]
     fn preserves_negative_delta_weights() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                }],
+            ),
+        );
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -836,8 +1270,39 @@ mod tests {
 
     #[test]
     fn empty_steps_decode_to_no_rows() {
+        let patterns = [
+            PatternPlan {
+                attribute: 10,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?name".to_var()),
+                output_vars: vec!["?e".to_var(), "?name".to_var()],
+            },
+            PatternPlan {
+                attribute: 11,
+                entity: PatternSlot::Variable("?e".to_var()),
+                value: PatternSlot::Variable("?age".to_var()),
+                output_vars: vec!["?e".to_var(), "?age".to_var()],
+            },
+        ];
+        let plan = query_plan(
+            vec!["?name".to_var(), "?age".to_var()],
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+            join_rel(
+                vec![
+                    pattern_rel(patterns[0].clone()),
+                    pattern_rel(patterns[1].clone()),
+                ],
+                vec![JoinStep {
+                    right_input_index: 1,
+                    left_vars: patterns[0].output_vars.clone(),
+                    right_vars: patterns[1].output_vars.clone(),
+                    key_vars: vec!["?e".to_var()],
+                    output_vars: vec!["?e".to_var(), "?name".to_var(), "?age".to_var()],
+                }],
+            ),
+        );
         let (mut circuit, (_handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, entity_join_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         circuit.transaction().unwrap();
 
