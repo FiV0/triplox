@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::{anyhow, bail, Result};
 use edn::query::{
     Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, UnifyVars, Variable, WhereClause,
+    PatternValuePlace, Variable, WhereClause,
 };
 
 use crate::codec::Encode;
@@ -101,9 +101,6 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 }
 
 fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
-    if !matches!(&or.unify_vars, UnifyVars::Implicit) {
-        bail!("Incremental queries do not support explicit or-join");
-    }
     for branch in &or.clauses {
         reject_unsupported_or_branch(branch)?;
     }
@@ -114,7 +111,7 @@ fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
     match branch {
         OrWhereClause::Clause(clause) => reject_unsupported_where_clause(clause),
         OrWhereClause::And(_) => {
-            bail!("Incremental querys currently do not support `and` patterns!")
+            bail!("Incremental queries currently do not support `and` patterns!")
         }
     }
 }
@@ -277,7 +274,7 @@ fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<RelPlan> {
     match branch {
         OrWhereClause::Clause(clause) => plan_where_clause(clause, schema),
         OrWhereClause::And(_) => {
-            unreachable!("Incremental querys currently do not support `and` patterns!")
+            unreachable!("Incremental queries currently do not support `and` patterns!")
         }
     }
 }

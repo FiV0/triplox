@@ -411,6 +411,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_rejects_explicit_or_join() {
+        let parsed =
+            parse_query(r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#);
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("explicit or-join"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_validate_rejects_nested_or_mismatched_branch_variables() {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
