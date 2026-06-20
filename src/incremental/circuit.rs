@@ -475,75 +475,6 @@ mod tests {
         )
     }
 
-    fn flat_or_plan() -> IncrementalQueryPlan {
-        let alice = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
-            output_vars: vec!["?e".to_var()],
-        };
-        let bob = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Constant(DataType::String("Bob".to_string()).encode()),
-            output_vars: vec!["?e".to_var()],
-        };
-        IncrementalQueryPlan {
-            find_vars: vec!["?e".to_var()],
-            variables: vec!["?e".to_var()],
-            where_plan: union_rel(
-                vec!["?e".to_var()],
-                vec![pattern_rel(alice.clone()), pattern_rel(bob.clone())],
-            ),
-        }
-    }
-
-    fn overlapping_or_plan() -> IncrementalQueryPlan {
-        let named = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
-            output_vars: vec!["?e".to_var()],
-        };
-        let typed = PatternPlan {
-            attribute: 13,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Constant(DataType::Keyword(kw!(:person)).encode()),
-            output_vars: vec!["?e".to_var()],
-        };
-        IncrementalQueryPlan {
-            find_vars: vec!["?e".to_var()],
-            variables: vec!["?e".to_var()],
-            where_plan: union_rel(
-                vec!["?e".to_var()],
-                vec![pattern_rel(named.clone()), pattern_rel(typed.clone())],
-            ),
-        }
-    }
-
-    fn reordered_branch_or_plan() -> IncrementalQueryPlan {
-        let name = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Variable("?v".to_var()),
-            output_vars: vec!["?e".to_var(), "?v".to_var()],
-        };
-        let follows = PatternPlan {
-            attribute: 12,
-            entity: PatternSlot::Variable("?v".to_var()),
-            value: PatternSlot::Variable("?e".to_var()),
-            output_vars: vec!["?v".to_var(), "?e".to_var()],
-        };
-        IncrementalQueryPlan {
-            find_vars: vec!["?e".to_var(), "?v".to_var()],
-            variables: vec!["?e".to_var(), "?v".to_var()],
-            where_plan: union_rel(
-                vec!["?e".to_var(), "?v".to_var()],
-                vec![pattern_rel(name.clone()), pattern_rel(follows.clone())],
-            ),
-        }
-    }
-
     fn reordered_join_plan() -> IncrementalQueryPlan {
         let patterns = vec![
             PatternPlan {
@@ -771,8 +702,28 @@ mod tests {
 
     #[test]
     fn or_stream_emits_disjoint_union() {
+        let alice = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let bob = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Bob".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var()],
+                vec![pattern_rel(alice), pattern_rel(bob)],
+            ),
+        };
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, flat_or_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -794,8 +745,28 @@ mod tests {
 
     #[test]
     fn or_stream_collapses_overlapping_branches() {
+        let named = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let typed = PatternPlan {
+            attribute: 13,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Constant(DataType::Keyword(kw!(:person)).encode()),
+            output_vars: vec!["?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var()],
+            variables: vec!["?e".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var()],
+                vec![pattern_rel(named), pattern_rel(typed)],
+            ),
+        };
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, overlapping_or_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
@@ -832,8 +803,28 @@ mod tests {
 
     #[test]
     fn or_stream_normalizes_branch_row_order() {
+        let name = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Variable("?v".to_var()),
+            output_vars: vec!["?e".to_var(), "?v".to_var()],
+        };
+        let follows = PatternPlan {
+            attribute: 12,
+            entity: PatternSlot::Variable("?v".to_var()),
+            value: PatternSlot::Variable("?e".to_var()),
+            output_vars: vec!["?v".to_var(), "?e".to_var()],
+        };
+        let plan = IncrementalQueryPlan {
+            find_vars: vec!["?e".to_var(), "?v".to_var()],
+            variables: vec!["?e".to_var(), "?v".to_var()],
+            where_plan: union_rel(
+                vec!["?e".to_var(), "?v".to_var()],
+                vec![pattern_rel(name), pattern_rel(follows)],
+            ),
+        };
         let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_find_circuit(circuit, reordered_branch_or_plan()));
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
