@@ -243,7 +243,7 @@
 (deftest test-or-joined-with-outer-pattern-retraction
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (api/transact conn [{:name "Alice" :city "Paris"}
+    (api/transact conn [{:name "Alice" :city "Berlin"}
                         {:name "Bob" :city "Berlin"}
                         {:name "Carol" :city "Rome"}])
     (let [bob-id (single-value conn '{:find [?e]
