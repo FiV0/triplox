@@ -256,6 +256,34 @@
         (is (= [[["Berlin"] -1]]
                (take-delta! sub)))))))
 
+(deftest test-or-and-branch-addition
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "Alice"}])
+    (let [alice-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Alice"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?e]
+                                            :where [(or (and [?e :name "Alice"]
+                                                             [?e :city "Berlin"])
+                                                        [?e :name "Bob"])]})]
+        (api/transact conn [[:db/add alice-id :city "Berlin"]])
+        (is (= [[[alice-id] 1]]
+               (take-delta! sub)))))))
+
+(deftest test-or-and-branch-retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "Alice" :city "Berlin"}])
+    (let [alice-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Alice"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?e]
+                                            :where [(or (and [?e :name "Alice"]
+                                                             [?e :city "Berlin"])
+                                                        [?e :name "Bob"])]})]
+        (api/transact conn [[:db/retract alice-id :city "Berlin"]])
+        (is (= [[[alice-id] -1]]
+               (take-delta! sub)))))))
+
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
