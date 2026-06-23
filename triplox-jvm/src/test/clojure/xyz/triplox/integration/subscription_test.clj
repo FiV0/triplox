@@ -264,7 +264,6 @@
         (api/transact conn [[:db/retract alice-id :name "Alice"]])
         (is (= [[["Alice"] -1]] (take-delta! sub 300)))))))
 
-
 (deftest test-or-joined-with-outer-pattern-retraction
   (with-open [conn (connect)]
     (api/transact conn people-schema)
