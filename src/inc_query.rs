@@ -140,7 +140,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
-            "Incremental queries currently support only triple patterns and or clauses in :where"
+            "Incremental queries currently support only triple patterns, or clauses, and and clauses in :where"
         ),
     }
 }
@@ -723,11 +723,11 @@ mod tests {
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
-            "only triple patterns and or clauses",
+            "only triple patterns, or clauses, and and clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] (not [?e :age 30])]"#,
-            "only triple patterns and or clauses",
+            "only triple patterns, or clauses, and and clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
