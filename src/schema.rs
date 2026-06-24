@@ -1188,7 +1188,7 @@ mod tests {
         let schema = bootstrapped_schema_with_person_name();
         let (name_id, _) = schema.get_attribute(&kw!(:name)).unwrap();
 
-        let ops = [TxOp::put(vec![
+        let ops = [TxOp::put([
             (kw!(:db/id), DataType::Long(name_id)),
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
             (kw!(:db/valueType), DataType::Long(DB_TYPE_LONG)),
@@ -1349,7 +1349,7 @@ mod tests {
     fn test_prepare_schema_update_missing_cardinality_errors() {
         let schema = bootstrapped_schema();
         // Provide db/ident + db/valueType but no db/cardinality
-        let ops = [TxOp::put(vec![
+        let ops = [TxOp::put([
             (kw!(:db/ident), DataType::Keyword(kw!(:name))),
             (kw!(:db/valueType), DataType::Long(DB_TYPE_STRING)),
             // No db/cardinality

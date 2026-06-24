@@ -950,7 +950,7 @@ mod tests {
             system_time: st_from_unix_epoch(2),
         };
 
-        let tx_ops = vec![TxOp::put(vec![
+        let tx_ops = vec![TxOp::put([
             (kw!(:name), "alan".into()),
             (kw!(:age), 30_i64.into()),
         ])];
@@ -1712,7 +1712,7 @@ mod tests {
         let indexed = indexer
             .transact_tx(
                 tx,
-                vec![TxOp::put(vec![
+                vec![TxOp::put([
                     (kw!(:db/id), DataType::Long(name_id)),
                     (kw!(:db/ident), DataType::Keyword(kw!(:name))),
                     (kw!(:db/valueType), DataType::Long(DB_TYPE_LONG)),
@@ -2070,7 +2070,7 @@ mod tests {
         };
         let waiter = indexer.tx_waiter();
         let tx_ops = vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:name), "Alice".into()),
                 (kw!(:email), "alice@example.com".into()),
             ]),
@@ -2115,7 +2115,7 @@ mod tests {
                     tx_id: 2,
                     system_time: st_from_unix_epoch(2),
                 },
-                vec![TxOp::put(vec![
+                vec![TxOp::put([
                     (kw!(:name), "Alice".into()),
                     (kw!(:email), "alice@example.com".into()),
                 ])],
@@ -2280,17 +2280,14 @@ mod tests {
         transact(
             &mut indexer,
             2,
-            TxOp::put(vec![
-                (kw!(:name), "alice".into()),
-                (kw!(:age), DataType::Long(2)),
-            ]),
+            TxOp::put([(kw!(:name), "alice".into()), (kw!(:age), DataType::Long(2))]),
         )
         .await?;
         let entity_id = find_first_user_entity(&slate).await?;
         transact(
             &mut indexer,
             3,
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::Long(entity_id)),
                 (kw!(:name), "bob".into()),
                 (kw!(:age), DataType::Long(1)),
@@ -2300,7 +2297,7 @@ mod tests {
         transact(
             &mut indexer,
             4,
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::Long(entity_id)),
                 (kw!(:name), "carol".into()),
                 (kw!(:age), DataType::Long(5)),

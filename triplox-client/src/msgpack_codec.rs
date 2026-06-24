@@ -1481,7 +1481,7 @@ mod tests {
     #[test]
     fn round_trip_tx_op_variants() {
         let cases = vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::Long(1)),
                 (kw!(:person/name), DataType::String("alice".into())),
             ]),
@@ -1599,7 +1599,7 @@ mod tests {
     #[test]
     fn round_trip_execute_request_body() {
         let ops = vec![
-            TxOp::put(vec![(kw!(:name), DataType::String("alice".into()))]),
+            TxOp::put([(kw!(:name), DataType::String("alice".into()))]),
             TxOp::Add {
                 entity: EntityRef::Id(42),
                 attribute: kw!(:age),

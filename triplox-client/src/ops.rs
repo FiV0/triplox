@@ -189,7 +189,7 @@ pub enum TxOp {
 
 impl TxOp {
     /// Build a Put without explicit entity ID (auto-allocated).
-    pub fn put(attrs: Vec<(Keyword, DataType)>) -> Self {
+    pub fn put(attrs: impl IntoIterator<Item = (Keyword, DataType)>) -> Self {
         TxOp::Put(attrs.into_iter().collect())
     }
 }
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_op_put_bincode() {
-        let op = TxOp::put(vec![
+        let op = TxOp::put([
             (kw!(:string), "string_value".into()),
             (kw!(:int), 1i64.into()),
         ]);

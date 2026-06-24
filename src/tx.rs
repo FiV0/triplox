@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_expand_put_with_id() {
-        let ops = vec![TxOp::put(vec![
+        let ops = vec![TxOp::put([
             (kw!(:db/id), DataType::Long(100)),
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
@@ -608,8 +608,8 @@ mod tests {
     #[test]
     fn test_expand_put_without_id() {
         let ops = vec![
-            TxOp::put(vec![(kw!(:name), "alice".into())]),
-            TxOp::put(vec![(kw!(:name), "bob".into())]),
+            TxOp::put([(kw!(:name), "alice".into())]),
+            TxOp::put([(kw!(:name), "bob".into())]),
         ];
         let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
         assert_eq!(datoms.len(), 2);
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_expand_put_attrs_share_entity() {
-        let ops = vec![TxOp::put(vec![
+        let ops = vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])];

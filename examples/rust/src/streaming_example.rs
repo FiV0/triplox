@@ -17,7 +17,7 @@ use triplox::ops::{DataType, TxOp};
 
 /// Build a schema attribute definition as a Put document.
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
-    TxOp::put(vec![
+    TxOp::put([
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
         (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
         (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
 
     // Transact three names; each produces a delta on the subscription.
     for name in ["alice", "bob", "carol"] {
-        node.execute_tx(vec![TxOp::put(vec![(kw!(:name), name.into())])])
+        node.execute_tx(vec![TxOp::put([(kw!(:name), name.into())])])
             .await?;
     }
 

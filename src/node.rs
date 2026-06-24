@@ -695,7 +695,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
@@ -762,12 +762,12 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("ivan".to_string())),
                 (kw!(:name), "Ivan".into()),
                 (kw!(:email), "ivan@example.com".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("petr".to_string())),
                 (kw!(:name), "Petr".into()),
                 (kw!(:email), "petr@example.com".into()),
@@ -853,15 +853,15 @@ mod tests {
 
         // Insert three named entities so LIMIT can actually truncate.
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("a".to_string())),
                 (kw!(:name), "Alice".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("b".to_string())),
                 (kw!(:name), "Bob".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("c".to_string())),
                 (kw!(:name), "Carol".into()),
             ]),
@@ -924,17 +924,17 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("ivan".to_string())),
                 (kw!(:name), "Ivan".into()),
                 (kw!(:email), "ivan@example.com".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("petr".to_string())),
                 (kw!(:name), "Petr".into()),
                 (kw!(:email), "petr@example.com".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("bob".to_string())),
                 (kw!(:name), "Bob".into()),
                 (kw!(:email), "bob@example.com".into()),
@@ -986,12 +986,12 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("alice".to_string())),
                 (kw!(:name), "alice".into()),
                 (kw!(:follows), DataType::String("bob".to_string())),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("bob".to_string())),
                 (kw!(:name), "bob".into()),
             ]),
@@ -1057,19 +1057,19 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
         .await
         .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ])])
         .await
         .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "charlie".into()),
             (kw!(:age), 35_i64.into()),
         ])])
@@ -1095,19 +1095,19 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
         .await
         .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ])])
         .await
         .unwrap();
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "charlie".into()),
             (kw!(:age), 35_i64.into()),
         ])])
@@ -1523,7 +1523,7 @@ mod tests {
         define_test_schema(&node).await;
 
         // Insert entity with auto-assigned ID
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
@@ -1626,7 +1626,7 @@ mod tests {
     async fn insert_three_people(node: &impl SubmitNode) {
         let people: Vec<(&str, i64)> = vec![("Ivan", 30), ("Bob", 40), ("Dominic", 50)];
         for (name, age) in people {
-            node.execute_tx(vec![TxOp::put(vec![
+            node.execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:age), age.into()),
             ])])
@@ -1836,7 +1836,7 @@ mod tests {
         define_test_schema(&node).await;
 
         // Define "sex" attribute with keyword value type
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:db/ident), DataType::Keyword(kw!(:sex))),
             (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/keyword))),
             (
@@ -1854,7 +1854,7 @@ mod tests {
             ("Doris", "female"),
         ];
         for (name, sex) in people {
-            node.execute_tx(vec![TxOp::put(vec![
+            node.execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
@@ -1883,7 +1883,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:db/ident), DataType::Keyword(kw!(:sex))),
             (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/keyword))),
             (
@@ -1901,7 +1901,7 @@ mod tests {
             ("Jane", "female"),
         ];
         for (name, sex) in people {
-            node.execute_tx(vec![TxOp::put(vec![
+            node.execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
@@ -1930,7 +1930,7 @@ mod tests {
         define_test_schema(&node).await;
 
         // Define "last-name" attribute
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:db/ident), DataType::Keyword(kw!(:last-name))),
             (kw!(:db/valueType), DataType::Keyword(kw!(:db.type/string))),
             (
@@ -3179,7 +3179,7 @@ mod tests {
         define_test_schema(&node).await;
 
         // Create an entity with a known email
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:email), "alice@example.com".into()),
         ])])
@@ -3217,14 +3217,14 @@ mod tests {
         define_test_schema(&node).await;
 
         // Create two entities
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:email), "alice@example.com".into()),
         ])])
         .await
         .unwrap();
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Bob".into()),
             (kw!(:email), "bob@example.com".into()),
         ])])
@@ -3265,11 +3265,11 @@ mod tests {
         define_test_schema(&node).await;
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:name), "Alice".into()),
                 (kw!(:email), "alice@example.com".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:name), "Bob".into()),
                 (kw!(:email), "bob@example.com".into()),
             ]),
@@ -3322,7 +3322,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Bob".into()),
             (kw!(:email), "bob@example.com".into()),
         ])])
@@ -3363,7 +3363,7 @@ mod tests {
         define_test_schema(&node).await;
 
         // Create an entity with a known email
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:email), "alice@example.com".into()),
         ])])
@@ -3426,7 +3426,7 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:email), "alice@example.com".into()),
         ])])
@@ -3514,7 +3514,7 @@ mod tests {
             TransactionResult::TxCommitted(_)
         ));
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:email), "alice@example.com".into()),
         ])])
@@ -3530,7 +3530,7 @@ mod tests {
             other => panic!("Expected Long entity ID, got {:?}", other),
         };
 
-        node.execute_tx(vec![TxOp::put(vec![
+        node.execute_tx(vec![TxOp::put([
             (kw!(:name), "Bob".into()),
             (kw!(:ref-id), DataType::Long(alice)),
         ])])
@@ -3604,7 +3604,7 @@ mod tests {
         define_test_schema(&node).await;
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:db/id), DataType::Long(11111)),
                 (kw!(:name), "Ivan".into()),
             ])])
@@ -3625,7 +3625,7 @@ mod tests {
         assert_aborted_with_error_matching(result, r"^unallocated entity id \d+$");
 
         let result = node
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:name), "Bob".into()),
                 (kw!(:follows), DataType::Long(11111)),
             ])])
@@ -3655,8 +3655,8 @@ mod tests {
         .unwrap();
 
         node.execute_tx(vec![
-            TxOp::put(vec![(kw!(:user/email), "alice".into())]),
-            TxOp::put(vec![(kw!(:user/email), "bob".into())]),
+            TxOp::put([(kw!(:user/email), "alice".into())]),
+            TxOp::put([(kw!(:user/email), "bob".into())]),
         ])
         .await
         .unwrap();
@@ -3722,15 +3722,15 @@ mod tests {
         .unwrap();
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("alice".into())),
                 (kw!(:user/email), "alice".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("bob".into())),
                 (kw!(:user/email), "bob".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("carol".into())),
                 (kw!(:user/email), "carol".into()),
                 (kw!(:user/spouse), DataType::String("bob".into())),
@@ -3789,11 +3789,11 @@ mod tests {
         .unwrap();
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("alice".into())),
                 (kw!(:user/email), "a@x".into()),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("bob".into())),
                 (kw!(:user/ssn), "123".into()),
             ]),
@@ -3853,15 +3853,15 @@ mod tests {
         .unwrap();
 
         node.execute_tx(vec![
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("alice".into())),
                 (kw!(:user/email), DataType::String("alice".into())),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("bob".into())),
                 (kw!(:user/handle), DataType::String("bob".into())),
             ]),
-            TxOp::put(vec![
+            TxOp::put([
                 (kw!(:db/id), DataType::String("carol".into())),
                 (kw!(:user/primary-friend), DataType::String("bob".into())),
             ]),
