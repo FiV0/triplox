@@ -17,7 +17,7 @@ use triplox::ops::{DataType, TxOp};
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
-    TxOp::put(vec![
+    TxOp::put([
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
         (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
         (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
@@ -48,11 +48,11 @@ async fn main() -> Result<()> {
 
     // 2. Insert some data
     let data_ops = vec![
-        TxOp::put(vec![
+        TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ]),
-        TxOp::put(vec![
+        TxOp::put([
             (kw!(:name), "bob".into()),
             (kw!(:age), 25_i64.into()),
         ]),

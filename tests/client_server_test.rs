@@ -408,7 +408,7 @@ async fn test_dev_server_connections_are_isolated() {
 
 async fn define_schema_attr(client: &ClientNode, name: &str, vtype: &str) {
     client
-        .execute_tx(vec![TxOp::put(vec![
+        .execute_tx(vec![TxOp::put([
             (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
             (
                 kw!(:db/valueType),
@@ -451,7 +451,7 @@ async fn test_query_keyword_value_comparison_via_wire() {
         ("Jane", "female"),
     ] {
         client
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
             ])])
@@ -496,7 +496,7 @@ async fn test_aggregates_and_or() {
         ("Adam", "Smith", "male", 23),
     ] {
         client
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:last-name), last.into()),
                 (kw!(:sex), DataType::Keyword(Keyword::plain(sex))),
@@ -557,7 +557,7 @@ async fn test_aggregate_set_semantics() {
 
     for (name, city) in [("Alice", "NYC"), ("Bob", "NYC"), ("Carol", "LA")] {
         client
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:city), city.into()),
             ])])
@@ -704,7 +704,7 @@ async fn test_order_and_limit() {
         ("Eve", 50),
     ] {
         client
-            .execute_tx(vec![TxOp::put(vec![
+            .execute_tx(vec![TxOp::put([
                 (kw!(:name), name.into()),
                 (kw!(:age), (age as i64).into()),
             ])])
@@ -780,7 +780,7 @@ async fn test_aggregate_min_incompatible_types() {
 
     // Insert entity with both name (string) and age (long)
     client
-        .execute_tx(vec![TxOp::put(vec![
+        .execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
@@ -805,7 +805,7 @@ async fn test_join_ref_with_plain_long() {
 
     // Insert Bob
     client
-        .execute_tx(vec![TxOp::put(vec![(kw!(:name), "Bob".into())])])
+        .execute_tx(vec![TxOp::put([(kw!(:name), "Bob".into())])])
         .await
         .unwrap();
 
@@ -823,7 +823,7 @@ async fn test_join_ref_with_plain_long() {
 
     // Insert Alice with :follows pointing to Bob's entity id
     client
-        .execute_tx(vec![TxOp::put(vec![
+        .execute_tx(vec![TxOp::put([
             (kw!(:name), "Alice".into()),
             (kw!(:follows), DataType::Long(bob_id)),
         ])])
@@ -850,7 +850,7 @@ async fn test_upsert_with_resolved_entity_id() {
 
     // Insert entity with auto-assigned ID
     client
-        .execute_tx(vec![TxOp::put(vec![
+        .execute_tx(vec![TxOp::put([
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])])
