@@ -13,7 +13,8 @@
 (def people-schema
   [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
-   {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
+   {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
 
 (def residence-schema
   [{:db/ident :person/name
@@ -34,10 +35,11 @@
 
 (def names-query '{:find [?name] :where [[?e :name ?name]]})
 
-(def delta-timeout-ms 1000)
+(def default-delta-timeout-ms 1000)
 
-(defn take-delta! [sub]
-  (api/take! sub delta-timeout-ms))
+(defn take-delta!
+  ([sub] (take-delta! sub default-delta-timeout-ms))
+  ([sub timeout] (api/take! sub timeout)))
 
 (defn delta-set! [sub]
   (let [res (take-delta! sub)]
@@ -240,6 +242,28 @@
         (is (= [[[bob-id] -1]]
                (take-delta! sub)))))))
 
+(deftest test-or-multiple-matching-branches
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+
+    (with-open [sub (api/subscribe conn '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (or [?e :name "Alice"]
+                                                      [?e :age 40])]})]
+      (api/transact conn [{:name "Alice" :age 40}
+                          {:name "Bob" :age 30}])
+      (is (= [[["Alice"] 1]] (take-delta! sub 300)))
+      (is (= ::api/timeout (take-delta! sub 300)))
+
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :name "Alice"]]})]
+
+        (api/transact conn [[:db/retract alice-id :age 40]])
+        (is (= ::api/timeout (take-delta! sub 300)))
+
+        (api/transact conn [[:db/retract alice-id :name "Alice"]])
+        (is (= [[["Alice"] -1]] (take-delta! sub 300)))))))
+
 (deftest test-or-joined-with-outer-pattern-retraction
   (with-open [conn (connect)]
     (api/transact conn people-schema)
@@ -255,6 +279,23 @@
         (api/transact conn [[:db/retract bob-id :name "Bob"]])
         (is (= [[["Berlin"] -1]]
                (take-delta! sub)))))))
+
+(deftest test-or+and-branch-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "Alice"}])
+    (let [alice-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Alice"]]})]
+      (with-open [sub (api/subscribe conn '{:find [?e]
+                                            :where [(or (and [?e :name "Alice"]
+                                                             [?e :city "Berlin"])
+                                                        [?e :name "Bob"])]})]
+
+        (api/transact conn [[:db/add alice-id :city "Berlin"]])
+        (is (= [[[alice-id] 1]] (take-delta! sub)))
+
+        (api/transact conn [[:db/retract alice-id :city "Berlin"]])
+        (is (= [[[alice-id] -1]] (take-delta! sub)))))))
 
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]

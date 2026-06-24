@@ -110,8 +110,11 @@ fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
 fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
     match branch {
         OrWhereClause::Clause(clause) => reject_unsupported_where_clause(clause),
-        OrWhereClause::And(_) => {
-            bail!("Incremental queries currently do not support `and` patterns!")
+        OrWhereClause::And(children) => {
+            for child in children {
+                reject_unsupported_where_clause(child)?;
+            }
+            Ok(())
         }
     }
 }
@@ -137,7 +140,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
-            "Incremental queries currently support only triple patterns and or clauses in :where"
+            "Incremental queries currently support only triple patterns, `or` clauses, and `and` clauses in :where"
         ),
     }
 }
@@ -273,9 +276,7 @@ fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<RelPlan> {
 fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<RelPlan> {
     match branch {
         OrWhereClause::Clause(clause) => plan_where_clause(clause, schema),
-        OrWhereClause::And(_) => {
-            unreachable!("Incremental queries currently do not support `and` patterns!")
-        }
+        OrWhereClause::And(children) => plan_where_clauses(children, schema),
     }
 }
 
@@ -624,6 +625,53 @@ mod tests {
     }
 
     #[test]
+    fn plans_and_branch_inside_or_as_join() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
+            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
+        };
+        assert_eq!(or.branches.len(), 2);
+        let RelPlanKind::Join(and_branch) = &or.branches[0].kind else {
+            panic!("expected join branch, got {:?}", &or.branches[0].kind);
+        };
+        assert_eq!(and_branch.inputs.len(), 2);
+        assert_eq!(and_branch.steps.len(), 1);
+        assert_eq!(and_branch.steps[0].key_vars, vec!["?e".to_var()]);
+        assert!(matches!(or.branches[1].kind, RelPlanKind::Pattern(_)));
+        assert_eq!(plan.leaf_patterns().len(), 3);
+    }
+
+    #[test]
+    fn plans_and_branch_inside_or_with_branch_specific_variable_order() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?x ?y :where (or (and [?y :name ?x] [?y :follows ?x]) [?x :follows ?y])]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
+            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
+        };
+        assert_eq!(
+            plan.where_plan.output_vars,
+            vec!["?y".to_var(), "?x".to_var()]
+        );
+        assert_eq!(or.branches[0].output_vars, &["?y".to_var(), "?x".to_var()]);
+        assert_eq!(or.branches[1].output_vars, &["?x".to_var(), "?y".to_var()]);
+    }
+
+    #[test]
     fn accepts_entid_attribute() {
         let schema = test_schema();
         let plan = plan_query(&parse_query("[:find ?e :where [?e 10 ?name]]"), &schema).unwrap();
@@ -675,15 +723,11 @@ mod tests {
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
-            "only triple patterns and or clauses",
+            "only triple patterns, `or` clauses, and `and` clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] (not [?e :age 30])]"#,
-            "only triple patterns and or clauses",
-        );
-        assert_plan_err(
-            r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
-            "do not support `and` patterns",
+            "only triple patterns, `or` clauses, and `and` clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
