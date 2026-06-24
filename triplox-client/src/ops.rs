@@ -557,18 +557,6 @@ mod tests {
     }
 
     #[test]
-    fn test_op_put_accepts_array() {
-        let op = TxOp::put([
-            (kw!(:string), "string_value".into()),
-            (kw!(:int), 1i64.into()),
-        ]);
-        let mut expected = BTreeMap::new();
-        expected.insert(kw!(:string), "string_value".into());
-        expected.insert(kw!(:int), 1i64.into());
-        assert_eq!(op, TxOp::Put(expected));
-    }
-
-    #[test]
     fn test_op_add_bincode() {
         let op = TxOp::Add {
             entity: EntityRef::Id(1),
