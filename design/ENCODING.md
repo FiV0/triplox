@@ -312,27 +312,3 @@ pub fn encode_datatype(value: &DataType, buf: &mut Vec<u8>);
 pub fn decode_datatype(cursor: &mut &[u8]) -> Result<DataType, DecodeError>;
 pub fn skip_datatype(cursor: &mut &[u8]) -> Result<(), DecodeError>;
 ```
-
----
-
-## 5. Testing Strategy
-
-### 5.1 Round-trip
-
-For every type: `decode(encode(value)) == value`.
-
-### 5.2 Ordering
-
-For every orderable type:
-```rust
-assert_eq!(encode(a).cmp(&encode(b)), a.partial_compare(&b).unwrap());
-```
-
-Edge cases: min/max values, zero crossings, NaN, empty strings, strings with embedded nulls.
-
-### 5.3 Prefix-Free
-
-For variable-length types:
-```rust
-assert!(!encode("abcd").starts_with(&encode("abc")));
-```
