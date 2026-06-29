@@ -149,6 +149,23 @@
                             {:name "Petr" :last-name "Petrov"}])
         (is (= ::api/timeout (api/take! sub 300)))))))
 
+(deftest test-not-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (with-open [sub (api/subscribe conn '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (not [?e :age 30])]})]
+      (api/transact conn [{:name "Alice"}])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :name "Alice"]]})]
+        (api/transact conn [[:db/add alice-id :age 30]])
+        (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+        (api/transact conn [[:db/retract alice-id :age 30]])
+        (is (= [[["Alice"] 1]] (take-delta! sub)))))))
+
 (deftest test-basic-query-5
   (testing "Can query for multiple results"
     (with-open [conn (connect)]

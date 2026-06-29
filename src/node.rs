@@ -2913,6 +2913,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_incremental_equivalence_not_clause() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = r#"[:find ?name :where [?e :name ?name] (not [?e :age 30])]"#;
+        let mut subscription = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:name),
+                value: DataType::String("Alice".to_string()),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::Retract {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+    }
+
+    #[tokio::test]
     async fn test_register_incremental_query_rejects_unsupported_query() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
