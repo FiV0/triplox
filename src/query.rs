@@ -1091,6 +1091,7 @@ where
             Ok(Box::new(extender))
         }
         WhereClause::OrJoin(oj) => {
+            let num_levels = join_order.len();
             let children: Vec<Box<dyn PrefixExtender>> = oj
                 .clauses
                 .iter()
@@ -1107,7 +1108,7 @@ where
                     )
                 })
                 .collect::<Result<_, _>>()?;
-            Ok(Box::new(GenericOrPrefixExtender::new(children)))
+            Ok(Box::new(GenericOrPrefixExtender::new(children, num_levels)))
         }
         WhereClause::NotJoin(nj) => {
             let children: Vec<Box<dyn PrefixExtender>> = nj

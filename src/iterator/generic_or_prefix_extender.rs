@@ -13,38 +13,35 @@ use crate::algo::trie::Trie;
 /// - participates_in_level: true when any child participates
 pub struct GenericOrPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
+    levels: Vec<usize>,
     // TODO: We could pass to a @ must self trait for PrefixExtender, then the RefCell is not needed.
     child_tries: Vec<RefCell<Trie<Extension>>>,
 }
 
 impl GenericOrPrefixExtender {
-    pub fn new(children: Vec<Box<dyn PrefixExtender>>) -> Self {
+    pub fn new(children: Vec<Box<dyn PrefixExtender>>, num_levels: usize) -> Self {
         assert!(
             !children.is_empty(),
             "OR extender requires at least one child"
         );
+        let levels = (0..num_levels)
+            .filter(|level| children[0].participates_in_level(*level))
+            .collect();
         let child_tries = (0..children.len())
             .map(|_| RefCell::new(Trie::new()))
             .collect();
         Self {
             children,
+            levels,
             child_tries,
         }
     }
 
     fn relevant_prefix(&self, prefix: &Prefix) -> Prefix {
-        prefix
+        self.levels
             .iter()
-            .enumerate()
-            .filter(|(level, _)| self.child_participates_in_level(*level))
-            .map(|(_, value)| value.clone())
+            .filter_map(|level| prefix.get(*level).cloned())
             .collect()
-    }
-
-    fn child_participates_in_level(&self, level: usize) -> bool {
-        self.children
-            .iter()
-            .any(|child| child.participates_in_level(level))
     }
 
     fn child_matches_prefix(&self, child_idx: usize, relevant_prefix: &Prefix) -> bool {
@@ -114,7 +111,7 @@ impl PrefixExtender for GenericOrPrefixExtender {
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
-        self.child_participates_in_level(level)
+        self.levels.contains(&level)
     }
 }
 
@@ -164,7 +161,7 @@ mod tests {
             Box::new(FromPrefixExtender::new(vec![0], vec![b("b")])),
             Box::new(lt_age_predicate(40)),
         ]);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)], 2);
 
         assert_eq!(
             or_ext.intersect(&vec![], &[b("a"), b("b")]),
@@ -183,7 +180,7 @@ mod tests {
             crate::iterator::GenericAndPrefixExtender::new(vec![Box::new(lt_age_predicate(30))]);
         let branch_b =
             crate::iterator::GenericAndPrefixExtender::new(vec![Box::new(lt_age_predicate(40))]);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)], 2);
 
         assert_eq!(or_ext.intersect(&vec![], &[b("entity")]), vec![b("entity")]);
         assert_eq!(or_ext.count(&vec![b("entity")]), usize::MAX);
@@ -197,7 +194,7 @@ mod tests {
     fn test_or_extender_count_sums_children() {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(2), bi(3)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(4), bi(5)], 0);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)], 1);
         assert_eq!(or_ext.count(&vec![]), 5);
     }
 
@@ -215,7 +212,7 @@ mod tests {
             "?x".to_var(),
             0,
         );
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(pred1), Box::new(pred2)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(pred1), Box::new(pred2)], 1);
 
         assert_eq!(or_ext.count(&vec![]), usize::MAX);
     }
@@ -224,7 +221,7 @@ mod tests {
     fn test_or_extender_propose_returns_sorted_union() {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(3), bi(5)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(2), bi(3), bi(4)], 0);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)], 1);
         let proposed = or_ext.propose(&vec![]);
         assert_eq!(proposed, vec![bi(1), bi(2), bi(3), bi(4), bi(5)]);
     }
@@ -233,7 +230,7 @@ mod tests {
     fn test_or_extender_intersect_returns_union_of_matching() {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(3)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(2), bi(4)], 0);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)], 1);
         let candidates = vec![bi(1), bi(2), bi(5)];
         let result = or_ext.intersect(&vec![], &candidates);
         assert_eq!(result, vec![bi(1), bi(2)]);
@@ -243,7 +240,7 @@ mod tests {
     fn test_or_extender_participates_in_level() {
         let ext1 = SingleLevelExtender::new(vec![bi(1)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(2)], 0);
-        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)], 2);
         assert!(or_ext.participates_in_level(0));
         assert!(!or_ext.participates_in_level(1));
     }
@@ -254,7 +251,8 @@ mod tests {
         // Constrained by even numbers => {2,4}
         let or_ext1 = SingleLevelExtender::new(vec![bi(1), bi(2), bi(3)], 0);
         let or_ext2 = SingleLevelExtender::new(vec![bi(3), bi(4), bi(5)], 0);
-        let or_extender = GenericOrPrefixExtender::new(vec![Box::new(or_ext1), Box::new(or_ext2)]);
+        let or_extender =
+            GenericOrPrefixExtender::new(vec![Box::new(or_ext1), Box::new(or_ext2)], 1);
         let even_extender = SingleLevelExtender::new(vec![bi(2), bi(4), bi(6)], 0);
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&or_extender, &even_extender];
@@ -267,6 +265,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "OR extender requires at least one child")]
     fn test_or_extender_empty_children_panics() {
-        GenericOrPrefixExtender::new(vec![]);
+        GenericOrPrefixExtender::new(vec![], 0);
     }
 }
