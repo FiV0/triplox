@@ -26,24 +26,13 @@ where
     where
         I: IntoIterator<Item = T>,
     {
-        let values: Vec<T> = values.into_iter().collect();
-        if self
-            .node_for(values.iter())
-            .is_some_and(|node| node.is_terminal)
-        {
-            return;
-        }
-
         let mut node = &mut self.root;
-        node.terminal_descendants += 1;
         for value in values {
-            node = node.insert_child(value);
-            node.terminal_descendants += 1;
+            node = node.children.entry(value).or_default();
         }
-        node.is_terminal = true;
     }
 
-    pub(crate) fn node_for<'a, Q, I>(&self, values: I) -> Option<&TrieNode<T>>
+    pub(crate) fn contains_prefix<'a, Q, I>(&self, values: I) -> bool
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized + 'a,
@@ -51,55 +40,24 @@ where
     {
         let mut node = &self.root;
         for value in values {
-            node = node.children.get(value)?;
+            let Some(child) = node.children.get(value) else {
+                return false;
+            };
+            node = child;
         }
-        Some(node)
-    }
-
-    pub(crate) fn node_for_mut<'a, Q, I>(&mut self, values: I) -> Option<&mut TrieNode<T>>
-    where
-        T: Borrow<Q>,
-        Q: Eq + Hash + ?Sized + 'a,
-        I: IntoIterator<Item = &'a Q>,
-    {
-        let mut node = &mut self.root;
-        for value in values {
-            node = node.children.get_mut(value)?;
-        }
-        Some(node)
+        true
     }
 }
 
-pub(crate) struct TrieNode<T> {
+struct TrieNode<T> {
     children: HashMap<T, TrieNode<T>>,
-    is_terminal: bool,
-    terminal_descendants: usize,
 }
 
 impl<T> Default for TrieNode<T> {
     fn default() -> Self {
         Self {
             children: HashMap::new(),
-            is_terminal: false,
-            terminal_descendants: 0,
         }
-    }
-}
-
-impl<T> TrieNode<T>
-where
-    T: Eq + Hash,
-{
-    pub(crate) fn children(&self) -> &HashMap<T, TrieNode<T>> {
-        &self.children
-    }
-
-    pub(crate) fn descendant_count(&self) -> usize {
-        self.terminal_descendants
-    }
-
-    pub(crate) fn insert_child(&mut self, value: T) -> &mut TrieNode<T> {
-        self.children.entry(value).or_default()
     }
 }
 
@@ -108,68 +66,41 @@ mod tests {
     use super::Trie;
 
     #[test]
-    fn root_lookup_accepts_empty_prefix() {
+    fn empty_prefix_is_always_present() {
         let trie = Trie::<&str>::new();
 
-        let root = trie.node_for(std::iter::empty::<&str>());
-
-        assert!(root.is_some());
-        assert!(root.unwrap().children().is_empty());
-        assert_eq!(root.unwrap().descendant_count(), 0);
+        assert!(trie.contains_prefix(std::iter::empty::<&str>()));
     }
 
     #[test]
-    fn finds_inserted_full_and_partial_prefixes() {
+    fn contains_inserted_full_and_partial_prefixes() {
         let mut trie = Trie::new();
         trie.insert(["a", "x"]);
         trie.insert(["a", "y"]);
         trie.insert(["b", "z"]);
 
-        let root = trie.node_for(std::iter::empty::<&str>()).unwrap();
-        let a = trie.node_for(["a"].iter()).unwrap();
-        let ax = trie.node_for(["a", "x"].iter()).unwrap();
-
-        assert_eq!(root.children().len(), 2);
-        assert_eq!(a.children().len(), 2);
-        assert!(ax.children().is_empty());
-        assert_eq!(root.descendant_count(), 3);
-        assert_eq!(a.descendant_count(), 2);
-        assert_eq!(ax.descendant_count(), 1);
+        assert!(trie.contains_prefix(["a"].iter()));
+        assert!(trie.contains_prefix(["a", "x"].iter()));
+        assert!(trie.contains_prefix(["a", "y"].iter()));
+        assert!(trie.contains_prefix(["b", "z"].iter()));
     }
 
     #[test]
-    fn missing_prefixes_return_none() {
+    fn missing_prefixes_return_false() {
         let mut trie = Trie::new();
         trie.insert(["a", "x"]);
 
-        assert!(trie.node_for(["b"].iter()).is_none());
-        assert!(trie.node_for(["a", "z"].iter()).is_none());
+        assert!(!trie.contains_prefix(["b"].iter()));
+        assert!(!trie.contains_prefix(["a", "z"].iter()));
     }
 
     #[test]
-    fn duplicate_inserts_do_not_duplicate_children() {
+    fn duplicate_inserts_keep_prefix_present() {
         let mut trie = Trie::new();
         trie.insert(["a", "x"]);
         trie.insert(["a", "x"]);
-        trie.insert(["a", "y"]);
 
-        let root = trie.node_for(std::iter::empty::<&str>()).unwrap();
-        let a = trie.node_for(["a"].iter()).unwrap();
-
-        assert_eq!(root.children().len(), 1);
-        assert_eq!(a.children().len(), 2);
-        assert_eq!(root.descendant_count(), 2);
-        assert_eq!(a.descendant_count(), 2);
-    }
-
-    #[test]
-    fn mutable_node_lookup_can_insert_child() {
-        let mut trie = Trie::new();
-        trie.insert(["branch"]);
-
-        let branch = trie.node_for_mut(["branch"].iter()).unwrap();
-        branch.insert_child("value");
-
-        assert!(trie.node_for(["branch", "value"].iter()).is_some());
+        assert!(trie.contains_prefix(["a"].iter()));
+        assert!(trie.contains_prefix(["a", "x"].iter()));
     }
 }

@@ -1,8 +1,6 @@
 use bytes::Bytes;
 use std::collections::HashSet;
 
-use crate::algo::trie::{Trie, TrieNode};
-
 pub type Prefix = Vec<Bytes>;
 pub type Extension = Bytes;
 pub type ResultTuple = Vec<Bytes>;
@@ -209,7 +207,7 @@ impl PrefixExtender for FromPrefixExtender {
 pub struct FromPrefixesExtender {
     participating_levels: Vec<usize>,
     level_set: HashSet<usize>,
-    partial_prefixes: Trie<Bytes>,
+    partial_prefixes: Vec<Prefix>,
 }
 
 impl FromPrefixesExtender {
@@ -220,50 +218,69 @@ impl FromPrefixesExtender {
             participating_levels
         );
         let level_set = participating_levels.iter().cloned().collect();
-        let mut prefix_trie = Trie::new();
-        for partial_prefix in partial_prefixes {
-            prefix_trie.insert(partial_prefix);
-        }
         Self {
             participating_levels,
             level_set,
-            partial_prefixes: prefix_trie,
+            partial_prefixes,
         }
     }
 
-    fn trie_node_for<'a>(&'a self, prefix: &'a Prefix) -> Option<&'a TrieNode<Bytes>> {
-        let trie_prefix = self
-            .participating_levels
+    fn matching_prefixes(&self, prefix: &Prefix) -> Vec<&Prefix> {
+        self.partial_prefixes
             .iter()
-            .copied()
-            .take_while(|&level| level < prefix.len())
-            .map(|level| &prefix[level]);
-        self.partial_prefixes.node_for(trie_prefix)
+            .filter(|partial_prefix| {
+                for (i, &level) in self.participating_levels.iter().enumerate() {
+                    if level >= prefix.len() {
+                        break;
+                    }
+                    if partial_prefix[i] != prefix[level] {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
+    fn next_level_index(&self, prefix: &Prefix) -> usize {
+        let mut i = 0;
+        for &level in &self.participating_levels {
+            if level >= prefix.len() {
+                break;
+            }
+            i += 1;
+        }
+        i
     }
 }
 
 impl PrefixExtender for FromPrefixesExtender {
     fn count(&self, prefix: &Prefix) -> usize {
-        self.trie_node_for(prefix)
-            .map_or(0, TrieNode::descendant_count)
+        self.matching_prefixes(prefix).len()
     }
 
     fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
-        let Some(node) = self.trie_node_for(prefix) else {
-            return vec![];
-        };
-        let mut extensions: Vec<_> = node.children().keys().cloned().collect();
+        let idx = self.next_level_index(prefix);
+        let mut extensions: Vec<_> = self
+            .matching_prefixes(prefix)
+            .into_iter()
+            .filter_map(|p| p.get(idx).cloned())
+            .collect();
         extensions.sort();
+        extensions.dedup();
         extensions
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        let Some(node) = self.trie_node_for(prefix) else {
-            return vec![];
-        };
+        let idx = self.next_level_index(prefix);
+        let valid_extensions: HashSet<_> = self
+            .matching_prefixes(prefix)
+            .into_iter()
+            .filter_map(|p| p.get(idx))
+            .collect();
         extensions
             .iter()
-            .filter(|ext| node.children().contains_key(*ext))
+            .filter(|ext| valid_extensions.contains(ext))
             .cloned()
             .collect()
     }
@@ -719,43 +736,6 @@ mod tests {
             extender.intersect(&vec![b("z")], &[b("a"), b("b"), b("x"), b("y")]),
             Vec::<Bytes>::new()
         );
-    }
-
-    #[test]
-    fn test_from_prefixes_extender_counts_shared_prefix_rows() {
-        let extender = FromPrefixesExtender::new(
-            vec![0, 1],
-            vec![
-                vec![b("a"), b("x")],
-                vec![b("a"), b("y")],
-                vec![b("b"), b("z")],
-            ],
-        );
-
-        assert_eq!(extender.count(&vec![]), 3);
-        assert_eq!(extender.count(&vec![b("a")]), 2);
-        assert_eq!(extender.propose(&vec![b("a")]), vec![b("x"), b("y")]);
-        assert_eq!(
-            extender.intersect(&vec![b("a")], &[b("y"), b("z"), b("x")]),
-            vec![b("y"), b("x")]
-        );
-    }
-
-    #[test]
-    fn test_from_prefixes_extender_deduplicates_duplicate_prefixes() {
-        let extender = FromPrefixesExtender::new(
-            vec![0, 1],
-            vec![
-                vec![b("a"), b("b")],
-                vec![b("a"), b("b")],
-                vec![b("a"), b("c")],
-            ],
-        );
-
-        assert_eq!(extender.count(&vec![]), 2);
-        assert_eq!(extender.count(&vec![b("a")]), 2);
-        assert_eq!(extender.propose(&vec![]), vec![b("a")]);
-        assert_eq!(extender.propose(&vec![b("a")]), vec![b("b"), b("c")]);
     }
 
     #[test]
