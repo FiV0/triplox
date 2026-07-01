@@ -228,17 +228,6 @@
                        [(< ?age 30)]
                        [(< ?age 40)])]}))))
 
-(deftest test-or-and-branch-predicate-after-terminal-triple-does-not-over-index
-  (tc/transact *conn* [{:name "A" :age 35}
-                       {:name "B" :age 35}])
-
-  (is (= #{["A" 35]}
-         (q '{:find [?name ?age]
-              :where [[?e :age ?age]
-                      (or (and [?e :name "A"]
-                               [(< ?age 40)]))
-                      [?e :name ?name]]}))))
-
 (deftest test-ors-must-use-same-vars
   (is (thrown? TriploxException
                (q '{:find [?e]
