@@ -118,7 +118,7 @@ mod tests {
         Bytes::from(n.to_be_bytes().to_vec())
     }
 
-    fn b(s: &str) -> Bytes {
+    fn bytes(s: &str) -> Bytes {
         Bytes::from(s.to_string())
     }
 
@@ -142,24 +142,24 @@ mod tests {
     #[test]
     fn test_or_extender_intersect_does_not_leak_across_branch_prefixes() {
         let branch_a = crate::iterator::GenericAndPrefixExtender::new(vec![
-            Box::new(FromPrefixExtender::new(vec![0], vec![b("a")])),
+            Box::new(FromPrefixExtender::new(vec![0], vec![bytes("a")])),
             Box::new(lt_age_predicate(30)),
         ]);
         let branch_b = crate::iterator::GenericAndPrefixExtender::new(vec![
-            Box::new(FromPrefixExtender::new(vec![0], vec![b("b")])),
+            Box::new(FromPrefixExtender::new(vec![0], vec![bytes("b")])),
             Box::new(lt_age_predicate(40)),
         ]);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)], 2);
 
         assert_eq!(
-            or_ext.intersect(&vec![], &[b("a"), b("b")]),
-            vec![b("a"), b("b")]
+            or_ext.intersect(&vec![], &[bytes("a"), bytes("b")]),
+            vec![bytes("a"), bytes("b")]
         );
         assert_eq!(
-            or_ext.intersect(&vec![b("a")], &[long(35)]),
+            or_ext.intersect(&vec![bytes("a")], &[long(35)]),
             Vec::<Bytes>::new()
         );
-        assert_eq!(or_ext.intersect(&vec![b("b")], &[long(35)]), vec![long(35)]);
+        assert_eq!(or_ext.intersect(&vec![bytes("b")], &[long(35)]), vec![long(35)]);
     }
 
     #[test]
@@ -170,10 +170,10 @@ mod tests {
             crate::iterator::GenericAndPrefixExtender::new(vec![Box::new(lt_age_predicate(40))]);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)], 2);
 
-        assert_eq!(or_ext.intersect(&vec![], &[b("entity")]), vec![b("entity")]);
-        assert_eq!(or_ext.count(&vec![b("entity")]), usize::MAX);
+        assert_eq!(or_ext.intersect(&vec![], &[bytes("entity")]), vec![bytes("entity")]);
+        assert_eq!(or_ext.count(&vec![bytes("entity")]), usize::MAX);
         assert_eq!(
-            or_ext.intersect(&vec![b("entity")], &[long(35)]),
+            or_ext.intersect(&vec![bytes("entity")], &[long(35)]),
             vec![long(35)]
         );
     }
