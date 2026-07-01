@@ -87,6 +87,15 @@ where
     pub(crate) fn insert(&mut self, value: T) -> &mut TrieNode<T> {
         self.children.entry(value).or_default()
     }
+
+    pub(crate) fn insert_all(&mut self, values: &[T])
+    where
+        T: Clone,
+    {
+        for value in values {
+            self.insert(value.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +151,19 @@ mod tests {
         assert!(trie.contains_prefix(["a"].iter()));
         assert!(trie.contains_prefix(["a", "x"].iter()));
         assert!(!trie.contains_prefix(["x"].iter()));
+    }
+
+    #[test]
+    fn node_insert_all_adds_non_copy_child_values() {
+        let mut trie = Trie::new();
+
+        let a = trie.root.insert(String::from("a"));
+        a.insert_all(&[String::from("x"), String::from("y")]);
+
+        assert!(trie.contains_prefix([String::from("a")].iter()));
+        assert!(trie.contains_prefix([String::from("a"), String::from("x")].iter()));
+        assert!(trie.contains_prefix([String::from("a"), String::from("y")].iter()));
+        assert!(!trie.contains_prefix([String::from("x")].iter()));
     }
 
     #[test]
