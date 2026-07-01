@@ -13,7 +13,7 @@ use crate::algo::trie::Trie;
 /// - participates_in_level: true when any child participates
 pub struct GenericOrPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
-    // TODO: We could pass to a @ must self trait for PrefixExtender, then the RefCell is not needed.
+    // TODO: We could switch PrefixExtender to a &mut self receiver, then the RefCell is not needed.
     // This would require a larger refactor (worth it?)
     child_tries: Vec<RefCell<Trie<Extension>>>,
     levels: Vec<usize>,
