@@ -230,7 +230,7 @@
 
 (deftest test-or-and-branch-predicate-after-terminal-triple-does-not-over-index
   (tc/transact *conn* [{:name "A" :age 35}
-                       {:name "B" :age 50}])
+                       {:name "B" :age 35}])
 
   (is (= #{["A" 35]}
          (q '{:find [?name ?age]
