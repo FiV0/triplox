@@ -120,6 +120,7 @@ impl PrefixExtender for TupleExtender {
 }
 
 /// An extender with participating levels and a partial prefix
+/// TODO: If we pass to set-semantics, this implemetation can be delegated to the trie implementation.
 pub struct FromPrefixExtender {
     participating_levels: Vec<usize>,
     level_set: HashSet<usize>,
