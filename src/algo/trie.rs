@@ -28,7 +28,7 @@ where
     {
         let mut node = &mut self.root;
         for value in values {
-            node = node.children.entry(value).or_default();
+            node = node.insert(value);
         }
     }
 
@@ -58,6 +58,15 @@ impl<T> Default for TrieNode<T> {
         Self {
             children: HashMap::new(),
         }
+    }
+}
+
+impl<T> TrieNode<T>
+where
+    T: Eq + Hash,
+{
+    pub(crate) fn insert(&mut self, value: T) -> &mut TrieNode<T> {
+        self.children.entry(value).or_default()
     }
 }
 
@@ -102,5 +111,17 @@ mod tests {
 
         assert!(trie.contains_prefix(["a"].iter()));
         assert!(trie.contains_prefix(["a", "x"].iter()));
+    }
+
+    #[test]
+    fn node_insert_adds_one_child_value() {
+        let mut trie = Trie::new();
+
+        let a = trie.root.insert("a");
+        a.insert("x");
+
+        assert!(trie.contains_prefix(["a"].iter()));
+        assert!(trie.contains_prefix(["a", "x"].iter()));
+        assert!(!trie.contains_prefix(["x"].iter()));
     }
 }
