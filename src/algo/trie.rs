@@ -38,10 +38,10 @@ where
         Q: Eq + Hash + ?Sized + 'a,
         I: IntoIterator<Item = &'a Q>,
     {
-        self.node_for(values).is_some()
+        self.node(values).is_some()
     }
 
-    pub(crate) fn node_for<'a, Q, I>(&self, values: I) -> Option<&TrieNode<T>>
+    pub(crate) fn node<'a, Q, I>(&self, values: I) -> Option<&TrieNode<T>>
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized + 'a,
@@ -54,7 +54,7 @@ where
         Some(node)
     }
 
-    pub(crate) fn node_for_mut<'a, Q, I>(&mut self, values: I) -> Option<&mut TrieNode<T>>
+    pub(crate) fn node_mut<'a, Q, I>(&mut self, values: I) -> Option<&mut TrieNode<T>>
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized + 'a,
@@ -145,21 +145,21 @@ mod tests {
     }
 
     #[test]
-    fn node_for_finds_existing_prefix() {
+    fn node_finds_existing_prefix() {
         let mut trie = Trie::new();
         trie.insert(["a", "x"]);
 
-        assert!(trie.node_for(["a"].iter()).is_some());
-        assert!(trie.node_for(["a", "x"].iter()).is_some());
-        assert!(trie.node_for(["a", "z"].iter()).is_none());
+        assert!(trie.node(["a"].iter()).is_some());
+        assert!(trie.node(["a", "x"].iter()).is_some());
+        assert!(trie.node(["a", "z"].iter()).is_none());
     }
 
     #[test]
-    fn node_for_mut_allows_insertion_from_existing_prefix() {
+    fn node_mut_allows_insertion_from_existing_prefix() {
         let mut trie = Trie::new();
         trie.insert(["a", "x"]);
 
-        let a = trie.node_for_mut(["a"].iter()).unwrap();
+        let a = trie.node_mut(["a"].iter()).unwrap();
         a.insert("y");
 
         assert!(trie.contains_prefix(["a", "x"].iter()));
