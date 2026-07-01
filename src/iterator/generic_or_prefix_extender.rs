@@ -13,9 +13,10 @@ use crate::algo::trie::Trie;
 /// - participates_in_level: true when any child participates
 pub struct GenericOrPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
-    levels: Vec<usize>,
     // TODO: We could pass to a @ must self trait for PrefixExtender, then the RefCell is not needed.
+    // This would require a larger refactor (worth it?)
     child_tries: Vec<RefCell<Trie<Extension>>>,
+    levels: Vec<usize>,
 }
 
 impl GenericOrPrefixExtender {
@@ -24,16 +25,16 @@ impl GenericOrPrefixExtender {
             !children.is_empty(),
             "OR extender requires at least one child"
         );
-        let levels = (0..num_levels)
-            .filter(|level| children[0].participates_in_level(*level))
-            .collect();
         let child_tries = (0..children.len())
             .map(|_| RefCell::new(Trie::new()))
             .collect();
+        let levels = (0..num_levels)
+            .filter(|level| children[0].participates_in_level(*level))
+            .collect();
         Self {
             children,
-            levels,
             child_tries,
+            levels,
         }
     }
 
