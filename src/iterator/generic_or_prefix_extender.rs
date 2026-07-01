@@ -5,6 +5,7 @@ use crate::algo::trie::Trie;
 
 /// An OR-combinator extender that unifies multiple child extenders with union semantics.
 ///
+/// Validation assures that all children participate in the same levels.
 /// Child tries track which branches produced each OR-relevant prefix.
 /// - count: sum of matching children's counts (upper bound)
 /// - propose: union of matching children's proposals (sorted, deduplicated)
@@ -12,6 +13,7 @@ use crate::algo::trie::Trie;
 /// - participates_in_level: true when any child participates
 pub struct GenericOrPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
+    // TODO: We could pass to a @ must self trait for PrefixExtender, then the RefCell is not needed.
     child_tries: Vec<RefCell<Trie<Extension>>>,
 }
 
