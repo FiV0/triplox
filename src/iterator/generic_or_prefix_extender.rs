@@ -1,14 +1,18 @@
+use std::cell::RefCell;
+
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
+use crate::algo::trie::Trie;
 
 /// An OR-combinator extender that unifies multiple child extenders with union semantics.
 ///
-/// All children must participate in the same levels (same free variables).
-/// - count: sum of all children's counts (upper bound)
-/// - propose: union of all children's proposals (sorted, deduplicated)
-/// - intersect: union of all children's intersections (sorted, deduplicated)
-/// - participates_in_level: delegates to the first child
+/// Child tries track which branches produced each OR-relevant prefix.
+/// - count: sum of matching children's counts (upper bound)
+/// - propose: union of matching children's proposals (sorted, deduplicated)
+/// - intersect: union of matching children's intersections (sorted, deduplicated)
+/// - participates_in_level: true when any child participates
 pub struct GenericOrPrefixExtender {
     children: Vec<Box<dyn PrefixExtender>>,
+    child_tries: Vec<RefCell<Trie<Extension>>>,
 }
 
 impl GenericOrPrefixExtender {
@@ -17,49 +21,107 @@ impl GenericOrPrefixExtender {
             !children.is_empty(),
             "OR extender requires at least one child"
         );
-        Self { children }
+        let child_tries = (0..children.len())
+            .map(|_| RefCell::new(Trie::new()))
+            .collect();
+        Self {
+            children,
+            child_tries,
+        }
+    }
+
+    fn relevant_prefix(&self, prefix: &Prefix) -> Prefix {
+        prefix
+            .iter()
+            .enumerate()
+            .filter(|(level, _)| self.child_participates_in_level(*level))
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    fn child_participates_in_level(&self, level: usize) -> bool {
+        self.children
+            .iter()
+            .any(|child| child.participates_in_level(level))
+    }
+
+    fn child_matches_prefix(&self, child_idx: usize, relevant_prefix: &Prefix) -> bool {
+        self.child_tries[child_idx]
+            .borrow()
+            .contains_prefix(relevant_prefix.iter())
+    }
+
+    fn insert_child_extensions(
+        &self,
+        child_idx: usize,
+        relevant_prefix: &Prefix,
+        extensions: &[Extension],
+    ) {
+        let mut child_trie = self.child_tries[child_idx].borrow_mut();
+        let Some(node) = child_trie.node_mut(relevant_prefix.iter()) else {
+            return;
+        };
+        for extension in extensions {
+            node.insert(extension.clone());
+        }
     }
 }
 
 impl PrefixExtender for GenericOrPrefixExtender {
     fn count(&self, prefix: &Prefix) -> usize {
+        let relevant_prefix = self.relevant_prefix(prefix);
         self.children
             .iter()
-            .fold(0, |total, child| total.saturating_add(child.count(prefix)))
+            .enumerate()
+            .filter(|(idx, _)| self.child_matches_prefix(*idx, &relevant_prefix))
+            .fold(0, |total, (_, child)| {
+                total.saturating_add(child.count(prefix))
+            })
     }
 
     fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.propose(prefix))
-            .collect();
+        let relevant_prefix = self.relevant_prefix(prefix);
+        let mut all = Vec::new();
+        for (idx, child) in self.children.iter().enumerate() {
+            if !self.child_matches_prefix(idx, &relevant_prefix) {
+                continue;
+            }
+            let proposals = child.propose(prefix);
+            self.insert_child_extensions(idx, &relevant_prefix, &proposals);
+            all.extend(proposals);
+        }
         all.sort();
         all.dedup();
         all
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.intersect(prefix, extensions))
-            .collect();
+        let relevant_prefix = self.relevant_prefix(prefix);
+        let mut all = Vec::new();
+        for (idx, child) in self.children.iter().enumerate() {
+            if !self.child_matches_prefix(idx, &relevant_prefix) {
+                continue;
+            }
+            let child_extensions = child.intersect(prefix, extensions);
+            self.insert_child_extensions(idx, &relevant_prefix, &child_extensions);
+            all.extend(child_extensions);
+        }
         all.sort();
         all.dedup();
         all
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
-        self.children[0].participates_in_level(level)
+        self.child_participates_in_level(level)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algo::generic_join::{GenericJoin, SingleLevelExtender};
-    use crate::expr::Expr;
+    use crate::algo::generic_join::{FromPrefixExtender, GenericJoin, SingleLevelExtender};
+    use crate::codec::Encode;
+    use crate::expr::{BinaryExpr, BinaryOp, Expr};
     use crate::iterator::GenericPredicatePrefixExtender;
     use crate::ops::DataType;
     use bytes::Bytes;
@@ -67,6 +129,66 @@ mod tests {
 
     fn bi(n: i32) -> Bytes {
         Bytes::from(n.to_be_bytes().to_vec())
+    }
+
+    fn b(s: &str) -> Bytes {
+        Bytes::from(s.to_string())
+    }
+
+    fn long(n: i64) -> Bytes {
+        Bytes::from(DataType::Long(n).encode())
+    }
+
+    fn lt_age_predicate(limit: i64) -> GenericPredicatePrefixExtender {
+        GenericPredicatePrefixExtender::new(
+            Expr::BinaryExpr(BinaryExpr {
+                left: Box::new(Expr::Variable("?age".to_var())),
+                op: BinaryOp::Lt,
+                right: Box::new(Expr::Literal(DataType::Long(limit))),
+            }),
+            vec![],
+            "?age".to_var(),
+            1,
+        )
+    }
+
+    #[test]
+    fn test_or_extender_intersect_does_not_leak_across_branch_prefixes() {
+        let branch_a = crate::iterator::GenericAndPrefixExtender::new(vec![
+            Box::new(FromPrefixExtender::new(vec![0], vec![b("a")])),
+            Box::new(lt_age_predicate(30)),
+        ]);
+        let branch_b = crate::iterator::GenericAndPrefixExtender::new(vec![
+            Box::new(FromPrefixExtender::new(vec![0], vec![b("b")])),
+            Box::new(lt_age_predicate(40)),
+        ]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)]);
+
+        assert_eq!(
+            or_ext.intersect(&vec![], &[b("a"), b("b")]),
+            vec![b("a"), b("b")]
+        );
+        assert_eq!(
+            or_ext.intersect(&vec![b("a")], &[long(35)]),
+            Vec::<Bytes>::new()
+        );
+        assert_eq!(or_ext.intersect(&vec![b("b")], &[long(35)]), vec![long(35)]);
+    }
+
+    #[test]
+    fn test_or_extender_predicate_only_branches_can_filter_bound_values() {
+        let branch_a =
+            crate::iterator::GenericAndPrefixExtender::new(vec![Box::new(lt_age_predicate(30))]);
+        let branch_b =
+            crate::iterator::GenericAndPrefixExtender::new(vec![Box::new(lt_age_predicate(40))]);
+        let or_ext = GenericOrPrefixExtender::new(vec![Box::new(branch_a), Box::new(branch_b)]);
+
+        assert_eq!(or_ext.intersect(&vec![], &[b("entity")]), vec![b("entity")]);
+        assert_eq!(or_ext.count(&vec![b("entity")]), usize::MAX);
+        assert_eq!(
+            or_ext.intersect(&vec![b("entity")], &[long(35)]),
+            vec![long(35)]
+        );
     }
 
     #[test]
