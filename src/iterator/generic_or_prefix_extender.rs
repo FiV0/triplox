@@ -73,8 +73,8 @@ impl PrefixExtender for GenericOrPrefixExtender {
                 continue;
             };
             let proposals = child.propose(prefix);
-            node.insert_all(&proposals);
-            all.extend(proposals);
+            all.extend(proposals.iter().cloned());
+            node.insert_all(proposals);
         }
         all.sort();
         all.dedup();
@@ -90,8 +90,8 @@ impl PrefixExtender for GenericOrPrefixExtender {
                 continue;
             };
             let child_extensions = child.intersect(prefix, extensions);
-            node.insert_all(&child_extensions);
-            all.extend(child_extensions);
+            all.extend(child_extensions.iter().cloned());
+            node.insert_all(child_extensions);
         }
         all.sort();
         all.dedup();

@@ -88,12 +88,9 @@ where
         self.children.entry(value).or_default()
     }
 
-    pub(crate) fn insert_all(&mut self, values: &[T])
-    where
-        T: Clone,
-    {
+    pub(crate) fn insert_all(&mut self, values: impl IntoIterator<Item = T>) {
         for value in values {
-            self.insert(value.clone());
+            self.insert(value);
         }
     }
 }
@@ -158,7 +155,7 @@ mod tests {
         let mut trie = Trie::new();
 
         let a = trie.root.insert(String::from("a"));
-        a.insert_all(&[String::from("x"), String::from("y")]);
+        a.insert_all(vec![String::from("x"), String::from("y")]);
 
         assert!(trie.contains_prefix([String::from("a")].iter()));
         assert!(trie.contains_prefix([String::from("a"), String::from("x")].iter()));
