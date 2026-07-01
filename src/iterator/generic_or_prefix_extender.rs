@@ -50,21 +50,6 @@ impl GenericOrPrefixExtender {
             .borrow()
             .contains_prefix(relevant_prefix.iter())
     }
-
-    fn insert_child_extensions(
-        &self,
-        child_idx: usize,
-        relevant_prefix: &Prefix,
-        extensions: &[Extension],
-    ) {
-        let mut child_trie = self.child_tries[child_idx].borrow_mut();
-        let Some(node) = child_trie.node_mut(relevant_prefix.iter()) else {
-            return;
-        };
-        for extension in extensions {
-            node.insert(extension.clone());
-        }
-    }
 }
 
 impl PrefixExtender for GenericOrPrefixExtender {
@@ -83,11 +68,12 @@ impl PrefixExtender for GenericOrPrefixExtender {
         let relevant_prefix = self.relevant_prefix(prefix);
         let mut all = Vec::new();
         for (idx, child) in self.children.iter().enumerate() {
-            if !self.child_matches_prefix(idx, &relevant_prefix) {
+            let mut child_trie = self.child_tries[idx].borrow_mut();
+            let Some(node) = child_trie.node_mut(relevant_prefix.iter()) else {
                 continue;
-            }
+            };
             let proposals = child.propose(prefix);
-            self.insert_child_extensions(idx, &relevant_prefix, &proposals);
+            node.insert_all(&proposals);
             all.extend(proposals);
         }
         all.sort();
@@ -99,11 +85,12 @@ impl PrefixExtender for GenericOrPrefixExtender {
         let relevant_prefix = self.relevant_prefix(prefix);
         let mut all = Vec::new();
         for (idx, child) in self.children.iter().enumerate() {
-            if !self.child_matches_prefix(idx, &relevant_prefix) {
+            let mut child_trie = self.child_tries[idx].borrow_mut();
+            let Some(node) = child_trie.node_mut(relevant_prefix.iter()) else {
                 continue;
-            }
+            };
             let child_extensions = child.intersect(prefix, extensions);
-            self.insert_child_extensions(idx, &relevant_prefix, &child_extensions);
+            node.insert_all(&child_extensions);
             all.extend(child_extensions);
         }
         all.sort();
