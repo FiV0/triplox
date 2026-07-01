@@ -218,6 +218,25 @@
                             [(< ?age 40)]))
                       [?e :name ?name]]}))))
 
+#_
+(deftest test-or-and-branch-predicates-stay-bound-to-same-prefix
+  (tc/transact *conn* [{:db/ident :limit
+                        :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one}])
+  (tc/transact *conn* [{:name "valid" :age 5 :salary 10 :limit 5}
+                       {:name "leaked" :age 20 :salary 10 :limit 5}])
+
+  (is (= #{["valid"]}
+         (q '{:find [?name]
+              :where [[?e :name ?name]
+                      [?e :age ?age]
+                      [?e :salary ?score]
+                      [?e :limit ?limit]
+                      (or (and [(< ?age ?score)]
+                               [(< ?limit 10)])
+                          (and [(> ?age ?score)]
+                               [(< ?limit 0)]))]}))))
+
 (deftest test-or-predicate-only-branches-can-filter-bound-values
   (tc/transact *conn* [{:name "A" :age 35}])
 
