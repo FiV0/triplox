@@ -84,7 +84,10 @@ Tokio anti-pattern.
 - The subscription stream uses a **bounded** `mpsc` with `biased`
   cancellation-safe `select!` (`server.rs:364`).
 - The `cdc.rs` poll loop is cancellation-safe.
-- Only **1 `unsafe` block** in the whole codebase.
+- **Zero `unsafe`** blocks/impls/fns in the codebase (production *or* tests). The
+  only occurrence of the token is a stale doc comment
+  (`edn/src/namespaceable_name.rs:191`) inherited from Mentat — even cleaner than
+  a prior draft's "only 1 unsafe block."
 
 ---
 
@@ -209,16 +212,184 @@ returning `Err("Key too short")` — be consistent and return errors.
 
 ---
 
+## 5. Second-pass findings (new)
+
+A follow-up sweep (locks/concurrency, untrusted-input robustness, error
+handling, hot-path perf) surfaced the items below. Each was verified against the
+source; the parser stack-overflow was reproduced empirically.
+
+### 5.0 HIGHEST — EDN parser has no recursion depth limit → whole-process stack overflow (remote DoS)
+
+The single most severe finding in this audit, and a **quick fix**.
+`edn/src/parse.rs` is a recursive-descent peg grammar with no depth guard:
+`value()` (180-187) → `vector()`/`list()`/`map()`/`set()` (161-176) →
+`value()*` recurses on the native stack per nesting level. The where-clause
+grammar is likewise self-recursive (`where_clause` 437 → `or_clause` 391 →
+`or_where_clause` 387 → `or_and_clause` 384 → `where_clause`). Reached from
+**unauthenticated** `POST /db/query` and `/db/subscribe` (`server.rs` handlers)
+via `String::into_query` → `parse_query`, in a data-pattern value position
+(`pattern_value_place` 343 → `value()`).
+
+**Reproduced:** a body of **~1–2 KB** (≈1000 nested `[` inside a pattern value,
+`[:find ?x :where [?e :a [[[[…]]]]]]`) reliably overflows a 2 MiB stack —
+Tokio's default worker/blocking-thread stack — and aborts the process with
+`SIGABRT` ("thread has overflowed its stack"). The overflow threshold sits
+between 500 and 1000 nesting levels; 50k (≈100 KB) is nowhere near the 64 MB
+body limit (`server.rs:425`, ~30,000× too generous to mitigate).
+
+This is **strictly worse than the parser `.unwrap()` panics in §2**: those
+unwind and abort only the connection *task*, but a stack overflow trips the
+guard page and calls `abort()`, killing the **entire node process** (every
+multiplexed HTTP/2 stream). A `CatchPanic` layer cannot save it. Fix: thread a
+depth counter through the recursive rules (or a cheap pre-parse
+bracket-depth/paren-depth check) and reject beyond a sane limit as a clean
+`ParseError`.
+
+Related (LOW): the storage codec recurses without a limit too —
+`codec.rs` `decode_datatype` (379) → `decode_datatype_payload` (388) →
+`decode_composite` (406-418) / `decode_map` (420-440), plus the `skip_*` /
+`encode_*` variants. For client data the nesting is capped at write time by
+rmpv's msgpack depth limit (~1024), so this is a stack-overflow risk only on
+corrupt/adversarial on-disk bytes — a distinct site from the guarded-`unwrap`
+fragility in §2.
+
+### 5.1 Async / concurrency (new)
+
+- **HIGH — One slow subscriber stalls the entire node (head-of-line
+  blocking).** The incremental-query subsystem runs on a *single* dedicated OS
+  thread behind a *single* command channel. When the CDC loop applies a tx it
+  holds the async `registration_gate` across the whole apply
+  (`incremental/cdc.rs:103-104`), and the per-query fan-out
+  (`incremental.rs:409-428`) calls `send_delta`, which `block_on`s a **bounded
+  128-slot** per-subscriber channel (`incremental.rs:287`). If one HTTP
+  subscriber stops reading, its channel fills → `send_delta` blocks the one
+  service thread indefinitely → because `registration_gate` is held across the
+  stalled `apply_triples().await`, this simultaneously (a) freezes delta
+  delivery to *every other* query, (b) blocks *all* new `register_query` calls
+  (they wait on the same gate, `incremental.rs:142`), and (c) halts CDC/WAL
+  progress node-wide. Per-connection backpressure becomes a global stall; only
+  shutdown-cancel recovers. (The `block_on` at 287 is mechanically fine on a
+  dedicated thread — it's the *global* consequence that's the bug.)
+- **MED — Blocking `thread::join()` inside `Drop` on a possible runtime worker.**
+  `kafka_log.rs:170-178` `LiveConsumer::drop` calls `handle.join()`; the
+  consumer only checks its stop flag between `poll(Timeout::After(100ms))` calls
+  (`kafka_log.rs:207`). `LiveConsumer` is owned by `KafkaLog` (`_live_consumer`,
+  `:247`), so dropping a node from async shutdown code can block a Tokio worker
+  for up to ~100 ms.
+- **MED — Wrong lock primitive: async guard never crosses an `.await`.**
+  `file_log.rs` uses `tokio::sync::Mutex<FileLogState>` and `memory_log.rs` uses
+  `tokio::sync::RwLock<MemoryLogState>`, but every critical section is fully
+  synchronous (`stream_position`/`serialize_into`/`flush`/`sync_data`, resp.
+  `clock.now()` + `Vec::push`) — no `.await` under any guard. These should be
+  `std::sync::Mutex`/`RwLock`. In `file_log` the async mutex also *obscures* that
+  it holds a lock while doing a blocking `fsync` (the §1 blocking-fsync finding).
+- **LOW — Dropped `JoinHandle` on the signal-handler spawn** (`main.rs:26-47`) —
+  same class as the `log.rs` §1 finding; a panic in the SIGINT/SIGTERM handler
+  is silently swallowed and shutdown is never signalled. (Process-lifetime task,
+  so low blast radius.)
+
+### 5.2 Error handling (new)
+
+- **HIGH — Incremental-query CDC loop dies silently on the first error.**
+  `incremental/cdc.rs:94-104`: every step uses `?` (`next_transaction`,
+  `datoms_from_cdc_transaction`, `tx_key_from_datoms`, `datoms_to_tuples`,
+  `apply_triples`). On any `Err` the task returns and exits. `spawn_cdc_loop`
+  (`cdc.rs:69`) is a bare `tokio::spawn`; the `JoinHandle<Result<()>>` is
+  inspected **only** at shutdown (`await_cdc_task`, `incremental.rs:250`), never
+  during operation, and the error path logs *nothing* (only the Ok path logs
+  `info!`). Per-query delta senders stay alive, so subscribers' receivers never
+  see a close and client subscriptions (`server.rs:382` `deltas.recv()`) hang
+  forever with no error frame. A single transient object-store/WAL read error
+  thus silently kills the whole incremental-query subsystem. Contrast
+  `log.rs:79-89` `catch_up_transactions`, which retries reads with exponential
+  backoff — mirror that.
+- **MED — `FileLog` treats mid-file corruption as clean EOF.**
+  `file_log.rs:90-95` (and `83-86`): `bincode::deserialize_from(...) Err(_) =>
+  break // EOF or corrupted data`. bincode returns `Err` for both clean EOF and
+  genuine corruption and the code can't distinguish them, so a torn record
+  mid-file is read as end-of-log. Since `catch_up_transactions` treats a
+  short/empty batch as "caught up" (`log.rs:60/72`), every record after the
+  corruption is silently dropped and the subscriber stops — no error logged.
+- **MED — `anyhow` errors flattened to `String` across an internal thread
+  boundary.** `incremental.rs:73` `type ServiceResult<T> = Result<T, String>`,
+  with `map_err(|err| format!("{:#}", err))` at `:370/:373/:418`, re-wrapped as
+  `anyhow!("{}", err)` at callers (`:213/:224/:245/:259`). `QueryCircuit` errors
+  are already `Send + Sync` `anyhow::Error` and channel-safe; stringifying loses
+  type/backtrace at an internal (non-wire) boundary.
+- **LOW — `broadcast` send failure logged as `warn!` on the normal
+  no-subscribers path.** `memory_log.rs:84-90` and `file_log.rs:125-127`:
+  `broadcast::Sender::send` only errors when `receiver_count == 0` (a normal
+  condition), yet warns on *every* append when nobody is subscribed
+  (`memory_log` even carries a TODO questioning this).
+- **LOW — `Drop` swallows query-storage removal errors.**
+  `incremental.rs:495-498` `let _ = self.remove_all_queries();` discards a
+  `Result` that deletes on-disk DBSP storage dirs — filesystem errors silently
+  leak storage with no log line.
+
+### 5.3 Untrusted-input / resource limits (new)
+
+- **MED — No cap on concurrent incremental-query registrations (subscription
+  DoS).** `incremental.rs:312` (`queries` map) / `:376` (insert) / `:409`
+  (per-tx fan-out); entry via `server.rs:319` → `node.rs` `register_query`. Each
+  `POST /db/subscribe` registers a query held for the lifetime of the HTTP/2
+  stream, with no cap; cleanup only reclaims streams the client already dropped.
+  An attacker holding many open subscription streams grows the map unboundedly
+  **and** multiplies per-transaction indexing work by N (memory + CPU
+  amplification). Compounds the 5.1 head-of-line-blocking issue.
+
+*(Verified clean: the 64 MB body limit is present (`server.rs:425`); msgpack
+decode is depth-limited (rmpv 1024) and never pre-allocates from claimed lengths;
+no truncating `as` casts on the tx/query attack surface; the `regex` predicate
+path is linear-time (no ReDoS); response parsing in `triplox-client` checks
+status before decoding and guards all slice reads.)*
+
+### 5.4 Performance / hot path (new)
+
+- **MED — `SingleLevelExtender::intersect` rebuilds a `HashSet` over
+  already-sorted values every call** (`algo/generic_join.rs:57-64`). `values` is
+  sorted in `new()`, yet `intersect` allocates + fills a fresh `HashSet` per
+  call — once per prefix for every non-proposing extender (e.g. a `BindColl`
+  `:in` binding). Use `binary_search` on the sorted slice instead.
+- **MED — `GenericPredicatePrefixExtender::intersect` builds a `HashMap` per
+  candidate extension** (`iterator/generic_predicate_prefix_extender.rs:63-78`).
+  Prefix bindings are pre-decoded once (good), but a fresh
+  `HashMap<Variable, &DataType>` — with a `Variable` (Arc) clone per entry — is
+  constructed *inside* the filter closure for every extension. Build the base map
+  once and update only the extension-var entry per row.
+- **MED — `CountDistinctAccumulator` bincode-serializes every value**
+  (`aggregate.rs:47-55`): a per-row `Vec<u8>` into `HashSet<Vec<u8>>`. `DataType`
+  already derives `Hash`/`Eq`, so `HashSet<DataType>` (`value.clone()`) drops the
+  per-row allocation and the serialize step for scalar variants.
+- **LOW (churn worth noting):** `apply_extensions` clones the whole `prefix`
+  `Vec` per output tuple (`algo/generic_join.rs:20-29`; the final extension could
+  consume it); `make_extractor_fn` boxes a fresh `Box<dyn Fn>` per
+  `count`/`propose`/`intersect` (`iterator/generic_prefix_extender.rs:139-154`);
+  unique-constraint validation double-clones the datom value on the write path
+  (`indexer.rs:517-524`).
+
+---
+
 ## Suggested fix priority
 
-1. **EDN parser overflow panics** (`parse.rs`) — convert integer/inst/uuid rules
+1. **EDN parser recursion depth limit** (§5.0, `parse.rs`) — add a depth
+   counter/guard to the recursive rules. A ~2 KB request aborts the *whole
+   process*; this is the highest-severity, network-reachable item and is a quick,
+   self-contained fix. *(Quick win.)*
+2. **EDN parser overflow panics** (`parse.rs`) — convert integer/inst/uuid rules
    to fallible `{?}`; small, self-contained, closes a network-reachable DoS.
    *(Quick win.)*
-2. **Blocking I/O in async** — wrap `file_log.rs` reads/flush/fsync in
-   `spawn_blocking`; switch `create_dir_all` to `tokio::fs`.
-3. **Make `PrefixExtender` fallible** — stops query-time SlateDB errors from
+3. **Silent failures in the incremental-query path** (§5.1/§5.2) —
+   (a) don't hold `registration_gate` across `apply_triples`, and bound/parallelize
+   delta delivery so one slow subscriber can't stall the node; (b) make the CDC
+   loop log + retry (mirror `catch_up_transactions`) instead of dying silently
+   and hanging every subscriber.
+4. **Blocking I/O in async** — wrap `file_log.rs` reads/flush/fsync in
+   `spawn_blocking`; switch `create_dir_all` to `tokio::fs`; switch the
+   `file_log`/`memory_log` locks to `std::sync` (§5.1).
+5. **Make `PrefixExtender` fallible** — stops query-time SlateDB errors from
    panicking; also fixes `schema.rs` load and `circuit.rs` to return `Result`.
-4. **Codec & key-length math** — `get(..N)?` / `checked_sub` so corrupt bytes
+6. **Codec & key-length math** — `get(..N)?` / `checked_sub` so corrupt bytes
    can't panic.
-5. **Document + guard the `block_on` / `spawn_blocking` invariant**; retain the
-   `log.rs` subscriber `JoinHandle`; add client timeouts.
+7. **Document + guard the `block_on` / `spawn_blocking` invariant**; retain the
+   `log.rs` subscriber `JoinHandle`; add client timeouts; cap concurrent
+   subscriptions (§5.3).
