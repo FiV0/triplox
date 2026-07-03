@@ -56,7 +56,7 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
         prefix: &Prefix,
         extensions: &[Extension],
     ) -> Result<Vec<Extension>, Error> {
-        // Pre-decode prefix variables once (same for all extensions).
+        // Pre-decode prefix variables and extension values once.
         let prefix_values: Vec<(Variable, DataType)> = self
             .prefix_vars
             .iter()
@@ -66,18 +66,21 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
                     .map_err(Error::from)
             })
             .collect::<Result<_, _>>()?;
+        let ext_values: Vec<DataType> = extensions
+            .iter()
+            .map(|ext| DataType::decode(ext).map_err(Error::from))
+            .collect::<Result<_, _>>()?;
+
+        // Build the bindings once; only the extension-var entry changes per row.
+        let bindings: HashMap<Variable, &DataType> = prefix_values
+            .iter()
+            .map(|(var, dt)| (var.clone(), dt))
+            .collect();
+        let mut ctx = EvalContext::new(bindings);
 
         let mut result = Vec::new();
-        for ext in extensions {
-            let ext_val = DataType::decode(ext)?;
-
-            let mut bindings: HashMap<Variable, &DataType> = prefix_values
-                .iter()
-                .map(|(var, dt)| (var.clone(), dt))
-                .collect();
-            bindings.insert(self.extension_var.clone(), &ext_val);
-
-            let ctx = EvalContext::new(bindings);
+        for (ext, ext_val) in extensions.iter().zip(ext_values.iter()) {
+            ctx.bind(self.extension_var.clone(), ext_val);
             if evaluate_as_bool(&self.expr, &ctx) {
                 result.push(ext.clone());
             }
