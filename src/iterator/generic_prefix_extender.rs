@@ -146,7 +146,9 @@ where
             _ => pattern_level + 1,
         };
 
-        Box::new(move |key: Bytes| make_extractor(position, index_type)(key))
+        // Box the extractor closure directly instead of wrapping it in another
+        // closure that would rebuild it on every key.
+        Box::new(make_extractor(position, index_type))
     }
 }
 

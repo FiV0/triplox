@@ -264,4 +264,4 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 27. `incremental.rs:495-498`: `Drop` swallows `remove_all_queries` errors → log them (§5.2 LOW)
 - [x] 28. `generic_predicate_prefix_extender.rs:63-78`: per-extension `HashMap` rebuild → build base map once (§5.4 MED)
 - [x] 29. `aggregate.rs:47-55`: `CountDistinctAccumulator` bincode round-trip → `HashSet<DataType>` (§5.4 MED)
-- [ ] 30. Churn: `apply_extensions` prefix clone, `make_extractor_fn` re-boxing, `indexer.rs:517-524` double clone (§5.4 LOW)
+- [x] 30. Churn: `apply_extensions` prefix clone, `make_extractor_fn` re-boxing, `indexer.rs:517-524` double clone (§5.4 LOW)

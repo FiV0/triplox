@@ -18,16 +18,22 @@ pub trait PrefixExtender {
     fn participates_in_level(&self, level: usize) -> bool;
 }
 
-/// Applies extensions to a prefix, creating new result tuples
-pub fn apply_extensions(prefix: &Prefix, extensions: &[Extension]) -> Vec<ResultTuple> {
-    extensions
-        .iter()
-        .map(|ext| {
-            let mut tuple = prefix.clone();
-            tuple.push(ext.clone());
-            tuple
-        })
-        .collect()
+/// Applies extensions to a prefix, creating new result tuples.
+/// Consumes the prefix so the final tuple reuses its allocation.
+pub fn apply_extensions(prefix: Prefix, extensions: &[Extension]) -> Vec<ResultTuple> {
+    let mut tuples = Vec::with_capacity(extensions.len());
+    let Some((last, rest)) = extensions.split_last() else {
+        return tuples;
+    };
+    for ext in rest {
+        let mut tuple = prefix.clone();
+        tuple.push(ext.clone());
+        tuples.push(tuple);
+    }
+    let mut tuple = prefix;
+    tuple.push(last.clone());
+    tuples.push(tuple);
+    tuples
 }
 
 /// A simple extender that participates in a single level with a fixed set of values
@@ -330,15 +336,18 @@ impl<'a> GenericSingleJoin<'a> {
         }
     }
 
-    pub fn join(&self) -> Result<Vec<Prefix>, Error> {
+    pub fn join(self) -> Result<Vec<Prefix>, Error> {
+        let Self {
+            extenders,
+            prefixes,
+        } = self;
         let mut results = Vec::new();
 
-        for prefix in &self.prefixes {
+        for prefix in prefixes {
             // Find the extender that proposes the least extensions
-            let counts = self
-                .extenders
+            let counts = extenders
                 .iter()
-                .map(|ext| ext.count(prefix))
+                .map(|ext| ext.count(&prefix))
                 .collect::<Result<Vec<_>, _>>()?;
             let min_index = counts
                 .iter()
@@ -348,12 +357,12 @@ impl<'a> GenericSingleJoin<'a> {
                 .unwrap();
 
             // Propose extensions from that extender
-            let mut extensions = self.extenders[min_index].propose(prefix)?;
+            let mut extensions = extenders[min_index].propose(&prefix)?;
 
             // Intersect with all other extenders
-            for (i, extender) in self.extenders.iter().enumerate() {
+            for (i, extender) in extenders.iter().enumerate() {
                 if i != min_index {
-                    extensions = extender.intersect(prefix, &extensions)?;
+                    extensions = extender.intersect(&prefix, &extensions)?;
                 }
             }
 
