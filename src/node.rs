@@ -18,7 +18,7 @@ use crate::incremental::{
 use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
-use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{subscribe, LogSubscription, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::partition::tx_eid_from_tx_id;
@@ -135,7 +135,7 @@ pub struct Node<L: TxLog> {
     log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
     pub(crate) slate: SlateComponents,
-    subscription: CancellationToken,
+    subscription: LogSubscription,
     incremental: IncrementalQueryService,
 }
 
@@ -188,7 +188,7 @@ impl<L: TxLog> Node<L> {
         let incremental = IncrementalQueryService::new(
             incremental_storage_path,
             Handle::current(),
-            subscription.clone(),
+            subscription.token.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
         );
@@ -230,7 +230,7 @@ impl Node<MemoryLog> {
                 crate::util::random_string(10)
             )),
             Handle::current(),
-            subscription.clone(),
+            subscription.token.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
         );
@@ -319,17 +319,28 @@ impl Node<KafkaLog> {
 impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
         let incremental_result = self.incremental.shutdown().await;
-        self.subscription.cancel();
+        let subscription_result = self.subscription.shutdown().await;
         let db_result = self.slate.db.close().await.map_err(Error::from);
 
-        match (incremental_result, db_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(incremental_err), Err(db_err)) => Err(anyhow::anyhow!(
-                "Incremental query shutdown failed: {:#}; SlateDB close failed: {:#}",
-                incremental_err,
-                db_err
-            )),
+        let errors: Vec<String> = [
+            incremental_result
+                .err()
+                .map(|e| format!("Incremental query shutdown failed: {:#}", e)),
+            subscription_result
+                .err()
+                .map(|e| format!("Log subscription shutdown failed: {:#}", e)),
+            db_result
+                .err()
+                .map(|e| format!("SlateDB close failed: {:#}", e)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(errors.join("; ")))
         }
     }
 

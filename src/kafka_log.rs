@@ -674,7 +674,7 @@ mod tests {
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
 
         let log = Arc::new(KafkaLog::new(&bootstrap, topic.clone()).await.unwrap());
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         let tx_key_0 = log.append_tx(vec![1, 2, 3]).await.unwrap();
         let tx_key_1 = log.append_tx(vec![4, 5, 6]).await.unwrap();
@@ -682,7 +682,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
@@ -699,14 +699,14 @@ mod tests {
 
         // Subscribe after second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await;
+        let subscription2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await;
 
         log.append_tx(vec![10, 11, 12]).await.unwrap();
         log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        token2.cancel();
+        subscription2.shutdown().await.unwrap();
 
         let subscriber2 = subscriber2.read().await;
 
@@ -734,11 +734,11 @@ mod tests {
 
         // Subscribe from the beginning
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
         assert_eq!(
@@ -785,7 +785,7 @@ mod tests {
 
         let log = Arc::new(KafkaLog::new(&bootstrap, topic.clone()).await.unwrap());
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", &bootstrap)
@@ -816,7 +816,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 1);

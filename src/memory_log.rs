@@ -114,7 +114,7 @@ mod tests {
             st_from_unix_epoch(400),
         ]);
         let log = Arc::new(MemoryLog::new(Box::new(clock)));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         log.append_tx(vec![1, 2, 3]).await.unwrap();
         log.append_tx(vec![4, 5, 6]).await.unwrap();
@@ -122,7 +122,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
@@ -162,14 +162,14 @@ mod tests {
         drop(subscriber);
 
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
+        let subscription2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
         log.append_tx(vec![10, 11, 12]).await.unwrap();
         log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        token2.cancel();
+        subscription2.shutdown().await.unwrap();
 
         let subscriber2 = subscriber2.read().await;
 
@@ -190,7 +190,7 @@ mod tests {
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -204,7 +204,7 @@ mod tests {
         .expect("timed out waiting for subscriber to process first record");
         tokio::time::sleep(Duration::from_millis(25)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
