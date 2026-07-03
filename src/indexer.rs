@@ -465,6 +465,8 @@ impl Indexer {
             resolved_datoms.insert(datom);
         }
 
+        // HashSet iteration makes datom order nondeterministic; fine today since
+        // downstream (index writes, CDC encoding) is order-independent.
         Ok(resolved_datoms.into_iter().collect())
     }
 
