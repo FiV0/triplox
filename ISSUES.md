@@ -233,6 +233,19 @@ returning `Err("Key too short")` — be consistent and return errors.
 
 ---
 
+## Discovered during fixes (not yet addressed)
+
+- **LOW — `DataType` `Eq`/`Hash` disagree on NaN.**
+  `triplox-client/src/ops.rs:61-63`: `impl Eq for DataType {}` sits on top of a
+  derived `PartialEq` (so `Double(NaN) != Double(NaN)`), while the manual
+  `Hash` uses `to_bits()` (so both NaNs hash equal). This violates the
+  `Eq`/`Hash` contract for NaN values: hash-based containers
+  (`HashSet<DataType>`, e.g. in `CountDistinctAccumulator`) will treat each
+  NaN as distinct despite identical hashes. Decide on bitwise equality
+  (compare via `to_bits()` in `PartialEq`) or exclude NaN at ingestion.
+
+---
+
 ## Checklist
 
 - [x] 1. `file_log.rs`: `read_txs_after` blocking file I/O in async fn → `spawn_blocking` (§1 HIGH)
