@@ -417,7 +417,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
             // TODO: Assure identical errors on live and reconstruction path. See #393.
             TxOutcome::Aborted(e) => Ok(TransactionResult::TxAborted(
                 completion.tx_key,
-                anyhow::anyhow!("{:#}", e).into(),
+                anyhow::anyhow!("{:#}", e),
             )),
             // A technical indexer failure wrote no tx entity; surface it as an error.
             TxOutcome::Failed(e) => Err(anyhow::anyhow!("{:#}", e)),

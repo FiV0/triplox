@@ -185,7 +185,7 @@ impl SubmitNode for ClientNode {
                 .unwrap_or_else(|| "transaction aborted".to_string());
             Ok(TransactionResult::TxAborted(
                 tx_key,
-                anyhow::anyhow!("{}", err_msg).into(),
+                anyhow::anyhow!("{}", err_msg),
             ))
         }
     }

@@ -253,7 +253,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 16. `index.rs:13-20`: `Bytes → Vec → Bytes` round-trip → zero-copy `slice(1..)` (§4; also fixed `remove_index_type` keeping the type byte instead of stripping it)
 - [x] 17. `indexer.rs:468`: `HashSet → Vec` ordering comment (§4)
 - [x] 18. `edn/types.rs:654-680`: `FromMicros`/`FromMillis` panic → dedupe onto `protocol::micros_to_datetime` (§4; the traits were unused everywhere, so they were removed outright)
-- [ ] 19. Minor idiom fixes: `Box<dyn Error>` in `transaction.rs:15`, `unwrap_or(vec![])` in `edn/query.rs:1075`, needless query `.clone()` in `ops.rs:53` (§4)
+- [x] 19. Minor idiom fixes: `Box<dyn Error>` in `transaction.rs:15`, `unwrap_or(vec![])` in `edn/query.rs:1075`, needless query `.clone()` in `ops.rs:53` (§4; the `&ParsedQuery` clone is inherent to the by-value `IntoQuery` contract and stays TODO'd — changing the trait to `Cow` is not worth the API churn)
 - [ ] 20. Incremental subsystem head-of-line blocking: slow subscriber stalls CDC/registration node-wide (§5.1 HIGH)
 - [ ] 21. `kafka_log.rs:170-178`: blocking `thread::join()` in `Drop` (§5.1 MED)
 - [ ] 22. `memory_log.rs`: `tokio::sync::RwLock` never held across `.await` → `std::sync::RwLock` (§5.1 MED; `file_log` half done in item 2)
