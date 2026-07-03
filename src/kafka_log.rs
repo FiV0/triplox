@@ -170,10 +170,22 @@ struct LiveConsumer {
 impl Drop for LiveConsumer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(handle) = self.handle.take() {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let join = move || {
             if handle.join().is_err() {
                 error!("Kafka live consumer thread panicked while stopping");
             }
+        };
+        // The consumer only checks the stop flag between 100ms polls, so the
+        // join can block that long. When dropped on a Tokio worker (async
+        // shutdown), run it off the runtime instead of stalling the worker.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn_blocking(join);
+            }
+            Err(_) => join(),
         }
     }
 }
