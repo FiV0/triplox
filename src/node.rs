@@ -257,14 +257,14 @@ impl Node<FileLog> {
     }
 
     pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
-        std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
+        tokio::fs::create_dir_all(&db_path).await?;
         let slate = local_slate(&db_path).await;
         if let Some(parent) = log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         Self::from_slate_and_log(slate, log_path, storage_path.join("dbsp")).await
     }
@@ -277,9 +277,9 @@ impl Node<FileLog> {
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        std::fs::create_dir_all(&storage.cache_path)?;
+        tokio::fs::create_dir_all(&storage.cache_path).await?;
         let cache_path = storage.cache_path.join("cache");
         let slate = remote_slate(
             &storage.endpoint,
@@ -300,7 +300,7 @@ impl Node<KafkaLog> {
         storage: &RemoteStorageConfig,
         log: &KafkaLogConfig,
     ) -> Result<Self, Error> {
-        std::fs::create_dir_all(&storage.cache_path)?;
+        tokio::fs::create_dir_all(&storage.cache_path).await?;
         let cache_path = storage.cache_path.join("cache");
         let slate = remote_slate(
             &storage.endpoint,
