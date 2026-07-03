@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use anyhow::{bail, Error};
+
 use crate::algo::generic_join::{
     Extension, GenericJoin, Prefix, PrefixAndExtensionsExtender, PrefixExtender,
 };
@@ -23,15 +25,19 @@ impl GenericNotPrefixExtender {
 }
 
 impl PrefixExtender for GenericNotPrefixExtender {
-    fn count(&self, _prefix: &Prefix) -> usize {
-        usize::MAX
+    fn count(&self, _prefix: &Prefix) -> Result<usize, Error> {
+        Ok(usize::MAX)
     }
 
-    fn propose(&self, _prefix: &Prefix) -> Vec<Extension> {
-        panic!("Propose should not be called on NOT prefix extender — variable is not bound by positive clauses")
+    fn propose(&self, _prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        bail!("Propose should not be called on NOT prefix extender — variable is not bound by positive clauses")
     }
 
-    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+    fn intersect(
+        &self,
+        prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
         let pinning_extender =
             PrefixAndExtensionsExtender::new(prefix.clone(), extensions.to_vec());
 
@@ -41,16 +47,16 @@ impl PrefixExtender for GenericNotPrefixExtender {
 
         let inner_join = GenericJoin::new(all_extenders, prefix.len() + 1);
         let extensions_to_remove: HashSet<Extension> = inner_join
-            .join()
+            .join()?
             .into_iter()
             .filter_map(|tuple| tuple.last().cloned())
             .collect();
 
-        extensions
+        Ok(extensions
             .iter()
             .filter(|ext| !extensions_to_remove.contains(*ext))
             .cloned()
-            .collect()
+            .collect())
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -71,14 +77,16 @@ mod tests {
     #[test]
     fn test_count_returns_max() {
         let not_ext = GenericNotPrefixExtender::new(vec![], 0);
-        assert_eq!(not_ext.count(&vec![]), usize::MAX);
+        assert_eq!(not_ext.count(&vec![]).unwrap(), usize::MAX);
     }
 
     #[test]
-    #[should_panic(expected = "Propose should not be called on NOT prefix extender")]
-    fn test_propose_panics() {
+    fn test_propose_errors() {
         let not_ext = GenericNotPrefixExtender::new(vec![], 0);
-        not_ext.propose(&vec![]);
+        let err = not_ext.propose(&vec![]).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Propose should not be called on NOT prefix extender"));
     }
 
     #[test]
@@ -105,7 +113,7 @@ mod tests {
         let prefix = vec![bi(6)];
         let extensions: Vec<Bytes> = (1..=10).map(bi).collect();
 
-        let result = not_ext.intersect(&prefix, &extensions);
+        let result = not_ext.intersect(&prefix, &extensions).unwrap();
 
         // Should remove 3, 6, 9 — keep 1, 2, 4, 5, 7, 8, 10
         assert_eq!(result.len(), 7);
@@ -135,11 +143,11 @@ mod tests {
         let extensions: Vec<Bytes> = (1..=10).map(bi).collect();
 
         // Prefix [4] — even number, so div-by-3 extensions are removed
-        let result_even = not_ext.intersect(&vec![bi(4)], &extensions);
+        let result_even = not_ext.intersect(&vec![bi(4)], &extensions).unwrap();
         assert_eq!(result_even.len(), 7); // removes 3, 6, 9
 
         // Prefix [3] — odd number, even_extender won't match, so nothing removed
-        let result_odd = not_ext.intersect(&vec![bi(3)], &extensions);
+        let result_odd = not_ext.intersect(&vec![bi(3)], &extensions).unwrap();
         assert_eq!(result_odd.len(), 10); // nothing removed
     }
 
@@ -157,7 +165,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &level1, &not_ext];
         let join = GenericJoin::new(extenders, 2);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         // Each of 5 prefixes should have 3 extensions (1, 3, 5) = 15 total
         assert_eq!(result.len(), 15);

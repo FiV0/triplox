@@ -1204,7 +1204,7 @@ where
     // 4. Run GenericJoin
     let extender_refs: Vec<&dyn PrefixExtender> = extenders.iter().map(|e| e.as_ref()).collect();
     let join = GenericJoin::new(extender_refs, num_levels);
-    let results = join.join();
+    let results = join.join()?;
 
     // 5. Project and aggregate results based on find clause
     let plan = compile_find_plan(&query.find_spec, &var_index)?;

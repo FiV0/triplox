@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anyhow::Error;
 use bytes::Bytes;
 
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
@@ -36,15 +37,17 @@ impl GenericFnPrefixExtender {
     }
 
     /// Evaluate the expression against the given prefix, returning the serialized result.
-    fn compute(&self, prefix: &Prefix) -> Option<Extension> {
+    /// `Ok(None)` means the expression did not evaluate (e.g. type mismatch).
+    fn compute(&self, prefix: &Prefix) -> Result<Option<Extension>, Error> {
         let prefix_values: Vec<(Variable, DataType)> = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
-                (var.clone(), dt)
+                DataType::decode(&prefix[*idx])
+                    .map(|dt| (var.clone(), dt))
+                    .map_err(Error::from)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         let bindings: HashMap<Variable, &DataType> = prefix_values
             .iter()
@@ -52,32 +55,35 @@ impl GenericFnPrefixExtender {
             .collect();
 
         let ctx = EvalContext::new(bindings);
-        let result = evaluate(&self.expr, &ctx)?;
-        Some(Bytes::from(result.as_ref().encode()))
+        Ok(evaluate(&self.expr, &ctx).map(|result| Bytes::from(result.as_ref().encode())))
     }
 }
 
 impl PrefixExtender for GenericFnPrefixExtender {
-    fn count(&self, _prefix: &Prefix) -> usize {
-        1
+    fn count(&self, _prefix: &Prefix) -> Result<usize, Error> {
+        Ok(1)
     }
 
-    fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
-        match self.compute(prefix) {
+    fn propose(&self, prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        Ok(match self.compute(prefix)? {
             Some(ext) => vec![ext],
             None => vec![],
-        }
+        })
     }
 
-    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        match self.compute(prefix) {
+    fn intersect(
+        &self,
+        prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
+        Ok(match self.compute(prefix)? {
             Some(result) => extensions
                 .iter()
                 .filter(|ext| **ext == result)
                 .cloned()
                 .collect(),
             None => vec![],
-        }
+        })
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -99,7 +105,7 @@ mod tests {
     #[test]
     fn test_count_returns_one() {
         let ext = GenericFnPrefixExtender::new(Expr::Literal(DataType::Long(42)), vec![], 0);
-        assert_eq!(ext.count(&vec![]), 1);
+        assert_eq!(ext.count(&vec![]).unwrap(), 1);
     }
 
     #[test]
@@ -115,7 +121,7 @@ mod tests {
     fn test_propose_constant_expr() {
         // Expression that evaluates to a constant (no variables)
         let ext = GenericFnPrefixExtender::new(Expr::Literal(DataType::Long(42)), vec![], 0);
-        let result = ext.propose(&vec![]);
+        let result = ext.propose(&vec![]).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(42));
     }
@@ -134,7 +140,7 @@ mod tests {
         );
 
         let prefix = vec![serialize(&DataType::Long(-5))];
-        let result = ext.propose(&prefix);
+        let result = ext.propose(&prefix).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(5));
     }
@@ -150,7 +156,7 @@ mod tests {
         let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::Long(25))];
-        let result = ext.propose(&prefix);
+        let result = ext.propose(&prefix).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(35));
     }
@@ -173,7 +179,7 @@ mod tests {
             serialize(&DataType::Long(10)),
             serialize(&DataType::Long(20)),
         ];
-        let result = ext.propose(&prefix);
+        let result = ext.propose(&prefix).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(30));
     }
@@ -189,7 +195,7 @@ mod tests {
         let ext = GenericFnPrefixExtender::new(expr, vec![("?x".to_var(), 0)], 1);
 
         let prefix = vec![serialize(&DataType::String("hello".to_string()))];
-        let result = ext.propose(&prefix);
+        let result = ext.propose(&prefix).unwrap();
         assert!(result.is_empty());
     }
 
@@ -210,7 +216,7 @@ mod tests {
             serialize(&DataType::Long(40)),
         ];
 
-        let result = ext.intersect(&prefix, &extensions);
+        let result = ext.intersect(&prefix, &extensions).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(35));
     }
@@ -231,7 +237,7 @@ mod tests {
             serialize(&DataType::Long(40)),
         ];
 
-        let result = ext.intersect(&prefix, &extensions);
+        let result = ext.intersect(&prefix, &extensions).unwrap();
         assert!(result.is_empty());
     }
 
@@ -255,7 +261,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &fn_ext];
         let join = GenericJoin::new(extenders, 2);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         assert_eq!(result.len(), 3);
         // Each tuple has [original, original+1]
@@ -295,7 +301,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &level1, &fn_ext];
         let join = GenericJoin::new(extenders, 3);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         // 3 ages × 2 names = 6 tuples, each with a computed age+1
         assert_eq!(result.len(), 6);
@@ -315,7 +321,7 @@ mod tests {
             0,
         );
 
-        let result = ext.propose(&vec![]);
+        let result = ext.propose(&vec![]).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(3));
     }

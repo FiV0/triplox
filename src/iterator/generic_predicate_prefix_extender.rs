@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use anyhow::{bail, Error};
+
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 use crate::codec::Decode;
 use crate::expr::{evaluate_as_bool, EvalContext, Expr};
@@ -41,41 +43,46 @@ impl GenericPredicatePrefixExtender {
 }
 
 impl PrefixExtender for GenericPredicatePrefixExtender {
-    fn count(&self, _prefix: &Prefix) -> usize {
-        usize::MAX
+    fn count(&self, _prefix: &Prefix) -> Result<usize, Error> {
+        Ok(usize::MAX)
     }
 
-    fn propose(&self, _prefix: &Prefix) -> Vec<Extension> {
-        panic!("Propose should not be called on predicate prefix extender")
+    fn propose(&self, _prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        bail!("Propose should not be called on predicate prefix extender")
     }
 
-    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+    fn intersect(
+        &self,
+        prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
         // Pre-decode prefix variables once (same for all extensions).
         let prefix_values: Vec<(Variable, DataType)> = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
-                (var.clone(), dt)
+                DataType::decode(&prefix[*idx])
+                    .map(|dt| (var.clone(), dt))
+                    .map_err(Error::from)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
-        extensions
-            .iter()
-            .filter(|ext| {
-                let ext_val = DataType::decode(ext).expect("failed to decode extension value");
+        let mut result = Vec::new();
+        for ext in extensions {
+            let ext_val = DataType::decode(ext)?;
 
-                let mut bindings: HashMap<Variable, &DataType> = prefix_values
-                    .iter()
-                    .map(|(var, dt)| (var.clone(), dt))
-                    .collect();
-                bindings.insert(self.extension_var.clone(), &ext_val);
+            let mut bindings: HashMap<Variable, &DataType> = prefix_values
+                .iter()
+                .map(|(var, dt)| (var.clone(), dt))
+                .collect();
+            bindings.insert(self.extension_var.clone(), &ext_val);
 
-                let ctx = EvalContext::new(bindings);
-                evaluate_as_bool(&self.expr, &ctx)
-            })
-            .cloned()
-            .collect()
+            let ctx = EvalContext::new(bindings);
+            if evaluate_as_bool(&self.expr, &ctx) {
+                result.push(ext.clone());
+            }
+        }
+        Ok(result)
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -104,19 +111,19 @@ mod tests {
             "?x".to_var(),
             0,
         );
-        assert_eq!(ext.count(&vec![]), usize::MAX);
+        assert_eq!(ext.count(&vec![]).unwrap(), usize::MAX);
     }
 
     #[test]
-    #[should_panic(expected = "Propose should not be called")]
-    fn test_propose_panics() {
+    fn test_propose_errors() {
         let ext = GenericPredicatePrefixExtender::new(
             Expr::Literal(DataType::Boolean(true)),
             vec![],
             "?x".to_var(),
             0,
         );
-        ext.propose(&vec![]);
+        let err = ext.propose(&vec![]).unwrap_err();
+        assert!(err.to_string().contains("Propose should not be called"));
     }
 
     #[test]
@@ -150,7 +157,7 @@ mod tests {
             serialize(&DataType::Long(10)),
         ];
 
-        let result = ext.intersect(&vec![], &extensions);
+        let result = ext.intersect(&vec![], &extensions).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(25));
         assert_eq!(DataType::decode(&result[1]).unwrap(), DataType::Long(10));
@@ -176,7 +183,7 @@ mod tests {
             serialize(&DataType::Long(20)), // 10 < 20 = true
         ];
 
-        let result = ext.intersect(&prefix, &extensions);
+        let result = ext.intersect(&prefix, &extensions).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(15));
         assert_eq!(DataType::decode(&result[1]).unwrap(), DataType::Long(20));
@@ -202,7 +209,7 @@ mod tests {
             serialize(&DataType::Long(15)), // 15 < 10 = false
         ];
 
-        let result = ext.intersect(&prefix, &extensions);
+        let result = ext.intersect(&prefix, &extensions).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(DataType::decode(&result[0]).unwrap(), DataType::Long(5));
     }
@@ -228,7 +235,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &pred];
         let join = GenericJoin::new(extenders, 1);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(DataType::decode(&result[0][0]).unwrap(), DataType::Long(20));
@@ -261,7 +268,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&level0, &level1, &pred];
         let join = GenericJoin::new(extenders, 2);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         // 2 ages (20, 30) * 2 names = 4 tuples
         assert_eq!(result.len(), 4);
