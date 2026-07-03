@@ -68,33 +68,46 @@ impl TxLog for FileLog {
     }
 }
 
+fn read_records_blocking(
+    path: &Path,
+    after_tx_id: Option<TxId>,
+    limit: u16,
+) -> Result<Vec<Record>> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    let mut records = Vec::new();
+
+    match after_tx_id {
+        None => {
+            file.seek(SeekFrom::Start(0))?;
+        }
+        Some(id) => {
+            file.seek(SeekFrom::Start(id as u64))?;
+            // Skip the record at `id` — we've already processed it
+            let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
+            if _skipped.is_err() {
+                return Ok(records); // nothing after this record
+            }
+        }
+    }
+
+    for _ in 0..limit {
+        match bincode::deserialize_from(&mut file) {
+            Ok(record) => records.push(record),
+            Err(_) => break, // EOF or corrupted data
+        }
+    }
+
+    Ok(records)
+}
+
 impl TxLogReader for FileLog {
     async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
-        let mut file = OpenOptions::new().read(true).open(&self.path)?;
-        let mut records = Vec::new();
+        let path = self.path.clone();
 
-        match after_tx_id {
-            None => {
-                file.seek(SeekFrom::Start(0))?;
-            }
-            Some(id) => {
-                file.seek(SeekFrom::Start(id as u64))?;
-                // Skip the record at `id` — we've already processed it
-                let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
-                if _skipped.is_err() {
-                    return Ok(records); // nothing after this record
-                }
-            }
-        }
-
-        for _ in 0..limit {
-            match bincode::deserialize_from(&mut file) {
-                Ok(record) => records.push(record),
-                Err(_) => break, // EOF or corrupted data
-            }
-        }
-
-        Ok(records)
+        // File reads block, so run them off the async runtime.
+        tokio::task::spawn_blocking(move || read_records_blocking(&path, after_tx_id, limit))
+            .await
+            .context("File log read task failed")?
     }
 
     async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
