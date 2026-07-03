@@ -311,16 +311,16 @@ pub(crate) async fn find_live_key_under_prefix(
             return Ok(None);
         }
 
-        assert!(
-            key.len() >= codec::TX_EID_OP_SUFFIX,
-            "Key too short ({} bytes) to contain tx_eid + op suffix",
-            key.len()
-        );
+        let Some(logical_key_end) = key.len().checked_sub(codec::TX_EID_OP_SUFFIX) else {
+            bail!(
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            );
+        };
         if key[key.len() - 1] != codec::RETRACT {
             return Ok(Some(key.clone()));
         }
 
-        let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
         let Some(next_group) = next_prefix(&key[..logical_key_end]) else {
             return Ok(None);
         };

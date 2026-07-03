@@ -17,7 +17,8 @@ pub(crate) trait Index {
 }
 
 /// Type alias for extractor functions that extract a component from a full key.
-pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
+/// Fallible: extraction fails on short/corrupt keys instead of panicking.
+pub type Extractor = Box<dyn Fn(Bytes) -> Result<Bytes, Error> + Send + Sync>;
 
 pub(crate) struct SlateIterator<M>
 where
@@ -98,7 +99,7 @@ where
         let next_key = self.handle.block_on(self.inner.next())?;
         if let Some(next_key) = next_key {
             self.current_key = Some(next_key.key.clone());
-            Ok(Some((self.extractor)(next_key.key)))
+            Ok(Some((self.extractor)(next_key.key)?))
         } else {
             self.current_key = None;
             Ok(None)
@@ -107,7 +108,7 @@ where
 
     fn get_value(&self) -> Result<Option<Bytes>, Error> {
         match &self.current_key {
-            Some(key) => Ok(Some((self.extractor)(key.clone()))),
+            Some(key) => Ok(Some((self.extractor)(key.clone())?)),
             None => Ok(None),
         }
     }
@@ -258,7 +259,7 @@ mod tests {
     fn make_test_extractor(prefix_len: usize) -> Extractor {
         Box::new(move |key: Bytes| {
             // Extract everything after prefix and before the OP byte
-            key.slice(prefix_len..key.len() - 1)
+            Ok(key.slice(prefix_len..key.len() - 1))
         })
     }
 

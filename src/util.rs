@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Error};
 use bytes::Bytes;
 use rand::Rng;
 
@@ -88,14 +89,27 @@ fn check_position(position: usize, index: IndexType) {
     }
 }
 
+/// Subtract `amount` from a key length, erroring on short/corrupt keys instead
+/// of underflowing.
+fn key_len_sub(total_length: usize, amount: usize) -> Result<usize, Error> {
+    total_length.checked_sub(amount).ok_or_else(|| {
+        anyhow!(
+            "key too short: {} bytes, need at least {}",
+            total_length,
+            amount
+        )
+    })
+}
+
 // TODO  refactor this and prefix_len
 pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
     position: usize,
     index: IndexType,
-) -> impl Fn(T) -> T {
+) -> impl Fn(T) -> Result<T, Error> {
     move |bytes: T| {
         check_position(position, index);
         let total_length = bytes.as_ref().len();
+        let sub = |amount| key_len_sub(total_length, amount);
 
         let (start, end) = match index {
             IndexType::EAV => match position {
@@ -109,7 +123,7 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ENTITY_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::TX_EID_OP_SUFFIX)?,
                 ),
             },
             IndexType::AVE => match position {
@@ -119,11 +133,11 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 1 => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
                 ),
                 2.. => (
-                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
-                    total_length - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
+                    sub(codec::TX_EID_OP_SUFFIX)?,
                 ),
             },
             IndexType::AEV => match position {
@@ -137,27 +151,21 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 ),
                 2.. => (
                     codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH,
-                    total_length - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::TX_EID_OP_SUFFIX)?,
                 ),
             },
             IndexType::VAE => match position {
                 0 => (
                     codec::CODEC_LENGTH,
-                    total_length
-                        - codec::ATTRIBUTE_LENGTH
-                        - codec::ENTITY_LENGTH
-                        - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
                 ),
                 1 => (
-                    total_length
-                        - codec::ATTRIBUTE_LENGTH
-                        - codec::ENTITY_LENGTH
-                        - codec::TX_EID_OP_SUFFIX,
-                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
+                    sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
                 ),
                 2.. => (
-                    total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
-                    total_length - codec::TX_EID_OP_SUFFIX,
+                    sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
+                    sub(codec::TX_EID_OP_SUFFIX)?,
                 ),
             },
             // AE/AV are atemporal — no T+op suffix
@@ -176,21 +184,34 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                 1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
             },
         };
-        bytes.get_slice(start, end)
+        if start > end || end > total_length {
+            return Err(anyhow!(
+                "invalid key: extractor range {}..{} out of bounds for {} bytes",
+                start,
+                end,
+                total_length
+            ));
+        }
+        Ok(bytes.get_slice(start, end))
     }
 }
 
-pub fn extract_value<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
+pub fn extract_value<T: GetSlice + AsRef<[u8]>>(
+    bytes: T,
+    position: usize,
+    index: IndexType,
+) -> Result<T, Error> {
     make_extractor(position, index)(bytes)
 }
 
 pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
     position: usize,
     index: IndexType,
-) -> impl Fn(T) -> T {
+) -> impl Fn(T) -> Result<T, Error> {
     move |bytes: T| {
         check_position(position, index);
         let total_length = bytes.as_ref().len();
+        let sub = |amount| key_len_sub(total_length, amount);
 
         let end = match index {
             IndexType::EAV => match position {
@@ -201,7 +222,7 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
             IndexType::AVE => match position {
                 0 => codec::CODEC_LENGTH,
                 1 => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                2.. => total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                2.. => sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
             },
             IndexType::AEV => match position {
                 0 => codec::CODEC_LENGTH,
@@ -210,13 +231,8 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
             },
             IndexType::VAE => match position {
                 0 => codec::CODEC_LENGTH,
-                1 => {
-                    total_length
-                        - codec::ATTRIBUTE_LENGTH
-                        - codec::ENTITY_LENGTH
-                        - codec::TX_EID_OP_SUFFIX
-                }
-                2.. => total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
+                1 => sub(codec::ATTRIBUTE_LENGTH + codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
+                2.. => sub(codec::ENTITY_LENGTH + codec::TX_EID_OP_SUFFIX)?,
             },
             IndexType::AE => match position {
                 0 => codec::CODEC_LENGTH,
@@ -227,11 +243,22 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
                 1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
             },
         };
-        bytes.get_slice(0, end)
+        if end > total_length {
+            return Err(anyhow!(
+                "invalid key: prefix end {} out of bounds for {} bytes",
+                end,
+                total_length
+            ));
+        }
+        Ok(bytes.get_slice(0, end))
     }
 }
 
-pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(bytes: T, position: usize, index: IndexType) -> T {
+pub fn extract_prefix<T: GetSlice + AsRef<[u8]>>(
+    bytes: T,
+    position: usize,
+    index: IndexType,
+) -> Result<T, Error> {
     prefix_extractor(position, index)(bytes)
 }
 

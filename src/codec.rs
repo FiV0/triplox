@@ -262,9 +262,9 @@ pub fn decode_bytes(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError> {
         match b {
             0x00 => return Ok(result),
             0x01 => {
-                let (&next, rest) = cursor
-                    .split_first()
-                    .ok_or_else(|| DecodeError::from("unexpected end of input after escape byte"))?;
+                let (&next, rest) = cursor.split_first().ok_or_else(|| {
+                    DecodeError::from("unexpected end of input after escape byte")
+                })?;
                 *cursor = rest;
                 match next {
                     0x01 => result.push(0x00),
@@ -470,16 +470,16 @@ fn skip_n(cursor: &mut &[u8], n: usize) -> Result<(), DecodeError> {
 
 fn skip_terminated(cursor: &mut &[u8]) -> Result<(), DecodeError> {
     loop {
-        let (&b, rest) = cursor
-            .split_first()
-            .ok_or_else(|| DecodeError::from("unexpected end of input skipping terminated bytes"))?;
+        let (&b, rest) = cursor.split_first().ok_or_else(|| {
+            DecodeError::from("unexpected end of input skipping terminated bytes")
+        })?;
         *cursor = rest;
         match b {
             0x00 => return Ok(()),
             0x01 => {
-                let (_, rest) = cursor
-                    .split_first()
-                    .ok_or_else(|| DecodeError::from("unexpected end of input after escape byte"))?;
+                let (_, rest) = cursor.split_first().ok_or_else(|| {
+                    DecodeError::from("unexpected end of input after escape byte")
+                })?;
                 *cursor = rest;
             }
             _ => {}

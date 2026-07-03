@@ -242,7 +242,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 5. `triplox-client/src/client.rs`: no client-side timeouts on reqwest client (§1 MED)
 - [x] 6. `edn/src/parse.rs`: integer/inst/uuid rules `.unwrap()` on attacker-controlled query text → fallible `{? ...}` rules (§2 HIGH)
 - [x] 7. `codec.rs`: guarded-`unwrap` decoding on untrusted bytes → locally bounds-safe `get(..)`/`split_first_chunk` + `DecodeError` (§2 MED)
-- [ ] 8. `util.rs`, `temporal_filter_iterator.rs`, `tx.rs:314`: unchecked key-length math → return errors like `indexer.rs` `strip_temporal_key` (§2 MED)
+- [x] 8. `util.rs`, `temporal_filter_iterator.rs`, `tx.rs:314`: unchecked key-length math → return errors like `indexer.rs` `strip_temporal_key` (§2 MED)
 - [ ] 9. `tx.rs:235`: `panic!` on `TxOp::Delete`/`Erase` → `bail!` (§2 MED)
 - [ ] 10. `generic_prefix_extender.rs` & friends: make `PrefixExtender` trait fallible; remove `panic!`/`expect` on SlateDB I/O and decode errors (§3 HIGH)
 - [ ] 11. `server.rs:508`: `DevServer::listen_on` `Arc::try_unwrap(...).unwrap_or_else(panic!)` → shared-`Arc` shutdown (§3 HIGH)

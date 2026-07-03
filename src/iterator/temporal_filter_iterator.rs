@@ -36,9 +36,18 @@ where
 }
 
 /// Extract the logical key from a full key (everything except timestamp + op suffix).
+/// Errors on keys too short to carry the suffix instead of panicking.
 #[inline]
-fn logical_key(key: &[u8]) -> &[u8] {
-    &key[..key.len() - codec::TX_EID_OP_SUFFIX]
+fn logical_key(key: &[u8]) -> Result<&[u8], Error> {
+    key.len()
+        .checked_sub(codec::TX_EID_OP_SUFFIX)
+        .map(|end| &key[..end])
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            )
+        })
 }
 
 impl<M> TemporalFilterIterator<M>
@@ -80,7 +89,7 @@ where
     /// Returns true if the seek succeeded, false if no successor exists (all 0xFF).
     fn seek_past_logical_key(&mut self, key: &[u8]) -> Result<bool, Error> {
         // Assumes prefix-free value encodings
-        match next_prefix(logical_key(key)) {
+        match next_prefix(logical_key(key)?) {
             Some(target) => {
                 self.handle.block_on(self.inner.seek(Bytes::from(target)))?;
                 Ok(true)
@@ -101,15 +110,10 @@ where
                 }
                 Some(kv) => {
                     let key = kv.key;
-                    assert!(
-                        key.len() >= codec::TX_EID_OP_SUFFIX,
-                        "Key too short ({} bytes) to contain tx_eid + op suffix",
-                        key.len()
-                    );
+                    let logical_end = logical_key(&key)?.len();
 
                     // Descending encoding: ts >= as_of_encoded means real_T <= as_of
-                    let ts =
-                        &key[key.len() - codec::TX_EID_OP_SUFFIX..key.len() - codec::OP_LENGTH];
+                    let ts = &key[logical_end..key.len() - codec::OP_LENGTH];
                     if ts >= self.as_of_encoded.as_slice() {
                         let op = key[key.len() - 1];
                         if op == codec::RETRACT {
@@ -161,7 +165,7 @@ where
 
         // Skip forward if already past the target
         if let Some(current) = &self.current_key {
-            let current_logical = logical_key(current);
+            let current_logical = logical_key(current)?;
             if current_logical >= full_key.as_ref() {
                 return Ok(());
             }
@@ -175,14 +179,14 @@ where
         // Seek past current group, then find next valid entry
         self.advance_past_current_group()?;
         match &self.current_key {
-            Some(key) => Ok(Some((self.extractor)(key.clone()))),
+            Some(key) => Ok(Some((self.extractor)(key.clone())?)),
             None => Ok(None),
         }
     }
 
     fn get_value(&self) -> Result<Option<Bytes>, Error> {
         match &self.current_key {
-            Some(key) => Ok(Some((self.extractor)(key.clone()))),
+            Some(key) => Ok(Some((self.extractor)(key.clone())?)),
             None => Ok(None),
         }
     }
@@ -208,7 +212,7 @@ mod tests {
     }
 
     fn make_test_extractor(prefix_len: usize) -> Extractor {
-        Box::new(move |key: Bytes| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX))
+        Box::new(move |key: Bytes| Ok(key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX)))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
