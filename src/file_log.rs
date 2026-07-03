@@ -6,11 +6,12 @@ use log::warn;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use tokio::sync::{broadcast, Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
 pub struct FileLog {
     path: PathBuf,
-    state: Mutex<FileLogState>,
+    state: Arc<Mutex<FileLogState>>,
     tx_sender: broadcast::Sender<Record>,
 }
 
@@ -31,10 +32,10 @@ impl FileLog {
 
         Ok(FileLog {
             path: path.to_path_buf(),
-            state: Mutex::new(FileLogState {
+            state: Arc::new(Mutex::new(FileLogState {
                 file: BufWriter::new(file),
                 clock,
-            }),
+            })),
             tx_sender: broadcast::channel(1024).0,
         })
     }
@@ -55,16 +56,25 @@ impl TxLog for FileLog {
             None => {}
         }
 
-        let mut state = self.state.lock().await;
-        if state.file.stream_position()? != 0 {
-            return Err(anyhow::anyhow!(
-                "file log has bytes but no readable bootstrap record"
-            ));
-        }
-        bincode::serialize_into(&mut state.file, &bootstrap_record)?;
-        state.file.flush()?;
-        state.file.get_ref().sync_data()?;
-        Ok(())
+        let state = Arc::clone(&self.state);
+
+        // The write fsyncs, so run the whole locked section off the async runtime.
+        tokio::task::spawn_blocking(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("file log state lock poisoned"))?;
+            if state.file.stream_position()? != 0 {
+                return Err(anyhow::anyhow!(
+                    "file log has bytes but no readable bootstrap record"
+                ));
+            }
+            bincode::serialize_into(&mut state.file, &bootstrap_record)?;
+            state.file.flush()?;
+            state.file.get_ref().sync_data()?;
+            Ok(())
+        })
+        .await
+        .context("File log bootstrap task failed")?
     }
 }
 
@@ -117,22 +127,32 @@ impl TxLogReader for FileLog {
 
 impl TxLogWriter for FileLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let mut state = self.state.lock().await;
-        let tx_id = state.file.stream_position()? as TxId;
+        let state = Arc::clone(&self.state);
 
-        let record = Record {
-            tx_key: TxKey {
-                tx_id,
-                system_time: state.clock.now(),
-            },
-            record,
-        };
+        // The write fsyncs, so run the whole locked section off the async runtime.
+        let record = tokio::task::spawn_blocking(move || -> Result<Record> {
+            let mut state = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("file log state lock poisoned"))?;
+            let tx_id = state.file.stream_position()? as TxId;
 
-        // Serialize and write the record
-        bincode::serialize_into(&mut state.file, &record).context("Failed to serialize record")?;
-        state.file.flush()?;
-        state.file.get_ref().sync_data()?;
-        drop(state);
+            let record = Record {
+                tx_key: TxKey {
+                    tx_id,
+                    system_time: state.clock.now(),
+                },
+                record,
+            };
+
+            // Serialize and write the record
+            bincode::serialize_into(&mut state.file, &record)
+                .context("Failed to serialize record")?;
+            state.file.flush()?;
+            state.file.get_ref().sync_data()?;
+            Ok(record)
+        })
+        .await
+        .context("File log append task failed")??;
 
         // Notify subscribers
         if let Err(e) = self.tx_sender.send(record.clone()) {

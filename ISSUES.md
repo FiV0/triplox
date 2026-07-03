@@ -236,7 +236,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 ## Checklist
 
 - [x] 1. `file_log.rs`: `read_txs_after` blocking file I/O in async fn → `spawn_blocking` (§1 HIGH)
-- [ ] 2. `file_log.rs`: blocking `flush`/`sync_data` while holding lock in `append_tx`/`ensure_bootstrap_record` → `spawn_blocking` + `std::sync::Mutex` (§1 HIGH; also covers the `file_log` half of §5.1 wrong-lock-primitive)
+- [x] 2. `file_log.rs`: blocking `flush`/`sync_data` while holding lock in `append_tx`/`ensure_bootstrap_record` → `spawn_blocking` + `std::sync::Mutex` (§1 HIGH; also covers the `file_log` half of §5.1 wrong-lock-primitive)
 - [ ] 3. `slate/mod.rs`, `node.rs`: sync `create_dir_all` in async fns → `tokio::fs` (§1 MED)
 - [ ] 4. `log.rs`: `subscribe` drops the subscriber task `JoinHandle` → retain it (§1 MED)
 - [ ] 5. `triplox-client/src/client.rs`: no client-side timeouts on reqwest client (§1 MED)
