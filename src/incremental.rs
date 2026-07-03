@@ -74,7 +74,9 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-type ServiceResult<T> = std::result::Result<T, String>;
+// anyhow::Error is Send + Sync, so it crosses the service-thread oneshot
+// channels intact — no need to flatten to String and lose the error chain.
+type ServiceResult<T> = Result<T>;
 
 enum IncrementalCommand {
     Register {
@@ -210,7 +212,6 @@ impl IncrementalQueryService {
         result
             .await
             .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
     }
 
     pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
@@ -221,7 +222,6 @@ impl IncrementalQueryService {
         result
             .await
             .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
     }
 
     pub(crate) async fn apply_triples(
@@ -242,7 +242,6 @@ impl IncrementalQueryService {
         result
             .await
             .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -256,7 +255,7 @@ impl IncrementalQueryService {
             Ok(()) => result
                 .await
                 .map_err(|_| anyhow!("Incremental query service stopped"))
-                .and_then(|result| result.map_err(|err| anyhow!("{}", err))),
+                .and_then(|result| result),
             Err(_) => Err(anyhow!("Incremental query service stopped")),
         };
 
@@ -336,11 +335,8 @@ impl IncrementalQueryServiceInner {
         self.cleanup_closed_subscriptions()?;
 
         let handle = self.allocate_query_id();
-        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
-            .map_err(|err| format!("{:#}", err))?;
-        circuit
-            .prime(initial_triples)
-            .map_err(|err| format!("{:#}", err))?;
+        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))?;
+        circuit.prime(initial_triples)?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
 
         self.queries.insert(
@@ -381,10 +377,7 @@ impl IncrementalQueryServiceInner {
                 continue;
             }
 
-            let rows = query
-                ._circuit
-                .apply(triples.clone())
-                .map_err(|err| format!("{:#}", err))?;
+            let rows = query._circuit.apply(triples.clone())?;
             if rows.is_empty() {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
@@ -426,7 +419,7 @@ impl IncrementalQueryServiceInner {
         let query = self
             .queries
             .remove(&id)
-            .ok_or_else(|| format!("Unknown incremental query handle: {:?}", id))?;
+            .ok_or_else(|| anyhow!("Unknown incremental query handle: {:?}", id))?;
         drop(query);
         self.remove_query_storage(id)
     }
@@ -435,9 +428,10 @@ impl IncrementalQueryServiceInner {
         match std::fs::remove_dir_all(self.query_storage_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!(
+            Err(err) => Err(anyhow!(
                 "Failed to remove incremental query storage for {:?}: {}",
-                id, err
+                id,
+                err
             )),
         }
     }
@@ -447,13 +441,13 @@ impl IncrementalQueryServiceInner {
         let mut errors = Vec::new();
         for id in ids {
             if let Err(err) = self.remove_query(id) {
-                errors.push(err);
+                errors.push(format!("{:#}", err));
             }
         }
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join("; "))
+            Err(anyhow!(errors.join("; ")))
         }
     }
 
@@ -532,7 +526,7 @@ mod tests {
         drop(subscription);
 
         let err = service.unregister(handle).unwrap_err();
-        assert!(err.contains("Unknown incremental query handle"));
+        assert!(err.to_string().contains("Unknown incremental query handle"));
         assert!(!storage_path.exists());
     }
 
