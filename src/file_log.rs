@@ -84,6 +84,9 @@ fn read_records_blocking(
     limit: u16,
 ) -> Result<Vec<Record>> {
     let mut file = OpenOptions::new().read(true).open(path)?;
+    // Snapshot of the log length: a record that starts before `len` but fails
+    // to decode is corruption, not a clean end-of-log.
+    let len = file.metadata()?.len();
     let mut records = Vec::new();
 
     match after_tx_id {
@@ -91,20 +94,24 @@ fn read_records_blocking(
             file.seek(SeekFrom::Start(0))?;
         }
         Some(id) => {
-            file.seek(SeekFrom::Start(id as u64))?;
-            // Skip the record at `id` — we've already processed it
-            let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
-            if _skipped.is_err() {
+            let pos = file.seek(SeekFrom::Start(id as u64))?;
+            if pos >= len {
                 return Ok(records); // nothing after this record
             }
+            // Skip the record at `id` — we've already processed it
+            bincode::deserialize_from::<_, Record>(&mut file)
+                .with_context(|| format!("file log corrupt at offset {}", pos))?;
         }
     }
 
     for _ in 0..limit {
-        match bincode::deserialize_from(&mut file) {
-            Ok(record) => records.push(record),
-            Err(_) => break, // EOF or corrupted data
+        let pos = file.stream_position()?;
+        if pos >= len {
+            break; // clean end-of-log
         }
+        let record = bincode::deserialize_from(&mut file)
+            .with_context(|| format!("file log corrupt at offset {}", pos))?;
+        records.push(record);
     }
 
     Ok(records)
@@ -298,5 +305,40 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].record, vec![1, 2, 3]);
         assert_eq!(records[1].record, vec![4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn test_read_errors_on_torn_record_instead_of_silent_eof() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_torn_record.log");
+
+        let log = FileLog::new(
+            &file_path,
+            Box::new(MockClock::new(vec![
+                st_from_unix_epoch(0),
+                st_from_unix_epoch(100),
+            ])),
+        )
+        .unwrap();
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
+        drop(log);
+
+        // Tear the second record in half.
+        let len = std::fs::metadata(&file_path).unwrap().len();
+        let file = OpenOptions::new().write(true).open(&file_path).unwrap();
+        file.set_len(len - 2).unwrap();
+        drop(file);
+
+        let log = FileLog::new(
+            &file_path,
+            Box::new(MockClock::new(vec![st_from_unix_epoch(200)])),
+        )
+        .unwrap();
+        let err = log.read_txs_after(None, u16::MAX).await.unwrap_err();
+        assert!(
+            err.to_string().contains("file log corrupt at offset"),
+            "unexpected error: {err:#}"
+        );
     }
 }

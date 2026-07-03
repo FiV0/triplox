@@ -258,7 +258,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 21. `kafka_log.rs:170-178`: blocking `thread::join()` in `Drop` (§5.1 MED)
 - [x] 22. `memory_log.rs`: `tokio::sync::RwLock` never held across `.await` → `std::sync::RwLock` (§5.1 MED; `file_log` half done in item 2)
 - [x] 23. `incremental/cdc.rs:94-104`: CDC loop dies silently on first error → log + retry like `log.rs` catch-up (§5.2 HIGH)
-- [ ] 24. `file_log.rs:83-95`: mid-file corruption treated as clean EOF → distinguish EOF from corruption (§5.2 MED)
+- [x] 24. `file_log.rs:83-95`: mid-file corruption treated as clean EOF → distinguish EOF from corruption (§5.2 MED)
 - [ ] 25. `incremental.rs:73`: `ServiceResult<T> = Result<T, String>` → keep `anyhow::Error` across channel (§5.2 MED)
 - [ ] 26. `memory_log.rs:84-90`, `file_log.rs:125-127`: `warn!` on normal no-subscribers broadcast send (§5.2 LOW)
 - [ ] 27. `incremental.rs:495-498`: `Drop` swallows `remove_all_queries` errors → log them (§5.2 LOW)
