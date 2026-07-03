@@ -24,6 +24,14 @@ use edn::query::ParsedQuery;
 
 const CONTENT_TYPE: &str = "application/vnd.triplox+msgpack";
 
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Total timeout for unary request/response calls. Streaming subscribe
+/// requests are excluded — they stay open indefinitely and rely on the
+/// HTTP/2 keep-alive pings to detect a stalled server.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEP_ALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Check an HTTP response for errors. If the status is not success,
 /// attempt to decode a binary ErrorResponse from the body.
 async fn check_response(resp: reqwest::Response) -> Result<bytes::Bytes> {
@@ -57,7 +65,13 @@ impl ClientNode {
     ///
     /// `url` should be the base URL, e.g. `http://127.0.0.1:5490`.
     pub async fn connect(url: &str) -> Result<Self> {
-        let client = Client::builder().http2_prior_knowledge().build()?;
+        let client = Client::builder()
+            .http2_prior_knowledge()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+            .http2_keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+            .http2_keep_alive_while_idle(true)
+            .build()?;
         Ok(ClientNode {
             client,
             base_url: url.trim_end_matches('/').to_string(),
@@ -110,6 +124,7 @@ impl ClientNode {
             .client
             .post(format!("{}/db/open", self.base_url))
             .header("Content-Type", CONTENT_TYPE)
+            .timeout(REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await?;
@@ -133,6 +148,7 @@ impl SubmitNode for ClientNode {
             .client
             .post(format!("{}/tx/submit", self.base_url))
             .header("Content-Type", CONTENT_TYPE)
+            .timeout(REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await?;
@@ -149,6 +165,7 @@ impl SubmitNode for ClientNode {
             .client
             .post(format!("{}/tx/execute", self.base_url))
             .header("Content-Type", CONTENT_TYPE)
+            .timeout(REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await?;
@@ -224,6 +241,7 @@ impl Database for ClientDb {
             .client
             .post(format!("{}/db/query", self.base_url))
             .header("Content-Type", CONTENT_TYPE)
+            .timeout(REQUEST_TIMEOUT)
             .body(body)
             .send()
             .await?;

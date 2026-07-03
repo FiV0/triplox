@@ -239,7 +239,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 2. `file_log.rs`: blocking `flush`/`sync_data` while holding lock in `append_tx`/`ensure_bootstrap_record` → `spawn_blocking` + `std::sync::Mutex` (§1 HIGH; also covers the `file_log` half of §5.1 wrong-lock-primitive)
 - [x] 3. `slate/mod.rs`, `node.rs`: sync `create_dir_all` in async fns → `tokio::fs` (§1 MED)
 - [x] 4. `log.rs`: `subscribe` drops the subscriber task `JoinHandle` → retain it (§1 MED)
-- [ ] 5. `triplox-client/src/client.rs`: no client-side timeouts on reqwest client (§1 MED)
+- [x] 5. `triplox-client/src/client.rs`: no client-side timeouts on reqwest client (§1 MED)
 - [ ] 6. `edn/src/parse.rs`: integer/inst/uuid rules `.unwrap()` on attacker-controlled query text → fallible `{? ...}` rules (§2 HIGH)
 - [ ] 7. `codec.rs`: guarded-`unwrap` decoding on untrusted bytes → locally bounds-safe `get(..)`/`split_first_chunk` + `DecodeError` (§2 MED)
 - [ ] 8. `util.rs`, `temporal_filter_iterator.rs`, `tx.rs:314`: unchecked key-length math → return errors like `indexer.rs` `strip_temporal_key` (§2 MED)
