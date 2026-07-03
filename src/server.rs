@@ -472,6 +472,21 @@ impl<L: TxLog + 'static> Server<L> {
 
 pub struct DevServer;
 
+/// Try to take sole ownership of `arc`, retrying while other holders
+/// (e.g. handler or subscription tasks winding down) drop their references.
+async fn try_into_inner<T>(mut arc: Arc<T>, attempts: u32, delay: Duration) -> Option<T> {
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            tokio::time::sleep(delay).await;
+        }
+        match Arc::try_unwrap(arc) {
+            Ok(inner) => return Some(inner),
+            Err(shared) => arc = shared,
+        }
+    }
+    None
+}
+
 impl Default for DevServer {
     fn default() -> Self {
         Self::new()
@@ -505,14 +520,22 @@ impl DevServer {
 
                     serve_connection(stream, router, conn_id, conn_token, "Dev HTTP").await;
 
-                    let node = Arc::try_unwrap(node).unwrap_or_else(|_| {
-                        panic!("dev node Arc should have refcount 1 after connection close")
-                    });
-                    if let Err(err) = node.close().await {
-                        warn!(
-                            "Dev HTTP connection {} failed to close node: {:#}",
-                            conn_id, err
-                        );
+                    // Handler or subscription tasks may still hold node references
+                    // briefly after the connection closes; wait for them instead of
+                    // panicking, and skip the graceful close if they never let go.
+                    match try_into_inner(node, 40, Duration::from_millis(50)).await {
+                        Some(node) => {
+                            if let Err(err) = node.close().await {
+                                warn!(
+                                    "Dev HTTP connection {} failed to close node: {:#}",
+                                    conn_id, err
+                                );
+                            }
+                        }
+                        None => warn!(
+                            "Dev HTTP connection {}: node still referenced after connection close; skipping graceful close",
+                            conn_id
+                        ),
                     }
                     info!("Dev HTTP connection {} closed", conn_id);
                 });
