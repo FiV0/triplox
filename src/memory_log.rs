@@ -9,7 +9,6 @@ use crate::log::{Record, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::logging::init;
 use crate::transaction::TxKey;
 use anyhow::Result;
-use log::warn;
 use std::sync::RwLock;
 use tokio::sync::broadcast;
 
@@ -92,13 +91,9 @@ impl TxLogWriter for MemoryLog {
         let tx_key = record.tx_key;
         state.txs.push(record.clone());
         drop(state);
-        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
-        if let Err(e) = self.tx_sender.send(record) {
-            warn!(
-                "Failed to send record from memory log to subscribers: {}",
-                e
-            );
-        }
+        // Notify subscribers; send only errors when nobody is subscribed,
+        // which is a normal condition.
+        let _ = self.tx_sender.send(record);
         Ok(tx_key)
     }
 }

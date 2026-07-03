@@ -2,7 +2,6 @@ use crate::clock::SystemTimeSource;
 use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 use anyhow::{Context, Result};
-use log::warn;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -161,10 +160,9 @@ impl TxLogWriter for FileLog {
         .await
         .context("File log append task failed")??;
 
-        // Notify subscribers
-        if let Err(e) = self.tx_sender.send(record.clone()) {
-            warn!("Failed to send record from file log to subscribers: {}", e);
-        }
+        // Notify subscribers; send only errors when nobody is subscribed,
+        // which is a normal condition.
+        let _ = self.tx_sender.send(record.clone());
 
         Ok(record.tx_key)
     }

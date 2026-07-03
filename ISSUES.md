@@ -260,7 +260,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 23. `incremental/cdc.rs:94-104`: CDC loop dies silently on first error → log + retry like `log.rs` catch-up (§5.2 HIGH)
 - [x] 24. `file_log.rs:83-95`: mid-file corruption treated as clean EOF → distinguish EOF from corruption (§5.2 MED)
 - [x] 25. `incremental.rs:73`: `ServiceResult<T> = Result<T, String>` → keep `anyhow::Error` across channel (§5.2 MED)
-- [ ] 26. `memory_log.rs:84-90`, `file_log.rs:125-127`: `warn!` on normal no-subscribers broadcast send (§5.2 LOW)
+- [x] 26. `memory_log.rs:84-90`, `file_log.rs:125-127`: `warn!` on normal no-subscribers broadcast send (§5.2 LOW)
 - [ ] 27. `incremental.rs:495-498`: `Drop` swallows `remove_all_queries` errors → log them (§5.2 LOW)
 - [ ] 28. `generic_predicate_prefix_extender.rs:63-78`: per-extension `HashMap` rebuild → build base map once (§5.4 MED)
 - [ ] 29. `aggregate.rs:47-55`: `CountDistinctAccumulator` bincode round-trip → `HashSet<DataType>` (§5.4 MED)
