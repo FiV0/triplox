@@ -230,3 +230,38 @@ returning `Err("Key too short")` — be consistent and return errors.
   `count`/`propose`/`intersect` (`iterator/generic_prefix_extender.rs:139-154`);
   unique-constraint validation double-clones the datom value on the write path
   (`indexer.rs:517-524`).
+
+---
+
+## Checklist
+
+- [ ] 1. `file_log.rs`: `read_txs_after` blocking file I/O in async fn → `spawn_blocking` (§1 HIGH)
+- [ ] 2. `file_log.rs`: blocking `flush`/`sync_data` while holding lock in `append_tx`/`ensure_bootstrap_record` → `spawn_blocking` + `std::sync::Mutex` (§1 HIGH; also covers the `file_log` half of §5.1 wrong-lock-primitive)
+- [ ] 3. `slate/mod.rs`, `node.rs`: sync `create_dir_all` in async fns → `tokio::fs` (§1 MED)
+- [ ] 4. `log.rs`: `subscribe` drops the subscriber task `JoinHandle` → retain it (§1 MED)
+- [ ] 5. `triplox-client/src/client.rs`: no client-side timeouts on reqwest client (§1 MED)
+- [ ] 6. `edn/src/parse.rs`: integer/inst/uuid rules `.unwrap()` on attacker-controlled query text → fallible `{? ...}` rules (§2 HIGH)
+- [ ] 7. `codec.rs`: guarded-`unwrap` decoding on untrusted bytes → locally bounds-safe `get(..)`/`split_first_chunk` + `DecodeError` (§2 MED)
+- [ ] 8. `util.rs`, `temporal_filter_iterator.rs`, `tx.rs:314`: unchecked key-length math → return errors like `indexer.rs` `strip_temporal_key` (§2 MED)
+- [ ] 9. `tx.rs:235`: `panic!` on `TxOp::Delete`/`Erase` → `bail!` (§2 MED)
+- [ ] 10. `generic_prefix_extender.rs` & friends: make `PrefixExtender` trait fallible; remove `panic!`/`expect` on SlateDB I/O and decode errors (§3 HIGH)
+- [ ] 11. `server.rs:508`: `DevServer::listen_on` `Arc::try_unwrap(...).unwrap_or_else(panic!)` → shared-`Arc` shutdown (§3 HIGH)
+- [ ] 12. `bootstrap.rs:107-143`: `init_db` unwraps/asserts in `Result` fn → `?` (§3)
+- [ ] 13. `main.rs:26-47`: signal-handler spawn — `expect` on `signal(SIGTERM)` + dropped `JoinHandle` (§3 + §5.1 LOW)
+- [ ] 14. `server.rs:116`: `encode_error_body(...).expect("infallible")` → fallback response (§3)
+- [ ] 15. `generic_and_prefix_extender.rs:77`: `sort_by_key` recomputes `count()` → precompute/`sort_by_cached_key` (§4 MED)
+- [ ] 16. `index.rs:13-20`: `Bytes → Vec → Bytes` round-trip → zero-copy `slice(1..)` (§4)
+- [ ] 17. `indexer.rs:468`: `HashSet → Vec` ordering comment (§4)
+- [ ] 18. `edn/types.rs:654-680`: `FromMicros`/`FromMillis` panic → dedupe onto `protocol::micros_to_datetime` (§4)
+- [ ] 19. Minor idiom fixes: `Box<dyn Error>` in `transaction.rs:15`, `unwrap_or(vec![])` in `edn/query.rs:1075`, needless query `.clone()` in `ops.rs:53` (§4)
+- [ ] 20. Incremental subsystem head-of-line blocking: slow subscriber stalls CDC/registration node-wide (§5.1 HIGH)
+- [ ] 21. `kafka_log.rs:170-178`: blocking `thread::join()` in `Drop` (§5.1 MED)
+- [ ] 22. `memory_log.rs`: `tokio::sync::RwLock` never held across `.await` → `std::sync::RwLock` (§5.1 MED; `file_log` half done in item 2)
+- [ ] 23. `incremental/cdc.rs:94-104`: CDC loop dies silently on first error → log + retry like `log.rs` catch-up (§5.2 HIGH)
+- [ ] 24. `file_log.rs:83-95`: mid-file corruption treated as clean EOF → distinguish EOF from corruption (§5.2 MED)
+- [ ] 25. `incremental.rs:73`: `ServiceResult<T> = Result<T, String>` → keep `anyhow::Error` across channel (§5.2 MED)
+- [ ] 26. `memory_log.rs:84-90`, `file_log.rs:125-127`: `warn!` on normal no-subscribers broadcast send (§5.2 LOW)
+- [ ] 27. `incremental.rs:495-498`: `Drop` swallows `remove_all_queries` errors → log them (§5.2 LOW)
+- [ ] 28. `generic_predicate_prefix_extender.rs:63-78`: per-extension `HashMap` rebuild → build base map once (§5.4 MED)
+- [ ] 29. `aggregate.rs:47-55`: `CountDistinctAccumulator` bincode round-trip → `HashSet<DataType>` (§5.4 MED)
+- [ ] 30. Churn: `apply_extensions` prefix clone, `make_extractor_fn` re-boxing, `indexer.rs:517-524` double clone (§5.4 LOW)
