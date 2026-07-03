@@ -466,7 +466,14 @@ impl IncrementalQueryServiceInner {
 
 impl Drop for IncrementalQueryServiceInner {
     fn drop(&mut self) {
-        let _ = self.remove_all_queries();
+        // Removal deletes on-disk DBSP storage; a swallowed error would
+        // silently leak it.
+        if let Err(err) = self.remove_all_queries() {
+            warn!(
+                "Failed to remove incremental query storage on drop: {:#}",
+                err
+            );
+        }
     }
 }
 
