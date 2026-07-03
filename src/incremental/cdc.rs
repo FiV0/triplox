@@ -26,6 +26,8 @@ use crate::transaction::TxKey;
 use crate::{codec, util::concat_bytes};
 
 const CDC_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const CDC_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const CDC_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) fn datoms_to_tuples(
     datoms: &[Datom],
@@ -87,25 +89,87 @@ async fn run_cdc_loop<N>(
 where
     N: SchemaProvider,
 {
-    let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
+    let mut cursor = CdcCursor::default();
+    let mut retry_delay = CDC_RETRY_INITIAL_DELAY;
+
+    loop {
+        let seq_before = cursor.last_seq;
+        match cdc_pass(
+            &object_path,
+            &object_store,
+            node.as_ref(),
+            &service,
+            &registration_gate,
+            &cancel,
+            &mut cursor,
+        )
+        .await
+        {
+            Ok(()) => {
+                info!("Incremental query CDC stream exited normally");
+                return Ok(());
+            }
+            // Dying here would silently kill delta delivery for every live
+            // subscription while their receivers stay open. Retry from the
+            // last applied position with backoff, like the log catch-up loop.
+            Err(err) => {
+                if cursor.last_seq > seq_before {
+                    retry_delay = CDC_RETRY_INITIAL_DELAY;
+                }
+                log::error!(
+                    "Incremental query CDC loop error; retrying in {:?}: {:#}",
+                    retry_delay,
+                    err
+                );
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(retry_delay) => {}
+                }
+                retry_delay = std::cmp::min(retry_delay * 2, CDC_RETRY_MAX_DELAY);
+            }
+        }
+    }
+}
+
+/// One streaming pass. Advances `cursor.last_seq` past every fully-applied
+/// (or empty) transaction so a retry resumes without gaps or duplicates.
+async fn cdc_pass<N>(
+    object_path: &str,
+    object_store: &Arc<dyn ObjectStore>,
+    node: &N,
+    service: &IncrementalQueryService,
+    registration_gate: &Mutex<()>,
+    cancel: &CancellationToken,
+    cursor: &mut CdcCursor,
+) -> Result<()>
+where
+    N: SchemaProvider,
+{
+    let wal_reader = WalReader::new(object_path.to_string(), object_store.clone());
+    let mut stream = CdcStream::new(
+        wal_reader,
+        cursor.clone(),
+        CDC_POLL_INTERVAL,
+        cancel.clone(),
+    )
+    .await?;
 
     while let Some(tx) = stream.next_transaction().await? {
         let seq = tx.seq;
         let schema = node.schema().await;
         let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
         if datoms.is_empty() {
+            cursor.last_seq = seq;
             continue;
         }
         let tx_key = tx_key_from_datoms(&datoms)?;
         let tuples = datoms_to_tuples(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
         service.apply_triples(tx_key, seq, tuples).await?;
+        cursor.last_seq = seq;
         // The registration gate is released before polling the next WAL transaction.
     }
 
-    info!("Incremental query CDC stream exited normally");
     Ok(())
 }
 

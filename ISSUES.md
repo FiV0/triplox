@@ -257,7 +257,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 20. Incremental subsystem head-of-line blocking: slow subscriber stalls CDC/registration node-wide (§5.1 HIGH; slow subscribers are now disconnected via `try_send` instead of blocking the service thread)
 - [x] 21. `kafka_log.rs:170-178`: blocking `thread::join()` in `Drop` (§5.1 MED)
 - [x] 22. `memory_log.rs`: `tokio::sync::RwLock` never held across `.await` → `std::sync::RwLock` (§5.1 MED; `file_log` half done in item 2)
-- [ ] 23. `incremental/cdc.rs:94-104`: CDC loop dies silently on first error → log + retry like `log.rs` catch-up (§5.2 HIGH)
+- [x] 23. `incremental/cdc.rs:94-104`: CDC loop dies silently on first error → log + retry like `log.rs` catch-up (§5.2 HIGH)
 - [ ] 24. `file_log.rs:83-95`: mid-file corruption treated as clean EOF → distinguish EOF from corruption (§5.2 MED)
 - [ ] 25. `incremental.rs:73`: `ServiceResult<T> = Result<T, String>` → keep `anyhow::Error` across channel (§5.2 MED)
 - [ ] 26. `memory_log.rs:84-90`, `file_log.rs:125-127`: `warn!` on normal no-subscribers broadcast send (§5.2 LOW)
