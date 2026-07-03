@@ -250,7 +250,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 13. `main.rs:26-47`: signal-handler spawn — `expect` on `signal(SIGTERM)` + dropped `JoinHandle` (§3 + §5.1 LOW)
 - [x] 14. `server.rs:116`: `encode_error_body(...).expect("infallible")` → fallback response (§3)
 - [x] 15. `generic_and_prefix_extender.rs:77`: `sort_by_key` recomputes `count()` → precompute/`sort_by_cached_key` (§4 MED; fixed as part of item 10 — counts are now computed once per child)
-- [ ] 16. `index.rs:13-20`: `Bytes → Vec → Bytes` round-trip → zero-copy `slice(1..)` (§4)
+- [x] 16. `index.rs:13-20`: `Bytes → Vec → Bytes` round-trip → zero-copy `slice(1..)` (§4; also fixed `remove_index_type` keeping the type byte instead of stripping it)
 - [ ] 17. `indexer.rs:468`: `HashSet → Vec` ordering comment (§4)
 - [ ] 18. `edn/types.rs:654-680`: `FromMicros`/`FromMillis` panic → dedupe onto `protocol::micros_to_datetime` (§4)
 - [ ] 19. Minor idiom fixes: `Box<dyn Error>` in `transaction.rs:15`, `unwrap_or(vec![])` in `edn/query.rs:1075`, needless query `.clone()` in `ops.rs:53` (§4)
