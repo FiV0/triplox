@@ -218,6 +218,9 @@ fn test_integer() {
     assert_eq!(integer("-999").unwrap(), Integer(-999i64));
 
     assert!(integer("nil").is_err());
+    // Overflow is a parse error, not a panic.
+    assert!(integer("99999999999999999999999999").is_err());
+    assert!(integer("-99999999999999999999999999").is_err());
 }
 
 #[test]
@@ -231,6 +234,8 @@ fn test_hexinteger() {
     assert!(hexinteger("1").is_err());
     assert!(hexinteger("nil").is_err());
     assert!(hexinteger("0xZZZ").is_err());
+    // Overflow is a parse error, not a panic.
+    assert!(hexinteger("0xffffffffffffffffff").is_err());
 }
 
 #[test]
@@ -245,6 +250,9 @@ fn test_basedinteger() {
 
     assert!(basedinteger("1").is_err());
     assert!(basedinteger("nil").is_err());
+    // Digits invalid for the base and overflow are parse errors, not panics.
+    assert!(basedinteger("2r9").is_err());
+    assert!(basedinteger("36rzzzzzzzzzzzzzzzzzz").is_err());
 }
 
 #[test]
@@ -256,6 +264,8 @@ fn test_octalinteger() {
 
     assert!(octalinteger("1").is_err());
     assert!(octalinteger("nil").is_err());
+    // Overflow is a parse error, not a panic.
+    assert!(octalinteger("0777777777777777777777777").is_err());
 }
 
 #[test]
@@ -314,6 +324,10 @@ fn test_inst() {
     assert!(parse::value("#inst\"2016-01-01T11:00:00.000Z\"").is_err()); // No whitespace.
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000\"").is_err()); // No timezone.
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000z\"").is_err()); // Lowercase timezone.
+                                                                          // Out-of-range values are parse errors, not panics.
+    assert!(parse::value("#instmicros 99999999999999999999").is_err()); // i64 overflow.
+    assert!(parse::value("#instmillis 9223372036854775807").is_err()); // Timestamp out of range.
+    assert!(parse::value("#instmicros 9223372036854775807").is_err()); // Timestamp out of range.
 
     let expected = DateTime::from_timestamp(1493410985, 187000000).unwrap();
     let s = "#inst \"2017-04-28T20:23:05.187Z\"";

@@ -53,13 +53,16 @@ peg::parser! {
         pub rule raw_bigint() -> BigInt = b:$( sign()? digit()+ ) "N"
             { b.parse::<BigInt>().unwrap() }
         pub rule raw_octalinteger() -> i64 = "0" i:$( octaldigit()+ )
-            { i64::from_str_radix(i, 8).unwrap() }
+            {? i64::from_str_radix(i, 8).map_err(|_| "integer out of range") }
         pub rule raw_hexinteger() -> i64 = "0x" i:$( hex()+ )
-            { i64::from_str_radix(i, 16).unwrap() }
+            {? i64::from_str_radix(i, 16).map_err(|_| "integer out of range") }
         pub rule raw_basedinteger() -> i64 = b:$( validbase() ) "r" i:$( alphanumeric()+ )
-            { i64::from_str_radix(i, b.parse::<u32>().unwrap()).unwrap() }
+            {? b.parse::<u32>()
+                .ok()
+                .and_then(|radix| i64::from_str_radix(i, radix).ok())
+                .ok_or("invalid based integer") }
         pub rule raw_integer() -> i64 = i:$( sign()? digit()+ ) !("." / (['e' | 'E']))
-            { i.parse::<i64>().unwrap() }
+            {? i.parse::<i64>().map_err(|_| "integer out of range") }
         pub rule raw_float() -> OrderedFloat<f64> = f:$(sign()? digit()+ ("." digit()+)? (['e' | 'E'] sign()? digit()+)?)
             { OrderedFloat(f.parse::<f64>().unwrap()) }
 
@@ -104,27 +107,35 @@ peg::parser! {
             }
 
         rule inst_micros() -> DateTime<Utc> =
-            "#instmicros" whitespace()+ d:$( digit()+ ) {
-                let micros = d.parse::<i64>().unwrap();
-                let seconds: i64 = micros / 1000000;
-                let nanos: u32 = ((micros % 1000000).unsigned_abs() as u32) * 1000;
-                DateTime::from_timestamp(seconds, nanos).unwrap()
+            "#instmicros" whitespace()+ d:$( digit()+ ) {?
+                d.parse::<i64>()
+                    .ok()
+                    .and_then(|micros| {
+                        let seconds: i64 = micros / 1000000;
+                        let nanos: u32 = ((micros % 1000000).unsigned_abs() as u32) * 1000;
+                        DateTime::from_timestamp(seconds, nanos)
+                    })
+                    .ok_or("timestamp out of range")
             }
 
         rule inst_millis() -> DateTime<Utc> =
-            "#instmillis" whitespace()+ d:$( digit()+ ) {
-                let millis = d.parse::<i64>().unwrap();
-                let seconds: i64 = millis / 1000;
-                let nanos: u32 = ((millis % 1000).unsigned_abs() as u32) * 1000000;
-                DateTime::from_timestamp(seconds, nanos).unwrap()
+            "#instmillis" whitespace()+ d:$( digit()+ ) {?
+                d.parse::<i64>()
+                    .ok()
+                    .and_then(|millis| {
+                        let seconds: i64 = millis / 1000;
+                        let nanos: u32 = ((millis % 1000).unsigned_abs() as u32) * 1000000;
+                        DateTime::from_timestamp(seconds, nanos)
+                    })
+                    .ok_or("timestamp out of range")
             }
 
         rule inst() -> SpannedValue = t:(inst_millis() / inst_micros() / inst_string())
             { SpannedValue::Instant(t) }
 
         rule uuid_string() -> Uuid =
-            "\"" u:$( ['a'..='f' | '0'..='9']*<8> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<12> ) "\"" {
-                Uuid::parse_str(u).expect("this is a valid UUID string")
+            "\"" u:$( ['a'..='f' | '0'..='9']*<8> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<4> "-" ['a'..='f' | '0'..='9']*<12> ) "\"" {?
+                Uuid::parse_str(u).map_err(|_| "invalid UUID")
             }
 
         pub rule uuid() -> SpannedValue = "#uuid" whitespace()+ u:uuid_string()
