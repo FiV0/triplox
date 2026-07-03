@@ -1,0 +1,232 @@
+## 1. Async / Tokio anti-patterns
+
+### HIGH — Blocking `std::fs` / `fsync` inside `async fn` on runtime workers
+
+These block a Tokio worker thread for the duration of disk I/O — the canonical
+Tokio anti-pattern.
+
+- **`file_log.rs:73-97`** — `read_txs_after` is `async` but does fully
+  synchronous `OpenOptions::open` + `seek` + a loop of
+  `bincode::deserialize_from(&mut file)` (blocking `read` syscalls). Invoked from
+  the spawned subscriber catch-up loop, so it stalls the runtime. `kafka_log.rs:411`
+  already does this right via `spawn_blocking` — mirror that.
+- **`file_log.rs:119-121`** — `append_tx` / `ensure_bootstrap_record` hold the
+  `tokio::sync::Mutex` guard while calling synchronous `flush()` + `sync_data()`
+  (an `fsync`, often multi-ms). Blocking **and** lock-holding on a worker.
+- **`slate/mod.rs:125`**, **`node.rs:260/267/282/303`** — synchronous
+  `std::fs::create_dir_all(...)` inside `async fn` node/slate constructors.
+  Startup-only, so MED, but should be `tokio::fs` or `spawn_blocking`.
+
+### MED — Dropped `JoinHandle` hides panics
+
+- **`log.rs:104-155`** — `subscribe` spawns the subscriber task and returns only
+  a `CancellationToken`; the `JoinHandle` is dropped, so a panic in the task is
+  silently swallowed and shutdown can't be awaited. Retain the handle (or use a
+  `TaskTracker`). By contrast, `subscription.rs:99/117` and `incremental/cdc.rs:69`
+  handle their handles correctly (abort-on-drop / awaited).
+
+### MED — No client-side timeouts
+
+- **`triplox-client/src/client.rs:60`** — `reqwest::Client::builder()` sets no
+  `.timeout()` / `.connect_timeout()`, and no `send().await` / `bytes().await` is
+  wrapped in `tokio::time::timeout`. A stalled server hangs the client
+  indefinitely (reqwest uses HTTP/2 here, so one stuck stream matters).
+
+---
+
+## 2. Panics reachable from untrusted / external data (most serious)
+
+### HIGH — EDN parser `.unwrap()` panics on attacker-controlled query text
+
+**Verified reachable from the network:** `server.rs:187` runs
+`query_request.query.into_query()` on the client-supplied query string →
+`edn::parse::parse_query`. The grammar matches unbounded digit runs, then
+unwraps the conversion:
+
+- **`parse.rs:62`** `raw_integer`: `i.parse::<i64>().unwrap()` — panics on
+  `99999999999999999999999999`
+- **`parse.rs:56/58`** `raw_octalinteger` / `raw_hexinteger`:
+  `from_str_radix(...).unwrap()` — overflow panic on long octal/hex
+- **`parse.rs:60`** `raw_basedinteger`: two `.unwrap()`s (radix + digits)
+- **`parse.rs:108/111`** & **`116/119`** `inst_micros` / `inst_millis`:
+  `parse::<i64>().unwrap()` + `DateTime::from_timestamp(...).unwrap()`
+  (out-of-range)
+- **`parse.rs:127`** `uuid_string`:
+  `Uuid::parse_str(u).expect("this is a valid UUID string")`
+
+A malformed query aborts the connection task (default `unwind`, no `CatchPanic`
+layer) instead of returning a clean `ParseError` 400, dropping other requests
+multiplexed on that HTTP/2 connection. **The fix is already demonstrated in the
+same file** — `inst_string` (line 100) uses the fallible
+`{? ... .map_err(...) }` form. Convert all the integer/inst/uuid rules to match.
+
+### MED — Codec decoders: guarded-`unwrap` fragility on untrusted bytes
+
+- **`codec.rs`** (lines ~125/139/156/180/207/320, and `cursor[0]` reads
+  throughout) — `cursor[..N].try_into().unwrap()` decoding on-disk/index/network
+  bytes. Currently *safe* (each has a preceding length check), but correctness
+  depends on every guard staying in sync with every slice. Convert to
+  `cursor.get(..N).ok_or(DecodeError)?` / `.split_first_chunk::<N>()` /
+  `cursor.first()` so bounds-safety is local and a guard regression can't crash
+  on corrupt input.
+
+### MED — Unchecked length math on keys read from storage
+
+These underflow-panic (debug) / wrap-then-slice-panic (release) on short/corrupt
+keys, on the read hot path:
+
+- **`util.rs:72, 122-160, 204-219`** — `total_length - codec::ENTITY_LENGTH -
+  codec::TX_EID_OP_SUFFIX` style subtractions in the key extractors.
+- **`temporal_filter_iterator.rs:104`** `assert!(key.len() >= ...)` and the
+  `&key[.. len - SUFFIX]` slices (lines 41/112).
+- **`tx.rs:314`** `assert!(key.len() >= TX_EID_OP_SUFFIX)`.
+
+Note `indexer.rs:709` (`strip_temporal_key`) already does this correctly by
+returning `Err("Key too short")` — be consistent and return errors.
+
+### MED — Panic on valid-but-unsupported client input
+
+- **`tx.rs:235`** — `expand_tx_ops` does
+  `panic!("Delete/Erase not yet implemented")` on `TxOp::Delete` / `Erase`. A
+  client submitting a Delete op crashes the tx task. Use `bail!`.
+
+---
+
+## 3. Panics on internal invariants (contained, but should be `Result`)
+
+- **`generic_prefix_extender.rs:120/131/166/177/186/196/204`** (HIGH within the
+  query engine) — `propose` / `count` / `intersect` / iterator-creation do
+  `.unwrap_or_else(|e| panic!(...))` (marked `// TODO: proper error handling`).
+  Because the `PrefixExtender` trait is infallible, **routine SlateDB I/O errors
+  during a normal query become panics.** Make the trait fallible (`-> Result`).
+  Same class: `generic_predicate_prefix_extender.rs:59/66` and
+  `generic_fn_prefix_extender.rs:45` `.expect("failed to decode...")` on
+  intermediate query values.
+- **`server.rs:508`** (HIGH) — `DevServer::listen_on`:
+  `Arc::try_unwrap(node).unwrap_or_else(|_| panic!("refcount should be 1"))`. If
+  any spawned task or live subscription still holds a node `Arc` at close, this
+  panics the connection task. Use a shared-`Arc` shutdown path. (Dev-only, so
+  lower real-world blast radius.)
+- **`bootstrap.rs:107-143`** — the fresh-DB `init_db` branch uses ~7 `.unwrap()`s
+  (plus `assert!` / `assert_eq!`) even though the fn already returns `Result`; a
+  first-init write error panics instead of propagating. Replace with `?`.
+- **`main.rs:32`** — `signal(SIGTERM).expect(...)` inside a detached spawn; a
+  failure silently loses shutdown signaling.
+- **`server.rs:116`** —
+  `encode_error_body(...).expect("infallible")` while building an error response
+  from arbitrary runtime strings.
+
+---
+
+## 4. General non-idiomatic Rust / performance
+
+- **`generic_and_prefix_extender.rs:77`** (perf, MED) — `sort_by_key(|c|
+  c.count(prefix))` recomputes `count()` O(n log n) times, and **each `count()`
+  re-opens a SlateDB scan via `block_on`**. Use `sort_by_cached_key` /
+  precompute counts once. Compounds the per-query blocking-thread cost.
+- **`index.rs:13-20`** — `Bytes → Vec → Bytes` round-trip just to add/strip one
+  prefix byte; `Bytes::slice(1..)` is zero-copy.
+- **`indexer.rs:468`** — `HashSet → Vec` collect loses deterministic datom
+  ordering; harmless only if nothing downstream depends on order (worth a
+  comment).
+- **`edn/types.rs:654-680`** — `FromMicros` / `FromMillis` trait impls panic via
+  `from_timestamp(...).unwrap()`; `protocol::micros_to_datetime` is the correct
+  non-panicking version — dedupe onto it.
+- Minor: `Box<dyn Error>` in `transaction.rs:15` (crate otherwise uses
+  `anyhow`); eager `unwrap_or(vec![])` vs `unwrap_or_default()`
+  (`edn/query.rs:1075`); needless query `.clone()` in `IntoQuery` (`ops.rs:53`,
+  already TODO'd).
+
+---
+
+### 5.1 Async / concurrency (new)
+
+- **HIGH — One slow subscriber stalls the entire node (head-of-line
+  blocking).** The incremental-query subsystem runs on a *single* dedicated OS
+  thread behind a *single* command channel. When the CDC loop applies a tx it
+  holds the async `registration_gate` across the whole apply
+  (`incremental/cdc.rs:103-104`), and the per-query fan-out
+  (`incremental.rs:409-428`) calls `send_delta`, which `block_on`s a **bounded
+  128-slot** per-subscriber channel (`incremental.rs:287`). If one HTTP
+  subscriber stops reading, its channel fills → `send_delta` blocks the one
+  service thread indefinitely → because `registration_gate` is held across the
+  stalled `apply_triples().await`, this simultaneously (a) freezes delta
+  delivery to *every other* query, (b) blocks *all* new `register_query` calls
+  (they wait on the same gate, `incremental.rs:142`), and (c) halts CDC/WAL
+  progress node-wide. Per-connection backpressure becomes a global stall; only
+  shutdown-cancel recovers. (The `block_on` at 287 is mechanically fine on a
+  dedicated thread — it's the *global* consequence that's the bug.)
+- **MED — Blocking `thread::join()` inside `Drop` on a possible runtime worker.**
+  `kafka_log.rs:170-178` `LiveConsumer::drop` calls `handle.join()`; the
+  consumer only checks its stop flag between `poll(Timeout::After(100ms))` calls
+  (`kafka_log.rs:207`). `LiveConsumer` is owned by `KafkaLog` (`_live_consumer`,
+  `:247`), so dropping a node from async shutdown code can block a Tokio worker
+  for up to ~100 ms.
+- **MED — Wrong lock primitive: async guard never crosses an `.await`.**
+  `file_log.rs` uses `tokio::sync::Mutex<FileLogState>` and `memory_log.rs` uses
+  `tokio::sync::RwLock<MemoryLogState>`, but every critical section is fully
+  synchronous (`stream_position`/`serialize_into`/`flush`/`sync_data`, resp.
+  `clock.now()` + `Vec::push`) — no `.await` under any guard. These should be
+  `std::sync::Mutex`/`RwLock`. In `file_log` the async mutex also *obscures* that
+  it holds a lock while doing a blocking `fsync` (the §1 blocking-fsync finding).
+- **LOW — Dropped `JoinHandle` on the signal-handler spawn** (`main.rs:26-47`) —
+  same class as the `log.rs` §1 finding; a panic in the SIGINT/SIGTERM handler
+  is silently swallowed and shutdown is never signalled. (Process-lifetime task,
+  so low blast radius.)
+
+### 5.2 Error handling (new)
+
+- **HIGH — Incremental-query CDC loop dies silently on the first error.**
+  `incremental/cdc.rs:94-104`: every step uses `?` (`next_transaction`,
+  `datoms_from_cdc_transaction`, `tx_key_from_datoms`, `datoms_to_tuples`,
+  `apply_triples`). On any `Err` the task returns and exits. `spawn_cdc_loop`
+  (`cdc.rs:69`) is a bare `tokio::spawn`; the `JoinHandle<Result<()>>` is
+  inspected **only** at shutdown (`await_cdc_task`, `incremental.rs:250`), never
+  during operation, and the error path logs *nothing* (only the Ok path logs
+  `info!`). Per-query delta senders stay alive, so subscribers' receivers never
+  see a close and client subscriptions (`server.rs:382` `deltas.recv()`) hang
+  forever with no error frame. A single transient object-store/WAL read error
+  thus silently kills the whole incremental-query subsystem. Contrast
+  `log.rs:79-89` `catch_up_transactions`, which retries reads with exponential
+  backoff — mirror that.
+- **MED — `FileLog` treats mid-file corruption as clean EOF.**
+  `file_log.rs:90-95` (and `83-86`): `bincode::deserialize_from(...) Err(_) =>
+  break // EOF or corrupted data`. bincode returns `Err` for both clean EOF and
+  genuine corruption and the code can't distinguish them, so a torn record
+  mid-file is read as end-of-log. Since `catch_up_transactions` treats a
+  short/empty batch as "caught up" (`log.rs:60/72`), every record after the
+  corruption is silently dropped and the subscriber stops — no error logged.
+- **MED — `anyhow` errors flattened to `String` across an internal thread
+  boundary.** `incremental.rs:73` `type ServiceResult<T> = Result<T, String>`,
+  with `map_err(|err| format!("{:#}", err))` at `:370/:373/:418`, re-wrapped as
+  `anyhow!("{}", err)` at callers (`:213/:224/:245/:259`). `QueryCircuit` errors
+  are already `Send + Sync` `anyhow::Error` and channel-safe; stringifying loses
+  type/backtrace at an internal (non-wire) boundary.
+- **LOW — `broadcast` send failure logged as `warn!` on the normal
+  no-subscribers path.** `memory_log.rs:84-90` and `file_log.rs:125-127`:
+  `broadcast::Sender::send` only errors when `receiver_count == 0` (a normal
+  condition), yet warns on *every* append when nobody is subscribed
+  (`memory_log` even carries a TODO questioning this).
+- **LOW — `Drop` swallows query-storage removal errors.**
+  `incremental.rs:495-498` `let _ = self.remove_all_queries();` discards a
+  `Result` that deletes on-disk DBSP storage dirs — filesystem errors silently
+  leak storage with no log line.
+
+### 5.4 Performance / hot path (new)
+
+- **MED — `GenericPredicatePrefixExtender::intersect` builds a `HashMap` per
+  candidate extension** (`iterator/generic_predicate_prefix_extender.rs:63-78`).
+  Prefix bindings are pre-decoded once (good), but a fresh
+  `HashMap<Variable, &DataType>` — with a `Variable` (Arc) clone per entry — is
+  constructed *inside* the filter closure for every extension. Build the base map
+  once and update only the extension-var entry per row.
+- **MED — `CountDistinctAccumulator` bincode-serializes every value**
+  (`aggregate.rs:47-55`): a per-row `Vec<u8>` into `HashSet<Vec<u8>>`. `DataType`
+  already derives `Hash`/`Eq`, so `HashSet<DataType>` (`value.clone()`) drops the
+  per-row allocation and the serialize step for scalar variants.
+- **LOW (churn worth noting):** `apply_extensions` clones the whole `prefix`
+  `Vec` per output tuple (`algo/generic_join.rs:20-29`; the final extension could
+  consume it); `make_extractor_fn` boxes a fresh `Box<dyn Fn>` per
+  `count`/`propose`/`intersect` (`iterator/generic_prefix_extender.rs:139-154`);
+  unique-constraint validation double-clones the datom value on the write path
+  (`indexer.rs:517-524`).
