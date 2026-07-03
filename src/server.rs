@@ -106,20 +106,26 @@ fn open_db_error(e: Error) -> ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = encode_error_body(&ErrorResponseBody {
+        match encode_error_body(&ErrorResponseBody {
             severity: SEVERITY_ERROR,
             code: self.code.as_u16(),
-            message: self.message,
+            message: self.message.clone(),
             detail: None,
             hint: None,
-        })
-        .expect("ErrorResponseBody encoding is infallible for fixed inputs");
-        (
-            self.status,
-            [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
-            body,
-        )
-            .into_response()
+        }) {
+            Ok(body) => (
+                self.status,
+                [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+                body,
+            )
+                .into_response(),
+            // Encoding an error response should never fail, but if it does,
+            // degrade to a plain-text body instead of panicking the handler.
+            Err(err) => {
+                warn!("Failed to encode error response body: {}", err);
+                (self.status, self.message).into_response()
+            }
+        }
     }
 }
 
