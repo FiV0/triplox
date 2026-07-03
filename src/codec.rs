@@ -119,12 +119,11 @@ pub fn encode_i64_bytes(value: i64) -> [u8; 8] {
 }
 
 pub fn decode_i64(cursor: &mut &[u8]) -> Result<i64, DecodeError> {
-    if cursor.len() < 8 {
-        return Err("not enough bytes for i64".into());
-    }
-    let bytes: [u8; 8] = cursor[..8].try_into().unwrap();
-    *cursor = &cursor[8..];
-    Ok(i64::from_be_bytes(bytes) ^ i64::MAX)
+    let (bytes, rest) = cursor
+        .split_first_chunk::<8>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for i64"))?;
+    *cursor = rest;
+    Ok(i64::from_be_bytes(*bytes) ^ i64::MAX)
 }
 
 pub fn encode_i128(value: i128, buf: &mut Vec<u8>) {
@@ -133,12 +132,11 @@ pub fn encode_i128(value: i128, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_i128(cursor: &mut &[u8]) -> Result<i128, DecodeError> {
-    if cursor.len() < 16 {
-        return Err("not enough bytes for i128".into());
-    }
-    let bytes: [u8; 16] = cursor[..16].try_into().unwrap();
-    *cursor = &cursor[16..];
-    Ok(i128::from_be_bytes(bytes) ^ i128::MAX)
+    let (bytes, rest) = cursor
+        .split_first_chunk::<16>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for i128"))?;
+    *cursor = rest;
+    Ok(i128::from_be_bytes(*bytes) ^ i128::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -150,12 +148,11 @@ pub fn encode_u64(value: u64, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_u64(cursor: &mut &[u8]) -> Result<u64, DecodeError> {
-    if cursor.len() < 8 {
-        return Err("not enough bytes for u64".into());
-    }
-    let bytes: [u8; 8] = cursor[..8].try_into().unwrap();
-    *cursor = &cursor[8..];
-    Ok(u64::from_be_bytes(bytes))
+    let (bytes, rest) = cursor
+        .split_first_chunk::<8>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for u64"))?;
+    *cursor = rest;
+    Ok(u64::from_be_bytes(*bytes))
 }
 
 // ---------------------------------------------------------------------------
@@ -174,12 +171,11 @@ pub fn encode_f64(value: f64, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_f64(cursor: &mut &[u8]) -> Result<f64, DecodeError> {
-    if cursor.len() < 8 {
-        return Err("not enough bytes for f64".into());
-    }
-    let bytes: [u8; 8] = cursor[..8].try_into().unwrap();
-    *cursor = &cursor[8..];
-    let sortable = u64::from_be_bytes(bytes);
+    let (bytes, rest) = cursor
+        .split_first_chunk::<8>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for f64"))?;
+    *cursor = rest;
+    let sortable = u64::from_be_bytes(*bytes);
     let sign_mask: u64 = 0x8000_0000_0000_0000;
     let bits = if sortable & sign_mask != 0 {
         sortable ^ sign_mask
@@ -201,12 +197,11 @@ pub fn encode_f32(value: f32, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_f32(cursor: &mut &[u8]) -> Result<f32, DecodeError> {
-    if cursor.len() < 4 {
-        return Err("not enough bytes for f32".into());
-    }
-    let bytes: [u8; 4] = cursor[..4].try_into().unwrap();
-    *cursor = &cursor[4..];
-    let sortable = u32::from_be_bytes(bytes);
+    let (bytes, rest) = cursor
+        .split_first_chunk::<4>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for f32"))?;
+    *cursor = rest;
+    let sortable = u32::from_be_bytes(*bytes);
     let sign_mask: u32 = 0x8000_0000;
     let bits = if sortable & sign_mask != 0 {
         sortable ^ sign_mask
@@ -225,11 +220,10 @@ pub fn encode_bool(value: bool, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_bool(cursor: &mut &[u8]) -> Result<bool, DecodeError> {
-    if cursor.is_empty() {
-        return Err("not enough bytes for bool".into());
-    }
-    let byte = cursor[0];
-    *cursor = &cursor[1..];
+    let (&byte, rest) = cursor
+        .split_first()
+        .ok_or_else(|| DecodeError::from("not enough bytes for bool"))?;
+    *cursor = rest;
     match byte {
         0x00 => Ok(false),
         0x01 => Ok(true),
@@ -261,19 +255,17 @@ pub fn encode_bytes(value: &[u8], buf: &mut Vec<u8>) {
 pub fn decode_bytes(cursor: &mut &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut result = Vec::new();
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input in bytes".into());
-        }
-        let b = cursor[0];
-        *cursor = &cursor[1..];
+        let (&b, rest) = cursor
+            .split_first()
+            .ok_or_else(|| DecodeError::from("unexpected end of input in bytes"))?;
+        *cursor = rest;
         match b {
             0x00 => return Ok(result),
             0x01 => {
-                if cursor.is_empty() {
-                    return Err("unexpected end of input after escape byte".into());
-                }
-                let next = cursor[0];
-                *cursor = &cursor[1..];
+                let (&next, rest) = cursor
+                    .split_first()
+                    .ok_or_else(|| DecodeError::from("unexpected end of input after escape byte"))?;
+                *cursor = rest;
                 match next {
                     0x01 => result.push(0x00),
                     0x02 => result.push(0x01),
@@ -314,12 +306,11 @@ pub fn encode_uuid(value: &Uuid, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_uuid(cursor: &mut &[u8]) -> Result<Uuid, DecodeError> {
-    if cursor.len() < 16 {
-        return Err("not enough bytes for UUID".into());
-    }
-    let bytes: [u8; 16] = cursor[..16].try_into().unwrap();
-    *cursor = &cursor[16..];
-    Ok(Uuid::from_bytes(bytes))
+    let (bytes, rest) = cursor
+        .split_first_chunk::<16>()
+        .ok_or_else(|| DecodeError::from("not enough bytes for UUID"))?;
+    *cursor = rest;
+    Ok(Uuid::from_bytes(*bytes))
 }
 
 pub fn encode_keyword(value: &Keyword, buf: &mut Vec<u8>) {
@@ -377,11 +368,10 @@ fn encode_map(map: &BTreeMap<String, DataType>, buf: &mut Vec<u8>) {
 }
 
 pub fn decode_datatype(cursor: &mut &[u8]) -> Result<DataType, DecodeError> {
-    if cursor.is_empty() {
-        return Err("unexpected end of input: expected type tag".into());
-    }
-    let tag = cursor[0];
-    *cursor = &cursor[1..];
+    let (&tag, rest) = cursor
+        .split_first()
+        .ok_or_else(|| DecodeError::from("unexpected end of input: expected type tag"))?;
+    *cursor = rest;
     decode_datatype_payload(tag, cursor)
 }
 
@@ -406,36 +396,39 @@ fn decode_datatype_payload(tag: u8, cursor: &mut &[u8]) -> Result<DataType, Deco
 fn decode_composite(cursor: &mut &[u8]) -> Result<Vec<DataType>, DecodeError> {
     let mut elements = Vec::new();
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input in composite".into());
+        match cursor.split_first() {
+            None => return Err("unexpected end of input in composite".into()),
+            Some((0x00, rest)) => {
+                *cursor = rest; // consume end marker
+                return Ok(elements);
+            }
+            Some(_) => elements.push(decode_datatype(cursor)?),
         }
-        if cursor[0] == 0x00 {
-            *cursor = &cursor[1..]; // consume end marker
-            return Ok(elements);
-        }
-        elements.push(decode_datatype(cursor)?);
     }
 }
 
 fn decode_map(cursor: &mut &[u8]) -> Result<BTreeMap<String, DataType>, DecodeError> {
     let mut map = BTreeMap::new();
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input in map".into());
+        match cursor.split_first() {
+            None => return Err("unexpected end of input in map".into()),
+            Some((0x00, rest)) => {
+                *cursor = rest; // consume end marker
+                return Ok(map);
+            }
+            // Read key: expect TAG_STRING
+            Some((&key_tag, rest)) => {
+                *cursor = rest;
+                if key_tag != TAG_STRING {
+                    return Err(
+                        format!("expected TAG_STRING for map key, got 0x{:02x}", key_tag).into(),
+                    );
+                }
+                let key = decode_string(cursor)?;
+                let value = decode_datatype(cursor)?;
+                map.insert(key, value);
+            }
         }
-        if cursor[0] == 0x00 {
-            *cursor = &cursor[1..]; // consume end marker
-            return Ok(map);
-        }
-        // Read key: expect TAG_STRING
-        let key_tag = cursor[0];
-        *cursor = &cursor[1..];
-        if key_tag != TAG_STRING {
-            return Err(format!("expected TAG_STRING for map key, got 0x{:02x}", key_tag).into());
-        }
-        let key = decode_string(cursor)?;
-        let value = decode_datatype(cursor)?;
-        map.insert(key, value);
     }
 }
 
@@ -444,11 +437,10 @@ fn decode_map(cursor: &mut &[u8]) -> Result<BTreeMap<String, DataType>, DecodeEr
 // ---------------------------------------------------------------------------
 
 pub fn skip_datatype(cursor: &mut &[u8]) -> Result<(), DecodeError> {
-    if cursor.is_empty() {
-        return Err("unexpected end of input: expected type tag".into());
-    }
-    let tag = cursor[0];
-    *cursor = &cursor[1..];
+    let (&tag, rest) = cursor
+        .split_first()
+        .ok_or_else(|| DecodeError::from("unexpected end of input: expected type tag"))?;
+    *cursor = rest;
     match tag {
         TAG_BIG_INT => skip_n(cursor, 16),
         TAG_BOOLEAN => skip_n(cursor, 1),
@@ -470,27 +462,25 @@ pub fn skip_datatype(cursor: &mut &[u8]) -> Result<(), DecodeError> {
 }
 
 fn skip_n(cursor: &mut &[u8], n: usize) -> Result<(), DecodeError> {
-    if cursor.len() < n {
-        return Err("not enough bytes to skip".into());
-    }
-    *cursor = &cursor[n..];
+    *cursor = cursor
+        .get(n..)
+        .ok_or_else(|| DecodeError::from("not enough bytes to skip"))?;
     Ok(())
 }
 
 fn skip_terminated(cursor: &mut &[u8]) -> Result<(), DecodeError> {
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input skipping terminated bytes".into());
-        }
-        let b = cursor[0];
-        *cursor = &cursor[1..];
+        let (&b, rest) = cursor
+            .split_first()
+            .ok_or_else(|| DecodeError::from("unexpected end of input skipping terminated bytes"))?;
+        *cursor = rest;
         match b {
             0x00 => return Ok(()),
             0x01 => {
-                if cursor.is_empty() {
-                    return Err("unexpected end of input after escape byte".into());
-                }
-                *cursor = &cursor[1..];
+                let (_, rest) = cursor
+                    .split_first()
+                    .ok_or_else(|| DecodeError::from("unexpected end of input after escape byte"))?;
+                *cursor = rest;
             }
             _ => {}
         }
@@ -499,28 +489,30 @@ fn skip_terminated(cursor: &mut &[u8]) -> Result<(), DecodeError> {
 
 fn skip_composite(cursor: &mut &[u8]) -> Result<(), DecodeError> {
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input in composite".into());
+        match cursor.split_first() {
+            None => return Err("unexpected end of input in composite".into()),
+            Some((0x00, rest)) => {
+                *cursor = rest;
+                return Ok(());
+            }
+            Some(_) => skip_datatype(cursor)?,
         }
-        if cursor[0] == 0x00 {
-            *cursor = &cursor[1..];
-            return Ok(());
-        }
-        skip_datatype(cursor)?;
     }
 }
 
 fn skip_map(cursor: &mut &[u8]) -> Result<(), DecodeError> {
     loop {
-        if cursor.is_empty() {
-            return Err("unexpected end of input in map".into());
+        match cursor.split_first() {
+            None => return Err("unexpected end of input in map".into()),
+            Some((0x00, rest)) => {
+                *cursor = rest;
+                return Ok(());
+            }
+            Some(_) => {
+                skip_datatype(cursor)?; // key (TAG_STRING + terminated)
+                skip_datatype(cursor)?; // value
+            }
         }
-        if cursor[0] == 0x00 {
-            *cursor = &cursor[1..];
-            return Ok(());
-        }
-        skip_datatype(cursor)?; // key (TAG_STRING + terminated)
-        skip_datatype(cursor)?; // value
     }
 }
 
