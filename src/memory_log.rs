@@ -10,9 +10,11 @@ use crate::logging::init;
 use crate::transaction::TxKey;
 use anyhow::Result;
 use log::warn;
-use tokio::sync::{broadcast, RwLock};
+use std::sync::RwLock;
+use tokio::sync::broadcast;
 
 pub struct MemoryLog {
+    // std RwLock: every critical section is synchronous, no guard crosses an .await.
     state: RwLock<MemoryLogState>,
     tx_sender: broadcast::Sender<Record>,
 }
@@ -34,7 +36,10 @@ impl MemoryLog {
 impl TxLog for MemoryLog {
     async fn ensure_bootstrap_record(&self) -> Result<()> {
         let bootstrap_record = BOOTSTRAP_RECORD.clone();
-        let mut state = self.state.write().await;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         match state.txs.first() {
             Some(record) if record == &bootstrap_record => Ok(()),
             Some(record) => Err(anyhow::anyhow!(
@@ -51,7 +56,10 @@ impl TxLog for MemoryLog {
 
 impl TxLogReader for MemoryLog {
     async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
-        let state = self.state.read().await;
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         let start = match after_tx_id {
             None => 0,
             Some(id) => id as usize + 1,
@@ -70,7 +78,10 @@ impl TxLogReader for MemoryLog {
 
 impl TxLogWriter for MemoryLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let mut state = self.state.write().await;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         let record = Record {
             tx_key: TxKey {
                 tx_id: state.txs.len() as i64,
