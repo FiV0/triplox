@@ -247,7 +247,7 @@ returning `Err("Key too short")` — be consistent and return errors.
 - [x] 10. `generic_prefix_extender.rs` & friends: make `PrefixExtender` trait fallible; remove `panic!`/`expect` on SlateDB I/O and decode errors (§3 HIGH)
 - [x] 11. `server.rs:508`: `DevServer::listen_on` `Arc::try_unwrap(...).unwrap_or_else(panic!)` → shared-`Arc` shutdown (§3 HIGH)
 - [x] 12. `bootstrap.rs:107-143`: `init_db` unwraps/asserts in `Result` fn → `?` (§3)
-- [ ] 13. `main.rs:26-47`: signal-handler spawn — `expect` on `signal(SIGTERM)` + dropped `JoinHandle` (§3 + §5.1 LOW)
+- [x] 13. `main.rs:26-47`: signal-handler spawn — `expect` on `signal(SIGTERM)` + dropped `JoinHandle` (§3 + §5.1 LOW)
 - [ ] 14. `server.rs:116`: `encode_error_body(...).expect("infallible")` → fallback response (§3)
 - [x] 15. `generic_and_prefix_extender.rs:77`: `sort_by_key` recomputes `count()` → precompute/`sort_by_cached_key` (§4 MED; fixed as part of item 10 — counts are now computed once per child)
 - [ ] 16. `index.rs:13-20`: `Bytes → Vec → Bytes` round-trip → zero-copy `slice(1..)` (§4)
