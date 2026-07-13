@@ -32,9 +32,7 @@ pub use uuid::Uuid;
 
 // Export from our modules.
 pub use parse::ParseError;
-pub use types::{
-    FromMicros, FromMillis, Span, SpannedValue, ToMicros, ToMillis, Value, ValueAndSpan,
-};
+pub use types::{Span, SpannedValue, ToMicros, ToMillis, Value, ValueAndSpan};
 pub use uuid::Error as UuidParseError;
 
 pub use symbols::{Keyword, NamespacedSymbol, PlainSymbol};

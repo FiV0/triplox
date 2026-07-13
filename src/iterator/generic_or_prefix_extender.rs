@@ -1,3 +1,5 @@
+use anyhow::Error;
+
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 
 /// An OR-combinator extender that unifies multiple child extenders with union semantics.
@@ -22,32 +24,36 @@ impl GenericOrPrefixExtender {
 }
 
 impl PrefixExtender for GenericOrPrefixExtender {
-    fn count(&self, prefix: &Prefix) -> usize {
-        self.children
-            .iter()
-            .fold(0, |total, child| total.saturating_add(child.count(prefix)))
+    fn count(&self, prefix: &Prefix) -> Result<usize, Error> {
+        let mut total: usize = 0;
+        for child in &self.children {
+            total = total.saturating_add(child.count(prefix)?);
+        }
+        Ok(total)
     }
 
-    fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.propose(prefix))
-            .collect();
+    fn propose(&self, prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        let mut all: Vec<Extension> = Vec::new();
+        for child in &self.children {
+            all.extend(child.propose(prefix)?);
+        }
         all.sort();
         all.dedup();
-        all
+        Ok(all)
     }
 
-    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        let mut all: Vec<Extension> = self
-            .children
-            .iter()
-            .flat_map(|c| c.intersect(prefix, extensions))
-            .collect();
+    fn intersect(
+        &self,
+        prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
+        let mut all: Vec<Extension> = Vec::new();
+        for child in &self.children {
+            all.extend(child.intersect(prefix, extensions)?);
+        }
         all.sort();
         all.dedup();
-        all
+        Ok(all)
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -74,7 +80,7 @@ mod tests {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(2), bi(3)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(4), bi(5)], 0);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
-        assert_eq!(or_ext.count(&vec![]), 5);
+        assert_eq!(or_ext.count(&vec![]).unwrap(), 5);
     }
 
     #[test]
@@ -93,7 +99,7 @@ mod tests {
         );
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(pred1), Box::new(pred2)]);
 
-        assert_eq!(or_ext.count(&vec![]), usize::MAX);
+        assert_eq!(or_ext.count(&vec![]).unwrap(), usize::MAX);
     }
 
     #[test]
@@ -101,7 +107,7 @@ mod tests {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(3), bi(5)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(2), bi(3), bi(4)], 0);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
-        let proposed = or_ext.propose(&vec![]);
+        let proposed = or_ext.propose(&vec![]).unwrap();
         assert_eq!(proposed, vec![bi(1), bi(2), bi(3), bi(4), bi(5)]);
     }
 
@@ -111,7 +117,7 @@ mod tests {
         let ext2 = SingleLevelExtender::new(vec![bi(2), bi(4)], 0);
         let or_ext = GenericOrPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
         let candidates = vec![bi(1), bi(2), bi(5)];
-        let result = or_ext.intersect(&vec![], &candidates);
+        let result = or_ext.intersect(&vec![], &candidates).unwrap();
         assert_eq!(result, vec![bi(1), bi(2)]);
     }
 
@@ -135,7 +141,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&or_extender, &even_extender];
         let join = GenericJoin::new(extenders, 1);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         assert_eq!(result, vec![vec![bi(2)], vec![bi(4)]]);
     }

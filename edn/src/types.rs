@@ -645,20 +645,6 @@ impl Display for ValueAndSpan {
     }
 }
 
-pub trait FromMicros {
-    fn from_micros(ts: i64) -> Self;
-}
-
-impl FromMicros for DateTime<Utc> {
-    fn from_micros(ts: i64) -> Self {
-        DateTime::from_timestamp(
-            ts / 1_000_000,
-            ((ts % 1_000_000).unsigned_abs() as u32) * 1_000,
-        )
-        .unwrap()
-    }
-}
-
 pub trait ToMicros {
     fn to_micros(&self) -> i64;
 }
@@ -668,16 +654,6 @@ impl ToMicros for DateTime<Utc> {
         let major: i64 = self.timestamp() * 1_000_000;
         let minor: i64 = self.timestamp_subsec_micros() as i64;
         major + minor
-    }
-}
-
-pub trait FromMillis {
-    fn from_millis(ts: i64) -> Self;
-}
-
-impl FromMillis for DateTime<Utc> {
-    fn from_millis(ts: i64) -> Self {
-        DateTime::from_timestamp(ts / 1_000, ((ts % 1_000).unsigned_abs() as u32) * 1_000).unwrap()
     }
 }
 
@@ -711,7 +687,7 @@ mod test {
     #[test]
     fn test_micros_roundtrip() {
         let ts_micros: i64 = 1493399581314000;
-        let dt = DateTime::<Utc>::from_micros(ts_micros);
+        let dt = DateTime::<Utc>::from_timestamp_micros(ts_micros).unwrap();
         assert_eq!(dt.to_micros(), ts_micros);
     }
 

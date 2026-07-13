@@ -23,18 +23,22 @@ async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
 
+    // Install the SIGTERM handler before spawning: a failure here surfaces as
+    // a startup error instead of a swallowed panic in a detached task that
+    // would silently lose shutdown signaling.
+    #[cfg(unix)]
+    let mut sigterm = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?
+    };
+
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
 
         #[cfg(unix)]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-            tokio::select! {
-                _ = ctrl_c => info!("SIGINT received, shutting down..."),
-                _ = sigterm.recv() => info!("SIGTERM received, shutting down..."),
-            }
+        tokio::select! {
+            _ = ctrl_c => info!("SIGINT received, shutting down..."),
+            _ = sigterm.recv() => info!("SIGTERM received, shutting down..."),
         }
 
         #[cfg(not(unix))]

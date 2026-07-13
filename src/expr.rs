@@ -148,6 +148,12 @@ impl<'a> EvalContext<'a> {
         Self { bindings }
     }
 
+    /// Insert or overwrite a single binding. Lets row-at-a-time callers reuse
+    /// one context instead of rebuilding the whole map per row.
+    pub fn bind(&mut self, var: Variable, value: &'a DataType) {
+        self.bindings.insert(var, value);
+    }
+
     pub fn resolve(&self, var: &Variable) -> Option<&DataType> {
         self.bindings.get(var).copied()
     }

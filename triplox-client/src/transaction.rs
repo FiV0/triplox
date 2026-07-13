@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 
 pub type Instant = chrono::DateTime<chrono::Utc>;
 
@@ -12,5 +11,5 @@ pub struct TxKey {
 #[derive(Debug)]
 pub enum TransactionResult {
     TxCommitted(TxKey),
-    TxAborted(TxKey, Box<dyn Error>),
+    TxAborted(TxKey, anyhow::Error),
 }

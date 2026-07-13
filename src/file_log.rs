@@ -2,15 +2,15 @@ use crate::clock::SystemTimeSource;
 use crate::log::{Record, TxId, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::transaction::TxKey;
 use anyhow::{Context, Result};
-use log::warn;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use tokio::sync::{broadcast, Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
 pub struct FileLog {
     path: PathBuf,
-    state: Mutex<FileLogState>,
+    state: Arc<Mutex<FileLogState>>,
     tx_sender: broadcast::Sender<Record>,
 }
 
@@ -31,10 +31,10 @@ impl FileLog {
 
         Ok(FileLog {
             path: path.to_path_buf(),
-            state: Mutex::new(FileLogState {
+            state: Arc::new(Mutex::new(FileLogState {
                 file: BufWriter::new(file),
                 clock,
-            }),
+            })),
             tx_sender: broadcast::channel(1024).0,
         })
     }
@@ -55,46 +55,75 @@ impl TxLog for FileLog {
             None => {}
         }
 
-        let mut state = self.state.lock().await;
-        if state.file.stream_position()? != 0 {
-            return Err(anyhow::anyhow!(
-                "file log has bytes but no readable bootstrap record"
-            ));
-        }
-        bincode::serialize_into(&mut state.file, &bootstrap_record)?;
-        state.file.flush()?;
-        state.file.get_ref().sync_data()?;
-        Ok(())
+        let state = Arc::clone(&self.state);
+
+        // The write fsyncs, so run the whole locked section off the async runtime.
+        tokio::task::spawn_blocking(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("file log state lock poisoned"))?;
+            if state.file.stream_position()? != 0 {
+                return Err(anyhow::anyhow!(
+                    "file log has bytes but no readable bootstrap record"
+                ));
+            }
+            bincode::serialize_into(&mut state.file, &bootstrap_record)?;
+            state.file.flush()?;
+            state.file.get_ref().sync_data()?;
+            Ok(())
+        })
+        .await
+        .context("File log bootstrap task failed")?
     }
+}
+
+fn read_records_blocking(
+    path: &Path,
+    after_tx_id: Option<TxId>,
+    limit: u16,
+) -> Result<Vec<Record>> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    // Snapshot of the log length: a record that starts before `len` but fails
+    // to decode is corruption, not a clean end-of-log.
+    let len = file.metadata()?.len();
+    let mut records = Vec::new();
+
+    match after_tx_id {
+        None => {
+            file.seek(SeekFrom::Start(0))?;
+        }
+        Some(id) => {
+            let pos = file.seek(SeekFrom::Start(id as u64))?;
+            if pos >= len {
+                return Ok(records); // nothing after this record
+            }
+            // Skip the record at `id` — we've already processed it
+            bincode::deserialize_from::<_, Record>(&mut file)
+                .with_context(|| format!("file log corrupt at offset {}", pos))?;
+        }
+    }
+
+    for _ in 0..limit {
+        let pos = file.stream_position()?;
+        if pos >= len {
+            break; // clean end-of-log
+        }
+        let record = bincode::deserialize_from(&mut file)
+            .with_context(|| format!("file log corrupt at offset {}", pos))?;
+        records.push(record);
+    }
+
+    Ok(records)
 }
 
 impl TxLogReader for FileLog {
     async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
-        let mut file = OpenOptions::new().read(true).open(&self.path)?;
-        let mut records = Vec::new();
+        let path = self.path.clone();
 
-        match after_tx_id {
-            None => {
-                file.seek(SeekFrom::Start(0))?;
-            }
-            Some(id) => {
-                file.seek(SeekFrom::Start(id as u64))?;
-                // Skip the record at `id` — we've already processed it
-                let _skipped: Result<Record, _> = bincode::deserialize_from(&mut file);
-                if _skipped.is_err() {
-                    return Ok(records); // nothing after this record
-                }
-            }
-        }
-
-        for _ in 0..limit {
-            match bincode::deserialize_from(&mut file) {
-                Ok(record) => records.push(record),
-                Err(_) => break, // EOF or corrupted data
-            }
-        }
-
-        Ok(records)
+        // File reads block, so run them off the async runtime.
+        tokio::task::spawn_blocking(move || read_records_blocking(&path, after_tx_id, limit))
+            .await
+            .context("File log read task failed")?
     }
 
     async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
@@ -104,27 +133,36 @@ impl TxLogReader for FileLog {
 
 impl TxLogWriter for FileLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let mut state = self.state.lock().await;
-        let tx_id = state.file.stream_position()? as TxId;
+        let state = Arc::clone(&self.state);
 
-        let record = Record {
-            tx_key: TxKey {
-                tx_id,
-                system_time: state.clock.now(),
-            },
-            record,
-        };
+        // The write fsyncs, so run the whole locked section off the async runtime.
+        let record = tokio::task::spawn_blocking(move || -> Result<Record> {
+            let mut state = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("file log state lock poisoned"))?;
+            let tx_id = state.file.stream_position()? as TxId;
 
-        // Serialize and write the record
-        bincode::serialize_into(&mut state.file, &record).context("Failed to serialize record")?;
-        state.file.flush()?;
-        state.file.get_ref().sync_data()?;
-        drop(state);
+            let record = Record {
+                tx_key: TxKey {
+                    tx_id,
+                    system_time: state.clock.now(),
+                },
+                record,
+            };
 
-        // Notify subscribers
-        if let Err(e) = self.tx_sender.send(record.clone()) {
-            warn!("Failed to send record from file log to subscribers: {}", e);
-        }
+            // Serialize and write the record
+            bincode::serialize_into(&mut state.file, &record)
+                .context("Failed to serialize record")?;
+            state.file.flush()?;
+            state.file.get_ref().sync_data()?;
+            Ok(record)
+        })
+        .await
+        .context("File log append task failed")??;
+
+        // Notify subscribers; send only errors when nobody is subscribed,
+        // which is a normal condition.
+        let _ = self.tx_sender.send(record.clone());
 
         Ok(record.tx_key)
     }
@@ -158,7 +196,7 @@ mod tests {
         ]);
 
         let log = Arc::new(FileLog::new(&file_path, Box::new(clock)).unwrap());
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         log.append_tx(vec![1, 2, 3]).await.unwrap();
         log.append_tx(vec![4, 5, 6]).await.unwrap();
@@ -166,7 +204,7 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
@@ -180,14 +218,14 @@ mod tests {
 
         // Restart log and subscribe after second transaction
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
+        let subscription2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
         log.append_tx(vec![10, 11, 12]).await.unwrap();
         log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        token2.cancel();
+        subscription2.shutdown().await.unwrap();
 
         let subscriber2 = subscriber2.read().await;
 
@@ -212,7 +250,7 @@ mod tests {
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -226,7 +264,7 @@ mod tests {
         .expect("timed out waiting for subscriber to process first record");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
@@ -265,5 +303,40 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].record, vec![1, 2, 3]);
         assert_eq!(records[1].record, vec![4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn test_read_errors_on_torn_record_instead_of_silent_eof() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_torn_record.log");
+
+        let log = FileLog::new(
+            &file_path,
+            Box::new(MockClock::new(vec![
+                st_from_unix_epoch(0),
+                st_from_unix_epoch(100),
+            ])),
+        )
+        .unwrap();
+        log.append_tx(vec![1, 2, 3]).await.unwrap();
+        log.append_tx(vec![4, 5, 6]).await.unwrap();
+        drop(log);
+
+        // Tear the second record in half.
+        let len = std::fs::metadata(&file_path).unwrap().len();
+        let file = OpenOptions::new().write(true).open(&file_path).unwrap();
+        file.set_len(len - 2).unwrap();
+        drop(file);
+
+        let log = FileLog::new(
+            &file_path,
+            Box::new(MockClock::new(vec![st_from_unix_epoch(200)])),
+        )
+        .unwrap();
+        let err = log.read_txs_after(None, u16::MAX).await.unwrap_err();
+        assert!(
+            err.to_string().contains("file log corrupt at offset"),
+            "unexpected error: {err:#}"
+        );
     }
 }

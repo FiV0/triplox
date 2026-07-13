@@ -107,30 +107,26 @@ where
         slate_prefix: &Bytes,
         index_type: IndexType,
         extractor: Extractor,
-    ) -> Box<dyn Index> {
-        match index_type {
-            IndexType::AE | IndexType::AV => Box::new(
-                SlateIterator::new(
-                    slate_prefix,
-                    self.slate.as_ref(),
-                    self.handle.clone(),
-                    extractor,
-                    self.range_stats.clone(),
-                )
-                .unwrap_or_else(|e| panic!("Failed to create SlateIterator: {}", e)),
-            ),
-            IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => Box::new(
-                TemporalFilterIterator::new(
+    ) -> Result<Box<dyn Index>, Error> {
+        Ok(match index_type {
+            IndexType::AE | IndexType::AV => Box::new(SlateIterator::new(
+                slate_prefix,
+                self.slate.as_ref(),
+                self.handle.clone(),
+                extractor,
+                self.range_stats.clone(),
+            )?),
+            IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
+                Box::new(TemporalFilterIterator::new(
                     slate_prefix,
                     self.slate.as_ref(),
                     self.handle.clone(),
                     extractor,
                     self.as_of,
                     self.range_stats.clone(),
-                )
-                .unwrap_or_else(|e| panic!("Failed to create TemporalFilterIterator: {}", e)),
-            ),
-        }
+                )?)
+            }
+        })
     }
 
     /// Create an extractor function for the current index type and position.
@@ -150,7 +146,9 @@ where
             _ => pattern_level + 1,
         };
 
-        Box::new(move |key: Bytes| make_extractor(position, index_type)(key))
+        // Box the extractor closure directly instead of wrapping it in another
+        // closure that would rebuild it on every key.
+        Box::new(make_extractor(position, index_type))
     }
 }
 
@@ -159,57 +157,50 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    fn count(&self, join_prefix: &Prefix) -> usize {
-        // TODO: proper error handling
-        let (slate_prefix, index_type) = self
-            .build_slate_prefix(join_prefix)
-            .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+    fn count(&self, join_prefix: &Prefix) -> Result<usize, Error> {
+        let (slate_prefix, index_type) = self.build_slate_prefix(join_prefix)?;
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let iter = self.create_iterator(&slate_prefix, index_type, extractor);
-        iter.count().unwrap_or(0) as usize
+        let iter = self.create_iterator(&slate_prefix, index_type, extractor)?;
+        Ok(iter.count()? as usize)
     }
 
-    fn propose(&self, join_prefix: &Prefix) -> Vec<Extension> {
-        // TODO: proper error handling
-        let (slate_prefix, index_type) = self
-            .build_slate_prefix(join_prefix)
-            .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+    fn propose(&self, join_prefix: &Prefix) -> Result<Vec<Extension>, Error> {
+        let (slate_prefix, index_type) = self.build_slate_prefix(join_prefix)?;
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
+        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor)?;
 
         let mut extensions = Vec::new();
-        while let Ok(Some(extension)) = iter.get_value() {
+        while let Some(extension) = iter.get_value()? {
             extensions.push(extension);
-            iter.next()
-                .unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
+            iter.next()?;
         }
 
-        extensions
+        Ok(extensions)
     }
 
-    fn intersect(&self, join_prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        // TODO: proper error handling
-        let (slate_prefix, index_type) = self
-            .build_slate_prefix(join_prefix)
-            .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
+    fn intersect(
+        &self,
+        join_prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
+        let (slate_prefix, index_type) = self.build_slate_prefix(join_prefix)?;
         let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
+        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor)?;
 
         let mut result = Vec::new();
         for ext in extensions {
-            iter.seek(ext.clone())
-                .unwrap_or_else(|e| panic!("Failed to seek iterator: {}", e));
+            iter.seek(ext.clone())?;
             if !iter.has_next() {
                 break;
             }
-            if iter.get_value().unwrap_or(None).as_ref() == Some(ext) {
+            if iter.get_value()?.as_ref() == Some(ext) {
                 result.push(ext.clone());
             }
         }
-        result
+        Ok(result)
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -311,7 +302,7 @@ mod tests {
             2000_i64,
         );
 
-        let count = extender.count(&vec![]);
+        let count = extender.count(&vec![]).unwrap();
         assert_eq!(count, 3);
 
         Ok(())
@@ -339,7 +330,7 @@ mod tests {
             2000_i64,
         );
 
-        let values = extender.propose(&vec![]);
+        let values = extender.propose(&vec![]).unwrap();
         assert_eq!(values.len(), 2);
         assert!(values[0] < values[1]);
 
@@ -371,10 +362,10 @@ mod tests {
             2000_i64,
         );
 
-        let values = extender.propose(&vec![]);
+        let values = extender.propose(&vec![]).unwrap();
         assert_eq!(values.len(), 2);
 
-        let entities = extender.propose(&vec![encode_string("Alice")]);
+        let entities = extender.propose(&vec![encode_string("Alice")]).unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0], encode_entity(1));
 
@@ -409,7 +400,7 @@ mod tests {
             encode_string("Charlie"),
         ];
 
-        let filtered = extender.intersect(&vec![], &candidates);
+        let filtered = extender.intersect(&vec![], &candidates).unwrap();
         assert_eq!(filtered.len(), 2);
         assert!(filtered.contains(&encode_string("Alice")));
         assert!(filtered.contains(&encode_string("Bob")));
@@ -449,7 +440,7 @@ mod tests {
             2000_i64,
         );
 
-        let proposed = extender.propose(&vec![]);
+        let proposed = extender.propose(&vec![]).unwrap();
         assert_eq!(proposed.len(), 1);
         // Should extract entity (DataType::Long(1)), not the value (DataType::String("alice"))
         assert_eq!(proposed[0], encode_entity(1));
@@ -477,9 +468,11 @@ mod tests {
         );
 
         // Note: estimate_key_count may return non-zero even for empty ranges
-        assert_eq!(extender.propose(&vec![]), Vec::<Bytes>::new());
+        assert_eq!(extender.propose(&vec![]).unwrap(), Vec::<Bytes>::new());
         assert_eq!(
-            extender.intersect(&vec![], &[encode_string("Alice")]),
+            extender
+                .intersect(&vec![], &[encode_string("Alice")])
+                .unwrap(),
             Vec::<Bytes>::new()
         );
 

@@ -465,6 +465,8 @@ impl Indexer {
             resolved_datoms.insert(datom);
         }
 
+        // HashSet iteration makes datom order nondeterministic; fine today since
+        // downstream (index writes, CDC encoding) is order-independent.
         Ok(resolved_datoms.into_iter().collect())
     }
 
@@ -520,11 +522,11 @@ impl Indexer {
             .collect();
         let resolved = tx::batch_lookup_unique_eids(&self.slatedb, &lookups).await?;
 
-        for (datom, attr_eid) in to_check {
-            if let Some(&owner) = resolved.get(&(attr_eid, datom.value.clone())) {
-                if owner != datom.entity
-                    && !retractions.contains(&(owner, attr_eid, datom.value.clone()))
-                {
+        // Reuse the owned lookup keys (same order as to_check) instead of
+        // cloning the datom value again per map probe.
+        for ((datom, attr_eid), key) in to_check.into_iter().zip(lookups) {
+            if let Some(&owner) = resolved.get(&key) {
+                if owner != datom.entity && !retractions.contains(&(owner, attr_eid, key.1)) {
                     return Err(anyhow::anyhow!(
                         "Unique constraint violation for attribute {} value {:?}: entity {} already owns it",
                         datom.attribute,

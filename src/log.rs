@@ -91,17 +91,34 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     }
 }
 
+/// A handle to a spawned log-subscriber task. Holding the JoinHandle lets
+/// shutdown await the task and surface panics instead of dropping them.
+pub(crate) struct LogSubscription {
+    pub(crate) token: CancellationToken,
+    pub(crate) handle: tokio::task::JoinHandle<()>,
+}
+
+impl LogSubscription {
+    /// Cancel the subscriber task and await it so a panic surfaces as an error.
+    pub(crate) async fn shutdown(self) -> Result<()> {
+        self.token.cancel();
+        self.handle
+            .await
+            .map_err(|e| anyhow::anyhow!("log subscriber task failed: {}", e))
+    }
+}
+
 pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     log: Arc<L>,
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
-) -> CancellationToken {
+) -> LogSubscription {
     let mut tx_receiver = log.subscribe_txs().await;
 
     let token = CancellationToken::new();
     let task_token = token.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut last_tx_id = after_tx_id;
         info!("Starting subscriber, after tx id: {:?}", last_tx_id);
 
@@ -154,7 +171,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
         info!("Stopping subscriber thread");
     });
 
-    token
+    LogSubscription { token, handle }
 }
 
 pub trait TxLogReader: Send + Sync + 'static {
@@ -344,7 +361,7 @@ mod tests {
         let log = Arc::new(SlowReadLog::new());
         let read_started = log.read_started.clone();
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber).await;
+        let subscription = subscribe(log.clone(), None, subscriber).await;
 
         tokio::time::timeout(Duration::from_secs(1), read_started.wait())
             .await
@@ -356,7 +373,7 @@ mod tests {
             .unwrap();
 
         log.release_read.notify_waiters();
-        token.cancel();
+        subscription.shutdown().await.unwrap();
     }
 
     #[tokio::test]

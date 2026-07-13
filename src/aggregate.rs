@@ -45,13 +45,16 @@ impl Accumulator for CountAccumulator {
 }
 
 struct CountDistinctAccumulator {
-    seen: HashSet<Vec<u8>>,
+    // DataType is Hash + Eq, so values are deduped directly — no per-row
+    // bincode serialization or byte-buffer allocation.
+    seen: HashSet<DataType>,
 }
 
 impl Accumulator for CountDistinctAccumulator {
     fn accumulate(&mut self, value: &DataType) -> Result<()> {
-        let bytes = bincode::serialize(value)?;
-        self.seen.insert(bytes);
+        if !self.seen.contains(value) {
+            self.seen.insert(value.clone());
+        }
         Ok(())
     }
 

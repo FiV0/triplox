@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::sync::LazyLock;
 
 use crate::clock::st_from_unix_epoch;
@@ -104,35 +104,44 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             let mut boot_pm = PartitionMap::new();
 
             // Same normalization and tempid-resolution stages as the indexer.
-            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
+            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema)
+                .context("Failed to expand bootstrap tx ops")?;
             let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
                 .await
-                .unwrap();
+                .context("Failed to resolve bootstrap lookup refs")?;
             let mut datoms =
                 tempids::resolve_tempids(with_tempids, &bootstrap_schema, &slate.db, &mut boot_pm)
                     .await
-                    .unwrap();
+                    .context("Failed to resolve bootstrap tempids")?;
             datoms.extend(build_tx_entity_datoms(BOOTSTRAP_TX_EID, tx_key, true, None));
 
             // Validate against pre-built schema, then derive the bootstrap schema delta.
-            let validation = bootstrap_schema.validate_datoms(&datoms).unwrap();
-            assert!(validation.schema_changes_detected);
-            let update = Schema::default().prepare_schema_update(&datoms).unwrap();
+            let validation = bootstrap_schema
+                .validate_datoms(&datoms)
+                .context("Failed to validate bootstrap datoms")?;
+            ensure!(
+                validation.schema_changes_detected,
+                "bootstrap tx contained no schema changes"
+            );
+            let update = Schema::default()
+                .prepare_schema_update(&datoms)
+                .context("Failed to prepare bootstrap schema update")?;
 
             // Verify: tx-derived schema changes must match pre-built schema
             let mut schema_from_tx = Schema::default();
             schema_from_tx.apply_schema_update(update);
-            assert_eq!(
-                schema_from_tx.ident_map, bootstrap_schema.ident_map,
+            ensure!(
+                schema_from_tx.ident_map == bootstrap_schema.ident_map,
                 "bootstrap ident_map mismatch"
             );
-            assert_eq!(
-                schema_from_tx.attribute_map, bootstrap_schema.attribute_map,
+            ensure!(
+                schema_from_tx.attribute_map == bootstrap_schema.attribute_map,
                 "bootstrap attribute_map mismatch"
             );
 
             let mut batch = WriteBatch::new();
-            write_index_entries(&mut batch, &datoms, &bootstrap_schema, BOOTSTRAP_TX_EID).unwrap();
+            write_index_entries(&mut batch, &datoms, &bootstrap_schema, BOOTSTRAP_TX_EID)
+                .context("Failed to build bootstrap index entries")?;
             // Write version
             let version = env!("CARGO_PKG_VERSION");
             batch.put(&version_key, version.as_bytes());
@@ -140,7 +149,7 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
                 .db
                 .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
                 .await
-                .unwrap();
+                .context("Failed to write bootstrap batch")?;
 
             // Derive counters from the just-written index
             let pm = scan_partition_counters(&slate.db).await?;

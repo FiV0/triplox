@@ -1,3 +1,5 @@
+use anyhow::Error;
+
 use crate::algo::generic_join::{Extension, Prefix, PrefixExtender};
 
 /// An AND-combinator extender that intersects results from multiple child extenders.
@@ -21,17 +23,21 @@ impl GenericAndPrefixExtender {
 }
 
 impl PrefixExtender for GenericAndPrefixExtender {
-    fn count(&self, prefix: &Prefix) -> usize {
+    fn count(&self, prefix: &Prefix) -> Result<usize, Error> {
         let next_level = prefix.len();
-        self.children
+        let mut min = None;
+        for child in self
+            .children
             .iter()
             .filter(|c| c.participates_in_level(next_level))
-            .map(|c| c.count(prefix))
-            .min()
-            .unwrap_or(0)
+        {
+            let count = child.count(prefix)?;
+            min = Some(min.map_or(count, |m: usize| m.min(count)));
+        }
+        Ok(min.unwrap_or(0))
     }
 
-    fn propose(&self, prefix: &Prefix) -> Vec<Extension> {
+    fn propose(&self, prefix: &Prefix) -> Result<Vec<Extension>, Error> {
         let next_level = prefix.len();
         let participating: Vec<_> = self
             .children
@@ -40,50 +46,61 @@ impl PrefixExtender for GenericAndPrefixExtender {
             .collect();
 
         if participating.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
-        // Propose from the child with the smallest count
-        let (min_idx, _) = participating
+        // Propose from the child with the smallest count (computed once per child)
+        let counts = participating
+            .iter()
+            .map(|c| c.count(prefix))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (min_idx, _) = counts
             .iter()
             .enumerate()
-            .min_by_key(|(_, c)| c.count(prefix))
+            .min_by_key(|(_, count)| **count)
             .unwrap();
 
-        let mut extensions = participating[min_idx].propose(prefix);
+        let mut extensions = participating[min_idx].propose(prefix)?;
 
         // Intersect with all other participating children
         for (i, child) in participating.iter().enumerate() {
             if i != min_idx {
-                extensions = child.intersect(prefix, &extensions);
+                extensions = child.intersect(prefix, &extensions)?;
                 if extensions.is_empty() {
                     break;
                 }
             }
         }
 
-        extensions
+        Ok(extensions)
     }
 
-    fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+    fn intersect(
+        &self,
+        prefix: &Prefix,
+        extensions: &[Extension],
+    ) -> Result<Vec<Extension>, Error> {
         let next_level = prefix.len();
-        let mut participating: Vec<_> = self
+
+        // Compute each count once, then sort so we intersect with the smallest
+        // first (fail fast). Recomputing counts in the sort comparator would
+        // re-open a SlateDB scan per comparison.
+        let mut counted = self
             .children
             .iter()
             .filter(|c| c.participates_in_level(next_level))
-            .collect();
-
-        // Sort by count so we intersect with the smallest first (fail fast)
-        participating.sort_by_key(|c| c.count(prefix));
+            .map(|c| c.count(prefix).map(|count| (count, c)))
+            .collect::<Result<Vec<_>, _>>()?;
+        counted.sort_by_key(|(count, _)| *count);
 
         let mut result = extensions.to_vec();
-        for child in participating {
-            result = child.intersect(prefix, &result);
+        for (_, child) in counted {
+            result = child.intersect(prefix, &result)?;
             if result.is_empty() {
                 break;
             }
         }
-        result
+        Ok(result)
     }
 
     fn participates_in_level(&self, level: usize) -> bool {
@@ -106,7 +123,7 @@ mod tests {
         let ext1 = SingleLevelExtender::new(vec![bi(1), bi(2), bi(3)], 0);
         let ext2 = SingleLevelExtender::new(vec![bi(2), bi(3)], 0);
         let and_ext = GenericAndPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
-        assert_eq!(and_ext.count(&vec![]), 2);
+        assert_eq!(and_ext.count(&vec![]).unwrap(), 2);
     }
 
     #[test]
@@ -116,7 +133,7 @@ mod tests {
         let div3 = SingleLevelExtender::new(vec![bi(3), bi(6), bi(9), bi(12)], 0);
         let and_ext = GenericAndPrefixExtender::new(vec![Box::new(even), Box::new(div3)]);
 
-        let result = and_ext.propose(&vec![]);
+        let result = and_ext.propose(&vec![]).unwrap();
         assert_eq!(result, vec![bi(6), bi(12)]);
     }
 
@@ -127,7 +144,7 @@ mod tests {
         let and_ext = GenericAndPrefixExtender::new(vec![Box::new(ext1), Box::new(ext2)]);
 
         let candidates = vec![bi(1), bi(2), bi(3), bi(4), bi(5)];
-        let result = and_ext.intersect(&vec![], &candidates);
+        let result = and_ext.intersect(&vec![], &candidates).unwrap();
         // Only 3 is in both ext1 and ext2
         assert_eq!(result, vec![bi(3)]);
     }
@@ -156,7 +173,7 @@ mod tests {
 
         let extenders: Vec<&dyn PrefixExtender> = vec![&and_extender, &odd_extender];
         let join = GenericJoin::new(extenders, 2);
-        let result = join.join();
+        let result = join.join().unwrap();
 
         assert_eq!(result.len(), 9); // 3 * 3
         assert_eq!(result[0], vec![bi(2), bi(1)]);

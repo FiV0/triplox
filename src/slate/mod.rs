@@ -122,7 +122,7 @@ pub async fn remote_slate(
         .expect("failed to build S3 object store");
 
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
-    std::fs::create_dir_all(cache_path)?;
+    tokio::fs::create_dir_all(cache_path).await?;
     let settings = Settings {
         flush_interval: Some(Duration::new(0, 100000)),
         max_unflushed_bytes: 2 * 1024 * 1024 * 1024,

@@ -1072,8 +1072,8 @@ impl ParsedQuery {
         Ok(ParsedQuery {
             find_spec: find_spec.ok_or("expected :find")?,
             default_source: SrcVar::DefaultSrc,
-            with: with.unwrap_or(vec![]),
-            in_bindings: in_bindings.unwrap_or(vec![]),
+            with: with.unwrap_or_default(),
+            in_bindings: in_bindings.unwrap_or_default(),
             in_sources: BTreeSet::default(),
             limit: limit.unwrap_or(Limit::None),
             where_clauses: where_clauses.ok_or("expected :where")?,

@@ -9,10 +9,11 @@ use crate::log::{Record, TxLog, TxLogReader, TxLogWriter, BOOTSTRAP_RECORD};
 use crate::logging::init;
 use crate::transaction::TxKey;
 use anyhow::Result;
-use log::warn;
-use tokio::sync::{broadcast, RwLock};
+use std::sync::RwLock;
+use tokio::sync::broadcast;
 
 pub struct MemoryLog {
+    // std RwLock: every critical section is synchronous, no guard crosses an .await.
     state: RwLock<MemoryLogState>,
     tx_sender: broadcast::Sender<Record>,
 }
@@ -34,7 +35,10 @@ impl MemoryLog {
 impl TxLog for MemoryLog {
     async fn ensure_bootstrap_record(&self) -> Result<()> {
         let bootstrap_record = BOOTSTRAP_RECORD.clone();
-        let mut state = self.state.write().await;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         match state.txs.first() {
             Some(record) if record == &bootstrap_record => Ok(()),
             Some(record) => Err(anyhow::anyhow!(
@@ -51,7 +55,10 @@ impl TxLog for MemoryLog {
 
 impl TxLogReader for MemoryLog {
     async fn read_txs_after(&self, after_tx_id: Option<TxId>, limit: u16) -> Result<Vec<Record>> {
-        let state = self.state.read().await;
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         let start = match after_tx_id {
             None => 0,
             Some(id) => id as usize + 1,
@@ -70,7 +77,10 @@ impl TxLogReader for MemoryLog {
 
 impl TxLogWriter for MemoryLog {
     async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-        let mut state = self.state.write().await;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory log state lock poisoned"))?;
         let record = Record {
             tx_key: TxKey {
                 tx_id: state.txs.len() as i64,
@@ -81,13 +91,9 @@ impl TxLogWriter for MemoryLog {
         let tx_key = record.tx_key;
         state.txs.push(record.clone());
         drop(state);
-        // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
-        if let Err(e) = self.tx_sender.send(record) {
-            warn!(
-                "Failed to send record from memory log to subscribers: {}",
-                e
-            );
-        }
+        // Notify subscribers; send only errors when nobody is subscribed,
+        // which is a normal condition.
+        let _ = self.tx_sender.send(record);
         Ok(tx_key)
     }
 }
@@ -114,7 +120,7 @@ mod tests {
             st_from_unix_epoch(400),
         ]);
         let log = Arc::new(MemoryLog::new(Box::new(clock)));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         log.append_tx(vec![1, 2, 3]).await.unwrap();
         log.append_tx(vec![4, 5, 6]).await.unwrap();
@@ -122,7 +128,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 
@@ -162,14 +168,14 @@ mod tests {
         drop(subscriber);
 
         let subscriber2 = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
+        let subscription2 = subscribe(log.clone(), Some(tx_id_1), subscriber2.clone()).await; // Subscribe after second transaction
 
         log.append_tx(vec![10, 11, 12]).await.unwrap();
         log.append_tx(vec![13, 14, 15]).await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        token2.cancel();
+        subscription2.shutdown().await.unwrap();
 
         let subscriber2 = subscriber2.read().await;
 
@@ -190,7 +196,7 @@ mod tests {
 
         // Subscribe from the beginning — should process the one transaction exactly once
         let subscriber = Arc::new(RwLock::new(MockSubscriber::new()));
-        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+        let subscription = subscribe(log.clone(), None, subscriber.clone()).await;
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -204,7 +210,7 @@ mod tests {
         .expect("timed out waiting for subscriber to process first record");
         tokio::time::sleep(Duration::from_millis(25)).await;
 
-        token.cancel();
+        subscription.shutdown().await.unwrap();
 
         let subscriber = subscriber.read().await;
 

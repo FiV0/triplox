@@ -181,7 +181,7 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
 ///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
 ///   an internal tempid.
 /// - `Add/Retract` -> 1 DatomExpanded
-/// - `Delete/Erase` -> panics (not yet implemented)
+/// - `Delete/Erase` -> error (not yet implemented)
 pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>> {
     let db_id_kw = Keyword::namespaced("db", "id");
     let mut datoms = Vec::new();
@@ -232,7 +232,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
                 });
             }
             TxOp::Delete(_) | TxOp::Erase(_) => {
-                panic!("Delete/Erase not yet implemented");
+                bail!("Delete/Erase not yet implemented");
             }
         }
     }
@@ -311,16 +311,16 @@ pub(crate) async fn find_live_key_under_prefix(
             return Ok(None);
         }
 
-        assert!(
-            key.len() >= codec::TX_EID_OP_SUFFIX,
-            "Key too short ({} bytes) to contain tx_eid + op suffix",
-            key.len()
-        );
+        let Some(logical_key_end) = key.len().checked_sub(codec::TX_EID_OP_SUFFIX) else {
+            bail!(
+                "Key too short ({} bytes) to contain tx_eid + op suffix",
+                key.len()
+            );
+        };
         if key[key.len() - 1] != codec::RETRACT {
             return Ok(Some(key.clone()));
         }
 
-        let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
         let Some(next_group) = next_prefix(&key[..logical_key_end]) else {
             return Ok(None);
         };
@@ -823,15 +823,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
-    fn test_expand_delete_panics() {
-        expand_tx_ops(&[TxOp::Delete(EntityRef::Id(100))], &empty_schema()).unwrap();
+    fn test_expand_delete_errors() {
+        let err = expand_tx_ops(&[TxOp::Delete(EntityRef::Id(100))], &empty_schema()).unwrap_err();
+        assert!(err.to_string().contains("Delete/Erase not yet implemented"));
     }
 
     #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
-    fn test_expand_erase_panics() {
-        expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap();
+    fn test_expand_erase_errors() {
+        let err = expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap_err();
+        assert!(err.to_string().contains("Delete/Erase not yet implemented"));
     }
 
     #[tokio::test]
