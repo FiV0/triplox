@@ -302,7 +302,7 @@ except `tx_key` is optional. In this version it **MUST be `nil`/omitted** (a non
 value is rejected with HTTP 400 / `InvalidQuery`; it is reserved for future historical
 replay) and `args` **MUST be empty** (reserved for future incremental `:in` bindings).
 At some point it might make sense to unify Query Request and Subscribe Request.
-Queries or args the incremental engine does not yet support mirror one-shot query
+Queries or args the incremental engine does not yet support mirror standard query
 failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:

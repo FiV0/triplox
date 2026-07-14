@@ -666,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn subscribe_registration_error_matches_query_error_mapping() {
         let server = Arc::new(Server::new(Arc::new(Node::memory_node().await)));
-        // `:in` parses as a one-shot query but is unsupported by the incremental engine.
+        // `:in` parses as a standard query but is unsupported by the incremental engine.
         let err = subscribe(
             State(server),
             subscribe_body("[:find ?n :in ?x :where [?e :name ?n]]", None),

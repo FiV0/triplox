@@ -62,7 +62,7 @@ class SubscriptionTest {
     void testUnsupportedQueryThrows() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
-            // Registration errors mirror one-shot query errors for now -> pre-stream 2001.
+            // Registration errors mirror standard query errors for now -> pre-stream 2001.
             var ex = assertThrows(TriploxException.class,
                     () -> node.subscribe("[:find ?n :in ?x :where [?e :name ?n]]"));
             assertEquals((short) 2001, ex.code());

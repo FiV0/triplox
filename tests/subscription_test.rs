@@ -112,9 +112,9 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
 }
 
 /// The accumulated deltas (including a retraction) reconstruct the same result
-/// set as a one-shot query at the final basis.
+/// set as a standard query at the final basis.
 #[tokio::test(flavor = "multi_thread")]
-async fn subscription_deltas_match_one_shot_query() {
+async fn subscription_deltas_match_standard_query() {
     let (addr, token) = start_test_server().await;
     let client = ClientNode::connect(&addr).await.unwrap();
     client.execute_tx(test_schema_tx()).await.unwrap();
@@ -163,14 +163,14 @@ async fn subscription_deltas_match_one_shot_query() {
         .map(|(row, _)| row)
         .collect();
 
-    let one_shot = client
+    let standard = client
         .db_as_of(last_basis)
         .await
         .unwrap()
         .query(NAMES_QUERY)
         .await
         .unwrap();
-    let expected: BTreeSet<String> = one_shot.iter().map(|row| format!("{row:?}")).collect();
+    let expected: BTreeSet<String> = standard.iter().map(|row| format!("{row:?}")).collect();
 
     assert_eq!(reconstructed, expected);
 

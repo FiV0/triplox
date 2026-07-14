@@ -23,8 +23,8 @@ query unless explicitly stated otherwise.
 
 ## Current Scope
 
-The incremental query engine will lag behind the one-shot query engine in most
-cases. The idea is use the same validation logic for one-shot queries also for
+The incremental query engine will lag behind the standard query engine in most
+cases. The idea is use the same validation logic for standard queries also for
 incremental queries and a further more retraining check for incremental queries
 that at some point should get removed when parity between the two query paths
 is reached.

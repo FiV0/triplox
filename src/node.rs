@@ -2060,7 +2060,7 @@ mod tests {
                 }
             })
             .await
-            .expect("timed out waiting for incremental rows to match one-shot query");
+            .expect("timed out waiting for incremental rows to match standard query");
         }
 
         assert_eq!(&expected, rows);

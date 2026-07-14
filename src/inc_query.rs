@@ -145,7 +145,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
     }
 }
 
-// TODO: Delete this when incremental queries reach one-shot query parity.
+// TODO: Delete this when incremental queries reach standard query parity.
 fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
     if !query.with.is_empty() {
         bail!("Incremental queries do not support :with");
