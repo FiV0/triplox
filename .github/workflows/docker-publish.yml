@@ -25,6 +25,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.mode }}
     permissions:
       contents: read
       packages: write
