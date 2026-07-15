@@ -112,7 +112,6 @@ jobs:
     uses: ./.github/workflows/docker-publish.yml
     with:
       mode: release
-    secrets: inherit
 
   github-release:
     runs-on: ubuntu-latest
