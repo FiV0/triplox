@@ -277,15 +277,14 @@ impl QueryCircuit {
         })
     }
 
-    // Loads the initial snapshot into the circuit and discards the bootstrap output.
+    // Loads the initial snapshot and returns the decoded query result.
     pub(super) fn prime(
         &mut self,
         mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<()> {
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self._input.append(&mut initial_triples);
         self._circuit.transaction().map_err(anyhow::Error::from)?;
-        let _ = self._output.consolidate();
-        Ok(())
+        decode_output_rows(&self._output.consolidate())
     }
 
     // Applies one weighted triple batch and returns the decoded query result delta.
@@ -478,12 +477,20 @@ mod tests {
         );
 
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
-        circuit
+        let priming_rows = circuit
             .prime(vec![
                 Tup2(triple(42, 10, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, 11, DataType::Long(30)), 1),
             ])
             .unwrap();
+
+        assert_eq!(
+            priming_rows,
+            vec![(
+                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
+                1,
+            )]
+        );
 
         assert!(storage_path.exists());
         assert!(!storage_path.join("stale").exists());

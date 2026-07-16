@@ -47,6 +47,11 @@
       (set res)
       res)))
 
+(defn take-priming! [sub]
+  (let [delta (take-delta! sub)]
+    (is (seq delta))
+    delta))
+
 (defn q [conn query]
   (api/q (api/db conn) query))
 
@@ -90,6 +95,7 @@
                                        :where [[?e :name "Ivan"]]})]
       (with-open [sub (api/subscribe conn {:find ['?name]
                                             :where [[ivan-id :name '?name]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/add ivan-id :name "Ivanov"]])
         (is (= #{[["Ivan"] -1]
                  [["Ivanov"] 1]}
@@ -192,6 +198,7 @@
                                        :where [[?e :name "Ivan"]]})]
       (with-open [sub (api/subscribe conn '{:find [?name]
                                              :where [[?e :name ?name]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/add ivan-id :name "Ivanova"]])
         (is (= #{[["Ivan"] -1]
                  [["Ivanova"] 1]}
@@ -206,6 +213,7 @@
                                        :where [[?e :name "Ivan"]]})]
       (with-open [sub (api/subscribe conn '{:find [?name]
                                              :where [[?e :name ?name]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract ivan-id :name "Ivan"]])
         (is (= [[["Ivan"] -1]]
                (take-delta! sub)))))))
@@ -222,6 +230,7 @@
                                       :where [[?e :name "Bob"]]})]
       (with-open [sub (api/subscribe conn '{:find [?city]
                                             :where [[?e :city ?city]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract bob-id :city "NYC"]])
         (is (= [[["NYC"] -1]] (take-delta! sub)))
         (api/transact conn [[:db/retract alice-id :city "NYC"]])
@@ -238,6 +247,7 @@
       (with-open [sub (api/subscribe conn '{:find [?e]
                                             :where [(or [?e :name "Alice"]
                                                         [?e :name "Bob"])]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract bob-id :name "Bob"]])
         (is (= [[[bob-id] -1]]
                (take-delta! sub)))))))
@@ -276,6 +286,7 @@
                                             :where [(or [?e :name "Alice"]
                                                         [?e :name "Bob"])
                                                     [?e :city ?city]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract bob-id :name "Bob"]])
         (is (= [[["Berlin"] -1]]
                (take-delta! sub)))))))
@@ -308,6 +319,7 @@
       (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
                                             :where [[?a :r/to ?b]
                                                     [?b :s/to ?c]]})]
+        (take-priming! sub)
         (t/is (true? (:committed? (api/transact conn [[:db/add b-id :s/to d-id]]))))
         (is (= #{[[a-id b-id d-id] 1]}
                (delta-set! sub)))))))
@@ -323,6 +335,7 @@
       (with-open [sub (api/subscribe conn '{:find [?a ?b ?c]
                                             :where [[?a :r/to ?b]
                                                     [?b :s/to ?c]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract b-id :s/to d-id]])
         (is (= #{[[a-id b-id d-id] -1]}
                (delta-set! sub)))))))
@@ -339,6 +352,7 @@
                                             :where [[?a :r/to ?b]
                                                     [?b :s/to ?c]
                                                     [?c :t/to ?a]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/retract b-id :s/to c-id]])
         (is (= [[[a-id b-id c-id] -1]] (take-delta! sub)))))))
 
@@ -381,6 +395,7 @@
       (with-open [sub (api/subscribe conn '{:find [?name ?residence]
                                              :where [[?p :person/name ?name]
                                                      [?p :person/residence ?residence]]})]
+        (take-priming! sub)
         (api/transact conn [[:db/add ada-id :person/residence "Buckingham Palace"]])
         (is (= #{[["Ada Lovelace" "12 St. James's Square"] -1]
                  [["Ada Lovelace" "Buckingham Palace"] 1]}

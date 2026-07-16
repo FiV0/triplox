@@ -78,6 +78,28 @@ async fn subscribe_receives_transaction_delta() {
     token.cancel();
 }
 
+/// Existing query results are delivered once at the subscription basis before
+/// deltas for later transactions.
+#[tokio::test(flavor = "multi_thread")]
+async fn subscription_returns_existing_rows_as_priming_delta() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    client.execute_tx(test_schema_tx()).await.unwrap();
+    client.execute_tx(add_name("alice", "Alice")).await.unwrap();
+
+    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let registration_basis = sub.tx_key();
+    let delta = next_delta(&mut sub).await;
+
+    assert_eq!(delta.tx_key, registration_basis);
+    assert_eq!(
+        delta.rows,
+        vec![(vec![DataType::String("Alice".to_string())], 1)]
+    );
+
+    token.cancel();
+}
+
 /// A slow consumer (transactions made before the client reads) loses no deltas:
 /// every transaction's change is delivered once the client drains.
 #[tokio::test(flavor = "multi_thread")]
@@ -195,6 +217,8 @@ async fn dropping_a_subscription_keeps_the_server_serving() {
 
     // A fresh subscription still works.
     let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let priming_delta = next_delta(&mut sub).await;
+    assert_eq!(priming_delta.tx_key, sub.tx_key());
     client.execute_tx(add_name("b", "Bob")).await.unwrap();
     let delta = next_delta(&mut sub).await;
     assert_eq!(

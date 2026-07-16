@@ -2116,6 +2116,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let priming_delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(priming_delta.tx_key, subscription.tx_key);
+        assert!(!priming_delta.rows.is_empty());
+
         let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
             TransactionResult::TxCommitted(basis) => basis,
             TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
@@ -2138,28 +2142,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_incremental_query_after_existing_data_emits_no_initial_delta() {
+    async fn test_register_incremental_query_after_existing_data_emits_priming_delta() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-        let result = node
+        let basis = match node
             .execute_tx(vec![TxOp::Add {
                 entity: EntityRef::Id(100),
                 attribute: kw!(:name),
                 value: DataType::String("Alice".to_string()),
             }])
             .await
-            .unwrap();
-        assert!(matches!(result, TransactionResult::TxCommitted(_)));
+            .unwrap()
+        {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
 
         let mut subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
 
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
+        assert_eq!(
+            subscription.deltas.try_recv().unwrap(),
+            crate::incremental::IncrementalQueryDelta {
+                tx_key: basis,
+                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+            }
+        );
     }
 
     #[tokio::test]
@@ -2262,6 +2272,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(subscription.tx_key, first_basis);
+        assert_eq!(
+            recv_incremental_delta(&mut subscription).await,
+            crate::incremental::IncrementalQueryDelta {
+                tx_key: first_basis,
+                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+            }
+        );
         assert!(try_recv_incremental_delta(&mut subscription)
             .await
             .is_none());
@@ -2352,6 +2369,12 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
+        let priming_delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(priming_delta.tx_key, subscription.tx_key);
+        assert_eq!(
+            priming_delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
         let basis = match node
             .execute_tx(vec![TxOp::Add {
                 entity: EntityRef::Id(100),

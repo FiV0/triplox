@@ -368,10 +368,18 @@ impl IncrementalQueryServiceInner {
         let handle = self.allocate_query_id();
         let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
             .map_err(|err| format!("{:#}", err))?;
-        circuit
+        let priming_rows = circuit
             .prime(initial_triples)
             .map_err(|err| format!("{:#}", err))?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
+        if !priming_rows.is_empty() {
+            sender
+                .try_send(IncrementalQueryDelta {
+                    tx_key,
+                    rows: priming_rows,
+                })
+                .map_err(|err| format!("Failed to enqueue priming result set: {}", err))?;
+        }
 
         self.queries.insert(
             handle,
@@ -569,6 +577,70 @@ mod tests {
     }
 
     #[test]
+    fn register_enqueues_non_empty_priming_result_before_future_deltas() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+        let registration_basis = test_tx_key_with_tx_id(1);
+        let future_basis = test_tx_key_with_tx_id(2);
+        let mut subscription = service
+            .register(
+                single_pattern_plan(),
+                registration_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .unwrap();
+
+        service
+            .apply_triples(future_basis, 2, vec![name_triple(43, "Bob")])
+            .unwrap();
+
+        assert_eq!(
+            subscription.deltas.try_recv().unwrap(),
+            IncrementalQueryDelta {
+                tx_key: registration_basis,
+                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+            }
+        );
+        assert_eq!(
+            subscription.deltas.try_recv().unwrap(),
+            IncrementalQueryDelta {
+                tx_key: future_basis,
+                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
+            }
+        );
+    }
+
+    #[test]
+    fn register_skips_empty_priming_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+        let mut subscription = service
+            .register(
+                single_pattern_plan(),
+                test_tx_key(),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
     fn apply_triples_skips_transactions_at_or_before_query_basis() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = test_runtime();
@@ -595,6 +667,15 @@ mod tests {
                 vec![name_triple(42, "Alice"), name_triple(43, "Bob")],
             )
             .unwrap();
+
+        assert_eq!(
+            old_subscription.deltas.try_recv().unwrap().tx_key,
+            old_basis
+        );
+        assert_eq!(
+            new_subscription.deltas.try_recv().unwrap().tx_key,
+            new_basis
+        );
 
         service
             .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
@@ -789,6 +870,10 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            first_subscription.deltas.try_recv().unwrap().tx_key,
+            query_tx_key
+        );
 
         let registration_guard = service.registration_gate.lock().await;
         let applying_service = service.clone();
@@ -810,6 +895,10 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            second_subscription.deltas.try_recv().unwrap().tx_key,
+            query_tx_key
+        );
         assert!(second_subscription.deltas.try_recv().is_err());
 
         drop(registration_guard);

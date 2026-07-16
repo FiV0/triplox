@@ -980,7 +980,7 @@ pub enum SubscriptionFrame {
         tx_key: TxKey,
         columns: Vec<ColumnDescription>,
     },
-    /// One transaction's z-set changes as `(values, weight)` rows.
+    /// Priming or transaction changes as `(values, weight)` rows.
     Delta {
         tx_key: TxKey,
         rows: Vec<(Vec<DataType>, i64)>,
