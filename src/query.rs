@@ -36,7 +36,7 @@ use regex::Regex;
 pub type QueryResult = Vec<Vec<DataType>>;
 
 // ---------------------------------------------------------------------------
-// AggregateFunc (moved from datalog.rs)
+// AggregateFunc
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -75,7 +75,7 @@ fn parse_aggregate_func(name: &str) -> Result<AggregateFunc, Error> {
 }
 
 // ---------------------------------------------------------------------------
-// FnExpr (moved from datalog.rs)
+// FnExpr
 // ---------------------------------------------------------------------------
 
 /// A function expression that computes a value and binds it to an output variable.
@@ -94,7 +94,7 @@ impl FnExpr {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern helpers (replacing PatternClause methods)
+// Pattern helpers
 // ---------------------------------------------------------------------------
 
 /// Extract variables from a Pattern's e/a/v positions.
