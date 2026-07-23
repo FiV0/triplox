@@ -53,16 +53,14 @@ form is in
 ## Non-goals
 
 - Add `not`, predicate, or function plan kinds.
-- Add or change DBSP operators.
+- Add or change DBSP operators. `Chain` is only a physical plan shape; circuits
+  continue to use the existing pattern `flat_map`, join, projection, sum, and
+  distinct operators.
 - Merge or reproduce the implementation from Triplox PR #412.
 - Change shared query validation or expand the supported incremental query
   syntax.
 - Change the subscription API, CDC path, or query lifecycle.
 - Optimize join cost beyond the deterministic heuristic described below.
-
-`Chain` is a physical plan shape, not a new DBSP operator. The resulting
-circuits continue to use the existing pattern `flat_map`, join, projection,
-sum, and distinct operators.
 
 ## Terminology
 
