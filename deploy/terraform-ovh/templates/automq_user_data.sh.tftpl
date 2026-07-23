@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + ufw ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y docker.io ufw
+systemctl enable --now docker
+
+# --- Host firewall (the authoritative inbound control on OVH) ---
+# Security groups are not reliably enforced on the public network, and Docker's
+# own port mapping bypasses them anyway; AutoMQ runs with --network host so ufw
+# governs its ports. Inter-node traffic flows over the private subnet.
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from ${private_cidr}
+ufw allow from ${admin_cidr} to any port 22 proto tcp
+ufw --force enable
+
+# Static private IP — used for advertised.listeners / controller quorum.
+PRIVATE_IP='${private_ip}'
+
+docker pull '${automq_image}'
+
+# Real-S3 deltas vs the dev compose: https endpoint, virtual-hosted addressing,
+# real bucket names, advertised/controller on the host private IP. Runtime values
+# are passed via -e and expanded by the container shell (single-quoted body).
+docker run -d --name automq --restart unless-stopped --network host \
+  -e KAFKA_S3_ACCESS_KEY='${s3_access_key}' \
+  -e KAFKA_S3_SECRET_KEY='${s3_secret_key}' \
+  -e KAFKA_HEAP_OPTS='${automq_heap_opts}' \
+  -e KAFKA_OPTS='-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:ErrorFile=/tmp/hs_err_pid%p.log -Dio.netty.allocator.maxOrder=11' \
+  -e CLUSTER_ID='${cluster_id}' \
+  -e LOG_DIR=/tmp/kafka-logs \
+  -e PRIVATE_IP="$PRIVATE_IP" \
+  -e S3_ENDPOINT='${s3_endpoint}' \
+  -e DATA_BUCKET='${automq_data_bucket}' \
+  -e OPS_BUCKET='${automq_ops_bucket}' \
+  -e S3_REGION='${s3_region}' \
+  '${automq_image}' \
+  bash -c '
+    cp /opt/kafka/config/log4j.properties /tmp/kafka-log4j.properties
+    printf "%s\n" "log4j.logger.kafka.network.Processor=ERROR" >> /tmp/kafka-log4j.properties
+    export KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:/tmp/kafka-log4j.properties"
+    /opt/kafka/bin/kafka-server-start.sh \
+      /opt/kafka/config/kraft/server.properties \
+      --override cluster.id="$CLUSTER_ID" \
+      --override node.id=0 \
+      --override process.roles=broker,controller \
+      --override controller.quorum.voters="0@$PRIVATE_IP:9093" \
+      --override controller.quorum.bootstrap.servers="$PRIVATE_IP:9093" \
+      --override listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+      --override advertised.listeners="PLAINTEXT://$PRIVATE_IP:9092" \
+      --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+      --override s3.data.buckets="0@s3://$DATA_BUCKET?region=$S3_REGION&endpoint=$S3_ENDPOINT" \
+      --override s3.ops.buckets="1@s3://$OPS_BUCKET?region=$S3_REGION&endpoint=$S3_ENDPOINT" \
+      --override s3.wal.path="0@s3://$DATA_BUCKET?region=$S3_REGION&endpoint=$S3_ENDPOINT" \
+      --override log.message.timestamp.type=LogAppendTime \
+      --override offsets.topic.num.partitions=1 \
+      --override autobalancer.reporter.metrics.reporting.interval.ms=5000
+  '
+
+# Wait for the broker to accept API requests, then pre-create the tx-log topic
+# with the exact settings Triplox's ensure_tx_log_topic() validates.
+echo "Waiting for AutoMQ to accept API requests..."
+for i in $(seq 1 60); do
+  if docker exec automq /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
+    echo "Broker healthy."
+    break
+  fi
+  sleep 5
+done
+
+docker exec automq /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create --if-not-exists \
+  --topic '${kafka_topic}' \
+  --partitions 1 \
+  --replication-factor 1 \
+  --config retention.ms=-1 \
+  --config retention.bytes=-1 \
+  --config message.timestamp.type=LogAppendTime
+
+echo "AutoMQ provisioning complete."
