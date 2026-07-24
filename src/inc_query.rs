@@ -13,7 +13,7 @@ mod descriptor;
 mod planner;
 
 pub(crate) use descriptor::PatternSlot;
-pub(crate) use planner::{JoinPlan, JoinStep, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
+pub(crate) use planner::{ChainPlan, JoinStep, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
@@ -36,7 +36,7 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     validate_query(query, &[])?;
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
-    let where_plan = planner::plan_scope(&descriptors)?;
+    let where_plan = planner::plan_scope(&descriptors, None)?;
     let variables = where_plan.output_vars.clone();
     for var in &find_vars {
         if !variables.contains(var) {
@@ -207,13 +207,15 @@ mod tests {
         assert_eq!(leaf_patterns.len(), 1);
         assert_eq!(leaf_patterns[0].attribute, 10);
         assert_eq!(
-            &leaf_patterns[0].output_vars,
+            &leaf_patterns[0].pattern_vars,
             &vec!["?e".to_var(), "?name".to_var()]
         );
+        assert_eq!(plan.where_plan.incoming_vars, None);
         let RelPlanKind::Pattern(pattern) = &plan.where_plan.kind else {
             panic!("expected pattern plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(pattern.attribute, 10);
+        assert_eq!(pattern.join, None);
     }
 
     #[test]
@@ -225,15 +227,22 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
-            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(join.inputs.len(), 2);
-        assert_eq!(join.steps.len(), 1);
-        assert_eq!(join.steps[0].right_input_index, 1);
-        assert_eq!(join.steps[0].key_vars, vec!["?e".to_var()]);
+        assert_eq!(chain.children.len(), 2);
+        assert_eq!(chain.children[0].incoming_vars, None);
         assert_eq!(
-            join.steps[0].output_vars,
+            chain.children[1].incoming_vars,
+            Some(vec!["?e".to_var(), "?name".to_var()])
+        );
+        let RelPlanKind::Pattern(age) = &chain.children[1].kind else {
+            panic!("expected extending pattern");
+        };
+        let join = age.join.as_ref().expect("extending pattern must join");
+        assert_eq!(join.key_vars, vec!["?e".to_var()]);
+        assert_eq!(
+            join.output_vars,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
         );
     }
@@ -249,11 +258,16 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
-            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(join.steps[0].right_input_index, 1);
-        assert_eq!(join.steps[0].key_vars, vec!["?friend".to_var()]);
+        let RelPlanKind::Pattern(friend_name) = &chain.children[1].kind else {
+            panic!("expected extending pattern");
+        };
+        assert_eq!(
+            friend_name.join.as_ref().unwrap().key_vars,
+            vec!["?friend".to_var()]
+        );
     }
 
     #[test]
@@ -265,13 +279,29 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
-            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(join.steps.len(), 3);
-        assert_eq!(join.steps[0].key_vars, vec!["?e".to_var()]);
-        assert_eq!(join.steps[1].key_vars, vec!["?friend".to_var()]);
-        assert_eq!(join.steps[2].key_vars, vec!["?friend".to_var()]);
+        assert_eq!(chain.children.len(), 4);
+        let keys = chain
+            .children
+            .iter()
+            .skip(1)
+            .map(|child| {
+                let RelPlanKind::Pattern(pattern) = &child.kind else {
+                    panic!("expected pattern child");
+                };
+                pattern.join.as_ref().unwrap().key_vars.clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                vec!["?e".to_var()],
+                vec!["?friend".to_var()],
+                vec!["?friend".to_var()]
+            ]
+        );
     }
 
     #[test]
@@ -301,12 +331,43 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Join(join) = &plan.where_plan.kind else {
-            panic!("expected join plan, got {:?}", &plan.where_plan.kind);
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(join.steps.len(), 1);
-        assert_eq!(join.steps[0].right_input_index, 1);
-        assert!(join.steps[0].key_vars.is_empty());
+        let RelPlanKind::Pattern(pattern) = &chain.children[1].kind else {
+            panic!("expected extending pattern");
+        };
+        assert!(pattern.join.as_ref().unwrap().key_vars.is_empty());
+    }
+
+    #[test]
+    fn prefers_connected_descriptor_over_earlier_disconnected_descriptor() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?name ?age ?friend :where
+                 [?e :name ?name]
+                 [?other :age ?age]
+                 [?e :follows ?friend]]",
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
+        };
+        let attributes = chain
+            .children
+            .iter()
+            .map(|child| {
+                let RelPlanKind::Pattern(pattern) = &child.kind else {
+                    panic!("expected pattern child");
+                };
+                pattern.attribute
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attributes, vec![10, 12, 11]);
     }
 
     #[test]
@@ -323,7 +384,12 @@ mod tests {
         let RelPlanKind::Union(union) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
+        assert_eq!(plan.where_plan.incoming_vars, None);
         assert_eq!(union.branches.len(), 2);
+        assert!(union
+            .branches
+            .iter()
+            .all(|branch| branch.incoming_vars.is_none()));
         assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
         assert!(matches!(union.branches[1].kind, RelPlanKind::Pattern(_)));
         let leaf_patterns = plan.leaf_patterns();
@@ -350,6 +416,7 @@ mod tests {
         let RelPlanKind::Union(union) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
+        assert_eq!(plan.where_plan.incoming_vars, None);
         assert_eq!(union.branches.len(), 2);
         assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
         assert!(matches!(union.branches[1].kind, RelPlanKind::Union(_)));
@@ -368,6 +435,7 @@ mod tests {
         let RelPlanKind::Union(or) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
+        assert_eq!(plan.where_plan.incoming_vars, None);
         assert_eq!(
             plan.where_plan.output_vars,
             vec!["?e".to_var(), "?v".to_var()]
@@ -377,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_and_branch_inside_or_as_join() {
+    fn plans_and_branch_inside_or_as_chain() {
         let schema = test_schema();
         let plan = plan_query(
             &parse_query(
@@ -391,12 +459,14 @@ mod tests {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(or.branches.len(), 2);
-        let RelPlanKind::Join(and_branch) = &or.branches[0].kind else {
-            panic!("expected join branch, got {:?}", &or.branches[0].kind);
+        let RelPlanKind::Chain(and_branch) = &or.branches[0].kind else {
+            panic!("expected chain branch, got {:?}", &or.branches[0].kind);
         };
-        assert_eq!(and_branch.inputs.len(), 2);
-        assert_eq!(and_branch.steps.len(), 1);
-        assert_eq!(and_branch.steps[0].key_vars, vec!["?e".to_var()]);
+        assert_eq!(and_branch.children.len(), 2);
+        let RelPlanKind::Pattern(second) = &and_branch.children[1].kind else {
+            panic!("expected extending pattern");
+        };
+        assert_eq!(second.join.as_ref().unwrap().key_vars, vec!["?e".to_var()]);
         assert!(matches!(or.branches[1].kind, RelPlanKind::Pattern(_)));
         assert_eq!(plan.leaf_patterns().len(), 3);
     }
@@ -421,6 +491,128 @@ mod tests {
         );
         assert_eq!(or.branches[0].output_vars, &["?y".to_var(), "?x".to_var()]);
         assert_eq!(or.branches[1].output_vars, &["?x".to_var(), "?y".to_var()]);
+    }
+
+    #[test]
+    fn plans_outer_relation_into_every_or_branch() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?name
+                    :where
+                    [?e :name ?name]
+                    (or [?e :age 30]
+                        [?e :age 40])]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
+        };
+        let incoming = vec!["?e".to_var(), "?name".to_var()];
+        let union = &chain.children[1];
+        assert_eq!(union.incoming_vars, Some(incoming.clone()));
+        assert_eq!(union.output_vars, incoming);
+        let RelPlanKind::Union(union) = &union.kind else {
+            panic!("expected union child");
+        };
+        for branch in &union.branches {
+            assert_eq!(
+                branch.incoming_vars,
+                Some(vec!["?e".to_var(), "?name".to_var()])
+            );
+            assert_eq!(branch.output_vars, vec!["?e".to_var(), "?name".to_var()]);
+            let RelPlanKind::Pattern(pattern) = &branch.kind else {
+                panic!("expected pattern branch");
+            };
+            assert_eq!(pattern.join.as_ref().unwrap().key_vars, vec!["?e".to_var()]);
+        }
+    }
+
+    #[test]
+    fn threads_outer_relation_through_and_branch() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?name
+                    :where
+                    [?e :name ?name]
+                    (or
+                      (and [?e :follows ?friend] [?friend :age ?age])
+                      (and [?e :follows ?friend] [?friend :age ?age]))]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected top-level chain");
+        };
+        let RelPlanKind::Union(union) = &chain.children[1].kind else {
+            panic!("expected union child");
+        };
+        let branch_plan = &union.branches[0];
+        let RelPlanKind::Chain(branch) = &branch_plan.kind else {
+            panic!("expected and branch chain");
+        };
+        assert_eq!(
+            branch_plan.incoming_vars,
+            Some(vec!["?e".to_var(), "?name".to_var()])
+        );
+        assert_eq!(branch.children.len(), 2);
+        assert_eq!(
+            branch.children[0].incoming_vars,
+            Some(vec!["?e".to_var(), "?name".to_var()])
+        );
+        assert_eq!(
+            branch.children[1].incoming_vars,
+            Some(vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()])
+        );
+        assert_eq!(
+            branch_plan.output_vars,
+            vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?friend".to_var(),
+                "?age".to_var()
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_incoming_layout_through_nested_or() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?name
+                    :where
+                    [?e :name ?name]
+                    (or
+                      (or [?e :age 30] [?e :age 40])
+                      [?e :age 50])]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected top-level chain");
+        };
+        let RelPlanKind::Union(outer) = &chain.children[1].kind else {
+            panic!("expected outer union");
+        };
+        let RelPlanKind::Union(inner) = &outer.branches[0].kind else {
+            panic!("expected inner union");
+        };
+        let incoming = Some(vec!["?e".to_var(), "?name".to_var()]);
+        assert_eq!(chain.children[1].incoming_vars, incoming);
+        assert_eq!(outer.branches[0].incoming_vars, incoming);
+        assert!(inner
+            .branches
+            .iter()
+            .all(|branch| branch.incoming_vars == incoming));
     }
 
     #[test]

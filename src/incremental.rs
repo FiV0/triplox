@@ -74,7 +74,7 @@ type ServiceResult<T> = std::result::Result<T, String>;
 
 enum IncrementalCommand {
     Register {
-        plan: IncrementalQueryPlan,
+        plan: Box<IncrementalQueryPlan>,
         tx_key: TxKey,
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
@@ -203,7 +203,7 @@ impl IncrementalQueryService {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
-                plan,
+                plan: Box::new(plan),
                 tx_key,
                 wal_cursor,
                 initial_triples,
@@ -338,7 +338,8 @@ impl IncrementalQueryServiceInner {
                     initial_triples,
                     response,
                 } => {
-                    let _ = response.send(self.register(plan, tx_key, wal_cursor, initial_triples));
+                    let _ =
+                        response.send(self.register(*plan, tx_key, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
                     let _ = response.send(self.unregister(handle));
@@ -922,13 +923,15 @@ mod tests {
             attribute: 10,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
-            output_vars: vec!["?e".to_var(), "?name".to_var()],
+            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
+            join: None,
         };
         IncrementalQueryPlan {
             find_vars: vec!["?name".to_var()],
             variables: vec!["?e".to_var(), "?name".to_var()],
             where_plan: RelPlan {
-                output_vars: pattern.output_vars.clone(),
+                incoming_vars: None,
+                output_vars: pattern.pattern_vars.clone(),
                 kind: RelPlanKind::Pattern(pattern),
             },
         }
