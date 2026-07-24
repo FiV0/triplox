@@ -12,7 +12,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::Error;
+use anyhow::{ensure, Error};
 use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
@@ -38,6 +38,11 @@ use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
 use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
 use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::{DataType, QueryArg};
+use crate::query::standard::assembly::assemble_plan;
+use crate::query::standard::binding_set::BindingSet;
+use crate::query::standard::engine::GenericJoinEngine;
+use crate::query::standard::plan::build_logical_plan;
+use crate::query_validation::validate_query;
 use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -1187,34 +1192,20 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    // 1. Extract variable order (in_bindings prepended)
-    let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
-    let num_levels = join_order.len();
-    let var_index = build_var_index(&join_order);
+    validate_query(query, args)?;
+    let logical_plan = build_logical_plan(query, args)?;
+    let executable_plan =
+        assemble_plan(&logical_plan, slate, handle, ident_map, as_of, range_stats)?;
+    let bindings = GenericJoinEngine::execute(executable_plan.stages(), BindingSet::unit())?;
+    ensure!(
+        bindings.variables() == executable_plan.variable_order(),
+        "Query execution produced variables {:?}, expected {:?}",
+        bindings.variables(),
+        executable_plan.variable_order()
+    );
 
-    // 2. Compile in-binding arguments into extenders
-    let mut extenders = compile_in_bindings(&query.in_bindings, args, &var_index);
-
-    // 3. Compile WHERE patterns into extenders
-    for clause in &query.where_clauses {
-        extenders.push(compile_where_clause(
-            clause,
-            &join_order,
-            &var_index,
-            &slate,
-            &handle,
-            ident_map,
-            as_of,
-            &range_stats,
-        )?);
-    }
-
-    // 4. Run GenericJoin
-    let extender_refs: Vec<&dyn PrefixExtender> = extenders.iter().map(|e| e.as_ref()).collect();
-    let join = GenericJoin::new(extender_refs, num_levels);
-    let results = join.join();
-
-    // 5. Project and aggregate results based on find clause
+    let var_index = build_var_index(executable_plan.variable_order());
+    let results = bindings.rows().to_vec();
     let plan = compile_find_plan(&query.find_spec, &var_index)?;
     let projected = if plan.has_aggregates {
         execute_aggregation(results, &plan)?
@@ -1222,7 +1213,6 @@ where
         project_results(results, &plan)?
     };
 
-    // 6. Resolve variable limit from :in bindings and apply ORDER BY + LIMIT
     let resolved_limit = resolve_limit(&query.limit, &query.in_bindings, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }

@@ -469,6 +469,22 @@
         (is (= [[["Alice" "Bob"] -1]]
                (take-delta! sub)))))))
 
+(deftest test-or-branch-predicates-preserve-branch-identity
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (api/transact conn [{:name "A" :age 35}
+                        {:name "B" :age 35}])
+    (is (= #{["B" 35]}
+           (set
+            (q conn '{:find [?name ?age]
+                      :where [[?e :age ?age]
+                              (or
+                               (and [?e :name "A"]
+                                    [(< ?age 30)])
+                               (and [?e :name "B"]
+                                    [(< ?age 40)]))
+                              [?e :name ?name]]}))))))
+
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
     (api/transact conn triangle-relation-schema)
