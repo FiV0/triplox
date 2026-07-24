@@ -163,7 +163,7 @@ mod tests {
         );
 
         assert_eq!(
-            pattern.join(&input, &[], input.variables).unwrap(),
+            pattern.join(&input, &[], &input.variables).unwrap(),
             binding_bag(&["?outer", "?x"], &[&["u", "a"], &["u", "a"]])
         );
     }
@@ -180,7 +180,7 @@ mod tests {
         let input = binding_bag(&["?x"], &[&["a"]]);
 
         assert!(pattern
-            .join(&input, &["?y".to_var()], input.variables)
+            .join(&input, &["?y".to_var()], &input.variables)
             .is_err());
         assert!(pattern.join(&input, &[], &["?other".to_var()]).is_err());
         assert!(pattern.join(&BindingBag::unit(), &[], &[]).is_err());

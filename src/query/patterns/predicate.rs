@@ -140,7 +140,7 @@ mod tests {
         )
         .unwrap();
 
-        let filtered = pattern.join(&input, &[], input.variables).unwrap();
+        let filtered = pattern.join(&input, &[], &input.variables).unwrap();
 
         assert_eq!(
             filtered,
@@ -171,15 +171,15 @@ mod tests {
         assert_eq!(proposals, vec![Proposal::default()]);
         assert!(pattern.count(&input, &[], &mut []).is_err());
         assert!(pattern
-            .join(&input, &["?z".to_var()], input.variables)
+            .join(&input, &["?z".to_var()], &input.variables)
             .is_err());
         assert!(pattern
             .join(&input, &[], &["?y".to_var(), "?x".to_var()],)
             .is_err());
-        assert!(pattern.join(&input, &[], input.variables).is_err());
+        assert!(pattern.join(&input, &[], &input.variables).is_err());
 
         let unbound =
             BindingBag::new(vec!["?x".to_var()], vec![vec![encoded(DataType::Long(1))]]).unwrap();
-        assert!(pattern.join(&unbound, &[], unbound.variables).is_err());
+        assert!(pattern.join(&unbound, &[], &unbound.variables).is_err());
     }
 }

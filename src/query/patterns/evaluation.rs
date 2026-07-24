@@ -6,7 +6,7 @@ use edn::query::Variable;
 use crate::codec::Decode;
 use crate::expr::EvalContext;
 use crate::ops::DataType;
-use crate::query::binding_bag::{BindingRow, BindingBag};
+use crate::query::binding_bag::{BindingBag, BindingRow};
 
 pub(super) fn decode_bindings(
     input: &BindingBag,

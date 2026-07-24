@@ -6,7 +6,7 @@ use super::evaluation::{decode_bindings, eval_context};
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, expr_variables, Expr};
 use crate::ops::DataType;
-use crate::query::binding_bag::{BindingRow, BindingBag};
+use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 
 pub(crate) struct FunctionPattern {
@@ -253,7 +253,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pattern.join(&input, &[], input.variables).unwrap(),
+            pattern.join(&input, &[], &input.variables).unwrap(),
             BindingBag::new(input.variables.to_vec(), vec![input.rows[0].clone()]).unwrap()
         );
     }
@@ -303,7 +303,7 @@ mod tests {
         let bound_input =
             BindingBag::new(vec!["?x".to_var()], vec![vec![encoded(DataType::Long(1))]]).unwrap();
         assert!(pattern
-            .join(&bound_input, &[], bound_input.variables)
+            .join(&bound_input, &[], &bound_input.variables)
             .is_err());
         assert!(pattern
             .join(
@@ -322,7 +322,7 @@ mod tests {
         )
         .unwrap();
         assert!(pattern
-            .join(&malformed_output, &[], malformed_output.variables)
+            .join(&malformed_output, &[], &malformed_output.variables)
             .is_err());
     }
 }

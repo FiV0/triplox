@@ -156,7 +156,7 @@ mod tests {
     use edn::query::{ToVariable, Variable};
 
     use super::GenericJoinEngine;
-    use crate::query::binding_bag::{BindingRow, BindingBag};
+    use crate::query::binding_bag::{BindingBag, BindingRow};
     use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
     use crate::query::stage::Stage;
 

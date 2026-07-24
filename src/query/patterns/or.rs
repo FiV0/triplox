@@ -339,7 +339,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            validating.join(&bound, &[], bound.variables).unwrap(),
+            validating.join(&bound, &[], &bound.variables).unwrap(),
             binding_bag(
                 &["?outer", "?x"],
                 vec![vec![bytes("u"), bytes("a")], vec![bytes("u"), bytes("a")],],
