@@ -1,6 +1,6 @@
 # Standard Query Engine Rewrite
 
-Status: proposed
+Status: implemented
 
 ## Context
 
@@ -466,6 +466,7 @@ src/query/standard/
   exec_pattern.rs
   stage.rs
   plan.rs
+  assembly.rs
   engine.rs
   patterns/
     mod.rs
@@ -583,11 +584,11 @@ Add runtime assembly, route `execute_query` through the new plan and engine,
 and only then remove the old implementation.
 
 The cutover must add the issue 374 query as a public standard-query regression
-in `src/node.rs`. Existing standard query tests for triples, joins, predicates,
-functions, OR, nested OR, NOT, scalar inputs, collection inputs, aggregation,
-ordering, limits, and time travel remain the parity suite. Incremental
-equivalence tests continue to compare against the standard engine but are not
-otherwise changed.
+in `triplox-jvm/src/test/clojure/xyz/triplox/integration/subscription_test.clj`.
+Existing standard query tests for triples, joins, predicates, functions, OR,
+nested OR, NOT, scalar inputs, collection inputs, aggregation, ordering,
+limits, and time travel remain the parity suite. Incremental equivalence tests
+continue to compare against the standard engine but are not otherwise changed.
 
 Once parity passes, remove:
 
