@@ -137,7 +137,7 @@ fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     use std::collections::HashMap;
 
     use edn::kw;
@@ -145,11 +145,11 @@ mod test_support {
 
     use crate::schema::{Attribute, Schema, ValueType};
 
-    pub(super) fn parse_query(input: &str) -> ParsedQuery {
+    pub(crate) fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
     }
 
-    pub(super) fn test_schema() -> Schema {
+    pub(crate) fn test_schema() -> Schema {
         let attrs = [
             (kw!(:name), 10, ValueType::String),
             (kw!(:age), 11, ValueType::Long),

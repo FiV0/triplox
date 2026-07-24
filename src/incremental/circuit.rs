@@ -317,8 +317,6 @@ impl QueryCircuit {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use dbsp::{
         utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
     };
@@ -328,9 +326,9 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
+    use crate::inc_query::test_support::{parse_query, test_schema};
     use crate::inc_query::{plan_query, IncrementalQueryPlan, PatternSlot};
     use crate::ops::DataType;
-    use crate::schema::{Attribute, Schema, ValueType};
 
     fn build_pattern_circuit(
         circuit: &mut RootCircuit,
@@ -420,37 +418,8 @@ mod tests {
         }
     }
 
-    fn test_schema() -> Schema {
-        let attrs = [
-            (kw!(:name), 10, ValueType::String),
-            (kw!(:age), 11, ValueType::Long),
-            (kw!(:follows), 12, ValueType::Ref),
-            (kw!(:type), 13, ValueType::Keyword),
-        ];
-        let mut ident_map = HashMap::new();
-        let mut entid_map = HashMap::new();
-        let mut attribute_map = HashMap::new();
-        for (ident, entid, value_type) in attrs {
-            ident_map.insert(ident.clone(), entid);
-            entid_map.insert(entid, ident);
-            attribute_map.insert(
-                entid,
-                Attribute {
-                    value_type,
-                    multival: true,
-                    unique: None,
-                },
-            );
-        }
-        Schema {
-            entid_map,
-            ident_map,
-            attribute_map,
-        }
-    }
-
     fn query_plan(query: &str) -> IncrementalQueryPlan {
-        let query = edn::parse::parse_query(query).expect("query should parse");
+        let query = parse_query(query);
         plan_query(&query, &test_schema()).expect("query should plan")
     }
 
