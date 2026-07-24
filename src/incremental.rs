@@ -107,7 +107,7 @@ pub(crate) struct IncrementalQueryService {
 
 // The two result levels in this service have two different meanings.
 // The first level is about the communication of this service.
-// The second level is about actual errors when sending a command. 
+// The second level is about actual errors when sending a command.
 impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
@@ -659,7 +659,7 @@ mod tests {
                 single_pattern_plan(),
                 old_basis,
                 test_cursor(),
-                Vec::new(),
+                vec![name_triple(42, "Alice")],
             )
             .unwrap();
         let mut new_subscription = service
@@ -667,9 +667,13 @@ mod tests {
                 single_pattern_plan(),
                 new_basis,
                 test_cursor(),
-                Vec::new(),
+                vec![name_triple(42, "Alice"), name_triple(43, "Bob")],
             )
             .unwrap();
+
+        // Drain priming deltas before testing application relative to each basis.
+        old_subscription.deltas.try_recv().unwrap();
+        new_subscription.deltas.try_recv().unwrap();
 
         service
             .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
