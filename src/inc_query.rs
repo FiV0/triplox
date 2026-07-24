@@ -137,22 +137,19 @@ fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test_support {
     use std::collections::HashMap;
 
-    use edn::query::ToVariable;
-    use edn::{kw, Keyword};
+    use edn::kw;
+    use edn::query::ParsedQuery;
 
-    use super::*;
-    use crate::codec::Encode;
-    use crate::ops::DataType;
-    use crate::schema::{Attribute, ValueType};
+    use crate::schema::{Attribute, Schema, ValueType};
 
-    fn parse_query(input: &str) -> ParsedQuery {
+    pub(super) fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
     }
 
-    fn test_schema() -> Schema {
+    pub(super) fn test_schema() -> Schema {
         let attrs = [
             (kw!(:name), 10, ValueType::String),
             (kw!(:age), 11, ValueType::Long),
@@ -180,6 +177,17 @@ mod tests {
             attribute_map,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use edn::query::ToVariable;
+    use edn::Keyword;
+
+    use super::test_support::{parse_query, test_schema};
+    use super::*;
+    use crate::codec::Encode;
+    use crate::ops::DataType;
 
     fn assert_plan_err(query: &str, expected: &str) {
         let schema = test_schema();

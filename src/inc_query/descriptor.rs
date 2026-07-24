@@ -219,45 +219,10 @@ pub(super) fn describe_where_clauses(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use edn::query::ToVariable;
 
-    use edn::kw;
-    use edn::query::{ParsedQuery, ToVariable};
-
+    use super::super::test_support::{parse_query, test_schema};
     use super::*;
-    use crate::schema::{Attribute, ValueType};
-
-    fn parse_query(input: &str) -> ParsedQuery {
-        edn::parse::parse_query(input).expect("query should parse")
-    }
-
-    fn test_schema() -> Schema {
-        let attrs = [
-            (kw!(:name), 10, ValueType::String),
-            (kw!(:age), 11, ValueType::Long),
-            (kw!(:follows), 12, ValueType::Ref),
-        ];
-        let mut ident_map = HashMap::new();
-        let mut entid_map = HashMap::new();
-        let mut attribute_map = HashMap::new();
-        for (ident, entid, value_type) in attrs {
-            ident_map.insert(ident.clone(), entid);
-            entid_map.insert(entid, ident);
-            attribute_map.insert(
-                entid,
-                Attribute {
-                    value_type,
-                    multival: true,
-                    unique: None,
-                },
-            );
-        }
-        Schema {
-            entid_map,
-            ident_map,
-            attribute_map,
-        }
-    }
 
     #[test]
     fn triple_variables_are_all_groundable_in_encounter_order() {
