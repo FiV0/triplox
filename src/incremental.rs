@@ -70,7 +70,19 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-type ServiceResult<T> = std::result::Result<T, String>;
+#[derive(Debug, thiserror::Error)]
+enum IncrementalServiceError {
+    #[error("Unknown incremental query handle: {handle:?}")]
+    UnknownQueryHandle { handle: IncrementalQueryHandle },
+    #[error("Failed to remove incremental query storage for {handle:?}: {source}")]
+    RemoveQueryStorage {
+        handle: IncrementalQueryHandle,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+type ServiceResult<T> = Result<T>;
 
 enum IncrementalCommand {
     Register {
@@ -131,6 +143,19 @@ impl IncrementalQueryService {
             cdc_task: Arc::new(StdMutex::new(None)),
             registration_gate: Arc::new(Mutex::new(())),
         }
+    }
+
+    async fn send_command<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<ServiceResult<T>>) -> IncrementalCommand,
+    ) -> Result<T> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(command(response))
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result
+            .await
+            .map_err(|_| anyhow!("Incremental query service stopped"))?
     }
 
     pub(crate) async fn register_query(
@@ -197,31 +222,19 @@ impl IncrementalQueryService {
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::Register {
-                plan,
-                tx_key,
-                wal_cursor,
-                initial_triples,
-                response,
-            })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        self.send_command(|response| IncrementalCommand::Register {
+            plan,
+            tx_key,
+            wal_cursor,
+            initial_triples,
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::Unregister { handle, response })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
+        self.send_command(|response| IncrementalCommand::Unregister { handle, response })
             .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
     }
 
     pub(crate) async fn apply_triples(
@@ -230,35 +243,21 @@ impl IncrementalQueryService {
         wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<()> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::ApplyTriples {
-                tx_key,
-                wal_seq,
-                triples,
-                response,
-            })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        self.send_command(|response| IncrementalCommand::ApplyTriples {
+            tx_key,
+            wal_seq,
+            triples,
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
         self.cancel.cancel();
         let cdc_result = self.await_cdc_task().await;
-        let (response, result) = oneshot::channel();
-        let service_result = match self
-            .commands
-            .send(IncrementalCommand::Shutdown { response })
-        {
-            Ok(()) => result
-                .await
-                .map_err(|_| anyhow!("Incremental query service stopped"))
-                .and_then(|result| result.map_err(|err| anyhow!("{}", err))),
-            Err(_) => Err(anyhow!("Incremental query service stopped")),
-        };
+        let service_result = self
+            .send_command(|response| IncrementalCommand::Shutdown { response })
+            .await;
 
         match (cdc_result, service_result) {
             (Ok(()), Ok(())) => Ok(()),
@@ -366,11 +365,8 @@ impl IncrementalQueryServiceInner {
         self.cleanup_closed_subscriptions()?;
 
         let handle = self.allocate_query_id();
-        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
-            .map_err(|err| format!("{:#}", err))?;
-        circuit
-            .prime(initial_triples)
-            .map_err(|err| format!("{:#}", err))?;
+        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))?;
+        circuit.prime(initial_triples)?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
 
         self.queries.insert(
@@ -412,10 +408,7 @@ impl IncrementalQueryServiceInner {
                 continue;
             }
 
-            let rows = query
-                ._circuit
-                .apply(triples.clone())
-                .map_err(|err| format!("{:#}", err))?;
+            let rows = query._circuit.apply(triples.clone())?;
             if rows.is_empty() {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
@@ -448,7 +441,7 @@ impl IncrementalQueryServiceInner {
         let query = self
             .queries
             .remove(&id)
-            .ok_or_else(|| format!("Unknown incremental query handle: {:?}", id))?;
+            .ok_or(IncrementalServiceError::UnknownQueryHandle { handle: id })?;
         drop(query);
         self.remove_query_storage(id)
     }
@@ -457,10 +450,9 @@ impl IncrementalQueryServiceInner {
         match std::fs::remove_dir_all(self.query_storage_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!(
-                "Failed to remove incremental query storage for {:?}: {}",
-                id, err
-            )),
+            Err(source) => {
+                Err(IncrementalServiceError::RemoveQueryStorage { handle: id, source }.into())
+            }
         }
     }
 
@@ -472,10 +464,17 @@ impl IncrementalQueryServiceInner {
                 errors.push(err);
             }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
+        match errors.len() {
+            0 => Ok(()),
+            1 => Err(errors.remove(0)),
+            _ => {
+                let message = errors
+                    .into_iter()
+                    .map(|err| format!("{:#}", err))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Err(anyhow!("{}", message))
+            }
         }
     }
 
@@ -564,7 +563,7 @@ mod tests {
         drop(subscription);
 
         let err = service.unregister(handle).unwrap_err();
-        assert!(err.contains("Unknown incremental query handle"));
+        assert!(err.to_string().contains("Unknown incremental query handle"));
         assert!(!storage_path.exists());
     }
 
@@ -674,6 +673,29 @@ mod tests {
             .expect("apply_triples should stop waiting after cancellation");
         assert!(result.is_ok());
         handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn unregister_preserves_service_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = IncrementalQueryService::new(
+            dir.path().to_path_buf(),
+            Handle::current(),
+            CancellationToken::new(),
+            "/test_incremental_unregister_error".to_string(),
+            Arc::new(InMemory::new()),
+        );
+        let handle = 42;
+
+        let err = service.unregister(handle).await.unwrap_err();
+
+        assert!(matches!(
+            err.downcast_ref::<IncrementalServiceError>(),
+            Some(IncrementalServiceError::UnknownQueryHandle {
+                handle: error_handle
+            }) if *error_handle == handle
+        ));
+        service.shutdown().await.unwrap();
     }
 
     #[tokio::test]
