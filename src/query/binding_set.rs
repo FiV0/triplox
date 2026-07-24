@@ -170,10 +170,10 @@ impl BindingSet {
         variables: &[Variable],
     ) -> Result<HashMap<BindingRow, Vec<usize>>> {
         let indexes = self.projection_indexes(variables)?;
-        let mut result = HashMap::new();
+        let mut result: HashMap<BindingRow, Vec<usize>> = HashMap::new();
         for (row_index, row) in self.rows.iter().enumerate() {
             let key = indexes.iter().map(|index| row[*index].clone()).collect();
-            result.entry(key).or_insert_with(Vec::new).push(row_index);
+            result.entry(key).or_default().push(row_index);
         }
         Ok(result)
     }
