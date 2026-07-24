@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 pub(crate) mod binding_bag;
+pub(crate) mod engine;
 pub(crate) mod exec_pattern;
 pub(crate) mod patterns;
 pub(crate) mod plan;
