@@ -85,40 +85,54 @@ fn required_variables(descriptor: &Descriptor) -> Vec<Variable> {
         .collect()
 }
 
+struct PendingDescriptor<'a> {
+    descriptor: &'a Descriptor,
+    required_variables: Vec<Variable>,
+}
+
 fn order_descriptors<'a>(
     descriptors: &'a [Descriptor],
     initial_grounded: &[Variable],
 ) -> Result<Vec<&'a Descriptor>> {
     let mut ordered = Vec::with_capacity(descriptors.len());
     let mut grounded = initial_grounded.iter().cloned().collect::<HashSet<_>>();
-    let mut remaining = descriptors.iter().collect::<Vec<_>>();
+    let mut remaining = descriptors
+        .iter()
+        .map(|descriptor| PendingDescriptor {
+            descriptor,
+            required_variables: required_variables(descriptor),
+        })
+        .collect::<Vec<_>>();
 
     while !remaining.is_empty() {
         let candidate = remaining
             .iter()
             .enumerate()
             .filter(|(_, descriptor)| {
-                required_variables(descriptor)
+                descriptor
+                    .required_variables
                     .iter()
                     .all(|variable| grounded.contains(variable))
             })
             .max_by_key(|(_, descriptor)| {
                 let shared = descriptor
+                    .descriptor
                     .variables
                     .iter()
                     .filter(|variable| grounded.contains(variable))
                     .count();
-                (shared, Reverse(descriptor.position))
+                (shared, Reverse(descriptor.descriptor.position))
             })
             .map(|(index, _)| index);
 
         let Some(candidate) = candidate else {
             let descriptor = remaining
                 .iter()
-                .min_by_key(|descriptor| descriptor.position)
+                .min_by_key(|descriptor| descriptor.descriptor.position)
                 .expect("non-empty remaining descriptors must have a first position");
-            let missing = required_variables(descriptor)
-                .into_iter()
+            let missing = descriptor
+                .required_variables
+                .iter()
                 .find(|variable| !grounded.contains(variable))
                 .expect("a non-introducible descriptor must have a missing variable");
             return Err(anyhow!(
@@ -128,8 +142,8 @@ fn order_descriptors<'a>(
         };
 
         let descriptor = remaining.remove(candidate);
-        grounded.extend(descriptor.variables.iter().cloned());
-        ordered.push(descriptor);
+        grounded.extend(descriptor.descriptor.variables.iter().cloned());
+        ordered.push(descriptor.descriptor);
     }
 
     Ok(ordered)
