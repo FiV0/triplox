@@ -140,7 +140,8 @@ pub(crate) struct Proposal {
 Each pattern updates a row only when it has a strictly cheaper, positive count.
 Equal counts preserve participant order. A row with no positive proposer is
 dropped. Keeping this metadata out of `BindingSet` keeps ordinary relational
-operations independent of engine bookkeeping.
+operations independent of engine bookkeeping. A None proposer means that the row
+was not extended by any proposer.
 
 ### `ExecPattern` operates on whole binding sets
 
