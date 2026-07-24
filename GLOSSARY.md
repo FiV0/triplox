@@ -58,7 +58,7 @@ The node design allows for different deployment topologies—you can have multip
 
 The query compiler is the read-side component that transforms declarative Datalog queries into efficient execution plans. It analyzes query patterns to understand which parts are known (constants) and which parts are unknown (variables), then selects the optimal index view to use.
 
-Beyond index selection, the query compiler also determines the best join order when queries involve multiple patterns. It considers which variables are shared between patterns and chooses strategies to minimize the amount of data that needs to be processed. The compiler uses sophisticated multi-way join algorithms like leapfrog trie-join to efficiently navigate the indexed data.
+Beyond index selection, the query compiler establishes a variable order for patterns and executes the resulting extenders with a multi-way Generic Join over the indexed data.
 
 The query compiler's job is to make queries fast without requiring users to understand the underlying index structure. You write declarative queries expressing what you want, and the compiler figures out the best way to get it.
 
