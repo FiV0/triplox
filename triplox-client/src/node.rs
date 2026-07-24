@@ -6,8 +6,28 @@ use crate::query::QueryResult;
 use crate::transaction::{TransactionResult, TxKey};
 
 #[allow(async_fn_in_trait)]
+/// A node that accepts Triplox transactions.
 pub trait SubmitNode {
+    /// Appends one transaction for asynchronous processing.
+    ///
+    /// Each item in `ops` is converted to a [`TxOp`] through [`IntoTxOp`].
+    /// The returned [`TxKey`] identifies the appended transaction, but does not
+    /// mean that it has been indexed or committed. Use
+    /// [`execute_tx`](SubmitNode::execute_tx) when the transaction outcome is
+    /// required.
+    ///
+    /// Returns an error if an operation cannot be converted or the transaction
+    /// cannot be appended.
     async fn submit_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TxKey, Error>;
+
+    /// Appends one transaction and waits for its indexed outcome.
+    ///
+    /// Committed and aborted transactions are both normal outcomes returned
+    /// inside `Ok` as [`TransactionResult::TxCommitted`] and
+    /// [`TransactionResult::TxAborted`], respectively.
+    ///
+    /// Returns an error if an operation cannot be converted, the transaction
+    /// cannot be appended, or processing fails before an outcome is available.
     async fn execute_tx<O: IntoTxOp>(&self, ops: Vec<O>) -> Result<TransactionResult, Error>;
 }
 
@@ -70,9 +90,24 @@ impl IntoQuery for String {
 }
 
 #[allow(async_fn_in_trait)]
+/// A read-only database value pinned to one indexed transaction basis.
 pub trait Database {
+    /// Executes a query against this database basis without input arguments.
+    ///
+    /// `query` may be a parsed query or an EDN query accepted by [`IntoQuery`].
+    /// Use [`query_with_args`](Database::query_with_args) for a query with
+    /// `:in` bindings.
+    ///
+    /// Returns an error if the query cannot be parsed, validated, or executed.
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
 
+    /// Executes a parsed query against this database basis with input arguments.
+    ///
+    /// Arguments correspond positionally to the query's `:in` bindings. Scalar
+    /// and collection bindings require the matching [`QueryArg`] variant.
+    ///
+    /// Returns an error if the arguments do not match the query or the query
+    /// cannot be validated or executed.
     async fn query_with_args(
         &self,
         query: &ParsedQuery,
@@ -81,8 +116,18 @@ pub trait Database {
 }
 
 #[allow(async_fn_in_trait)]
+/// A node that opens read-only database values.
 pub trait QueryNode {
+    /// The database value returned by this node.
     type DB: Database;
+
+    /// Opens a database value at the latest indexed transaction.
     async fn db(&self) -> Result<Self::DB, Error>;
+
+    /// Opens a database value pinned to `tx_key`.
+    ///
+    /// If the transaction has been submitted but not indexed yet, this waits
+    /// for indexing. It returns an error if the requested basis cannot be made
+    /// available.
     async fn db_as_of(&self, tx_key: TxKey) -> Result<Self::DB, Error>;
 }
