@@ -226,9 +226,14 @@ Not { children: Vec<Descriptor> }
 Every descriptor has a stable `PatternId`, ordered variables, and a
 `groundable(bound)` operation. A complete logical plan contains descriptor
 data, recursively planned nested scopes, and logical stages whose participants
-are IDs:
+are IDs. Each scope also records its ordered incoming variables:
 
 ```rust
+pub(crate) struct LogicalScope {
+    incoming_variables: Option<Vec<Variable>>,
+    stages: Vec<LogicalStage>,
+}
+
 pub(crate) struct LogicalStage {
     added: Vec<Variable>,
     proposers: Vec<ParticipantRef>,
@@ -242,33 +247,51 @@ pub(crate) enum ParticipantRef {
 }
 ```
 
-`Incoming` is an explicit planning/runtime-template slot for the projected
-outer relation of an OR branch or NOT body. It avoids a magic pattern ID and,
-unlike removing a planning-only participant during assembly, cannot produce an
-empty runtime stage.
+`incoming_variables` is `None` for the top-level scope and `Some` for an OR
+branch or NOT body, including when the projected variable list is empty.
+`ParticipantRef::Incoming` refers to that scope's single projected outer
+relation. The planner treats it like a relation descriptor with
+relation-prefix groundability and may place it in several stages. Its presence
+in `proposers` records a proposing role; presence only in `participants`
+records a validating role. The separate variant avoids assigning a magic
+`PatternId` to a planning-only participant.
 
 Runtime assembly converts a logical stage into a `StageTemplate`:
 
 ```rust
-pub(crate) enum RuntimeParticipant {
+pub(crate) enum ParticipantTemplate {
     Pattern(Arc<dyn ExecPattern>),
     Incoming,
 }
 
 pub(crate) struct StageTemplate {
     added: Vec<Variable>,
-    participants: Vec<RuntimeParticipant>,
+    participants: Vec<ParticipantTemplate>,
     target_variables: Vec<Variable>,
 }
 ```
 
-A top-level template cannot contain `Incoming` and is immediately converted
-to a concrete `Stage`. OR and NOT retain nested templates. For each nested
-execution they create one projected `RelationPattern`, replace every
-`Incoming` slot with that shared pattern, validate that the resulting stages
-have non-empty distinct participants, and only then call the engine. The
-incoming relation can use the owning composite pattern's ID because that ID
-does not occur among its descendant patterns.
+`ParticipantTemplate::Incoming` is a deferred slot, not an executable runtime
+participant. Assembly cannot construct its `RelationPattern` because the outer
+rows do not exist until the owning OR or NOT pattern is invoked. A top-level
+template cannot contain this slot and is immediately converted to a concrete
+`Stage`.
+
+For each nested invocation, the owning OR or NOT pattern:
+
+1. projects the current outer `BindingSet` to the scope's
+   `incoming_variables`;
+2. creates one `Arc<RelationPattern>` from that projection;
+3. clones that arc into every `ParticipantTemplate::Incoming` slot, preserving
+   participant order;
+4. converts every `StageTemplate` into a concrete `Stage` and validates that
+   its participants are non-empty and have distinct IDs;
+5. passes only those concrete stages to `GenericJoinEngine`.
+
+The reusable templates remain on the composite pattern; the concrete stages
+exist only for that invocation. `GenericJoinEngine` therefore never observes
+an `Incoming` variant. The incoming relation can use the owning composite
+pattern's ID because that ID does not occur among its descendant patterns.
 
 Planner tests compare ordinary descriptors and logical plans. They do not open
 a database or construct fake executable patterns.
@@ -414,7 +437,7 @@ Runtime assembly is a separate pass over the complete logical plan. It:
 - recursively assembles OR and NOT branch plan templates;
 - replaces `ParticipantRef::Pattern` IDs with shared
   `Arc<dyn ExecPattern>` values;
-- converts `ParticipantRef::Incoming` to a `RuntimeParticipant::Incoming`
+- converts `ParticipantRef::Incoming` to a `ParticipantTemplate::Incoming`
   slot to be materialized by its owning composite pattern.
 
 `execute_query` then becomes orchestration:
