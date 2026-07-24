@@ -105,6 +105,9 @@ pub(crate) struct IncrementalQueryService {
     registration_gate: Arc<Mutex<()>>,
 }
 
+// The two result levels in this service have two different meanings.
+// The first level is about the communication of this service.
+// The second level is about actual errors when sending a command. 
 impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
