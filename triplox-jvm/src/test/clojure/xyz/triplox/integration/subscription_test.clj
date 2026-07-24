@@ -16,6 +16,12 @@
    {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
 
+(def people-with-friends-schema
+  (conj people-schema
+        {:db/ident :friend
+         :db/valueType :db.type/ref
+         :db/cardinality :db.cardinality/one}))
+
 (def residence-schema
   [{:db/ident :person/name
     :db/valueType :db.type/string
@@ -307,6 +313,34 @@
 
         (api/transact conn [[:db/retract alice-id :city "Berlin"]])
         (is (= [[[alice-id] -1]] (take-delta! sub)))))))
+
+(deftest test-outer-relation-through-and+nested-or-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-with-friends-schema)
+    (with-open [sub (api/subscribe conn '{:find [?name ?friend-name]
+                                          :where [[?e :name ?name]
+                                                  (or
+                                                   (and [?e :friend ?friend]
+                                                        (or [?friend :age 30]
+                                                            [?friend :age 40])
+                                                        [?friend :name ?friend-name])
+                                                   (and [?e :friend ?friend]
+                                                        [?friend :age 50]
+                                                        [?friend :name ?friend-name]))]})]
+      (api/transact conn [{:db/id "alice"
+                           :name "Alice"
+                           :friend "bob"}
+                          {:db/id "bob"
+                           :name "Bob"
+                           :age 30}])
+      (is (= [[["Alice" "Bob"] 1]]
+             (take-delta! sub)))
+
+      (let [bob-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Bob"]]})]
+        (api/transact conn [[:db/retract bob-id :age 30]])
+        (is (= [[["Alice" "Bob"] -1]]
+               (take-delta! sub)))))))
 
 (deftest test-prefix-stable-extension-addition
   (with-open [conn (connect)]
