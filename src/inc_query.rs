@@ -1,19 +1,19 @@
 //! Incremental-query planning helpers.
 
-use std::collections::HashSet;
-
 use anyhow::{anyhow, bail, Result};
 use edn::query::{
     Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Variable, WhereClause,
+    Variable, WhereClause,
 };
 
-use crate::codec::Encode;
-use crate::incremental::EncodedValue;
-use crate::ops::DataType;
-use crate::query::non_integer_constant_to_datatype;
 use crate::query_validation::validate_query;
 use crate::schema::Schema;
+
+mod descriptor;
+mod planner;
+
+pub(crate) use descriptor::PatternSlot;
+pub(crate) use planner::{JoinPlan, JoinStep, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
@@ -25,56 +25,9 @@ pub(crate) struct IncrementalQueryPlan {
 impl IncrementalQueryPlan {
     pub(crate) fn leaf_patterns(&self) -> Vec<&PatternPlan> {
         let mut patterns = Vec::new();
-        collect_leaf_patterns(&self.where_plan, &mut patterns);
+        planner::collect_leaf_patterns(&self.where_plan, &mut patterns);
         patterns
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RelPlan {
-    pub output_vars: Vec<Variable>,
-    pub kind: RelPlanKind,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RelPlanKind {
-    Pattern(PatternPlan),
-    Join(JoinPlan),
-    Union(UnionPlan),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PatternSlot {
-    Variable(Variable),
-    Constant(EncodedValue),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PatternPlan {
-    pub attribute: i64,
-    pub entity: PatternSlot,
-    pub value: PatternSlot,
-    pub output_vars: Vec<Variable>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UnionPlan {
-    pub branches: Vec<RelPlan>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct JoinPlan {
-    pub inputs: Vec<RelPlan>,
-    pub steps: Vec<JoinStep>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct JoinStep {
-    pub right_input_index: usize,
-    pub left_vars: Vec<Variable>,
-    pub right_vars: Vec<Variable>,
-    pub key_vars: Vec<Variable>,
-    pub output_vars: Vec<Variable>,
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
@@ -82,8 +35,9 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
     let find_vars = find_vars(&query.find_spec)?;
     validate_query(query, &[])?;
 
-    let where_plan = plan_where_clauses(&query.where_clauses, schema)?;
-    let variables = collect_variables(&where_plan);
+    let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
+    let where_plan = planner::plan_scope(&descriptors)?;
+    let variables = where_plan.output_vars.clone();
     for var in &find_vars {
         if !variables.contains(var) {
             bail!(
@@ -182,210 +136,6 @@ fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
         .collect()
 }
 
-fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
-    match place {
-        PatternNonValuePlace::Variable(var) => PatternSlot::Variable(var.clone()),
-        PatternNonValuePlace::Entid(entid) => {
-            PatternSlot::Constant(DataType::Long(*entid).encode())
-        }
-        // TODO This needs proper ident resolution for refs
-        PatternNonValuePlace::Ident(ident) => {
-            PatternSlot::Constant(DataType::Keyword(ident.as_ref().clone()).encode())
-        }
-        PatternNonValuePlace::Placeholder => {
-            unreachable!("entity placeholders are rejected before planning")
-        }
-    }
-}
-
-fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
-    match place {
-        PatternValuePlace::Variable(var) => Ok(PatternSlot::Variable(var.clone())),
-        PatternValuePlace::EntidOrInteger(value) => {
-            Ok(PatternSlot::Constant(DataType::Long(*value).encode()))
-        }
-        // TODO This needs proper ident resolution for refs
-        PatternValuePlace::IdentOrKeyword(ident) => Ok(PatternSlot::Constant(
-            DataType::Keyword(ident.as_ref().clone()).encode(),
-        )),
-        PatternValuePlace::Constant(constant) => Ok(PatternSlot::Constant(
-            non_integer_constant_to_datatype(constant)
-                .ok_or_else(|| anyhow!("BigInteger constant is outside Triplox i128 range"))?
-                .encode(),
-        )),
-        PatternValuePlace::Placeholder => {
-            unreachable!("value placeholders are rejected before planning")
-        }
-    }
-}
-
-fn pattern_output_vars(entity: &PatternSlot, value: &PatternSlot) -> Vec<Variable> {
-    let mut vars = Vec::new();
-    if let PatternSlot::Variable(var) = entity {
-        vars.push(var.clone());
-    }
-    if let PatternSlot::Variable(var) = value {
-        vars.push(var.clone());
-    }
-    vars
-}
-
-fn plan_pattern(pattern: &Pattern, schema: &Schema) -> Result<PatternPlan> {
-    let attribute = match &pattern.attribute {
-        PatternNonValuePlace::Ident(ident) => {
-            schema
-                .get_attribute(ident.as_ref())
-                .ok_or_else(|| anyhow!("Unknown attribute: {}", ident))?
-                .0
-        }
-        PatternNonValuePlace::Entid(entid) => *entid,
-        PatternNonValuePlace::Variable(_) | PatternNonValuePlace::Placeholder => {
-            unreachable!("variable and placeholder attributes are rejected before planning")
-        }
-    };
-
-    let entity = non_value_slot(&pattern.entity);
-    let value = value_slot(&pattern.value)?;
-    let output_vars = pattern_output_vars(&entity, &value);
-
-    Ok(PatternPlan {
-        attribute,
-        entity,
-        value,
-        output_vars,
-    })
-}
-
-fn plan_or_join(or: &OrJoin, schema: &Schema) -> Result<RelPlan> {
-    let branches = or
-        .clauses
-        .iter()
-        .map(|branch| plan_or_branch(branch, schema))
-        .collect::<Result<Vec<_>>>()?;
-    let output_vars = branches
-        .first()
-        .map(|branch| branch.output_vars.clone())
-        .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
-
-    Ok(RelPlan {
-        output_vars,
-        kind: RelPlanKind::Union(UnionPlan { branches }),
-    })
-}
-
-fn plan_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<RelPlan> {
-    match branch {
-        OrWhereClause::Clause(clause) => plan_where_clause(clause, schema),
-        OrWhereClause::And(children) => plan_where_clauses(children, schema),
-    }
-}
-
-fn plan_where_clause(clause: &WhereClause, schema: &Schema) -> Result<RelPlan> {
-    match clause {
-        WhereClause::Pattern(pattern) => {
-            let pattern = plan_pattern(pattern, schema)?;
-            Ok(RelPlan {
-                output_vars: pattern.output_vars.clone(),
-                kind: RelPlanKind::Pattern(pattern),
-            })
-        }
-        WhereClause::OrJoin(or) => plan_or_join(or, schema),
-        _ => unreachable!("unsupported clauses are rejected before planning"),
-    }
-}
-
-fn plan_where_clauses(clauses: &[WhereClause], schema: &Schema) -> Result<RelPlan> {
-    let inputs = clauses
-        .iter()
-        .map(|clause| plan_where_clause(clause, schema))
-        .collect::<Result<Vec<_>>>()?;
-    plan_inputs(inputs)
-}
-
-fn plan_inputs(mut inputs: Vec<RelPlan>) -> Result<RelPlan> {
-    if inputs.is_empty() {
-        bail!("Incremental queries require at least one triple pattern");
-    }
-    if inputs.len() == 1 {
-        return Ok(inputs.remove(0));
-    }
-
-    let steps = plan_join_steps(&inputs);
-    let output_vars = steps
-        .last()
-        .map(|step| step.output_vars.clone())
-        .expect("multi-input join plan must have at least one step");
-
-    Ok(RelPlan {
-        output_vars,
-        kind: RelPlanKind::Join(JoinPlan { inputs, steps }),
-    })
-}
-
-fn collect_variables(plan: &RelPlan) -> Vec<Variable> {
-    let mut variables = Vec::new();
-    let mut seen = HashSet::new();
-    for var in &plan.output_vars {
-        if seen.insert(var.clone()) {
-            variables.push(var.clone());
-        }
-    }
-    variables
-}
-
-fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'a PatternPlan>) {
-    match &plan.kind {
-        RelPlanKind::Pattern(pattern) => patterns.push(pattern),
-        RelPlanKind::Join(join) => {
-            for input in &join.inputs {
-                collect_leaf_patterns(input, patterns);
-            }
-        }
-        RelPlanKind::Union(union) => {
-            for branch in &union.branches {
-                collect_leaf_patterns(branch, patterns);
-            }
-        }
-    }
-}
-
-// This plans a very naive left-deep join plan, always joining on the intersection
-// of left (the accumulate so far) and right.
-fn plan_join_steps(inputs: &[RelPlan]) -> Vec<JoinStep> {
-    let mut steps = Vec::new();
-    let mut left_vars = inputs[0].output_vars.clone();
-    let mut bound: HashSet<Variable> = left_vars.iter().cloned().collect();
-
-    for (right_input_index, input) in inputs.iter().enumerate().skip(1) {
-        let right_vars = input.output_vars.clone();
-        let right_set: HashSet<Variable> = right_vars.iter().cloned().collect();
-        // Note: Not using intersection to preserve ordering from left_vars
-        let key_vars = left_vars
-            .iter()
-            .filter(|var| right_set.contains(*var))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut output_vars = left_vars.clone();
-        for var in &right_vars {
-            if bound.insert(var.clone()) {
-                output_vars.push(var.clone());
-            }
-        }
-
-        steps.push(JoinStep {
-            right_input_index,
-            left_vars,
-            right_vars,
-            key_vars,
-            output_vars: output_vars.clone(),
-        });
-        left_vars = output_vars;
-    }
-
-    steps
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -394,6 +144,8 @@ mod tests {
     use edn::{kw, Keyword};
 
     use super::*;
+    use crate::codec::Encode;
+    use crate::ops::DataType;
     use crate::schema::{Attribute, ValueType};
 
     fn parse_query(input: &str) -> ParsedQuery {
