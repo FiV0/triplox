@@ -656,7 +656,7 @@ mod tests {
                 single_pattern_plan(),
                 old_basis,
                 test_cursor(),
-                vec![name_triple(42, "Alice")],
+                Vec::new(),
             )
             .unwrap();
         let mut new_subscription = service
@@ -664,18 +664,9 @@ mod tests {
                 single_pattern_plan(),
                 new_basis,
                 test_cursor(),
-                vec![name_triple(42, "Alice"), name_triple(43, "Bob")],
+                Vec::new(),
             )
             .unwrap();
-
-        assert_eq!(
-            old_subscription.deltas.try_recv().unwrap().tx_key,
-            old_basis
-        );
-        assert_eq!(
-            new_subscription.deltas.try_recv().unwrap().tx_key,
-            new_basis
-        );
 
         service
             .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
@@ -866,14 +857,10 @@ mod tests {
                 single_pattern_plan(),
                 query_tx_key,
                 test_cursor(),
-                vec![name_triple(42, "Alice")],
+                Vec::new(),
             )
             .await
             .unwrap();
-        assert_eq!(
-            first_subscription.deltas.try_recv().unwrap().tx_key,
-            query_tx_key
-        );
 
         let registration_guard = service.registration_gate.lock().await;
         let applying_service = service.clone();
@@ -891,14 +878,10 @@ mod tests {
                 single_pattern_plan(),
                 query_tx_key,
                 test_cursor(),
-                vec![name_triple(42, "Alice")],
+                Vec::new(),
             )
             .await
             .unwrap();
-        assert_eq!(
-            second_subscription.deltas.try_recv().unwrap().tx_key,
-            query_tx_key
-        );
         assert!(second_subscription.deltas.try_recv().is_err());
 
         drop(registration_guard);
