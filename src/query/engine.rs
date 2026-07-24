@@ -4,6 +4,13 @@ use super::binding_bag::BindingBag;
 use super::exec_pattern::{ExecPattern, PatternId, Proposal};
 use super::stage::Stage;
 
+// generic-join based on
+// http://www.frankmcsherry.org/dataflow/relational/join/2015/04/11/genericjoin.html
+// https://arxiv.org/abs/1310.3314
+//
+// The ExecPattern interface very much inspired by
+// https://github.com/frankmcsherry/datatoad
+
 pub(crate) struct GenericJoinEngine;
 
 impl GenericJoinEngine {
