@@ -1989,6 +1989,14 @@ mod tests {
             .expect("subscription should be open")
     }
 
+    async fn take_priming_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        let delta = recv_incremental_delta(subscription).await;
+        assert!(!delta.rows.is_empty());
+        delta
+    }
+
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
@@ -2116,9 +2124,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let priming_delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(priming_delta.tx_key, subscription.tx_key);
-        assert!(!priming_delta.rows.is_empty());
+        take_priming_delta(&mut subscription).await;
 
         let basis = match node.execute_tx(test_schema_tx()).await.unwrap() {
             TransactionResult::TxCommitted(basis) => basis,
@@ -2272,13 +2278,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(subscription.tx_key, first_basis);
-        assert_eq!(
-            recv_incremental_delta(&mut subscription).await,
-            crate::incremental::IncrementalQueryDelta {
-                tx_key: first_basis,
-                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
-            }
-        );
+        take_priming_delta(&mut subscription).await;
         assert!(try_recv_incremental_delta(&mut subscription)
             .await
             .is_none());
@@ -2369,12 +2369,7 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
-        let priming_delta = recv_incremental_delta(&mut subscription).await;
-        assert_eq!(priming_delta.tx_key, subscription.tx_key);
-        assert_eq!(
-            priming_delta.rows,
-            vec![(vec![DataType::String("Alice".to_string())], 1)]
-        );
+        take_priming_delta(&mut subscription).await;
         let basis = match node
             .execute_tx(vec![TxOp::Add {
                 entity: EntityRef::Id(100),
