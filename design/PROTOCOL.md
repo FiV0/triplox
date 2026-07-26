@@ -307,9 +307,10 @@ failures and are rejected with HTTP 500 / `QueryError` (code 2001).
 
 On success the response is **HTTP 200** with `Content-Type:
 application/vnd.triplox+msgpack` and a body that is a **frame stream** (§4.12),
-not a single value. The subscription starts at the latest indexed basis; it does
-not replay existing rows, only deltas for transactions after the returned basis.
-Closing the HTTP/2 stream unsubscribes and releases server-side resources.
+not a single value. The subscription starts at the latest indexed basis. A
+non-empty result at that basis is emitted as the first delta, followed by deltas
+for later transactions. Closing the HTTP/2 stream unsubscribes and releases
+server-side resources.
 
 ### 4.12 Subscription Frame Stream
 
@@ -331,10 +332,11 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
  "columns": [<ColumnDescription>, ...]}
 ```
 
-`tx_key` is the registration basis; deltas describe transactions strictly after
-it. `columns` matches [QueryResponse](#46-queryresponse).
+`tx_key` is the registration basis. A priming delta can use the same key; later
+deltas describe transactions strictly after it. `columns` matches
+[QueryResponse](#46-queryresponse).
 
-#### `delta` frame — zero or more, one per affecting transaction
+#### `delta` frame — optional priming result, then one per affecting transaction
 
 ```
 {"kind": "delta",
@@ -342,12 +344,13 @@ it. `columns` matches [QueryResponse](#46-queryresponse).
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
-Each entry of `rows` is a 2-element array `[values, weight]`: `values` has one
+The first delta is the non-empty priming result, if any, and uses the registration
+`tx_key`. Later deltas use the transaction key that produced the change. Each
+entry of `rows` is a 2-element array `[values, weight]`: `values` has one
 `DataType` per column (positional, per the `open` frame), `weight` is a **raw
 signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
 `delta` frame is emitted only for a transaction that produces a non-empty change
-(`rows` is never empty). `tx_key` is the transaction basis that produced the
-delta.
+or for a non-empty priming result (`rows` is never empty).
 
 #### `error` frame — terminal
 

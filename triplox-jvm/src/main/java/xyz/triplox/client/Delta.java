@@ -3,9 +3,9 @@ package xyz.triplox.client;
 import java.util.List;
 
 /**
- * One transaction's z-set changes for a subscribed query.
+ * A subscribed query's weighted result changes.
  *
- * <p>{@code txKey} is the transaction key that produced the delta. Each
- * {@link Row} carries the raw signed weight.</p>
+ * <p>{@code txKey} is the registration basis for a priming delta, or the
+ * transaction key that produced a later delta. Each {@link Row} carries the raw signed weight.</p>
  */
 public record Delta(TxKey txKey, List<Row> rows) implements SubscriptionFrame {}

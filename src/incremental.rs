@@ -105,6 +105,9 @@ pub(crate) struct IncrementalQueryService {
     registration_gate: Arc<Mutex<()>>,
 }
 
+// The two result levels in this service have two different meanings.
+// The first level is about the communication of this service.
+// The second level reports errors while processing a command.
 impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
@@ -368,10 +371,19 @@ impl IncrementalQueryServiceInner {
         let handle = self.allocate_query_id();
         let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
             .map_err(|err| format!("{:#}", err))?;
-        circuit
-            .prime(initial_triples)
+        // Priming is the circuit's first batch, so its delta is the whole query result.
+        let priming_rows = circuit
+            .apply(initial_triples)
             .map_err(|err| format!("{:#}", err))?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
+        if !priming_rows.is_empty() {
+            sender
+                .try_send(IncrementalQueryDelta {
+                    tx_key,
+                    rows: priming_rows,
+                })
+                .map_err(|err| format!("Failed to enqueue priming result set: {}", err))?;
+        }
 
         self.queries.insert(
             handle,
@@ -569,6 +581,70 @@ mod tests {
     }
 
     #[test]
+    fn register_enqueues_non_empty_priming_result_before_future_deltas() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+        let registration_basis = test_tx_key_with_tx_id(1);
+        let future_basis = test_tx_key_with_tx_id(2);
+        let mut subscription = service
+            .register(
+                single_pattern_plan(),
+                registration_basis,
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .unwrap();
+
+        service
+            .apply_triples(future_basis, 2, vec![name_triple(43, "Bob")])
+            .unwrap();
+
+        assert_eq!(
+            subscription.deltas.try_recv().unwrap(),
+            IncrementalQueryDelta {
+                tx_key: registration_basis,
+                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+            }
+        );
+        assert_eq!(
+            subscription.deltas.try_recv().unwrap(),
+            IncrementalQueryDelta {
+                tx_key: future_basis,
+                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
+            }
+        );
+    }
+
+    #[test]
+    fn register_skips_empty_priming_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+        let mut subscription = service
+            .register(
+                single_pattern_plan(),
+                test_tx_key(),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            subscription.deltas.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
     fn apply_triples_skips_transactions_at_or_before_query_basis() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = test_runtime();
@@ -595,6 +671,10 @@ mod tests {
                 vec![name_triple(42, "Alice"), name_triple(43, "Bob")],
             )
             .unwrap();
+
+        // Drain priming deltas before testing application relative to each basis.
+        old_subscription.deltas.try_recv().unwrap();
+        new_subscription.deltas.try_recv().unwrap();
 
         service
             .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
@@ -785,7 +865,7 @@ mod tests {
                 single_pattern_plan(),
                 query_tx_key,
                 test_cursor(),
-                vec![name_triple(42, "Alice")],
+                Vec::new(),
             )
             .await
             .unwrap();
@@ -806,7 +886,7 @@ mod tests {
                 single_pattern_plan(),
                 query_tx_key,
                 test_cursor(),
-                vec![name_triple(42, "Alice")],
+                Vec::new(),
             )
             .await
             .unwrap();

@@ -67,7 +67,8 @@ impl ClientNode {
     /// Register an incremental query and stream its result deltas.
     ///
     /// Subscribes at the latest indexed basis. The returned [`Subscription`] is a
-    /// `Stream` of [`Delta`](crate::Delta)s; dropping it unsubscribes.
+    /// `Stream` of [`Delta`](crate::Delta)s. A non-empty initial result is emitted
+    /// first at the registration basis; dropping the subscription unsubscribes.
     pub async fn subscribe(
         &self,
         query: impl IntoQuery,

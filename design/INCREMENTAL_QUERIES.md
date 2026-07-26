@@ -102,6 +102,7 @@ IncrementalQueryService::register_query
 triplox-incremental-query thread
     builds one QueryCircuit for the plan
     primes it with the initial triples
+    queues the non-empty priming result at the registration basis
     stores the plan, circuit, basis, WAL cursor, and subscription sender
     returns an IncrementalQuerySubscription
 ```
@@ -148,10 +149,11 @@ In the future the server should drain these subscribers eagerly server side and 
 the appropriate deltas to the corresponding clients. The clients then need to deal
 with the backpressure themselves, depending on the client implementation.
 
-`IncrementalQueryDelta` is a subscriber-facing result batch emitted
-after a circuit step. The command protocol exists to serialize
-mutations to the query registry and DBSP circuits onto the single
-service thread.
+`IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
+circuit step. The first delta is the non-empty priming result at the registration
+basis; later deltas describe transactions after that basis. The command protocol
+exists to serialize mutations to the query registry and DBSP circuits onto the
+single service thread.
 
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
@@ -178,8 +180,9 @@ Registration creates a cutover point:
 5. Insert the registered query into the incremental service.
 6. Start the CDC loop if it is not already running.
 
-The subscription does not emit initial snapshot rows. It emits only transactions
-after the returned basis.
+If the initial query result is non-empty, registration queues it as the first
+delta with the registration `TxKey`. Empty priming results are omitted. Later
+deltas describe transactions after the returned basis.
 
 Registration is serialized against CDC application. This prevents a race where
 the global CDC loop consumes a transaction after the new query's snapshot basis

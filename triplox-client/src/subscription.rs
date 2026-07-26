@@ -27,10 +27,10 @@ type FrameStream = FramedRead<StreamReader<ByteStream, Bytes>, MsgpackFrameDecod
 
 const SUBSCRIPTION_QUEUE_CAPACITY: usize = 128;
 
-/// A single transaction's z-set changes for a subscribed query.
+/// A subscribed query's weighted result changes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Delta {
-    /// The transaction key that produced this delta.
+    /// The registration basis for a priming delta, or the transaction that produced a later delta.
     pub tx_key: TxKey,
     /// `(values, weight)` rows; `weight` is the raw signed multiplicity.
     pub rows: Vec<(Vec<DataType>, i64)>,
@@ -68,7 +68,7 @@ async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>
 }
 
 impl Subscription {
-    /// The registration tx_key. Deltas describe transactions strictly after it.
+    /// The registration tx_key. A priming delta can equal it; later deltas are strictly after it.
     pub fn tx_key(&self) -> TxKey {
         self.tx_key
     }
