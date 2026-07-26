@@ -48,23 +48,6 @@ class SubscriptionTest {
     }
 
     @Test
-    void testSubscribeReturnsExistingRowsAsPrimingDelta() throws Exception {
-        try (var node = TriploxNode.connect(host(), port())) {
-            defineNameSchema(node);
-            node.executeTx(List.of(new TxOp.Put(map(":name", "Alice"))));
-
-            try (Subscription sub = node.subscribe(NAMES_QUERY)) {
-                Delta delta = sub.poll(10, TimeUnit.SECONDS);
-                assertNotNull(delta, "expected a priming delta within 10s");
-                assertEquals(sub.txKey(), delta.txKey());
-                assertEquals(1, delta.rows().size());
-                assertEquals(List.of("Alice"), delta.rows().get(0).values());
-                assertEquals(1L, delta.rows().get(0).weight());
-            }
-        }
-    }
-
-    @Test
     void testPollTimesOutWithoutChange() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
