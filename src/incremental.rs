@@ -371,8 +371,9 @@ impl IncrementalQueryServiceInner {
         let handle = self.allocate_query_id();
         let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
             .map_err(|err| format!("{:#}", err))?;
+        // Priming is the circuit's first batch, so its delta is the whole query result.
         let priming_rows = circuit
-            .prime(initial_triples)
+            .apply(initial_triples)
             .map_err(|err| format!("{:#}", err))?;
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         if !priming_rows.is_empty() {

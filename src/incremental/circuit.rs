@@ -277,17 +277,8 @@ impl QueryCircuit {
         })
     }
 
-    // Loads the initial snapshot and returns the decoded query result.
-    pub(super) fn prime(
-        &mut self,
-        mut initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        self._input.append(&mut initial_triples);
-        self._circuit.transaction().map_err(anyhow::Error::from)?;
-        decode_output_rows(&self._output.consolidate())
-    }
-
     // Applies one weighted triple batch and returns the decoded query result delta.
+    // The first batch is the initial snapshot, so its delta is the whole query result.
     pub(super) fn apply(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
@@ -478,7 +469,7 @@ mod tests {
 
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         let priming_rows = circuit
-            .prime(vec![
+            .apply(vec![
                 Tup2(triple(42, 10, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, 11, DataType::Long(30)), 1),
             ])
