@@ -107,7 +107,7 @@ pub(crate) struct IncrementalQueryService {
 
 // The two result levels in this service have two different meanings.
 // The first level is about the communication of this service.
-// The second level is about actual errors when sending a command.
+// The second level reports errors while processing a command.
 impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
