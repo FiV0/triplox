@@ -26,17 +26,22 @@
   [db query & args]
   (if (seq args)
     (let [query-args (mapv (fn [a]
-                            (if (sequential? a)
-                              (QueryArg$Collection. (vec a))
-                              (QueryArg$Scalar. a)))
-                          args)]
+                             (if (sequential? a)
+                               (QueryArg$Collection. (vec a))
+                               (QueryArg$Scalar. a)))
+                           args)]
       (mapv (fn [row] (mapv types/wire->clj row))
             (.query ^Db db (pr-str query) query-args)))
     (mapv (fn [row] (mapv types/wire->clj row))
           (.query ^Db db (pr-str query)))))
 
 (defn transact
-  "Execute a transaction and wait for indexing. Returns result map."
+  "Execute a transaction and wait for indexing. Returns a result map of
+
+   :tx-id - the transaction id
+   :system-time - the time the transaction was registered on the log
+   :committed? - whether the transaction was committed or not
+   :error-message - optional error message if the transaction was not committed"
   [conn tx-data]
   (let [^TxResult result (.executeTx ^TriploxNode conn (tx/tx-data->ops tx-data))]
     (cond-> {:tx-id (.txId result)
@@ -46,7 +51,7 @@
       (assoc :error-message (.errorMessage result)))))
 
 (defn submit-tx
-  "Submit a fire-and-forget transaction. Returns result map."
+  "Submits a transaction without waiting for indexing. Returns a tx-key as map."
   [conn tx-data]
   (let [ops (tx/tx-data->ops tx-data)
         ^TxKey result (.submitTx ^TriploxNode conn ops)]
@@ -73,8 +78,8 @@
 
 (defn take!
   "Block for the next delta. Returns a vector of `[row-values weight]` pairs
-  (values via `types/wire->clj`), or nil when the stream is closed. The 2-arity
-  bounds the wait, returning `::timeout` on expiry."
+  or nil when the stream is closed. The 2-arity bounds the wait,
+  returning `::timeout` on expiry."
   ([sub] (types/delta->clj (.take ^Subscription sub)))
   ([sub timeout-ms]
    (let [delta (.poll ^Subscription sub (long timeout-ms) TimeUnit/MILLISECONDS)]
@@ -84,7 +89,7 @@
        :else ::timeout))))
 
 (defn tx-key
-  "The registration tx_key of a subscription, as a map."
+  "The registration tx-key of a subscription, as a map."
   [^Subscription sub]
   (let [b (.txKey ^Subscription sub)]
     {:tx-id (.txId b)
