@@ -89,3 +89,7 @@
   (let [b (.txKey ^Subscription sub)]
     {:tx-id (.txId b)
      :system-time (.systemTime b)}))
+
+(defn ^:no-doc dbsp-q [conn query & args]
+  (with-open [sub (apply subscribe conn query args)]
+    (take! sub 5000)))

@@ -98,9 +98,15 @@
   (def conn (tc/connect "localhost" 5490))
 
   (ingest-graph! conn {:vertices 10000 :probability 0.00182 :batch-size 1000})
+  (ingest-graph! conn {:vertices 1000 :probability 0.01 :batch-size 1000})
 
   (time
    (let [db (tc/db conn)]
      (count (tc/q db gg/triangle-query))))
+  ;; => 1441
+
+  (time
+   (count (tc/dbsp-q conn gg/triangle-query)))
+  ;; => 1441
 
   )
