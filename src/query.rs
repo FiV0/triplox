@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-pub(crate) mod binding_set;
+pub(crate) mod binding_bag;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};

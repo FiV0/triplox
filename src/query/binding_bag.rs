@@ -7,25 +7,25 @@ use edn::query::Variable;
 pub(crate) type BindingRow = Vec<Bytes>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BindingSet {
+pub(crate) struct BindingBag {
     variables: Vec<Variable>,
     rows: Vec<BindingRow>,
     column_indexes: HashMap<Variable, usize>,
 }
 
-impl BindingSet {
+impl BindingBag {
     pub(crate) fn new(variables: Vec<Variable>, rows: Vec<BindingRow>) -> Result<Self> {
         let mut column_indexes = HashMap::with_capacity(variables.len());
         for (index, variable) in variables.iter().enumerate() {
             ensure!(
                 column_indexes.insert(variable.clone(), index).is_none(),
-                "BindingSet variables must be unique: {variable}"
+                "BindingBag variables must be unique: {variable}"
             );
         }
         for (index, row) in rows.iter().enumerate() {
             ensure!(
                 row.len() == variables.len(),
-                "BindingSet row {index} has arity {}, expected {}",
+                "BindingBag row {index} has arity {}, expected {}",
                 row.len(),
                 variables.len()
             );
@@ -62,7 +62,7 @@ impl BindingSet {
         self.column_indexes
             .get(variable)
             .copied()
-            .ok_or_else(|| anyhow::anyhow!("Unknown BindingSet variable: {variable}"))
+            .ok_or_else(|| anyhow::anyhow!("Unknown BindingBag variable: {variable}"))
     }
 
     fn projection_indexes(&self, variables: &[Variable]) -> Result<Vec<usize>> {
@@ -86,7 +86,7 @@ impl BindingSet {
                 self.rows
                     .get(*row_index)
                     .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Unknown BindingSet row index: {row_index}"))
+                    .ok_or_else(|| anyhow::anyhow!("Unknown BindingBag row index: {row_index}"))
             })
             .collect::<Result<Vec<_>>>()?;
         Self::new(self.variables.clone(), rows)
@@ -99,7 +99,7 @@ impl BindingSet {
     ) -> Result<Self> {
         ensure!(
             extensions.len() == self.rows.len(),
-            "BindingSet extensions have {} input rows, expected {}",
+            "BindingBag extensions have {} input rows, expected {}",
             extensions.len(),
             self.rows.len()
         );
@@ -108,7 +108,7 @@ impl BindingSet {
         for variable in &added_variables {
             ensure!(
                 seen.insert(variable.clone()),
-                "Extended BindingSet variables must be unique: {variable}"
+                "Extended BindingBag variables must be unique: {variable}"
             );
         }
 
@@ -117,7 +117,7 @@ impl BindingSet {
             for mut extension in input_extensions {
                 ensure!(
                     extension.len() == added_variables.len(),
-                    "BindingSet extension has arity {}, expected {}",
+                    "BindingBag extension has arity {}, expected {}",
                     extension.len(),
                     added_variables.len()
                 );
@@ -253,7 +253,7 @@ impl BindingSet {
     pub(crate) fn union(&self, other: &Self) -> Result<Self> {
         ensure!(
             self.variables == other.variables,
-            "Union requires identical BindingSet layouts"
+            "Union requires identical BindingBag layouts"
         );
         let mut rows = self.rows.clone();
         rows.extend(other.rows.iter().cloned());
@@ -270,14 +270,14 @@ mod tests {
     use bytes::Bytes;
     use edn::query::ToVariable;
 
-    use super::BindingSet;
+    use super::BindingBag;
 
     fn bytes(value: &str) -> Bytes {
         Bytes::copy_from_slice(value.as_bytes())
     }
 
-    fn binding_set(variables: &[&str], rows: &[&[&str]]) -> BindingSet {
-        BindingSet::new(
+    fn binding_bag(variables: &[&str], rows: &[&[&str]]) -> BindingBag {
+        BindingBag::new(
             variables.iter().map(|variable| variable.to_var()).collect(),
             rows.iter()
                 .map(|row| row.iter().map(|value| bytes(value)).collect())
@@ -290,13 +290,13 @@ mod tests {
     fn construction_rejects_duplicate_variables_and_wrong_row_arity() {
         let x = "?x".to_var();
 
-        assert!(BindingSet::new(vec![x.clone(), x], vec![]).is_err());
-        assert!(BindingSet::new(vec!["?x".to_var()], vec![vec![]]).is_err());
+        assert!(BindingBag::new(vec![x.clone(), x], vec![]).is_err());
+        assert!(BindingBag::new(vec!["?x".to_var()], vec![vec![]]).is_err());
     }
 
     #[test]
     fn column_lookup_reports_unknown_variables() {
-        let bindings = binding_set(&["?x", "?y"], &[&["a", "b"]]);
+        let bindings = binding_bag(&["?x", "?y"], &[&["a", "b"]]);
 
         assert_eq!(bindings.column_index(&"?x".to_var()).unwrap(), 0);
         assert_eq!(bindings.column_index(&"?y".to_var()).unwrap(), 1);
@@ -305,8 +305,8 @@ mod tests {
 
     #[test]
     fn unit_and_empty_have_relational_identity_layouts() {
-        let unit = BindingSet::unit();
-        let empty = BindingSet::empty(vec!["?x".to_var()]).unwrap();
+        let unit = BindingBag::unit();
+        let empty = BindingBag::empty(vec!["?x".to_var()]).unwrap();
 
         assert!(unit.variables().is_empty());
         assert_eq!(unit.rows(), &[Vec::<Bytes>::new()]);
@@ -316,17 +316,17 @@ mod tests {
 
     #[test]
     fn row_selection_preserves_requested_order_and_multiplicity() {
-        let bindings = binding_set(&["?x"], &[&["a"], &["b"], &["c"]]);
+        let bindings = binding_bag(&["?x"], &[&["a"], &["b"], &["c"]]);
 
         let selected = bindings.select_rows(&[2, 0, 2]).unwrap();
 
-        assert_eq!(selected, binding_set(&["?x"], &[&["c"], &["a"], &["c"]]));
+        assert_eq!(selected, binding_bag(&["?x"], &[&["c"], &["a"], &["c"]]));
         assert!(bindings.select_rows(&[3]).is_err());
     }
 
     #[test]
     fn row_extension_supports_one_to_many_results() {
-        let bindings = binding_set(&["?x"], &[&["a"], &["b"]]);
+        let bindings = binding_bag(&["?x"], &[&["a"], &["b"]]);
 
         let extended = bindings
             .extend_rows(
@@ -337,7 +337,7 @@ mod tests {
 
         assert_eq!(
             extended,
-            binding_set(&["?x", "?y"], &[&["a", "1"], &["a", "2"]])
+            binding_bag(&["?x", "?y"], &[&["a", "1"], &["a", "2"]])
         );
         assert!(bindings
             .extend_rows(vec!["?y".to_var()], vec![vec![]])
@@ -355,20 +355,20 @@ mod tests {
 
     #[test]
     fn projection_and_reorder_address_columns_by_variable() {
-        let bindings = binding_set(
+        let bindings = binding_bag(
             &["?x", "?y", "?z"],
             &[&["x1", "y1", "z1"], &["x2", "y2", "z2"]],
         );
 
         assert_eq!(
             bindings.project(&["?z".to_var(), "?x".to_var()]).unwrap(),
-            binding_set(&["?z", "?x"], &[&["z1", "x1"], &["z2", "x2"]])
+            binding_bag(&["?z", "?x"], &[&["z1", "x1"], &["z2", "x2"]])
         );
         assert_eq!(
             bindings
                 .reorder(&["?z".to_var(), "?x".to_var(), "?y".to_var()])
                 .unwrap(),
-            binding_set(
+            binding_bag(
                 &["?z", "?x", "?y"],
                 &[&["z1", "x1", "y1"], &["z2", "x2", "y2"]],
             )
@@ -380,20 +380,20 @@ mod tests {
 
     #[test]
     fn distinct_removes_complete_row_duplicates_stably() {
-        let bindings = binding_set(
+        let bindings = binding_bag(
             &["?x", "?y"],
             &[&["a", "1"], &["b", "2"], &["a", "1"], &["a", "3"]],
         );
 
         assert_eq!(
             bindings.distinct(),
-            binding_set(&["?x", "?y"], &[&["a", "1"], &["b", "2"], &["a", "3"]],)
+            binding_bag(&["?x", "?y"], &[&["a", "1"], &["b", "2"], &["a", "3"]],)
         );
     }
 
     #[test]
     fn row_index_preserves_all_source_row_indexes() {
-        let bindings = binding_set(&["?x", "?y"], &[&["a", "1"], &["b", "1"], &["c", "2"]]);
+        let bindings = binding_bag(&["?x", "?y"], &[&["a", "1"], &["b", "1"], &["c", "2"]]);
 
         let by_y = bindings.index_by(&["?y".to_var()]).unwrap();
         assert_eq!(by_y.get(&vec![bytes("1")]), Some(&vec![0, 1]));
@@ -406,8 +406,8 @@ mod tests {
 
     #[test]
     fn natural_join_preserves_bag_multiplicity_and_layout_order() {
-        let left = binding_set(&["?x"], &[&["a"], &["a"], &["b"]]);
-        let right = binding_set(
+        let left = binding_bag(&["?x"], &[&["a"], &["a"], &["b"]]);
+        let right = binding_bag(
             &["?x", "?y"],
             &[&["a", "1"], &["a", "1"], &["a", "2"], &["c", "3"]],
         );
@@ -416,7 +416,7 @@ mod tests {
 
         assert_eq!(
             joined,
-            binding_set(
+            binding_bag(
                 &["?x", "?y"],
                 &[
                     &["a", "1"],
@@ -432,12 +432,12 @@ mod tests {
 
     #[test]
     fn natural_join_without_shared_variables_is_a_cartesian_product() {
-        let left = binding_set(&["?x"], &[&["a"], &["b"]]);
-        let right = binding_set(&["?y"], &[&["1"], &["2"]]);
+        let left = binding_bag(&["?x"], &[&["a"], &["b"]]);
+        let right = binding_bag(&["?y"], &[&["1"], &["2"]]);
 
         assert_eq!(
             left.natural_join(&right).unwrap(),
-            binding_set(
+            binding_bag(
                 &["?x", "?y"],
                 &[&["a", "1"], &["a", "2"], &["b", "1"], &["b", "2"]],
             )
@@ -446,58 +446,58 @@ mod tests {
 
     #[test]
     fn semijoin_and_antijoin_filter_without_multiplying_left_rows() {
-        let left = binding_set(
+        let left = binding_bag(
             &["?x", "?value"],
             &[&["a", "1"], &["a", "1"], &["b", "2"], &["c", "3"]],
         );
-        let right = binding_set(&["?x"], &[&["a"], &["a"], &["c"]]);
+        let right = binding_bag(&["?x"], &[&["a"], &["a"], &["c"]]);
 
         assert_eq!(
             left.semijoin(&right).unwrap(),
-            binding_set(&["?x", "?value"], &[&["a", "1"], &["a", "1"], &["c", "3"]],)
+            binding_bag(&["?x", "?value"], &[&["a", "1"], &["a", "1"], &["c", "3"]],)
         );
         assert_eq!(
             left.antijoin(&right).unwrap(),
-            binding_set(&["?x", "?value"], &[&["b", "2"]])
+            binding_bag(&["?x", "?value"], &[&["b", "2"]])
         );
     }
 
     #[test]
     fn union_has_bag_semantics_and_requires_identical_layouts() {
-        let left = binding_set(&["?x"], &[&["a"], &["a"]]);
-        let right = binding_set(&["?x"], &[&["a"], &["b"]]);
+        let left = binding_bag(&["?x"], &[&["a"], &["a"]]);
+        let right = binding_bag(&["?x"], &[&["a"], &["b"]]);
 
         assert_eq!(
             left.union(&right).unwrap(),
-            binding_set(&["?x"], &[&["a"], &["a"], &["a"], &["b"]])
+            binding_bag(&["?x"], &[&["a"], &["a"], &["a"], &["b"]])
         );
         assert_eq!(
             left.distinct_union(&right).unwrap(),
-            binding_set(&["?x"], &[&["a"], &["b"]])
+            binding_bag(&["?x"], &[&["a"], &["b"]])
         );
-        assert!(left.union(&binding_set(&["?y"], &[&["a"]])).is_err());
+        assert!(left.union(&binding_bag(&["?y"], &[&["a"]])).is_err());
     }
 
     #[test]
     fn zero_column_relations_follow_relational_identity_rules() {
-        let unit = BindingSet::unit();
-        let empty = BindingSet::empty(vec![]).unwrap();
-        let values = binding_set(&["?x"], &[&["a"], &["b"]]);
+        let unit = BindingBag::unit();
+        let empty = BindingBag::empty(vec![]).unwrap();
+        let values = binding_bag(&["?x"], &[&["a"], &["b"]]);
 
         assert_eq!(unit.natural_join(&values).unwrap(), values);
         assert_eq!(values.natural_join(&unit).unwrap(), values);
         assert_eq!(
             empty.natural_join(&values).unwrap(),
-            BindingSet::empty(vec!["?x".to_var()]).unwrap()
+            BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
         assert_eq!(values.semijoin(&unit).unwrap(), values);
         assert_eq!(
             values.semijoin(&empty).unwrap(),
-            BindingSet::empty(vec!["?x".to_var()]).unwrap()
+            BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
         assert_eq!(
             values.antijoin(&unit).unwrap(),
-            BindingSet::empty(vec!["?x".to_var()]).unwrap()
+            BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
         assert_eq!(values.antijoin(&empty).unwrap(), values);
         assert_eq!(unit.union(&unit).unwrap().rows().len(), 2);
