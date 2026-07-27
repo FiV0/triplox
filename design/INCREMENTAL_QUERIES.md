@@ -166,10 +166,11 @@ product over the empty key.
 
 A chain's output layout is its last child's output layout. A standalone union
 uses its descriptor variable order. A union with an incoming relation preserves
-the incoming layout and appends the variables groundable by the union. Because
-branches may naturally produce their columns in different orders, every branch
-is projected to the union's declared output layout before the branches are
-summed.
+the incoming layout and appends its remaining descriptor variables; descriptor
+ordering guarantees that variables the union cannot ground are already part of
+the incoming layout. Because branches may naturally produce their columns in
+different orders, every branch is projected to the union's declared output
+layout before the branches are summed.
 
 The circuit verifies that the running relation layout matches each plan node's
 declared incoming layout. It does not derive a different variable order during

@@ -151,9 +151,10 @@ fn plan_union(
     branches: &[ScopeDescriptor],
     incoming_vars: Option<Vec<Variable>>,
 ) -> Result<RelPlan> {
+    // Ordering guarantees variables the union cannot ground are already incoming.
     let output_vars = incoming_vars
         .as_ref()
-        .map(|incoming| append_new_variables(incoming, &descriptor.groundable))
+        .map(|incoming| append_new_variables(incoming, &descriptor.variables))
         .unwrap_or_else(|| descriptor.variables.clone());
     let branches = branches
         .iter()
