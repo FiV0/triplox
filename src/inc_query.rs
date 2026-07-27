@@ -472,11 +472,11 @@ mod tests {
     }
 
     #[test]
-    fn plans_and_branch_inside_or_as_chain() {
+    fn plans_and_branch_as_chain_with_branch_specific_variable_order() {
         let schema = test_schema();
         let plan = plan_query(
             &parse_query(
-                r#"[:find ?e :where (or (and [?e :name "Alice"] [?e :age 30]) [?e :name "Bob"])]"#,
+                r#"[:find ?x ?y :where (or (and [?y :name ?x] [?y :follows ?x]) [?x :follows ?y])]"#,
             ),
             &schema,
         )
@@ -493,31 +493,18 @@ mod tests {
         let RelPlanKind::Pattern(second) = &and_branch.children[1].kind else {
             panic!("expected extending pattern");
         };
-        assert_eq!(second.pattern_vars, vec!["?e".to_var()]);
-        assert_eq!(and_branch.children[1].output_vars, vec!["?e".to_var()]);
+        assert_eq!(second.pattern_vars, vec!["?y".to_var(), "?x".to_var()]);
         assert!(matches!(or.branches[1].kind, RelPlanKind::Pattern(_)));
         assert_eq!(plan.leaf_patterns().len(), 3);
-    }
-
-    #[test]
-    fn plans_and_branch_inside_or_with_branch_specific_variable_order() {
-        let schema = test_schema();
-        let plan = plan_query(
-            &parse_query(
-                r#"[:find ?x ?y :where (or (and [?y :name ?x] [?y :follows ?x]) [?x :follows ?y])]"#,
-            ),
-            &schema,
-        )
-        .unwrap();
-
-        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
-            panic!("expected union plan, got {:?}", &plan.where_plan.kind);
-        };
         assert_eq!(
             plan.where_plan.output_vars,
             vec!["?y".to_var(), "?x".to_var()]
         );
         assert_eq!(or.branches[0].output_vars, &["?y".to_var(), "?x".to_var()]);
+        assert_eq!(
+            and_branch.children[1].output_vars,
+            vec!["?y".to_var(), "?x".to_var()]
+        );
         assert_eq!(or.branches[1].output_vars, &["?x".to_var(), "?y".to_var()]);
     }
 
