@@ -739,6 +739,7 @@ mod tests {
 
         append(
             &handle,
+            // Attribute IDs come from `test_schema`: 10 is :name and 11 is :age.
             [
                 (triple(1, 10, DataType::String("Alice".to_string())), 1),
                 (triple(1, 11, DataType::Long(30)), 1),
