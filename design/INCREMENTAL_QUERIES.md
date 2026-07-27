@@ -116,12 +116,6 @@ child descriptors and has no descriptor representation of its own.
 order. `groundable` lists the variables that the descriptor can produce
 without receiving them from an incoming relation:
 
-| Descriptor | Variable order | Groundable variables |
-| --- | --- | --- |
-| Triple pattern | Entity variable, then value variable | All pattern variables |
-| Scope / `and` | Ordered union of child variables | Ordered union of child groundable variables |
-| `or` | First branch order | Variables groundable in every branch, in first branch order |
-
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
 are present in the running layout. Among eligible descriptors, the planner
