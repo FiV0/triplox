@@ -11,9 +11,7 @@ use dbsp::{
 use edn::query::Variable;
 
 use crate::codec::Decode;
-use crate::inc_query::{
-    IncrementalQueryPlan, JoinStep, PatternPlan, PatternSlot, RelPlan, RelPlanKind,
-};
+use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 
@@ -95,40 +93,54 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
         .collect()
 }
 
-// Joins two row streams according to one planned join step.
-fn join_rows(
-    left: Stream<RootCircuit, RowZSet>,
-    right: Stream<RootCircuit, RowZSet>,
-    join: &JoinStep,
+// Joins incoming rows with pattern rows using their planned layouts.
+fn join_pattern_rows(
+    incoming_rows: Stream<RootCircuit, RowZSet>,
+    incoming_vars: &[Variable],
+    pattern_rows: Stream<RootCircuit, RowZSet>,
+    pattern_vars: &[Variable],
+    output_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
-    let left_key_positions = positions(&join.left_vars, &join.key_vars);
-    let right_key_positions = positions(&join.right_vars, &join.key_vars);
-    let output_sources = join
-        .output_vars
+    let key_vars = incoming_vars
+        .iter()
+        .filter(|variable| pattern_vars.contains(variable))
+        .cloned()
+        .collect::<Vec<_>>();
+    let incoming_key_positions = positions(incoming_vars, &key_vars);
+    let pattern_key_positions = positions(pattern_vars, &key_vars);
+    let output_sources = output_vars
         .iter()
         .map(|var| {
-            join.left_vars
+            incoming_vars
                 .iter()
-                .position(|left_var| left_var == var)
+                .position(|incoming_var| incoming_var == var)
                 .map(RowSource::Left)
                 .unwrap_or_else(|| {
                     RowSource::Right(
-                        join.right_vars
+                        pattern_vars
                             .iter()
-                            .position(|right_var| right_var == var)
-                            .expect("output var must come from one join side"),
+                            .position(|pattern_var| pattern_var == var)
+                            .expect("output var must come from incoming or pattern rows"),
                     )
                 })
         })
         .collect::<Vec<_>>();
 
-    let left_indexed =
-        left.map_index(move |row| (select_row_positions(row, &left_key_positions), row.clone()));
-    let right_indexed =
-        right.map_index(move |row| (select_row_positions(row, &right_key_positions), row.clone()));
+    let incoming_indexed = incoming_rows.map_index(move |row| {
+        (
+            select_row_positions(row, &incoming_key_positions),
+            row.clone(),
+        )
+    });
+    let pattern_indexed = pattern_rows.map_index(move |row| {
+        (
+            select_row_positions(row, &pattern_key_positions),
+            row.clone(),
+        )
+    });
 
-    left_indexed.join(&right_indexed, move |_key, left_row, right_row| {
-        merge_rows(left_row, right_row, &output_sources)
+    incoming_indexed.join(&pattern_indexed, move |_key, incoming_row, pattern_row| {
+        merge_rows(incoming_row, pattern_row, &output_sources)
     })
 }
 
@@ -176,20 +188,14 @@ fn rel_stream(
         RelPlanKind::Pattern(pattern) => {
             let pattern_rows = pattern_stream(fact_input, pattern.clone());
             let rows = match incoming {
-                Some(incoming) => {
-                    let join = pattern
-                        .join
-                        .as_ref()
-                        .expect("a pattern with an incoming relation must have join metadata");
-                    join_rows(incoming.rows, pattern_rows, join)
-                }
-                None => {
-                    assert!(
-                        pattern.join.is_none(),
-                        "a standalone pattern must not have join metadata"
-                    );
-                    pattern_rows
-                }
+                Some(incoming) => join_pattern_rows(
+                    incoming.rows,
+                    &incoming.vars,
+                    pattern_rows,
+                    &pattern.pattern_vars,
+                    &plan.output_vars,
+                ),
+                None => pattern_rows,
             };
             PlannedWhereStream {
                 rows,
@@ -414,7 +420,6 @@ mod tests {
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
             pattern_vars: vec!["?e".to_var(), "?name".to_var()],
-            join: None,
         }
     }
 
@@ -505,7 +510,6 @@ mod tests {
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
             pattern_vars: vec!["?e".to_var()],
-            join: None,
         };
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_pattern_circuit(circuit, pattern.clone()));

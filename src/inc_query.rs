@@ -13,7 +13,7 @@ mod descriptor;
 mod planner;
 
 pub(crate) use descriptor::PatternSlot;
-pub(crate) use planner::{ChainPlan, JoinStep, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
+pub(crate) use planner::{ChainPlan, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
@@ -223,11 +223,10 @@ mod tests {
             panic!("expected pattern plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(pattern.attribute, 10);
-        assert_eq!(pattern.join, None);
     }
 
     #[test]
-    fn plans_entity_join() {
+    fn plans_entity_extension_layout() {
         let schema = test_schema();
         let plan = plan_query(
             &parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
@@ -247,16 +246,15 @@ mod tests {
         let RelPlanKind::Pattern(age) = &chain.children[1].kind else {
             panic!("expected extending pattern");
         };
-        let join = age.join.as_ref().expect("extending pattern must join");
-        assert_eq!(join.key_vars, vec!["?e".to_var()]);
+        assert_eq!(age.pattern_vars, vec!["?e".to_var(), "?age".to_var()]);
         assert_eq!(
-            join.output_vars,
+            chain.children[1].output_vars,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
         );
     }
 
     #[test]
-    fn plans_ref_value_join() {
+    fn plans_ref_value_extension_layout() {
         let schema = test_schema();
         let plan = plan_query(
             &parse_query(
@@ -273,8 +271,12 @@ mod tests {
             panic!("expected extending pattern");
         };
         assert_eq!(
-            friend_name.join.as_ref().unwrap().key_vars,
-            vec!["?friend".to_var()]
+            friend_name.pattern_vars,
+            vec!["?friend".to_var(), "?friend-name".to_var()]
+        );
+        assert_eq!(
+            chain.children[1].output_vars,
+            vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()]
         );
     }
 
@@ -291,23 +293,28 @@ mod tests {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(chain.children.len(), 4);
-        let keys = chain
-            .children
-            .iter()
-            .skip(1)
-            .map(|child| {
-                let RelPlanKind::Pattern(pattern) = &child.kind else {
-                    panic!("expected pattern child");
-                };
-                pattern.join.as_ref().unwrap().key_vars.clone()
-            })
-            .collect::<Vec<_>>();
         assert_eq!(
-            keys,
+            chain
+                .children
+                .iter()
+                .map(|child| child.output_vars.clone())
+                .collect::<Vec<_>>(),
             vec![
-                vec!["?e".to_var()],
-                vec!["?friend".to_var()],
-                vec!["?friend".to_var()]
+                vec!["?e".to_var(), "?name".to_var()],
+                vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()],
+                vec![
+                    "?e".to_var(),
+                    "?name".to_var(),
+                    "?friend".to_var(),
+                    "?friend-name".to_var()
+                ],
+                vec![
+                    "?e".to_var(),
+                    "?name".to_var(),
+                    "?friend".to_var(),
+                    "?friend-name".to_var(),
+                    "?age".to_var()
+                ]
             ]
         );
     }
@@ -345,7 +352,19 @@ mod tests {
         let RelPlanKind::Pattern(pattern) = &chain.children[1].kind else {
             panic!("expected extending pattern");
         };
-        assert!(pattern.join.as_ref().unwrap().key_vars.is_empty());
+        assert_eq!(
+            pattern.pattern_vars,
+            vec!["?other".to_var(), "?age".to_var()]
+        );
+        assert_eq!(
+            chain.children[1].output_vars,
+            vec![
+                "?e".to_var(),
+                "?name".to_var(),
+                "?other".to_var(),
+                "?age".to_var()
+            ]
+        );
     }
 
     #[test]
@@ -474,7 +493,8 @@ mod tests {
         let RelPlanKind::Pattern(second) = &and_branch.children[1].kind else {
             panic!("expected extending pattern");
         };
-        assert_eq!(second.join.as_ref().unwrap().key_vars, vec!["?e".to_var()]);
+        assert_eq!(second.pattern_vars, vec!["?e".to_var()]);
+        assert_eq!(and_branch.children[1].output_vars, vec!["?e".to_var()]);
         assert!(matches!(or.branches[1].kind, RelPlanKind::Pattern(_)));
         assert_eq!(plan.leaf_patterns().len(), 3);
     }
@@ -532,10 +552,7 @@ mod tests {
                 Some(vec!["?e".to_var(), "?name".to_var()])
             );
             assert_eq!(branch.output_vars, vec!["?e".to_var(), "?name".to_var()]);
-            let RelPlanKind::Pattern(pattern) = &branch.kind else {
-                panic!("expected pattern branch");
-            };
-            assert_eq!(pattern.join.as_ref().unwrap().key_vars, vec!["?e".to_var()]);
+            assert!(matches!(branch.kind, RelPlanKind::Pattern(_)));
         }
     }
 

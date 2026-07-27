@@ -924,7 +924,6 @@ mod tests {
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
             pattern_vars: vec!["?e".to_var(), "?name".to_var()],
-            join: None,
         };
         IncrementalQueryPlan {
             find_vars: vec!["?name".to_var()],

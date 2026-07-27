@@ -144,8 +144,8 @@ extends a running relation. This distinction also preserves a present
 zero-column relation.
 
 - `Pattern` filters the fact input by attribute and constants. With an incoming
-  relation it also carries a planned join containing the left, right, key, and
-  output layouts.
+  relation, circuit assembly joins the filtered pattern rows to that relation
+  using the plan's incoming, pattern, and output layouts.
 - `Chain` represents a scope with multiple descriptors and passes each child's
   output relation to the next child.
 - `Union` passes the same incoming relation to every branch and declares one

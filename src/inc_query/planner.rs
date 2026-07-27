@@ -27,7 +27,6 @@ pub(crate) struct PatternPlan {
     pub entity: PatternSlot,
     pub value: PatternSlot,
     pub pattern_vars: Vec<Variable>,
-    pub join: Option<JoinStep>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,14 +39,6 @@ pub(crate) struct UnionPlan {
     pub branches: Vec<RelPlan>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct JoinStep {
-    pub left_vars: Vec<Variable>,
-    pub right_vars: Vec<Variable>,
-    pub key_vars: Vec<Variable>,
-    pub output_vars: Vec<Variable>,
-}
-
 fn append_new_variables(base: &[Variable], additional: &[Variable]) -> Vec<Variable> {
     let mut output = base.to_vec();
     let mut seen = base.iter().cloned().collect::<HashSet<_>>();
@@ -57,22 +48,6 @@ fn append_new_variables(base: &[Variable], additional: &[Variable]) -> Vec<Varia
         }
     }
     output
-}
-
-fn plan_join(left_vars: &[Variable], right_vars: &[Variable]) -> JoinStep {
-    let right_set = right_vars.iter().collect::<HashSet<_>>();
-    let key_vars = left_vars
-        .iter()
-        .filter(|variable| right_set.contains(variable))
-        .cloned()
-        .collect();
-
-    JoinStep {
-        left_vars: left_vars.to_vec(),
-        right_vars: right_vars.to_vec(),
-        key_vars,
-        output_vars: append_new_variables(left_vars, right_vars),
-    }
 }
 
 fn required_variables(descriptor: &Descriptor) -> Vec<Variable> {
@@ -154,12 +129,9 @@ fn plan_pattern(
     incoming_vars: Option<Vec<Variable>>,
 ) -> RelPlan {
     let pattern_vars = descriptor.variables.clone();
-    let join = incoming_vars
+    let output_vars = incoming_vars
         .as_ref()
-        .map(|incoming| plan_join(incoming, &pattern_vars));
-    let output_vars = join
-        .as_ref()
-        .map(|join| join.output_vars.clone())
+        .map(|incoming| append_new_variables(incoming, &pattern_vars))
         .unwrap_or_else(|| pattern_vars.clone());
 
     RelPlan {
@@ -170,7 +142,6 @@ fn plan_pattern(
             entity: pattern.entity.clone(),
             value: pattern.value.clone(),
             pattern_vars,
-            join,
         }),
     }
 }
@@ -302,13 +273,7 @@ mod tests {
         let plan = plan_scope(&scope, Some(vec![])).unwrap();
 
         assert_eq!(plan.incoming_vars, Some(vec![]));
-        let RelPlanKind::Pattern(pattern) = plan.kind else {
-            panic!("expected pattern plan");
-        };
-        let join = pattern
-            .join
-            .expect("zero-column relation is still an incoming relation");
-        assert!(join.left_vars.is_empty());
-        assert!(join.key_vars.is_empty());
+        assert_eq!(plan.output_vars, vec!["?e".to_var()]);
+        assert!(matches!(plan.kind, RelPlanKind::Pattern(_)));
     }
 }
