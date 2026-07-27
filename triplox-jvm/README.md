@@ -74,3 +74,10 @@ If `signAllPublications=true` is set in `~/.gradle/gradle.properties`, local
 non-release checks such as `publishMavenPublicationToMavenLocal` also expect a
 signing key. Pass `-PsignAllPublications=false` for those checks when you are
 not testing signing.
+
+To publish locally for testing, you can do:
+```bash
+./gradlew publishMavenPublicationToMavenLocal
+    -PtriploxVersion=0.1.0-SNAPSHOT
+    -PsignAllPublications=false
+```
