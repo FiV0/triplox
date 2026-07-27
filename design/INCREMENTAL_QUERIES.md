@@ -181,8 +181,7 @@ and the optional incoming relation:
   branch results to the union layout, sums them, and applies `distinct`.
 
 The completed `:where` relation is projected to the query's `:find` variable
-order. DBSP then maintains this circuit and emits signed result deltas for each
-applied transaction.
+order.
 
 The DBSP state is trace-backed and configured with file-backed storage.
 Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
