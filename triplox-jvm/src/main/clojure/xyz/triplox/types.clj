@@ -1,4 +1,4 @@
-(ns xyz.triplox.types
+(ns ^:no-doc xyz.triplox.types
   "Conversion between Triplox wire types and Clojure types."
   (:import [java.util Map]
            [xyz.triplox.client Delta Row]))

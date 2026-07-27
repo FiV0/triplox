@@ -1,4 +1,4 @@
-(ns xyz.triplox.tx
+(ns ^:no-doc xyz.triplox.tx
   "Convert Datomic-style transaction data to TxOp objects."
   (:import [clojure.lang MapEntry]
            [xyz.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
