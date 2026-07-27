@@ -110,8 +110,7 @@ Descriptor {
 
 The top-level `:where` clauses form a scope. Each `or` is a descriptor whose
 branches are scopes. An `and` branch is represented by a scope containing its
-child descriptors, so nested scopes do not need global positions or flattened
-identifiers.
+child descriptors and has no descriptor representation of its own.
 
 `variables` lists the variables mentioned by a descriptor in stable semantic
 order. `groundable` lists the variables that the descriptor can produce
