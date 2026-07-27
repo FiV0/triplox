@@ -62,7 +62,7 @@ modules:
 
 `src/incremental.rs` owns registered query handles, channels, per-query circuit
 instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
-registration snapshot and feeds decoded SlateDB WAL transactions to the
+triples at the registration tx-key and feeds decoded SlateDB WAL transactions to the
 service.
 
 ### Fact input and relation streams
