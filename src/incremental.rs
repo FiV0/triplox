@@ -74,7 +74,7 @@ type ServiceResult<T> = std::result::Result<T, String>;
 
 enum IncrementalCommand {
     Register {
-        plan: Box<IncrementalQueryPlan>,
+        plan: IncrementalQueryPlan,
         tx_key: TxKey,
         wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
@@ -203,7 +203,7 @@ impl IncrementalQueryService {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
-                plan: Box::new(plan),
+                plan,
                 tx_key,
                 wal_cursor,
                 initial_triples,
@@ -338,8 +338,7 @@ impl IncrementalQueryServiceInner {
                     initial_triples,
                     response,
                 } => {
-                    let _ =
-                        response.send(self.register(*plan, tx_key, wal_cursor, initial_triples));
+                    let _ = response.send(self.register(plan, tx_key, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
                     let _ = response.send(self.unregister(handle));
