@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Error;
 use bytes::Bytes;
@@ -12,6 +13,57 @@ use crate::util::make_extractor;
 
 use super::slate_iterator::{Extractor, Index, SlateIterator};
 use super::temporal_filter_iterator::TemporalFilterIterator;
+
+// Materialize a range when scanning it is competitive with candidate-driven seeks.
+const MATERIALIZE_INTERSECTION_RATIO: usize = 4;
+
+// Query-local cache because one storage prefix can recur under many join prefixes.
+#[derive(Default)]
+struct PrefixCache {
+    counts: Mutex<HashMap<Bytes, usize>>,
+    values: Mutex<HashMap<Bytes, Arc<Vec<Extension>>>>,
+}
+
+impl PrefixCache {
+    fn count_or_init(&self, prefix: &Bytes, load: impl FnOnce() -> usize) -> usize {
+        if let Some(values) = self.values(prefix) {
+            return values.len();
+        }
+        if let Some(count) = self.counts.lock().unwrap().get(prefix) {
+            return *count;
+        }
+
+        let count = load();
+        *self
+            .counts
+            .lock()
+            .unwrap()
+            .entry(prefix.clone())
+            .or_insert(count)
+    }
+
+    fn values(&self, prefix: &Bytes) -> Option<Arc<Vec<Extension>>> {
+        self.values.lock().unwrap().get(prefix).cloned()
+    }
+
+    fn values_or_init(
+        &self,
+        prefix: &Bytes,
+        load: impl FnOnce() -> Vec<Extension>,
+    ) -> Arc<Vec<Extension>> {
+        if let Some(values) = self.values(prefix) {
+            return values;
+        }
+
+        let loaded = Arc::new(load());
+        self.values
+            .lock()
+            .unwrap()
+            .entry(prefix.clone())
+            .or_insert_with(|| loaded.clone())
+            .clone()
+    }
+}
 
 /// GenericPrefixExtender implements PrefixExtender using SlateDB with byte prefixes.
 ///
@@ -28,6 +80,7 @@ where
     constant_prefix: Vec<u8>,         // attr_bytes + serialized constant values from the pattern
     participating_levels: Vec<usize>, // Which join levels this participates in
     as_of: i64,                       // temporal filter: only see facts at or before this time
+    prefix_cache: PrefixCache,
 }
 
 impl<D, M> GenericPrefixExtender<D, M>
@@ -64,7 +117,21 @@ where
             constant_prefix: full_prefix,
             participating_levels,
             as_of,
+            prefix_cache: PrefixCache::default(),
         }
+    }
+
+    fn is_atemporal(index_type: IndexType) -> bool {
+        matches!(index_type, IndexType::AE | IndexType::AV)
+    }
+
+    fn should_materialize_intersection(
+        index_type: IndexType,
+        estimated_count: usize,
+        candidate_count: usize,
+    ) -> bool {
+        Self::is_atemporal(index_type)
+            || estimated_count <= candidate_count.saturating_mul(MATERIALIZE_INTERSECTION_RATIO)
     }
 
     /// Get the pattern-internal level (how many of this pattern's variables we've already bound)
@@ -133,6 +200,48 @@ where
         }
     }
 
+    fn collect_extensions(
+        &self,
+        slate_prefix: &Bytes,
+        index_type: IndexType,
+        extractor: Extractor,
+    ) -> Vec<Extension> {
+        let mut iter = self.create_iterator(slate_prefix, index_type, extractor);
+        let mut extensions = Vec::new();
+        while let Ok(Some(extension)) = iter.get_value() {
+            extensions.push(extension);
+            iter.next()
+                .unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
+        }
+        extensions
+    }
+
+    fn estimate_count(&self, slate_prefix: &Bytes) -> usize {
+        self.handle
+            .block_on(
+                self.range_stats
+                    .estimate_key_count_with_prefix(slate_prefix),
+            )
+            .unwrap_or(0) as usize
+    }
+
+    fn values_for_prefix(
+        &self,
+        join_prefix: &Prefix,
+        slate_prefix: &Bytes,
+        index_type: IndexType,
+    ) -> Arc<Vec<Extension>> {
+        self.prefix_cache.values_or_init(slate_prefix, || {
+            let values = self.collect_extensions(
+                slate_prefix,
+                index_type,
+                self.make_extractor_fn(join_prefix),
+            );
+            debug_assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
+            values
+        })
+    }
+
     /// Create an extractor function for the current index type and position.
     ///
     /// Uses `make_extractor` from util.rs which knows the key layout for each index type.
@@ -161,13 +270,11 @@ where
 {
     fn count(&self, join_prefix: &Prefix) -> usize {
         // TODO: proper error handling
-        let (slate_prefix, index_type) = self
+        let (slate_prefix, _) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
-        let extractor = self.make_extractor_fn(join_prefix);
-
-        let iter = self.create_iterator(&slate_prefix, index_type, extractor);
-        iter.count().unwrap_or(0) as usize
+        self.prefix_cache
+            .count_or_init(&slate_prefix, || self.estimate_count(&slate_prefix))
     }
 
     fn propose(&self, join_prefix: &Prefix) -> Vec<Extension> {
@@ -175,28 +282,46 @@ where
         let (slate_prefix, index_type) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
-        let extractor = self.make_extractor_fn(join_prefix);
-
-        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
-
-        let mut extensions = Vec::new();
-        while let Ok(Some(extension)) = iter.get_value() {
-            extensions.push(extension);
-            iter.next()
-                .unwrap_or_else(|e| panic!("Failed to advance iterator: {}", e));
-        }
-
-        extensions
+        self.values_for_prefix(join_prefix, &slate_prefix, index_type)
+            .as_ref()
+            .clone()
     }
 
     fn intersect(&self, join_prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+        if extensions.is_empty() {
+            return Vec::new();
+        }
+
         // TODO: proper error handling
         let (slate_prefix, index_type) = self
             .build_slate_prefix(join_prefix)
             .unwrap_or_else(|e| panic!("Failed to build slate prefix: {}", e));
-        let extractor = self.make_extractor_fn(join_prefix);
 
-        let mut iter = self.create_iterator(&slate_prefix, index_type, extractor);
+        if let Some(values) = self.prefix_cache.values(&slate_prefix) {
+            return extensions
+                .iter()
+                .filter(|extension| values.binary_search(extension).is_ok())
+                .cloned()
+                .collect();
+        }
+
+        let estimated_count = self
+            .prefix_cache
+            .count_or_init(&slate_prefix, || self.estimate_count(&slate_prefix));
+        if Self::should_materialize_intersection(index_type, estimated_count, extensions.len()) {
+            let values = self.values_for_prefix(join_prefix, &slate_prefix, index_type);
+            return extensions
+                .iter()
+                .filter(|extension| values.binary_search(extension).is_ok())
+                .cloned()
+                .collect();
+        }
+
+        let mut iter = self.create_iterator(
+            &slate_prefix,
+            index_type,
+            self.make_extractor_fn(join_prefix),
+        );
 
         let mut result = Vec::new();
         for ext in extensions {
@@ -219,6 +344,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::codec::Encode;
     use crate::ops::DataType;
@@ -484,5 +611,78 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn prefix_cache_initializes_count_and_values_once() {
+        let cache = PrefixCache::default();
+        let count_loads = Cell::new(0);
+        let value_loads = Cell::new(0);
+        let prefix = Bytes::from_static(b"prefix");
+
+        assert_eq!(
+            cache.count_or_init(&prefix, || {
+                count_loads.set(count_loads.get() + 1);
+                2
+            }),
+            2
+        );
+        assert_eq!(cache.count_or_init(&prefix, || 99), 2);
+
+        let values = cache.values_or_init(&prefix, || {
+            value_loads.set(value_loads.get() + 1);
+            vec![encode_string("Alice"), encode_string("Bob")]
+        });
+        assert_eq!(values.len(), 2);
+        assert_eq!(cache.values_or_init(&prefix, Vec::new), values);
+        assert_eq!(cache.count_or_init(&prefix, || 99), values.len());
+        assert_eq!(count_loads.get(), 1);
+        assert_eq!(value_loads.get(), 1);
+    }
+
+    #[test]
+    fn intersection_materialization_keeps_sparse_temporal_ranges_on_seek_path() {
+        type Extender = GenericPrefixExtender<slatedb::Db, slatedb::Db>;
+
+        assert!(Extender::should_materialize_intersection(
+            IndexType::AE,
+            10_000,
+            1
+        ));
+        assert!(Extender::should_materialize_intersection(
+            IndexType::AVE,
+            8,
+            2
+        ));
+        assert!(!Extender::should_materialize_intersection(
+            IndexType::AVE,
+            9,
+            2
+        ));
+    }
+
+    #[test]
+    fn prefix_cache_initializes_values_once_per_slate_prefix() {
+        let cache = PrefixCache::default();
+        let loads = Cell::new(0);
+        let alice = Bytes::from_static(b"alice");
+        let bob = Bytes::from_static(b"bob");
+
+        let alice_values = cache.values_or_init(&alice, || {
+            loads.set(loads.get() + 1);
+            vec![encode_entity(1)]
+        });
+        let same_alice_values = cache.values_or_init(&alice, || {
+            loads.set(loads.get() + 1);
+            Vec::new()
+        });
+        let bob_values = cache.values_or_init(&bob, || {
+            loads.set(loads.get() + 1);
+            vec![encode_entity(2)]
+        });
+
+        assert!(Arc::ptr_eq(&alice_values, &same_alice_values));
+        assert_ne!(alice_values, bob_values);
+        assert_eq!(loads.get(), 2);
     }
 }
