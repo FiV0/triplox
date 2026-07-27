@@ -23,24 +23,26 @@ query unless explicitly stated otherwise.
 
 ## Current Scope
 
-Incremental queries use the shared query validation and an additional
-incremental-query shape check. The supported query shape is:
+The incremental query engine will lag behind the standard query engine in most
+cases. The idea is use the same validation logic for standard queries also for
+incremental queries and a further more retraining check for incremental queries
+that at some point should get removed when parity between the two query paths
+is reached.
 
-- a relational `:find` containing only variables;
-- fixed-attribute triple patterns;
-- implicit `or` clauses, including nested `or` clauses; and
-- `and` branches inside an `or`.
+Any approach for incremental query compilation should be first tested in hooray
+(https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
+in Triplox.
 
-Patterns may use variables or constants in entity and value positions.
-Attributes must be constant idents or entids. Source variables, transaction
-positions, placeholders, and repeated variables within a pattern are not
-supported. Explicit `or-join`, `not`, predicates, functions, `:with`, `:in`,
-`:limit`, and `:order` are also not supported.
+Initially we are focusing on queries that are started at the newest (as in most recently visible)
+DB value. In theory nothing prevents us from replaying transactions from an arbitrary DB
+value in the past as all the old data sits in the covering indexes,
+but this requires a different approach of piping the old transactions through
+the circuits compared to just tailing the WAL files of SlateDB. I am not
+saying it is out of scope, it is just out of scope for now.
 
 A query starts at the latest visible database value captured during
-registration. The snapshot is the circuit's first batch. A non-empty snapshot
-result is emitted as the first delta at the registration basis; later deltas
-describe changes from subsequent transactions.
+registration. A non-empty delta is emitted if the priming of the circuit produces results;
+later deltas describe changes from subsequent transactions.
 
 ---
 
