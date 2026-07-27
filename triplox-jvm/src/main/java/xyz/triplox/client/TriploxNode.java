@@ -4,7 +4,6 @@ import java.io.*;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -25,30 +24,24 @@ public class TriploxNode implements AutoCloseable {
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
     private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
-    private static final String SUBSCRIBE_PATH = "/db/subscribe";
 
     private TriploxNode(OkHttpClient httpClient, String baseUrl) {
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
     }
 
-    static Response disableReadTimeoutForSubscriptions(Interceptor.Chain chain) throws IOException {
-        Request request = chain.request();
-        if (SUBSCRIBE_PATH.equals(request.url().encodedPath())) {
-            return chain.withReadTimeout(0, TimeUnit.MILLISECONDS).proceed(request);
-        }
-        return chain.proceed(request);
+    static OkHttpClient createHttpClient() {
+        return new OkHttpClient.Builder()
+                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .build();
     }
 
     /**
      * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        var client = new OkHttpClient.Builder()
-                .protocols(List.of(Protocol.H2_PRIOR_KNOWLEDGE))
-                .addInterceptor(TriploxNode::disableReadTimeoutForSubscriptions)
-                .build();
-        return new TriploxNode(client, "http://" + host + ":" + port);
+        return new TriploxNode(createHttpClient(), "http://" + host + ":" + port);
     }
 
     /**
