@@ -23,41 +23,49 @@ query unless explicitly stated otherwise.
 
 ## Current Scope
 
-The incremental query engine will lag behind the standard query engine in most
-cases. The idea is use the same validation logic for standard queries also for
-incremental queries and a further more retraining check for incremental queries
-that at some point should get removed when parity between the two query paths
-is reached.
+Incremental queries use the shared query validation and an additional
+incremental-query shape check. The supported query shape is:
 
-Any approach for incremental query compilation should be first tested in hooray
-(https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
-in Triplox.
+- a relational `:find` containing only variables;
+- fixed-attribute triple patterns;
+- implicit `or` clauses, including nested `or` clauses; and
+- `and` branches inside an `or`.
 
-Initially we are focusing on queries that are started at the newest (as in most recently visible)
-DB value. In theory nothing prevents us from replaying transactions from an arbitrary DB
-value in the past as all the old data sits in the covering indexes,
-but this requires a different approach of piping the old transactions through
-the circuits compared to just tailing the WAL files of SlateDB. I am not
-saying it is out of scope, it is just out of scope for now.
+Patterns may use variables or constants in entity and value positions.
+Attributes must be constant idents or entids. Source variables, transaction
+positions, placeholders, and repeated variables within a pattern are not
+supported. Explicit `or-join`, `not`, predicates, functions, `:with`, `:in`,
+`:limit`, and `:order` are also not supported.
+
+A query starts at the latest visible database value captured during
+registration. The snapshot is the circuit's first batch. A non-empty snapshot
+result is emitted as the first delta at the registration basis; later deltas
+describe changes from subsequent transactions.
 
 ---
 
 ## Architecture
 
-The incremental query path has four main parts:
+Incremental query planning and circuit construction are split across four
+modules:
 
-1. **Planner** - This mostly currently sits in `inc_query.rs`. The planner validates the supported
-query subset and lowers triple patterns into an incremental query plan.
-2. **DBSP circuit** - Sitting in `circuit.rs` owns the per-query dataflow graph and emits result deltas.
-Is build via the plan created by the planner.
-3. **Incremental query service** - Living in `incremental.rs`. It owns registered query handles, channels, and
-   per-query circuit instances. This service coordinates between the node and the actual feeding of data into
-   the circuits. It's the "ugly" glue. There are also some coordination problems solved by this service.
-4. **CDC loop** - It also sits in `incremental.rs` reads SlateDB WAL files, decodes transactions into datoms, and
-   applies weighted triple updates to all registered circuits.
+- `src/inc_query.rs` validates the incremental query shape and coordinates
+  query planning.
+- `src/inc_query/descriptor.rs` describes the semantic structure and binding
+  properties of the `:where` tree.
+- `src/inc_query/planner.rs` orders descriptors and lowers them to physical
+  relation plans.
+- `src/incremental/circuit.rs` assembles the relation plans into a per-query
+  DBSP circuit.
 
-Each registered query owns a DBSP circuit. The circuit input is a weighted set
-of encoded triples:
+`src/incremental.rs` owns registered query handles, channels, per-query circuit
+instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
+registration snapshot and feeds decoded SlateDB WAL transactions to the
+service.
+
+### Fact input and relation streams
+
+Each registered query owns a DBSP circuit with one weighted fact input:
 
 ```text
 EncodedTriple {
@@ -69,8 +77,116 @@ EncodedTriple {
 
 Values are encoded bytes rather than `DataType` keys because DBSP Z-set keys
 need ordering, and `DataType` contains values such as floats, maps, and vectors
-that do not form a simple total order. After pattern filtering, operators pass
-rows of encoded values between patterns and joins.
+that do not form a simple total order.
+
+The fact input and an incoming relation are different inputs to plan-node
+assembly. The fact input is the shared stream of `EncodedTriple` changes. An
+incoming relation is the running `EncodedRow` stream produced while evaluating
+the enclosing `:where` scope. It is internal to circuit assembly and is
+unrelated to query `:in` bindings.
+
+Every relation stream carries a variable layout alongside its rows. The layout
+maps each variable to its positional encoded value in `EncodedRow`.
+
+### Semantic descriptors
+
+The descriptor tree mirrors nested query scopes:
+
+```text
+ScopeDescriptor {
+    descriptors: [Descriptor],
+    variables: [Variable],
+    groundable: [Variable],
+}
+
+Descriptor {
+    variables: [Variable],
+    groundable: [Variable],
+    kind: Pattern | Or { branches: [ScopeDescriptor] },
+}
+```
+
+The top-level `:where` clauses form a scope. Each `or` is a descriptor whose
+branches are scopes. An `and` branch is represented by a scope containing its
+child descriptors, so nested scopes do not need global positions or flattened
+identifiers.
+
+`variables` lists the variables mentioned by a descriptor in stable semantic
+order. `groundable` lists the variables that the descriptor can produce
+without receiving them from an incoming relation:
+
+| Descriptor | Variable order | Groundable variables |
+| --- | --- | --- |
+| Triple pattern | Entity variable, then value variable | All pattern variables |
+| Scope / `and` | Ordered union of child variables | Ordered union of child groundable variables |
+| `or` | First branch order | Variables groundable in every branch, in first branch order |
+
+The planner derives a descriptor's required bindings as
+`variables - groundable`. A descriptor is eligible once all required variables
+are present in the running layout. Among eligible descriptors, the planner
+prefers the descriptor sharing the most variables with the running relation
+and uses scope order as the deterministic tie-breaker.
+
+### Physical relation plans
+
+Every physical relation plan records:
+
+```text
+RelPlan {
+    incoming_vars: optional [Variable],
+    output_vars: [Variable],
+    kind: Pattern | Chain | Union,
+}
+```
+
+`incoming_vars` is absent when the node starts a relation and present when it
+extends a running relation. This distinction also preserves a present
+zero-column relation.
+
+- `Pattern` filters the fact input by attribute and constants. With an incoming
+  relation it also carries a planned join containing the left, right, key, and
+  output layouts.
+- `Chain` represents a scope with multiple descriptors and passes each child's
+  output relation to the next child.
+- `Union` passes the same incoming relation to every branch and declares one
+  output layout for all branch results.
+
+`Chain` is a physical plan shape rather than a DBSP operator. Circuit assembly
+uses the existing `flat_map`, join, projection, sum, and distinct operators.
+
+### Row layouts
+
+A standalone pattern outputs its pattern variable order. A node receiving an
+incoming relation preserves that layout and appends only newly produced
+variables in semantic order. Join keys are the variables shared by both sides,
+in incoming-layout order. A join without shared variables is a Cartesian
+product over the empty key.
+
+A chain's output layout is its last child's output layout. A standalone union
+uses its descriptor variable order. A union with an incoming relation preserves
+the incoming layout and appends the variables groundable by the union. Because
+branches may naturally produce their columns in different orders, every branch
+is projected to the union's declared output layout before the branches are
+summed.
+
+The circuit verifies that the running relation layout matches each plan node's
+declared incoming layout. It does not derive a different variable order during
+assembly.
+
+### Circuit assembly
+
+Circuit assembly recursively consumes the shared fact input, a relation plan,
+and the optional incoming relation:
+
+- a pattern creates matching rows with `flat_map` and joins them to the
+  incoming rows when present;
+- a chain folds the running relation through its children; and
+- a union evaluates each branch with the same incoming relation, projects the
+  branch results to the union layout, sums them, and applies `distinct`.
+
+The completed `:where` relation is projected to the query's `:find` variable
+order. DBSP then maintains this circuit and emits signed result deltas for each
+applied transaction.
 
 The DBSP state is trace-backed and configured with file-backed storage.
 Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
@@ -288,7 +404,7 @@ These should be tracked in the issue Tracker. In no particular order, they are:
 - Make use of Triplox temporal indexes in base triple patterns. This will avoid
 save a lot of space in the incremental circuits.
 - Shared circuits or shared arrangements across equivalent queries.
-- Better planning for join order and disconnected groups.
+- Cost-based join ordering beyond the shared-variable heuristic.
 - Batching and scheduling policies for many active queries.
 - Storage cleanup and compaction policies for long-running query traces.
 - CDC currently applies one WAL transaction at a time. Future batching could
