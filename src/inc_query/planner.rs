@@ -114,22 +114,21 @@ fn order_descriptors<'a>(
                     .iter()
                     .all(|variable| grounded.contains(variable))
             })
-            .max_by_key(|(_, descriptor)| {
+            .max_by_key(|(index, descriptor)| {
                 let shared = descriptor
                     .descriptor
                     .variables
                     .iter()
                     .filter(|variable| grounded.contains(variable))
                     .count();
-                (shared, Reverse(descriptor.descriptor.position))
+                (shared, Reverse(*index))
             })
             .map(|(index, _)| index);
 
         let Some(candidate) = candidate else {
             let descriptor = remaining
-                .iter()
-                .min_by_key(|descriptor| descriptor.descriptor.position)
-                .expect("non-empty remaining descriptors must have a first position");
+                .first()
+                .expect("non-empty remaining descriptors must have a first descriptor");
             let missing = descriptor
                 .required_variables
                 .iter()
@@ -267,7 +266,6 @@ mod tests {
     fn ordering_reports_a_missing_required_variable() {
         let missing = "?missing".to_var();
         let descriptor = Descriptor {
-            position: 0,
             variables: vec![missing.clone()],
             groundable: vec![],
             kind: DescriptorKind::Pattern(PatternDescriptor {
@@ -287,7 +285,6 @@ mod tests {
     fn preserves_a_zero_column_incoming_relation() {
         let entity = "?e".to_var();
         let descriptor = Descriptor {
-            position: 0,
             variables: vec![entity.clone()],
             groundable: vec![entity.clone()],
             kind: DescriptorKind::Pattern(PatternDescriptor {

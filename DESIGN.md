@@ -97,7 +97,6 @@ without choosing a DBSP circuit shape.
 
 A descriptor records:
 
-- its position in the immediate scope;
 - its semantic kind;
 - its referenced variables in stable encounter order;
 - its groundable variables in stable order;
@@ -188,7 +187,7 @@ Repeatedly:
 1. Compute `required(node)` for every remaining descriptor.
 2. Keep descriptors whose required variables are a subset of the grounded set.
 3. Prefer the candidate sharing the most variables with the grounded set.
-4. Break ties by the descriptor's original scope position.
+4. Break ties by the descriptor's order in its scope.
 5. Append the selected descriptor and add all of its referenced variables to
    the grounded set.
 
@@ -377,7 +376,7 @@ Descriptor tests:
 - triple variables are all groundable;
 - a scope's groundable variables are the ordered union of its children;
 - an `or` exposes only the ordered intersection of branch groundability;
-- nested branch structure and scope-local positions are preserved;
+- nested branch structure and scope order are preserved;
 - branch encounter-order differences do not make layout order nondeterministic.
 
 Physical planner tests:

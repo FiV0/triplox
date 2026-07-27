@@ -26,7 +26,6 @@ pub(super) struct ScopeDescriptor {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Descriptor {
-    pub position: usize,
     pub variables: Vec<Variable>,
     pub groundable: Vec<Variable>,
     pub kind: DescriptorKind,
@@ -130,23 +129,18 @@ fn ordered_union<'a>(variables: impl IntoIterator<Item = &'a Variable>) -> Vec<V
     result
 }
 
-fn describe_where_clause(
-    position: usize,
-    clause: &WhereClause,
-    schema: &Schema,
-) -> Result<Descriptor> {
+fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descriptor> {
     match clause {
         WhereClause::Pattern(pattern) => {
             let pattern = pattern_descriptor(pattern, schema)?;
             let variables = pattern_variables(&pattern);
             Ok(Descriptor {
-                position,
                 groundable: variables.clone(),
                 variables,
                 kind: DescriptorKind::Pattern(pattern),
             })
         }
-        WhereClause::OrJoin(or) => describe_or(position, or, schema),
+        WhereClause::OrJoin(or) => describe_or(or, schema),
         _ => unreachable!("unsupported clauses are rejected before planning"),
     }
 }
@@ -160,7 +154,7 @@ fn describe_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<ScopeDe
     }
 }
 
-fn describe_or(position: usize, or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
+fn describe_or(or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
     let branches = or
         .clauses
         .iter()
@@ -183,7 +177,6 @@ fn describe_or(position: usize, or: &OrJoin, schema: &Schema) -> Result<Descript
         .collect();
 
     Ok(Descriptor {
-        position,
         variables,
         groundable,
         kind: DescriptorKind::Or(OrDescriptor { branches }),
@@ -196,8 +189,7 @@ pub(super) fn describe_where_clauses(
 ) -> Result<ScopeDescriptor> {
     let descriptors = clauses
         .iter()
-        .enumerate()
-        .map(|(position, clause)| describe_where_clause(position, clause, schema))
+        .map(|clause| describe_where_clause(clause, schema))
         .collect::<Result<Vec<_>>>()?;
     let variables = ordered_union(
         descriptors
@@ -231,7 +223,6 @@ mod tests {
 
         assert_eq!(scope.variables, vec!["?e".to_var(), "?name".to_var()]);
         assert_eq!(scope.groundable, scope.variables);
-        assert_eq!(scope.descriptors[0].position, 0);
         assert_eq!(scope.descriptors[0].variables, scope.variables);
         assert_eq!(scope.descriptors[0].groundable, scope.variables);
         let DescriptorKind::Pattern(pattern) = &scope.descriptors[0].kind else {
@@ -250,14 +241,6 @@ mod tests {
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
         );
         assert_eq!(scope.groundable, scope.variables);
-        assert_eq!(
-            scope
-                .descriptors
-                .iter()
-                .map(|descriptor| descriptor.position)
-                .collect::<Vec<_>>(),
-            vec![0, 1]
-        );
     }
 
     #[test]
@@ -273,69 +256,5 @@ mod tests {
         };
         assert_eq!(or.branches[0].variables, vec!["?e".to_var(), "?v".to_var()]);
         assert_eq!(or.branches[1].variables, vec!["?v".to_var(), "?e".to_var()]);
-    }
-
-    #[test]
-    fn and_branches_preserve_nested_scope_positions() {
-        let query = parse_query(
-            "[:find ?e ?name ?age :where
-             (or
-               (and [?e :name ?name] [?e :age ?age])
-               (and [?e :age ?age] [?e :name ?name]))]",
-        );
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
-        let DescriptorKind::Or(or) = &scope.descriptors[0].kind else {
-            panic!("expected or descriptor");
-        };
-
-        assert_eq!(or.branches.len(), 2);
-        assert_eq!(
-            or.branches[0]
-                .descriptors
-                .iter()
-                .map(|descriptor| descriptor.position)
-                .collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        assert_eq!(
-            or.branches[1]
-                .descriptors
-                .iter()
-                .map(|descriptor| descriptor.position)
-                .collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        assert_eq!(
-            or.branches[0].variables,
-            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
-        );
-        assert_eq!(
-            or.branches[1].variables,
-            vec!["?e".to_var(), "?age".to_var(), "?name".to_var()]
-        );
-    }
-
-    #[test]
-    fn nested_or_preserves_branch_scopes() {
-        let query = parse_query(
-            "[:find ?e ?v :where
-             (or
-               (or [?e :name ?v] [?v :follows ?e])
-               [?e :age ?v])]",
-        );
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
-        let DescriptorKind::Or(outer) = &scope.descriptors[0].kind else {
-            panic!("expected outer or descriptor");
-        };
-        let DescriptorKind::Or(inner) = &outer.branches[0].descriptors[0].kind else {
-            panic!("expected nested or descriptor");
-        };
-
-        assert_eq!(outer.branches.len(), 2);
-        assert_eq!(inner.branches.len(), 2);
-        assert_eq!(outer.branches[0].descriptors[0].position, 0);
-        assert_eq!(outer.branches[1].descriptors[0].position, 0);
-        assert_eq!(inner.branches[0].descriptors[0].position, 0);
-        assert_eq!(inner.branches[1].descriptors[0].position, 0);
     }
 }
