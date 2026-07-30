@@ -217,16 +217,23 @@ impl BindingBag {
         if self.rows.len() < other.rows.len() {
             let left_index = self.index_by(&shared_variables)?;
             let right_shared_indexes = other.projection_indexes(&shared_variables)?;
-            for right_row in &other.rows {
+            let mut right_row_indexes_by_left = vec![Vec::new(); self.rows.len()];
+            for (right_row_index, right_row) in other.rows.iter().enumerate() {
                 let key = Self::row_key(right_row, &right_shared_indexes);
                 if let Some(left_row_indexes) = left_index.get(&key) {
                     for left_row_index in left_row_indexes {
-                        rows.push(Self::joined_row(
-                            &self.rows[*left_row_index],
-                            right_row,
-                            &right_only_indexes,
-                        ));
+                        right_row_indexes_by_left[*left_row_index].push(right_row_index);
                     }
+                }
+            }
+            for (left_row_index, right_row_indexes) in right_row_indexes_by_left.iter().enumerate()
+            {
+                for right_row_index in right_row_indexes {
+                    rows.push(Self::joined_row(
+                        &self.rows[left_row_index],
+                        &other.rows[*right_row_index],
+                        &right_only_indexes,
+                    ));
                 }
             }
         } else {
@@ -445,13 +452,25 @@ mod tests {
                 &["?x", "?left", "?y"],
                 &[
                     &["a", "l1", "1"],
-                    &["a", "l2", "1"],
                     &["a", "l1", "1"],
-                    &["a", "l2", "1"],
                     &["a", "l1", "2"],
+                    &["a", "l2", "1"],
+                    &["a", "l2", "1"],
                     &["a", "l2", "2"],
                 ],
             )
+        );
+    }
+
+    #[test]
+    fn natural_join_row_order_is_independent_of_build_side() {
+        let left = binding_bag(&["?x", "?left"], &[&["a", "l1"], &["a", "l2"]]);
+        let right = binding_bag(&["?x", "?right"], &[&["a", "1"], &["a", "2"]]);
+        let larger_right = binding_bag(&["?x", "?right"], &[&["a", "1"], &["a", "2"], &["b", "3"]]);
+
+        assert_eq!(
+            left.natural_join(&right).unwrap(),
+            left.natural_join(&larger_right).unwrap()
         );
     }
 
