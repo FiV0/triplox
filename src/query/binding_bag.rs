@@ -38,6 +38,14 @@ impl BindingBag {
         })
     }
 
+    fn with_rows(&self, rows: Vec<BindingRow>) -> Self {
+        Self {
+            variables: self.variables.clone(),
+            rows,
+            column_indexes: self.column_indexes.clone(),
+        }
+    }
+
     pub(crate) fn unit() -> Self {
         Self {
             variables: Vec::new(),
@@ -81,7 +89,7 @@ impl BindingBag {
                     .ok_or_else(|| anyhow::anyhow!("Unknown BindingBag row index: {row_index}"))
             })
             .collect::<Result<Vec<_>>>()?;
-        Self::new(self.variables.clone(), rows)
+        Ok(self.with_rows(rows))
     }
 
     pub(crate) fn extend_rows(
@@ -266,7 +274,7 @@ impl BindingBag {
             .filter(|row| right_index.contains_key(&Self::row_key(row, &left_shared_indexes)))
             .cloned()
             .collect();
-        Self::new(self.variables.clone(), rows)
+        Ok(self.with_rows(rows))
     }
 
     pub(crate) fn antijoin(&self, other: &Self) -> Result<Self> {
@@ -279,7 +287,7 @@ impl BindingBag {
             .filter(|row| !right_index.contains_key(&Self::row_key(row, &left_shared_indexes)))
             .cloned()
             .collect();
-        Self::new(self.variables.clone(), rows)
+        Ok(self.with_rows(rows))
     }
 
     pub(crate) fn union(&self, other: &Self) -> Result<Self> {
@@ -289,7 +297,7 @@ impl BindingBag {
         );
         let mut rows = self.rows.clone();
         rows.extend(other.rows.iter().cloned());
-        Self::new(self.variables.clone(), rows)
+        Ok(self.with_rows(rows))
     }
 
     pub(crate) fn distinct_union(&self, other: &Self) -> Result<Self> {
