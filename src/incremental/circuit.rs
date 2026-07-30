@@ -894,6 +894,106 @@ mod tests {
     }
 
     #[test]
+    fn not_stream_projects_a_multi_clause_negative_scope_to_its_key() {
+        let plan = query_plan(
+            "[:find ?name
+              :where
+              [?e :name ?name]
+              [?e :follows ?friend]
+              (not [?e :age 30] [?friend :age 40])]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(1, 12, DataType::Long(2)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(2, 11, DataType::Long(40)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], -1)]
+        );
+
+        append(&handle, [(triple(2, 11, DataType::Long(40)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[test]
+    fn not_stream_seeds_every_or_branch_in_the_negative_scope() {
+        let plan = query_plan(
+            "[:find ?name
+              :where
+              [?e :name ?name]
+              (not (or [?e :age 30] [?e :type :person]))]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [(triple(1, 10, DataType::String("Alice".to_string())), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], -1)]
+        );
+
+        append(
+            &handle,
+            [(triple(1, 13, DataType::Keyword(kw!(:person))), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(
+            &handle,
+            [(triple(1, 13, DataType::Keyword(kw!(:person))), -1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[test]
     fn double_not_stream_tracks_nested_presence() {
         let plan = query_plan("[:find ?name :where [?e :name ?name] (not (not [?e :age 30]))]");
         let (mut circuit, (handle, output), _storage) =
