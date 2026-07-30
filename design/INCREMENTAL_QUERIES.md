@@ -189,11 +189,11 @@ Circuit assembly recursively consumes the shared fact input, a relation plan,
 and the optional incoming relation:
 
 - a pattern creates matching rows with `flat_map` and joins them to the
-  incoming rows when present;
-- a chain folds the running relation through its children;
+  incoming rows when present.
+- a chain folds the running relation through its children.
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming
-  rows against the resulting keys; and
+  rows against the resulting keys.
 - a union evaluates each branch with the same incoming relation, projects the
   branch results to the union layout, sums them, and applies `distinct`.
 
