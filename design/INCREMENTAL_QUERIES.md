@@ -179,12 +179,6 @@ the incoming layout. Because branches may naturally produce their columns in
 different orders, every branch is projected to the union's declared output
 layout before the branches are summed.
 
-Difference keys are the variables mentioned by the `not` body, selected from
-the incoming layout in incoming-layout order. The negative subplan receives and
-returns exactly this key layout. Local intermediate layouts inside the negative
-scope are projected away at the subplan boundary. The difference output layout
-is unchanged from its incoming layout.
-
 The circuit verifies that the running relation layout matches each plan node's
 declared incoming layout. It does not derive a different variable order during
 assembly.
