@@ -213,10 +213,10 @@ fn rel_stream(
 ) -> PlannedWhereStream {
     assert_incoming_layout(plan, &incoming);
 
-    match &plan.kind {
+    let rows = match &plan.kind {
         RelPlanKind::Pattern(pattern) => {
             let pattern_rows = pattern_stream(fact_input, pattern.clone());
-            let rows = match incoming {
+            match incoming {
                 Some(incoming) => join_pattern_rows(
                     incoming.rows,
                     &incoming.vars,
@@ -225,10 +225,6 @@ fn rel_stream(
                     &plan.output_vars,
                 ),
                 None => pattern_rows,
-            };
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
             }
         }
         RelPlanKind::Chain(chain) => {
@@ -239,11 +235,7 @@ fn rel_stream(
                     Some(rel_stream(fact_input, child, running))
                 })
                 .expect("chain plan must contain at least one child");
-            let rows = project_stream(relation.rows, &relation.vars, &plan.output_vars);
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
-            }
+            project_stream(relation.rows, &relation.vars, &plan.output_vars)
         }
         RelPlanKind::Difference(difference) => {
             let positive = incoming.expect("difference plan requires an incoming relation");
@@ -254,11 +246,7 @@ fn rel_stream(
                 vars: difference.key_vars.clone(),
             };
             let negative = rel_stream(fact_input, &difference.negative, Some(negative_seed));
-            let rows = difference_rows(positive, negative, &difference.key_vars);
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
-            }
+            difference_rows(positive, negative, &difference.key_vars)
         }
         RelPlanKind::Union(union) => {
             let mut branches = union
@@ -270,12 +258,13 @@ fn rel_stream(
                 })
                 .collect::<Vec<_>>();
             let first = branches.remove(0);
-            let rows = first.sum(branches.iter()).distinct();
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
-            }
+            first.sum(branches.iter()).distinct()
         }
+    };
+
+    PlannedWhereStream {
+        rows,
+        vars: plan.output_vars.clone(),
     }
 }
 
