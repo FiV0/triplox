@@ -164,6 +164,10 @@ fn project_stream(
     source_vars: &[Variable],
     target_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
+    if source_vars == target_vars {
+        return rows;
+    }
+
     let selected_positions = positions(source_vars, target_vars);
     rows.map(move |row| select_row_positions(row, &selected_positions))
 }
