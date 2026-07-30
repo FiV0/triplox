@@ -8,8 +8,8 @@ pub(crate) type BindingRow = Vec<Bytes>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BindingBag {
-    variables: Vec<Variable>,
-    rows: Vec<BindingRow>,
+    pub(crate) variables: Vec<Variable>,
+    pub(crate) rows: Vec<BindingRow>,
     column_indexes: HashMap<Variable, usize>,
 }
 
@@ -48,14 +48,6 @@ impl BindingBag {
 
     pub(crate) fn empty(variables: Vec<Variable>) -> Result<Self> {
         Self::new(variables, Vec::new())
-    }
-
-    pub(crate) fn variables(&self) -> &[Variable] {
-        &self.variables
-    }
-
-    pub(crate) fn rows(&self) -> &[BindingRow] {
-        &self.rows
     }
 
     pub(crate) fn column_index(&self, variable: &Variable) -> Result<usize> {
@@ -308,10 +300,10 @@ mod tests {
         let unit = BindingBag::unit();
         let empty = BindingBag::empty(vec!["?x".to_var()]).unwrap();
 
-        assert!(unit.variables().is_empty());
-        assert_eq!(unit.rows(), &[Vec::<Bytes>::new()]);
-        assert_eq!(empty.variables(), &["?x".to_var()]);
-        assert!(empty.rows().is_empty());
+        assert!(unit.variables.is_empty());
+        assert_eq!(unit.rows, &[Vec::<Bytes>::new()]);
+        assert_eq!(empty.variables, ["?x".to_var()]);
+        assert!(empty.rows.is_empty());
     }
 
     #[test]
@@ -500,7 +492,7 @@ mod tests {
             BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
         assert_eq!(values.antijoin(&empty).unwrap(), values);
-        assert_eq!(unit.union(&unit).unwrap().rows().len(), 2);
+        assert_eq!(unit.union(&unit).unwrap().rows.len(), 2);
         assert_eq!(unit.distinct_union(&unit).unwrap(), unit);
     }
 }
