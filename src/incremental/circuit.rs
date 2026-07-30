@@ -177,6 +177,31 @@ fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>)
     );
 }
 
+fn difference_rows(
+    positive: PlannedWhereStream,
+    negative: PlannedWhereStream,
+    key_vars: &[Variable],
+) -> Stream<RootCircuit, RowZSet> {
+    let positive_key_positions = positions(&positive.vars, key_vars);
+    let negative_key_positions = positions(&negative.vars, key_vars);
+    let positive_indexed = positive.rows.map_index(move |row| {
+        (
+            select_row_positions(row, &positive_key_positions),
+            row.clone(),
+        )
+    });
+    let negative_indexed = negative.rows.map_index(move |row| {
+        (
+            select_row_positions(row, &negative_key_positions),
+            row.clone(),
+        )
+    });
+
+    positive_indexed
+        .antijoin(&negative_indexed)
+        .map(|(_key, row)| row.clone())
+}
+
 fn rel_stream(
     fact_input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: &RelPlan,
@@ -202,13 +227,35 @@ fn rel_stream(
                 vars: plan.output_vars.clone(),
             }
         }
-        RelPlanKind::Chain(chain) => chain
-            .children
-            .iter()
-            .fold(incoming, |running, child| {
-                Some(rel_stream(fact_input, child, running))
-            })
-            .expect("chain plan must contain at least one child"),
+        RelPlanKind::Chain(chain) => {
+            let relation = chain
+                .children
+                .iter()
+                .fold(incoming, |running, child| {
+                    Some(rel_stream(fact_input, child, running))
+                })
+                .expect("chain plan must contain at least one child");
+            let rows = project_stream(relation.rows, &relation.vars, &plan.output_vars);
+            PlannedWhereStream {
+                rows,
+                vars: plan.output_vars.clone(),
+            }
+        }
+        RelPlanKind::Difference(difference) => {
+            let positive = incoming.expect("difference plan requires an incoming relation");
+            let negative_seed_rows =
+                project_stream(positive.rows.clone(), &positive.vars, &difference.key_vars);
+            let negative_seed = PlannedWhereStream {
+                rows: negative_seed_rows,
+                vars: difference.key_vars.clone(),
+            };
+            let negative = rel_stream(fact_input, &difference.negative, Some(negative_seed));
+            let rows = difference_rows(positive, negative, &difference.key_vars);
+            PlannedWhereStream {
+                rows,
+                vars: plan.output_vars.clone(),
+            }
+        }
         RelPlanKind::Union(union) => {
             let mut branches = union
                 .branches
@@ -759,6 +806,120 @@ mod tests {
                 (vec![DataType::String("Alice".to_string())], 1),
                 (vec![DataType::String("Bob".to_string())], 1),
             ]
+        );
+    }
+
+    #[test]
+    fn not_stream_retracts_and_restores_positive_rows() {
+        let plan = query_plan("[:find ?name :where [?e :name ?name] (not [?e :age 30])]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [(triple(1, 10, DataType::String("Alice".to_string())), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], -1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[test]
+    fn not_stream_uses_negative_key_presence() {
+        let plan = query_plan("[:find ?name :where [?e :name ?name] (not [?e :age 30])]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, 10, DataType::String("Alice".to_string())), 1),
+                (triple(1, 11, DataType::Long(30)), 2),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[test]
+    fn not_stream_extracts_a_non_leading_key() {
+        let plan = query_plan("[:find ?label :where [?label :follows ?e] (not [?e :age 30])]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(&handle, [(triple(100, 12, DataType::Long(1)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(100)], 1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(100)], -1)]
+        );
+    }
+
+    #[test]
+    fn double_not_stream_tracks_nested_presence() {
+        let plan = query_plan("[:find ?name :where [?e :name ?name] (not (not [?e :age 30]))]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [(triple(1, 10, DataType::String("Alice".to_string())), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        append(&handle, [(triple(1, 11, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], -1)]
         );
     }
 

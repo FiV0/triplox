@@ -104,17 +104,23 @@ ScopeDescriptor {
 Descriptor {
     variables: [Variable],
     groundable: [Variable],
-    kind: Pattern | Or { branches: [ScopeDescriptor] },
+    kind: Pattern
+        | Not { scope: ScopeDescriptor }
+        | Or { branches: [ScopeDescriptor] },
 }
 ```
 
 The top-level `:where` clauses form a scope. Each `or` is a descriptor whose
 branches are scopes. An `and` branch is represented by a scope containing its
-child descriptors and has no descriptor representation of its own.
+child descriptors and has no descriptor representation of its own. An implicit
+`not` is a descriptor whose body is another scope.
 
 `variables` lists the variables mentioned by a descriptor in stable semantic
 order. `groundable` lists the variables that the descriptor can produce
-without receiving them from an incoming relation:
+without receiving them from an incoming relation. A pattern can ground all of
+its variables. An `or` can ground the intersection of variables groundable by
+all branches. A `not` grounds no variables, so every variable it mentions must
+already be available from the enclosing positive relation.
 
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
@@ -130,7 +136,7 @@ Every physical relation plan records:
 RelPlan {
     incoming_vars: optional [Variable],
     output_vars: [Variable],
-    kind: Pattern | Chain | Union,
+    kind: Pattern | Chain | Difference | Union,
 }
 ```
 
@@ -143,6 +149,9 @@ zero-column relation.
   using the plan's incoming, pattern, and output layouts.
 - `Chain` represents a scope with multiple descriptors and passes each child's
   output relation to the next child.
+- `Difference` preserves the incoming relation and removes rows whose selected
+  key occurs in its negative subplan. The negative scope is seeded by projecting
+  the incoming relation to that key.
 - `Union` passes the same incoming relation to every branch and declares one
   output layout for all branch results.
 
@@ -165,6 +174,12 @@ the incoming layout. Because branches may naturally produce their columns in
 different orders, every branch is projected to the union's declared output
 layout before the branches are summed.
 
+Difference keys are the variables mentioned by the `not` body, selected from
+the incoming layout in incoming-layout order. The negative subplan receives and
+returns exactly this key layout. Local intermediate layouts inside the negative
+scope are projected away at the subplan boundary. The difference output layout
+is unchanged from its incoming layout.
+
 The circuit verifies that the running relation layout matches each plan node's
 declared incoming layout. It does not derive a different variable order during
 assembly.
@@ -176,9 +191,17 @@ and the optional incoming relation:
 
 - a pattern creates matching rows with `flat_map` and joins them to the
   incoming rows when present;
-- a chain folds the running relation through its children; and
+- a chain folds the running relation through its children;
+- a difference projects the incoming rows to the negative key, evaluates the
+  negative scope from that raw projection, and antijoins the original incoming
+  rows against the resulting keys; and
 - a union evaluates each branch with the same incoming relation, projects the
   branch results to the union layout, sums them, and applies `distinct`.
+
+The negative seed is not made distinct before evaluation. Its weights remain
+correlated with the positive input, while DBSP antijoin treats the resulting
+negative key relation by presence. This gives the expected add/retract behavior
+when a key has multiple negative matches.
 
 The completed `:where` relation is projected to the query's `:find` variable
 order.

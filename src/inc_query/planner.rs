@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use anyhow::{anyhow, bail, Result};
 use edn::query::Variable;
 
-use super::descriptor::{Descriptor, DescriptorKind, PatternDescriptor, ScopeDescriptor};
+use super::descriptor::{
+    Descriptor, DescriptorKind, NotDescriptor, PatternDescriptor, ScopeDescriptor,
+};
 use super::PatternSlot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +20,7 @@ pub(crate) struct RelPlan {
 pub(crate) enum RelPlanKind {
     Pattern(PatternPlan),
     Chain(ChainPlan),
+    Difference(DifferencePlan),
     Union(UnionPlan),
 }
 
@@ -32,6 +35,12 @@ pub(crate) struct PatternPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChainPlan {
     pub children: Vec<RelPlan>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DifferencePlan {
+    pub key_vars: Vec<Variable>,
+    pub negative: Box<RelPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,12 +177,38 @@ fn plan_union(
     })
 }
 
+fn plan_difference(
+    descriptor: &Descriptor,
+    not: &NotDescriptor,
+    incoming_vars: Option<Vec<Variable>>,
+) -> Result<RelPlan> {
+    let incoming_vars =
+        incoming_vars.ok_or_else(|| anyhow!("Cannot plan `not` without a positive relation"))?;
+    let key_vars = incoming_vars
+        .iter()
+        .filter(|variable| descriptor.variables.contains(variable))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut negative = plan_scope(&not.scope, Some(key_vars.clone()))?;
+    negative.output_vars = key_vars.clone();
+
+    Ok(RelPlan {
+        incoming_vars: Some(incoming_vars.clone()),
+        output_vars: incoming_vars,
+        kind: RelPlanKind::Difference(DifferencePlan {
+            key_vars,
+            negative: Box::new(negative),
+        }),
+    })
+}
+
 fn plan_descriptor(
     descriptor: &Descriptor,
     incoming_vars: Option<Vec<Variable>>,
 ) -> Result<RelPlan> {
     match &descriptor.kind {
         DescriptorKind::Pattern(pattern) => Ok(plan_pattern(descriptor, pattern, incoming_vars)),
+        DescriptorKind::Not(not) => plan_difference(descriptor, not, incoming_vars),
         DescriptorKind::Or(or) => plan_union(descriptor, &or.branches, incoming_vars),
     }
 }
@@ -219,6 +254,9 @@ pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'
             for child in &chain.children {
                 collect_leaf_patterns(child, patterns);
             }
+        }
+        RelPlanKind::Difference(difference) => {
+            collect_leaf_patterns(&difference.negative, patterns);
         }
         RelPlanKind::Union(union) => {
             for branch in &union.branches {
