@@ -926,7 +926,6 @@ mod tests {
         };
         IncrementalQueryPlan {
             find_vars: vec!["?name".to_var()],
-            variables: vec!["?e".to_var(), "?name".to_var()],
             where_plan: RelPlan {
                 incoming_vars: None,
                 output_vars: pattern.pattern_vars.clone(),

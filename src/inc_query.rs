@@ -18,7 +18,6 @@ pub(crate) use planner::{ChainPlan, PatternPlan, RelPlan, RelPlanKind, UnionPlan
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
     pub find_vars: Vec<Variable>,
-    pub variables: Vec<Variable>,
     pub where_plan: RelPlan,
 }
 
@@ -37,9 +36,8 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
     let where_plan = planner::plan_scope(&descriptors, None)?;
-    let variables = where_plan.output_vars.clone();
     for var in &find_vars {
-        if !variables.contains(var) {
+        if !where_plan.output_vars.contains(var) {
             bail!(
                 "Find variable {} is not bound by incremental query patterns",
                 var
@@ -49,7 +47,6 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 
     Ok(IncrementalQueryPlan {
         find_vars,
-        variables,
         where_plan,
     })
 }
@@ -210,7 +207,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.find_vars, vec!["?e".to_var(), "?name".to_var()]);
-        assert_eq!(plan.variables, vec!["?e".to_var(), "?name".to_var()]);
         let leaf_patterns = plan.leaf_patterns();
         assert_eq!(leaf_patterns.len(), 1);
         assert_eq!(leaf_patterns[0].attribute, 10);
@@ -407,7 +403,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.find_vars, vec!["?e".to_var()]);
-        assert_eq!(plan.variables, vec!["?e".to_var()]);
         let RelPlanKind::Union(union) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
@@ -438,7 +433,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.variables, vec!["?e".to_var()]);
         assert_eq!(plan.leaf_patterns().len(), 3);
         let RelPlanKind::Union(union) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
@@ -458,7 +452,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.variables, vec!["?e".to_var(), "?v".to_var()]);
         let RelPlanKind::Union(or) = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
