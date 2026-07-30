@@ -922,13 +922,14 @@ mod tests {
             attribute: 10,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
-            output_vars: vec!["?e".to_var(), "?name".to_var()],
+            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
         };
         IncrementalQueryPlan {
             find_vars: vec!["?name".to_var()],
             variables: vec!["?e".to_var(), "?name".to_var()],
             where_plan: RelPlan {
-                output_vars: pattern.output_vars.clone(),
+                incoming_vars: None,
+                output_vars: pattern.pattern_vars.clone(),
                 kind: RelPlanKind::Pattern(pattern),
             },
         }
