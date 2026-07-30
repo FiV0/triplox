@@ -182,33 +182,66 @@ impl BindingBag {
         indexes.iter().map(|index| row[*index].clone()).collect()
     }
 
+    fn joined_row(
+        left_row: &BindingRow,
+        right_row: &BindingRow,
+        right_only_indexes: &[usize],
+    ) -> BindingRow {
+        let mut row = left_row.clone();
+        row.extend(
+            right_only_indexes
+                .iter()
+                .map(|index| right_row[*index].clone()),
+        );
+        row
+    }
+
     pub(crate) fn natural_join(&self, other: &Self) -> Result<Self> {
         let shared_variables = self.shared_variables(other);
-        let left_shared_indexes = self.projection_indexes(&shared_variables)?;
-        let right_index = other.index_by(&shared_variables)?;
-        let right_only: Vec<(Variable, usize)> = other
+        let right_only_indexes: Vec<usize> = other
             .variables
             .iter()
             .enumerate()
             .filter(|(_, variable)| !self.column_indexes.contains_key(*variable))
-            .map(|(index, variable)| (variable.clone(), index))
+            .map(|(index, _)| index)
             .collect();
 
         let mut variables = self.variables.clone();
-        variables.extend(right_only.iter().map(|(variable, _)| variable.clone()));
+        variables.extend(
+            right_only_indexes
+                .iter()
+                .map(|index| other.variables[*index].clone()),
+        );
 
         let mut rows = Vec::new();
-        for left_row in &self.rows {
-            let key = Self::row_key(left_row, &left_shared_indexes);
-            if let Some(right_row_indexes) = right_index.get(&key) {
-                for right_row_index in right_row_indexes {
-                    let mut row = left_row.clone();
-                    row.extend(
-                        right_only
-                            .iter()
-                            .map(|(_, index)| other.rows[*right_row_index][*index].clone()),
-                    );
-                    rows.push(row);
+        if self.rows.len() < other.rows.len() {
+            let left_index = self.index_by(&shared_variables)?;
+            let right_shared_indexes = other.projection_indexes(&shared_variables)?;
+            for right_row in &other.rows {
+                let key = Self::row_key(right_row, &right_shared_indexes);
+                if let Some(left_row_indexes) = left_index.get(&key) {
+                    for left_row_index in left_row_indexes {
+                        rows.push(Self::joined_row(
+                            &self.rows[*left_row_index],
+                            right_row,
+                            &right_only_indexes,
+                        ));
+                    }
+                }
+            }
+        } else {
+            let left_shared_indexes = self.projection_indexes(&shared_variables)?;
+            let right_index = other.index_by(&shared_variables)?;
+            for left_row in &self.rows {
+                let key = Self::row_key(left_row, &left_shared_indexes);
+                if let Some(right_row_indexes) = right_index.get(&key) {
+                    for right_row_index in right_row_indexes {
+                        rows.push(Self::joined_row(
+                            left_row,
+                            &other.rows[*right_row_index],
+                            &right_only_indexes,
+                        ));
+                    }
                 }
             }
         }
@@ -397,8 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn natural_join_preserves_bag_multiplicity_and_layout_order() {
-        let left = binding_bag(&["?x"], &[&["a"], &["a"], &["b"]]);
+    fn natural_join_indexes_smaller_receiver_and_preserves_layout_and_multiplicity() {
+        let left = binding_bag(&["?x", "?left"], &[&["a", "l1"], &["a", "l2"]]);
         let right = binding_bag(
             &["?x", "?y"],
             &[&["a", "1"], &["a", "1"], &["a", "2"], &["c", "3"]],
@@ -409,15 +442,32 @@ mod tests {
         assert_eq!(
             joined,
             binding_bag(
-                &["?x", "?y"],
+                &["?x", "?left", "?y"],
                 &[
-                    &["a", "1"],
-                    &["a", "1"],
-                    &["a", "2"],
-                    &["a", "1"],
-                    &["a", "1"],
-                    &["a", "2"],
+                    &["a", "l1", "1"],
+                    &["a", "l2", "1"],
+                    &["a", "l1", "1"],
+                    &["a", "l2", "1"],
+                    &["a", "l1", "2"],
+                    &["a", "l2", "2"],
                 ],
+            )
+        );
+    }
+
+    #[test]
+    fn natural_join_indexes_smaller_other_and_preserves_receiver_layout() {
+        let left = binding_bag(
+            &["?x", "?left"],
+            &[&["a", "l1"], &["a", "l2"], &["b", "l3"]],
+        );
+        let right = binding_bag(&["?right", "?x"], &[&["r1", "a"]]);
+
+        assert_eq!(
+            left.natural_join(&right).unwrap(),
+            binding_bag(
+                &["?x", "?left", "?right"],
+                &[&["a", "l1", "r1"], &["a", "l2", "r1"]],
             )
         );
     }
