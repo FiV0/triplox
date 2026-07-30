@@ -496,6 +496,22 @@ mod tests {
     }
 
     #[test]
+    fn natural_join_build_sides_produce_the_same_bag() {
+        let left = binding_bag(&["?x", "?left"], &[&["a", "l1"], &["a", "l2"]]);
+        let larger_left = binding_bag(
+            &["?x", "?left"],
+            &[&["a", "l1"], &["a", "l2"], &["b", "l3"]],
+        );
+        let right = binding_bag(&["?x", "?right"], &[&["a", "1"], &["a", "2"]]);
+        let larger_right = binding_bag(&["?x", "?right"], &[&["a", "1"], &["a", "2"], &["c", "3"]]);
+
+        assert_eq!(
+            left.natural_join(&larger_right).unwrap(),
+            larger_left.natural_join(&right).unwrap()
+        );
+    }
+
+    #[test]
     fn natural_join_without_shared_variables_is_a_cartesian_product() {
         let left = binding_bag(&["?x"], &[&["a"], &["b"]]);
         let right = binding_bag(&["?y"], &[&["1"], &["2"]]);
@@ -553,6 +569,10 @@ mod tests {
         assert_eq!(values.natural_join(&unit).unwrap(), values);
         assert_eq!(
             empty.natural_join(&values).unwrap(),
+            BindingBag::empty(vec!["?x".to_var()]).unwrap()
+        );
+        assert_eq!(
+            values.natural_join(&empty).unwrap(),
             BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
         assert_eq!(values.semijoin(&unit).unwrap(), values);
