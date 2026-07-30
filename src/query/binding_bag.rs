@@ -155,14 +155,10 @@ impl BindingBag {
         let rows = self
             .rows
             .iter()
-            .filter(|row| seen.insert((*row).clone()))
+            .filter(|row| seen.insert(*row))
             .cloned()
             .collect();
-        Self {
-            variables: self.variables.clone(),
-            rows,
-            column_indexes: self.column_indexes.clone(),
-        }
+        self.with_rows(rows)
     }
 
     pub(crate) fn index_by(
