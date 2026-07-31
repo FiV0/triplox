@@ -194,12 +194,10 @@ fn difference_stream(
             row.clone(),
         )
     });
-    let negative_indexed = negative.stream.map_index(move |row| {
-        (
-            select_row_positions(row, &negative_key_positions),
-            row.clone(),
-        )
-    });
+    // `antijoin` only looks at the negative keys, so carrying row values would be wasted work.
+    let negative_indexed = negative
+        .stream
+        .map_index(move |row| (select_row_positions(row, &negative_key_positions), ()));
 
     positive_indexed
         .antijoin(&negative_indexed)
