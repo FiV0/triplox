@@ -28,6 +28,10 @@
 (def edge-schema
   [{:db/ident :g/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
+(def aliases-schema
+  [{:db/ident :alias :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
+   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+
 (def triangle-relation-schema
   [{:db/ident :node/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :r/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
@@ -165,6 +169,29 @@
 
         (api/transact conn [[:db/retract alice-id :age 30]])
         (is (= [[["Alice"] 1]] (take-delta! sub)))))))
+
+(deftest not-suppresses-positive-side-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn aliases-schema)
+    (with-open [sub (api/subscribe conn '{:find [?alias]
+                                          :where [[?e :alias ?alias]
+                                                  (not [?e :age 30])]})]
+      (api/transact conn [{:db/id "alice" :alias "Alice"}])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :alias "Alice"]]})]
+        (api/transact conn [[:db/add alice-id :age 30]])
+        (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+        (api/transact conn [[:db/add alice-id :alias "Alicia"]])
+        (is (= ::api/timeout (take-delta! sub 300)))
+
+        (api/transact conn [[:db/retract alice-id :alias "Alice"]])
+        (is (= ::api/timeout (take-delta! sub 300)))
+
+        (api/transact conn [[:db/retract alice-id :age 30]])
+        (is (= [[["Alicia"] 1]] (take-delta! sub)))))))
 
 (deftest test-not-negative-scope-layouts
   (testing "Multi-clause negative scope"
