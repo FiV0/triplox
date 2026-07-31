@@ -93,11 +93,11 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
         .collect()
 }
 
-// Joins incoming rows with pattern rows using their planned layouts.
-fn join_pattern_rows(
-    incoming_rows: Stream<RootCircuit, RowZSet>,
+// Joins incoming and pattern streams using their planned row layouts.
+fn join_pattern_streams(
+    incoming_stream: Stream<RootCircuit, RowZSet>,
     incoming_vars: &[Variable],
-    pattern_rows: Stream<RootCircuit, RowZSet>,
+    pattern_stream: Stream<RootCircuit, RowZSet>,
     pattern_vars: &[Variable],
     output_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
@@ -126,13 +126,13 @@ fn join_pattern_rows(
         })
         .collect::<Vec<_>>();
 
-    let incoming_indexed = incoming_rows.map_index(move |row| {
+    let incoming_indexed = incoming_stream.map_index(move |row| {
         (
             select_row_positions(row, &incoming_key_positions),
             row.clone(),
         )
     });
-    let pattern_indexed = pattern_rows.map_index(move |row| {
+    let pattern_indexed = pattern_stream.map_index(move |row| {
         (
             select_row_positions(row, &pattern_key_positions),
             row.clone(),
@@ -155,17 +155,21 @@ pub(crate) fn pattern_stream(
 
 #[derive(Clone)]
 pub(crate) struct PlannedWhereStream {
-    rows: Stream<RootCircuit, RowZSet>,
+    stream: Stream<RootCircuit, RowZSet>,
     vars: Vec<Variable>,
 }
 
 fn project_stream(
-    rows: Stream<RootCircuit, RowZSet>,
+    stream: Stream<RootCircuit, RowZSet>,
     source_vars: &[Variable],
     target_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
+    if source_vars == target_vars {
+        return stream;
+    }
+
     let selected_positions = positions(source_vars, target_vars);
-    rows.map(move |row| select_row_positions(row, &selected_positions))
+    stream.map(move |row| select_row_positions(row, &selected_positions))
 }
 
 fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>) {
@@ -177,6 +181,29 @@ fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>)
     );
 }
 
+fn difference_stream(
+    positive: PlannedWhereStream,
+    negative: PlannedWhereStream,
+    key_vars: &[Variable],
+) -> Stream<RootCircuit, RowZSet> {
+    let positive_key_positions = positions(&positive.vars, key_vars);
+    let negative_key_positions = positions(&negative.vars, key_vars);
+    let positive_indexed = positive.stream.map_index(move |row| {
+        (
+            select_row_positions(row, &positive_key_positions),
+            row.clone(),
+        )
+    });
+    // `antijoin` only looks at the negative keys, so carrying row values would be wasted work.
+    let negative_indexed = negative
+        .stream
+        .map_index(move |row| (select_row_positions(row, &negative_key_positions), ()));
+
+    positive_indexed
+        .antijoin(&negative_indexed)
+        .map(|(_key, row)| row.clone())
+}
+
 fn rel_stream(
     fact_input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     plan: &RelPlan,
@@ -184,47 +211,61 @@ fn rel_stream(
 ) -> PlannedWhereStream {
     assert_incoming_layout(plan, &incoming);
 
-    match &plan.kind {
+    let stream = match &plan.kind {
         RelPlanKind::Pattern(pattern) => {
-            let pattern_rows = pattern_stream(fact_input, pattern.clone());
-            let rows = match incoming {
-                Some(incoming) => join_pattern_rows(
-                    incoming.rows,
+            let pattern_stream = pattern_stream(fact_input, pattern.clone());
+            match incoming {
+                Some(incoming) => join_pattern_streams(
+                    incoming.stream,
                     &incoming.vars,
-                    pattern_rows,
+                    pattern_stream,
                     &pattern.pattern_vars,
                     &plan.output_vars,
                 ),
-                None => pattern_rows,
-            };
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
+                None => pattern_stream,
             }
         }
-        RelPlanKind::Chain(chain) => chain
-            .children
-            .iter()
-            .fold(incoming, |running, child| {
-                Some(rel_stream(fact_input, child, running))
-            })
-            .expect("chain plan must contain at least one child"),
+        RelPlanKind::Chain(chain) => {
+            let relation = chain
+                .children
+                .iter()
+                .fold(incoming, |running, child| {
+                    Some(rel_stream(fact_input, child, running))
+                })
+                .expect("chain plan must contain at least one child");
+            project_stream(relation.stream, &relation.vars, &plan.output_vars)
+        }
+        RelPlanKind::Difference(difference) => {
+            let positive = incoming.expect("difference plan requires an incoming relation");
+            let negative_seed_stream = project_stream(
+                positive.stream.clone(),
+                &positive.vars,
+                &difference.key_vars,
+            );
+            let negative_seed = PlannedWhereStream {
+                stream: negative_seed_stream,
+                vars: difference.key_vars.clone(),
+            };
+            let negative = rel_stream(fact_input, &difference.negative, Some(negative_seed));
+            difference_stream(positive, negative, &difference.key_vars)
+        }
         RelPlanKind::Union(union) => {
             let mut branches = union
                 .branches
                 .iter()
                 .map(|branch| {
                     let branch = rel_stream(fact_input, branch, incoming.clone());
-                    project_stream(branch.rows, &branch.vars, &plan.output_vars)
+                    project_stream(branch.stream, &branch.vars, &plan.output_vars)
                 })
                 .collect::<Vec<_>>();
             let first = branches.remove(0);
-            let rows = first.sum(branches.iter()).distinct();
-            PlannedWhereStream {
-                rows,
-                vars: plan.output_vars.clone(),
-            }
+            first.sum(branches.iter()).distinct()
         }
+    };
+
+    PlannedWhereStream {
+        stream,
+        vars: plan.output_vars.clone(),
     }
 }
 
@@ -243,7 +284,7 @@ pub(crate) fn query_find_stream(
 ) -> Stream<RootCircuit, RowZSet> {
     let find_positions = positions(&where_stream.vars, find_vars);
     where_stream
-        .rows
+        .stream
         .map(move |row| select_row_positions(row, &find_positions))
 }
 
@@ -297,8 +338,8 @@ impl QueryCircuit {
         let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
-            let rows = query_find_stream(where_stream, &plan.find_vars);
-            Ok((handle, rows.output()))
+            let stream = query_find_stream(where_stream, &plan.find_vars);
+            Ok((handle, stream.output()))
         })
         .map_err(anyhow::Error::from)?;
 
@@ -332,17 +373,20 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::test_support::{parse_query, test_schema};
+    use crate::inc_query::test_support::{
+        parse_query, test_schema, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS,
+        NAME_ATTR_ID as NAME, TYPE_ATTR_ID as TYPE,
+    };
     use crate::inc_query::{plan_query, IncrementalQueryPlan, PatternSlot};
-    use crate::ops::DataType;
+    use crate::ops::{DataType, Entid};
 
     fn build_pattern_circuit(
         circuit: &mut RootCircuit,
         pattern: PatternPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = pattern_stream(&input, pattern);
-        Ok((handle, rows.output()))
+        let stream = pattern_stream(&input, pattern);
+        Ok((handle, stream.output()))
     }
 
     fn build_where_circuit(
@@ -350,8 +394,8 @@ mod tests {
         plan: IncrementalQueryPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = query_where_stream(&input, &plan).rows;
-        Ok((handle, rows.output()))
+        let stream = query_where_stream(&input, &plan).stream;
+        Ok((handle, stream.output()))
     }
 
     fn build_find_circuit(
@@ -360,8 +404,8 @@ mod tests {
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let where_stream = query_where_stream(&input, &plan);
-        let rows = query_find_stream(where_stream, &plan.find_vars);
-        Ok((handle, rows.output()))
+        let stream = query_find_stream(where_stream, &plan.find_vars);
+        Ok((handle, stream.output()))
     }
 
     fn build_test_circuit<T, F>(constructor: F) -> (DBSPHandle, T, TempDir)
@@ -397,10 +441,10 @@ mod tests {
         handle.append(&mut batch);
     }
 
-    fn triple(entity: i64, attribute: i64, value: DataType) -> EncodedTriple {
+    fn triple(entity: Entid, attribute_id: Entid, value: DataType) -> EncodedTriple {
         EncodedTriple {
             entity: DataType::Long(entity).encode(),
-            attribute,
+            attribute: attribute_id,
             value: value.encode(),
         }
     }
@@ -416,7 +460,7 @@ mod tests {
 
     fn single_var_pattern() -> PatternPlan {
         PatternPlan {
-            attribute: 10,
+            attribute: NAME,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
             pattern_vars: vec!["?e".to_var(), "?name".to_var()],
@@ -439,8 +483,8 @@ mod tests {
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         let priming_rows = circuit
             .apply(vec![
-                Tup2(triple(42, 10, DataType::String("Alice".to_string())), 1),
-                Tup2(triple(42, 11, DataType::Long(30)), 1),
+                Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
             .unwrap();
 
@@ -464,7 +508,7 @@ mod tests {
 
         append(
             &handle,
-            [(triple(42, 10, DataType::String("Alice".to_string())), 1)],
+            [(triple(42, NAME, DataType::String("Alice".to_string())), 1)],
         );
         circuit.transaction().unwrap();
 
@@ -487,7 +531,7 @@ mod tests {
 
         append(
             &handle,
-            [(triple(42, 10, DataType::String("Alice".to_string())), -1)],
+            [(triple(42, NAME, DataType::String("Alice".to_string())), -1)],
         );
         circuit.transaction().unwrap();
 
@@ -506,7 +550,7 @@ mod tests {
     #[test]
     fn pattern_filters_constants() {
         let pattern = PatternPlan {
-            attribute: 10,
+            attribute: NAME,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
             pattern_vars: vec!["?e".to_var()],
@@ -517,9 +561,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(43, 10, DataType::String("Bob".to_string())), 1),
-                (triple(44, 11, DataType::String("Alice".to_string())), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(43, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(44, AGE, DataType::String("Alice".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -539,9 +583,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(42, 11, DataType::Long(30)), 1),
-                (triple(43, 10, DataType::String("Bob".to_string())), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(43, NAME, DataType::String("Bob".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -574,9 +618,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(42, 11, DataType::Long(30)), 1),
-                (triple(42, 12, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -610,9 +654,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(42, 11, DataType::Long(30)), 1),
-                (triple(42, 12, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -637,9 +681,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, 10, DataType::String("Alice".to_string())), 1),
-                (triple(2, 10, DataType::String("Bob".to_string())), 1),
-                (triple(3, 10, DataType::String("Charlie".to_string())), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(3, NAME, DataType::String("Charlie".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -666,8 +710,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, 10, DataType::String("Alice".to_string())), 1),
-                (triple(1, 13, DataType::Keyword(kw!(:person))), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, TYPE, DataType::Keyword(kw!(:person))), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -678,7 +722,7 @@ mod tests {
 
         append(
             &handle,
-            [(triple(1, 10, DataType::String("Alice".to_string())), -1)],
+            [(triple(1, NAME, DataType::String("Alice".to_string())), -1)],
         );
         circuit.transaction().unwrap();
         assert!(decode_output_rows(&output.consolidate())
@@ -687,7 +731,7 @@ mod tests {
 
         append(
             &handle,
-            [(triple(1, 13, DataType::Keyword(kw!(:person))), -1)],
+            [(triple(1, TYPE, DataType::Keyword(kw!(:person))), -1)],
         );
         circuit.transaction().unwrap();
         assert_eq!(
@@ -705,8 +749,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, 10, DataType::String("Alice".to_string())), 1),
-                (triple(2, 12, DataType::Long(1)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, FOLLOWS, DataType::Long(1)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -739,14 +783,13 @@ mod tests {
 
         append(
             &handle,
-            // Attribute IDs come from `test_schema`: 10 is :name and 11 is :age.
             [
-                (triple(1, 10, DataType::String("Alice".to_string())), 1),
-                (triple(1, 11, DataType::Long(30)), 1),
-                (triple(2, 10, DataType::String("Bob".to_string())), 1),
-                (triple(2, 11, DataType::Long(40)), 1),
-                (triple(3, 10, DataType::String("Cara".to_string())), 1),
-                (triple(3, 11, DataType::Long(50)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(2, AGE, DataType::Long(40)), 1),
+                (triple(3, NAME, DataType::String("Cara".to_string())), 1),
+                (triple(3, AGE, DataType::Long(50)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -763,6 +806,68 @@ mod tests {
     }
 
     #[test]
+    fn not_stream_uses_negative_key_presence() {
+        let plan = query_plan("[:find ?name :where [?e :name ?name] (not [?e :age 30])]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, AGE, DataType::Long(30)), 2),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[test]
+    fn double_not_stream_tracks_nested_presence() {
+        let plan = query_plan("[:find ?name :where [?e :name ?name] (not (not [?e :age 30]))]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [(triple(1, NAME, DataType::String("Alice".to_string())), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("Alice".to_string())], -1)]
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "running relation layout does not match planned incoming layout")]
     fn assembly_rejects_incoming_layout_mismatch() {
         let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
@@ -773,9 +878,9 @@ mod tests {
 
         let _ = build_test_circuit(move |circuit| {
             let (facts, _) = circuit.add_input_zset::<EncodedTriple>();
-            let (rows, _) = circuit.add_input_zset::<EncodedRow>();
+            let (stream, _) = circuit.add_input_zset::<EncodedRow>();
             let incoming = PlannedWhereStream {
-                rows,
+                stream,
                 vars: vec!["?name".to_var(), "?e".to_var()],
             };
             let _ = rel_stream(&facts, &extending_pattern, Some(incoming));
@@ -797,8 +902,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, 12, DataType::Long(2)), 1),
-                (triple(2, 10, DataType::String("Bob".to_string())), 1),
+                (triple(1, FOLLOWS, DataType::Long(2)), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -831,9 +936,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(42, 11, DataType::Long(30)), 1),
-                (triple(42, 12, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -866,9 +971,9 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, 10, DataType::String("Alice".to_string())), 1),
-                (triple(2, 10, DataType::String("Bob".to_string())), 1),
-                (triple(3, 11, DataType::Long(30)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(3, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -907,8 +1012,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), 1),
-                (triple(42, 11, DataType::Long(30)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -931,8 +1036,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(42, 10, DataType::String("Alice".to_string())), -1),
-                (triple(42, 11, DataType::Long(30)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), -1),
+                (triple(42, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();

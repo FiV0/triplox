@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 use edn::query::{
-    OrJoin, OrWhereClause, Pattern, PatternNonValuePlace, PatternValuePlace, Variable, WhereClause,
+    NotJoin, OrJoin, OrWhereClause, Pattern, PatternNonValuePlace, PatternValuePlace, Variable,
+    WhereClause,
 };
 
 use crate::codec::Encode;
@@ -34,6 +35,7 @@ pub(super) struct Descriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DescriptorKind {
     Pattern(PatternDescriptor),
+    Not(NotDescriptor),
     Or(OrDescriptor),
 }
 
@@ -47,6 +49,11 @@ pub(super) struct PatternDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct OrDescriptor {
     pub branches: Vec<ScopeDescriptor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct NotDescriptor {
+    pub scope: ScopeDescriptor,
 }
 
 fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
@@ -140,9 +147,19 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
                 kind: DescriptorKind::Pattern(pattern),
             })
         }
+        WhereClause::NotJoin(not) => describe_not(not, schema),
         WhereClause::OrJoin(or) => describe_or(or, schema),
         _ => unreachable!("unsupported clauses are rejected before planning"),
     }
+}
+
+fn describe_not(not: &NotJoin, schema: &Schema) -> Result<Descriptor> {
+    let scope = describe_where_clauses(&not.clauses, schema)?;
+    Ok(Descriptor {
+        variables: scope.variables.clone(),
+        groundable: Vec::new(),
+        kind: DescriptorKind::Not(NotDescriptor { scope }),
+    })
 }
 
 fn describe_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<ScopeDescriptor> {
@@ -256,5 +273,20 @@ mod tests {
         };
         assert_eq!(or.branches[0].variables, vec!["?e".to_var(), "?v".to_var()]);
         assert_eq!(or.branches[1].variables, vec!["?v".to_var(), "?e".to_var()]);
+    }
+
+    #[test]
+    fn not_metadata_mentions_variables_without_grounding_them() {
+        let query = parse_query("[:find ?e :where [?e :name ?name] (not [?e :age ?age])]");
+        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let descriptor = &scope.descriptors[1];
+
+        assert_eq!(descriptor.variables, vec!["?e".to_var(), "?age".to_var()]);
+        assert!(descriptor.groundable.is_empty());
+        let DescriptorKind::Not(not) = &descriptor.kind else {
+            panic!("expected not descriptor");
+        };
+        assert_eq!(not.scope.variables, vec!["?e".to_var(), "?age".to_var()]);
+        assert_eq!(not.scope.groundable, not.scope.variables);
     }
 }

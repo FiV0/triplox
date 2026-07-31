@@ -15,7 +15,8 @@
    {:db/ident :last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
-   {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
+   {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+   {:db/ident :alias :db/valueType :db.type/string :db/cardinality :db.cardinality/many}])
 
 (def residence-schema
   [{:db/ident :person/name
@@ -148,6 +149,96 @@
         (api/transact conn [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}])
         (is (= ::api/timeout (api/take! sub 300)))))))
+
+(deftest test-not-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (with-open [sub (api/subscribe conn '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (not [?e :age 30])]})]
+      (api/transact conn [{:name "Alice"}])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :name "Alice"]]})]
+        (api/transact conn [[:db/add alice-id :age 30]])
+        (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+        (api/transact conn [[:db/retract alice-id :age 30]])
+        (is (= [[["Alice"] 1]] (take-delta! sub)))))))
+
+(deftest not-suppresses-positive-side-addition+retraction
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (with-open [sub (api/subscribe conn '{:find [?alias]
+                                          :where [[?e :alias ?alias]
+                                                  (not [?e :age 30])]})]
+      (api/transact conn [{:db/id "alice" :alias "Alice"}])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :alias "Alice"]]})]
+        (api/transact conn [[:db/add alice-id :age 30]])
+        (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+        (api/transact conn [[:db/add alice-id :alias "Alicia"]])
+        (is (= ::api/timeout (take-delta! sub 300)))
+
+        (api/transact conn [[:db/retract alice-id :alias "Alice"]])
+        (is (= ::api/timeout (take-delta! sub 300)))
+
+        (api/transact conn [[:db/retract alice-id :age 30]])
+        (is (= [[["Alicia"] 1]] (take-delta! sub)))))))
+
+(deftest test-not-negative-scope-layouts
+  (testing "Multi-clause negative scope"
+    (with-open [conn (connect)]
+      (api/transact conn people-schema)
+      (api/transact conn [{:db/id "alice" :name "Alice" :friend "bob"}
+                          {:db/id "bob" :name "Bob"}])
+      (let [alice-id (single-value conn '{:find [?e]
+                                          :where [[?e :name "Alice"]]})
+            bob-id (single-value conn '{:find [?e]
+                                        :where [[?e :name "Bob"]]})]
+        (with-open [sub (api/subscribe conn '{:find [?name]
+                                              :where [[?e :name ?name]
+                                                      [?e :friend ?friend]
+                                                      (not [?e :age 30]
+                                                           [?friend :age 40])]})]
+          (is (= [[["Alice"] 1]] (take-priming! sub)))
+
+          (api/transact conn [[:db/add alice-id :age 30]])
+          (is (= ::api/timeout (take-delta! sub 300)))
+
+          (api/transact conn [[:db/add bob-id :age 40]])
+          (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+          (api/transact conn [[:db/retract bob-id :age 40]])
+          (is (= [[["Alice"] 1]] (take-delta! sub)))))))
+
+  (testing "OR inside negative scope"
+    (with-open [conn (connect)]
+      (api/transact conn people-schema)
+      (with-open [sub (api/subscribe conn '{:find [?name]
+                                            :where [[?e :name ?name]
+                                                    (not (or [?e :age 30]
+                                                             [?e :city "Berlin"]))]})]
+        (api/transact conn [{:name "Alice"}])
+        (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+        (let [alice-id (single-value conn '{:find [?e]
+                                            :where [[?e :name "Alice"]]})]
+          (api/transact conn [[:db/add alice-id :age 30]])
+          (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+          (api/transact conn [[:db/add alice-id :city "Berlin"]])
+          (is (= ::api/timeout (take-delta! sub 300)))
+
+          (api/transact conn [[:db/retract alice-id :age 30]])
+          (is (= ::api/timeout (take-delta! sub 300)))
+
+          (api/transact conn [[:db/retract alice-id :city "Berlin"]])
+          (is (= [[["Alice"] 1]] (take-delta! sub))))))))
 
 (deftest test-basic-query-5
   (testing "Can query for multiple results"

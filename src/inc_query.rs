@@ -13,7 +13,7 @@ mod descriptor;
 mod planner;
 
 pub(crate) use descriptor::PatternSlot;
-pub(crate) use planner::{ChainPlan, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
+pub(crate) use planner::{ChainPlan, DifferencePlan, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
@@ -89,9 +89,15 @@ fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
 fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
     match clause {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
+        WhereClause::NotJoin(not) => {
+            for clause in &not.clauses {
+                reject_unsupported_where_clause(clause)?;
+            }
+            Ok(())
+        }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
-            "Incremental queries currently support only triple patterns, `or` clauses, and `and` clauses in :where"
+            "Incremental queries currently support only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
         ),
     }
 }
@@ -140,7 +146,13 @@ pub(crate) mod test_support {
     use edn::kw;
     use edn::query::ParsedQuery;
 
+    use crate::ops::Entid;
     use crate::schema::{Attribute, Schema, ValueType};
+
+    pub(crate) const NAME_ATTR_ID: Entid = 10;
+    pub(crate) const AGE_ATTR_ID: Entid = 11;
+    pub(crate) const FOLLOWS_ATTR_ID: Entid = 12;
+    pub(crate) const TYPE_ATTR_ID: Entid = 13;
 
     pub(crate) fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
@@ -148,10 +160,10 @@ pub(crate) mod test_support {
 
     pub(crate) fn test_schema() -> Schema {
         let attrs = [
-            (kw!(:name), 10, ValueType::String),
-            (kw!(:age), 11, ValueType::Long),
-            (kw!(:follows), 12, ValueType::Ref),
-            (kw!(:type), 13, ValueType::Keyword),
+            (kw!(:name), NAME_ATTR_ID, ValueType::String),
+            (kw!(:age), AGE_ATTR_ID, ValueType::Long),
+            (kw!(:follows), FOLLOWS_ATTR_ID, ValueType::Ref),
+            (kw!(:type), TYPE_ATTR_ID, ValueType::Keyword),
         ];
         let mut ident_map = HashMap::new();
         let mut entid_map = HashMap::new();
@@ -621,6 +633,109 @@ mod tests {
     }
 
     #[test]
+    fn plans_not_after_its_variables_are_grounded() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query("[:find ?name :where (not [?e :age 30]) [?e :name ?name]]"),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        assert!(matches!(chain.children[0].kind, RelPlanKind::Pattern(_)));
+        let difference = &chain.children[1];
+        assert_eq!(
+            difference.incoming_vars,
+            Some(vec!["?e".to_var(), "?name".to_var()])
+        );
+        assert_eq!(
+            difference.output_vars,
+            vec!["?e".to_var(), "?name".to_var()]
+        );
+        let RelPlanKind::Difference(difference) = &difference.kind else {
+            panic!("expected difference plan");
+        };
+        assert_eq!(difference.key_vars, vec!["?e".to_var()]);
+        assert_eq!(difference.negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(difference.negative.output_vars, vec!["?e".to_var()]);
+    }
+
+    #[test]
+    fn plans_not_with_a_non_leading_key() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query("[:find ?name :where [?name :follows ?e] (not [?e :age 30])]"),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        let RelPlanKind::Difference(difference) = &chain.children[1].kind else {
+            panic!("expected difference plan");
+        };
+        assert_eq!(
+            chain.children[1].incoming_vars,
+            Some(vec!["?name".to_var(), "?e".to_var()])
+        );
+        assert_eq!(difference.key_vars, vec!["?e".to_var()]);
+    }
+
+    #[test]
+    fn plans_double_not_from_the_projected_outer_relation() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query("[:find ?e :where [?e :name ?name] (not (not [?e :age 30]))]"),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        let RelPlanKind::Difference(outer) = &chain.children[1].kind else {
+            panic!("expected outer difference");
+        };
+        let RelPlanKind::Difference(inner) = &outer.negative.kind else {
+            panic!("expected inner difference");
+        };
+        assert_eq!(outer.key_vars, vec!["?e".to_var()]);
+        assert_eq!(outer.negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(inner.key_vars, vec!["?e".to_var()]);
+        assert_eq!(inner.negative.incoming_vars, Some(vec!["?e".to_var()]));
+    }
+
+    #[test]
+    fn plans_not_inside_an_and_or_branch() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                r#"[:find ?e
+                    :where
+                    (or
+                      (and [?e :name "Alice"] (not [?e :age 30]))
+                      [?e :name "Bob"])]"#,
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+            panic!("expected union plan");
+        };
+        let RelPlanKind::Chain(branch) = &union.branches[0].kind else {
+            panic!("expected and branch");
+        };
+        assert!(matches!(
+            branch.children[1].kind,
+            RelPlanKind::Difference(_)
+        ));
+    }
+
+    #[test]
     fn accepts_entid_attribute() {
         let schema = test_schema();
         let plan = plan_query(&parse_query("[:find ?e :where [?e 10 ?name]]"), &schema).unwrap();
@@ -672,11 +787,7 @@ mod tests {
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
-            "only triple patterns, `or` clauses, and `and` clauses",
-        );
-        assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] (not [?e :age 30])]"#,
-            "only triple patterns, `or` clauses, and `and` clauses",
+            "only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
