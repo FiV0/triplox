@@ -49,6 +49,7 @@ pub(crate) trait ExecPattern: Send + Sync {
         proposals: &mut [Proposal],
     ) -> Result<()>;
 
+    /// An empty `added` existentially validates the current binding prefix; unbound pattern variables remain for later stages.
     fn join(
         &self,
         input: &BindingBag,
