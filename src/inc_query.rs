@@ -830,18 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_not_without_a_positive_binding() {
-        assert_plan_err(
-            "[:find ?e :where (not [?e :age 30])]",
-            "Query has no variables",
-        );
-        assert_plan_err(
-            r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#,
-            "Variable ?e in NOT clause is not bound by positive clauses",
-        );
-    }
-
-    #[test]
     fn rejects_unknown_ident_attribute() {
         assert_plan_err(
             "[:find ?e :where [?e :unknown ?value]]",

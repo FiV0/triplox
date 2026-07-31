@@ -438,6 +438,30 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_rejects_not_without_positive_variables() {
+        let parsed = parse_query("[:find ?e :where (not [?e :age 30])]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("Query has no variables"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_unbound_not_variable() {
+        let parsed =
+            parse_query(r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#);
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Variable ?e in NOT clause is not bound by positive clauses"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_validate_rejects_nested_or_mismatched_branch_variables() {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
