@@ -6,6 +6,12 @@ use crate::algo::trie::{Trie, TrieNode};
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 
+/// A pattern that matches a relation (set of rows) with a fixed set of variables.
+///
+/// Bound variables are read from the input in this relation's variable order, regardless of
+/// their input column order or unrelated interleaved columns. For proposals, the bound variables
+/// followed by the introduced variables must form a relation prefix. Validation requires the bound
+/// variables themselves to form a relation prefix.
 pub(crate) struct RelationPattern {
     id: PatternId,
     variables: Vec<Variable>,
