@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, bail, Result};
 use edn::query::{
-    Element, FindSpec, Limit, NotJoin, OrJoin, OrWhereClause, ParsedQuery, Pattern,
-    PatternNonValuePlace, UnifyVars, Variable, WhereClause,
+    Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
+    Variable, WhereClause,
 };
 
 use crate::query_validation::validate_query;
@@ -58,16 +58,6 @@ fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
     Ok(())
 }
 
-fn reject_unsupported_not_join(not: &NotJoin) -> Result<()> {
-    if !matches!(not.unify_vars, UnifyVars::Implicit) {
-        bail!("Incremental queries do not support explicit not-join");
-    }
-    for clause in &not.clauses {
-        reject_unsupported_where_clause(clause)?;
-    }
-    Ok(())
-}
-
 fn reject_unsupported_or_branch(branch: &OrWhereClause) -> Result<()> {
     match branch {
         OrWhereClause::Clause(clause) => reject_unsupported_where_clause(clause),
@@ -99,7 +89,12 @@ fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
 fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
     match clause {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
-        WhereClause::NotJoin(not) => reject_unsupported_not_join(not),
+        WhereClause::NotJoin(not) => {
+            for clause in &not.clauses {
+                reject_unsupported_where_clause(clause)?;
+            }
+            Ok(())
+        }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
             "Incremental queries currently support only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
@@ -793,10 +788,6 @@ mod tests {
         assert_plan_err(
             r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
             "only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses",
-        );
-        assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] (not-join [?e] [?e :age 30])]"#,
-            "explicit not-join",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,

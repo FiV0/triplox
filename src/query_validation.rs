@@ -46,6 +46,9 @@ where
             Ok(())
         }
         WhereClause::NotJoin(nj) => {
+            if !matches!(&nj.unify_vars, UnifyVars::Implicit) {
+                bail!("Queries (currently) do not support explicit not-join");
+            }
             validate_where_clauses_recursively(&nj.clauses, validate_clause)
         }
         _ => Ok(()),
@@ -417,6 +420,18 @@ mod tests {
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
             err.to_string().contains("explicit or-join"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_explicit_not_join() {
+        let parsed =
+            parse_query(r#"[:find ?e :where [?e :name "Alice"] (not-join [?e] [?e :age 30])]"#);
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("explicit not-join"),
             "unexpected error: {}",
             err
         );
