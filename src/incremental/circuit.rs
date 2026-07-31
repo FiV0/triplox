@@ -376,7 +376,8 @@ mod tests {
     use super::*;
     use crate::codec::Encode;
     use crate::inc_query::test_support::{
-        parse_query, test_schema, AGE_ATTR_ID, FOLLOWS_ATTR_ID, NAME_ATTR_ID, TYPE_ATTR_ID,
+        parse_query, test_schema, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS,
+        NAME_ATTR_ID as NAME, TYPE_ATTR_ID as TYPE,
     };
     use crate::inc_query::{plan_query, IncrementalQueryPlan, PatternSlot};
     use crate::ops::{DataType, Entid};
@@ -461,7 +462,7 @@ mod tests {
 
     fn single_var_pattern() -> PatternPlan {
         PatternPlan {
-            attribute: NAME_ATTR_ID,
+            attribute: NAME,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Variable("?name".to_var()),
             pattern_vars: vec!["?e".to_var(), "?name".to_var()],
@@ -484,11 +485,8 @@ mod tests {
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         let priming_rows = circuit
             .apply(vec![
-                Tup2(
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                Tup2(triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
+                Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
             .unwrap();
 
@@ -512,10 +510,7 @@ mod tests {
 
         append(
             &handle,
-            [(
-                triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                1,
-            )],
+            [(triple(42, NAME, DataType::String("Alice".to_string())), 1)],
         );
         circuit.transaction().unwrap();
 
@@ -538,10 +533,7 @@ mod tests {
 
         append(
             &handle,
-            [(
-                triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                -1,
-            )],
+            [(triple(42, NAME, DataType::String("Alice".to_string())), -1)],
         );
         circuit.transaction().unwrap();
 
@@ -560,7 +552,7 @@ mod tests {
     #[test]
     fn pattern_filters_constants() {
         let pattern = PatternPlan {
-            attribute: NAME_ATTR_ID,
+            attribute: NAME,
             entity: PatternSlot::Variable("?e".to_var()),
             value: PatternSlot::Constant(DataType::String("Alice".to_string()).encode()),
             pattern_vars: vec!["?e".to_var()],
@@ -571,18 +563,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (
-                    triple(43, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
-                (
-                    triple(44, AGE_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(43, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(44, AGE, DataType::String("Alice".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -602,15 +585,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
-                (
-                    triple(43, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(43, NAME, DataType::String("Bob".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -643,12 +620,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
-                (triple(42, FOLLOWS_ATTR_ID, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -682,12 +656,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
-                (triple(42, FOLLOWS_ATTR_ID, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -712,18 +683,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (
-                    triple(2, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
-                (
-                    triple(3, NAME_ATTR_ID, DataType::String("Charlie".to_string())),
-                    1,
-                ),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(3, NAME, DataType::String("Charlie".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -750,11 +712,8 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(1, TYPE_ATTR_ID, DataType::Keyword(kw!(:person))), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, TYPE, DataType::Keyword(kw!(:person))), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -765,10 +724,7 @@ mod tests {
 
         append(
             &handle,
-            [(
-                triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                -1,
-            )],
+            [(triple(1, NAME, DataType::String("Alice".to_string())), -1)],
         );
         circuit.transaction().unwrap();
         assert!(decode_output_rows(&output.consolidate())
@@ -777,7 +733,7 @@ mod tests {
 
         append(
             &handle,
-            [(triple(1, TYPE_ATTR_ID, DataType::Keyword(kw!(:person))), -1)],
+            [(triple(1, TYPE, DataType::Keyword(kw!(:person))), -1)],
         );
         circuit.transaction().unwrap();
         assert_eq!(
@@ -795,11 +751,8 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(2, FOLLOWS_ATTR_ID, DataType::Long(1)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, FOLLOWS, DataType::Long(1)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -833,21 +786,12 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(1, AGE_ATTR_ID, DataType::Long(30)), 1),
-                (
-                    triple(2, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
-                (triple(2, AGE_ATTR_ID, DataType::Long(40)), 1),
-                (
-                    triple(3, NAME_ATTR_ID, DataType::String("Cara".to_string())),
-                    1,
-                ),
-                (triple(3, AGE_ATTR_ID, DataType::Long(50)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(2, AGE, DataType::Long(40)), 1),
+                (triple(3, NAME, DataType::String("Cara".to_string())), 1),
+                (triple(3, AGE, DataType::Long(50)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -872,11 +816,8 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(1, AGE_ATTR_ID, DataType::Long(30)), 2),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(1, AGE, DataType::Long(30)), 2),
             ],
         );
         circuit.transaction().unwrap();
@@ -884,13 +825,13 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        append(&handle, [(triple(1, AGE_ATTR_ID, DataType::Long(30)), -1)]);
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
         circuit.transaction().unwrap();
         assert!(decode_output_rows(&output.consolidate())
             .unwrap()
             .is_empty());
 
-        append(&handle, [(triple(1, AGE_ATTR_ID, DataType::Long(30)), -1)]);
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
         circuit.transaction().unwrap();
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
@@ -906,24 +847,21 @@ mod tests {
 
         append(
             &handle,
-            [(
-                triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                1,
-            )],
+            [(triple(1, NAME, DataType::String("Alice".to_string())), 1)],
         );
         circuit.transaction().unwrap();
         assert!(decode_output_rows(&output.consolidate())
             .unwrap()
             .is_empty());
 
-        append(&handle, [(triple(1, AGE_ATTR_ID, DataType::Long(30)), 1)]);
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), 1)]);
         circuit.transaction().unwrap();
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
             vec![(vec![DataType::String("Alice".to_string())], 1)]
         );
 
-        append(&handle, [(triple(1, AGE_ATTR_ID, DataType::Long(30)), -1)]);
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
         circuit.transaction().unwrap();
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
@@ -966,11 +904,8 @@ mod tests {
         append(
             &handle,
             [
-                (triple(1, FOLLOWS_ATTR_ID, DataType::Long(2)), 1),
-                (
-                    triple(2, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
+                (triple(1, FOLLOWS, DataType::Long(2)), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -1003,12 +938,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
-                (triple(42, FOLLOWS_ATTR_ID, DataType::Long(43)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(42, FOLLOWS, DataType::Long(43)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -1041,15 +973,9 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(1, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (
-                    triple(2, NAME_ATTR_ID, DataType::String("Bob".to_string())),
-                    1,
-                ),
-                (triple(3, AGE_ATTR_ID, DataType::Long(30)), 1),
+                (triple(1, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(2, NAME, DataType::String("Bob".to_string())), 1),
+                (triple(3, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -1088,11 +1014,8 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
+                (triple(42, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -1115,11 +1038,8 @@ mod tests {
         append(
             &handle,
             [
-                (
-                    triple(42, NAME_ATTR_ID, DataType::String("Alice".to_string())),
-                    -1,
-                ),
-                (triple(42, AGE_ATTR_ID, DataType::Long(30)), 1),
+                (triple(42, NAME, DataType::String("Alice".to_string())), -1),
+                (triple(42, AGE, DataType::Long(30)), 1),
             ],
         );
         circuit.transaction().unwrap();
