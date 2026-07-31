@@ -93,11 +93,11 @@ fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> E
         .collect()
 }
 
-// Joins incoming rows with pattern rows using their planned layouts.
-fn join_pattern_rows(
-    incoming_rows: Stream<RootCircuit, RowZSet>,
+// Joins incoming and pattern streams using their planned row layouts.
+fn join_pattern_streams(
+    incoming_stream: Stream<RootCircuit, RowZSet>,
     incoming_vars: &[Variable],
-    pattern_rows: Stream<RootCircuit, RowZSet>,
+    pattern_stream: Stream<RootCircuit, RowZSet>,
     pattern_vars: &[Variable],
     output_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
@@ -126,13 +126,13 @@ fn join_pattern_rows(
         })
         .collect::<Vec<_>>();
 
-    let incoming_indexed = incoming_rows.map_index(move |row| {
+    let incoming_indexed = incoming_stream.map_index(move |row| {
         (
             select_row_positions(row, &incoming_key_positions),
             row.clone(),
         )
     });
-    let pattern_indexed = pattern_rows.map_index(move |row| {
+    let pattern_indexed = pattern_stream.map_index(move |row| {
         (
             select_row_positions(row, &pattern_key_positions),
             row.clone(),
@@ -155,21 +155,21 @@ pub(crate) fn pattern_stream(
 
 #[derive(Clone)]
 pub(crate) struct PlannedWhereStream {
-    rows: Stream<RootCircuit, RowZSet>,
+    stream: Stream<RootCircuit, RowZSet>,
     vars: Vec<Variable>,
 }
 
 fn project_stream(
-    rows: Stream<RootCircuit, RowZSet>,
+    stream: Stream<RootCircuit, RowZSet>,
     source_vars: &[Variable],
     target_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
     if source_vars == target_vars {
-        return rows;
+        return stream;
     }
 
     let selected_positions = positions(source_vars, target_vars);
-    rows.map(move |row| select_row_positions(row, &selected_positions))
+    stream.map(move |row| select_row_positions(row, &selected_positions))
 }
 
 fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>) {
@@ -181,20 +181,20 @@ fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>)
     );
 }
 
-fn difference_rows(
+fn difference_stream(
     positive: PlannedWhereStream,
     negative: PlannedWhereStream,
     key_vars: &[Variable],
 ) -> Stream<RootCircuit, RowZSet> {
     let positive_key_positions = positions(&positive.vars, key_vars);
     let negative_key_positions = positions(&negative.vars, key_vars);
-    let positive_indexed = positive.rows.map_index(move |row| {
+    let positive_indexed = positive.stream.map_index(move |row| {
         (
             select_row_positions(row, &positive_key_positions),
             row.clone(),
         )
     });
-    let negative_indexed = negative.rows.map_index(move |row| {
+    let negative_indexed = negative.stream.map_index(move |row| {
         (
             select_row_positions(row, &negative_key_positions),
             row.clone(),
@@ -213,18 +213,18 @@ fn rel_stream(
 ) -> PlannedWhereStream {
     assert_incoming_layout(plan, &incoming);
 
-    let rows = match &plan.kind {
+    let stream = match &plan.kind {
         RelPlanKind::Pattern(pattern) => {
-            let pattern_rows = pattern_stream(fact_input, pattern.clone());
+            let pattern_stream = pattern_stream(fact_input, pattern.clone());
             match incoming {
-                Some(incoming) => join_pattern_rows(
-                    incoming.rows,
+                Some(incoming) => join_pattern_streams(
+                    incoming.stream,
                     &incoming.vars,
-                    pattern_rows,
+                    pattern_stream,
                     &pattern.pattern_vars,
                     &plan.output_vars,
                 ),
-                None => pattern_rows,
+                None => pattern_stream,
             }
         }
         RelPlanKind::Chain(chain) => {
@@ -235,18 +235,21 @@ fn rel_stream(
                     Some(rel_stream(fact_input, child, running))
                 })
                 .expect("chain plan must contain at least one child");
-            project_stream(relation.rows, &relation.vars, &plan.output_vars)
+            project_stream(relation.stream, &relation.vars, &plan.output_vars)
         }
         RelPlanKind::Difference(difference) => {
             let positive = incoming.expect("difference plan requires an incoming relation");
-            let negative_seed_rows =
-                project_stream(positive.rows.clone(), &positive.vars, &difference.key_vars);
+            let negative_seed_stream = project_stream(
+                positive.stream.clone(),
+                &positive.vars,
+                &difference.key_vars,
+            );
             let negative_seed = PlannedWhereStream {
-                rows: negative_seed_rows,
+                stream: negative_seed_stream,
                 vars: difference.key_vars.clone(),
             };
             let negative = rel_stream(fact_input, &difference.negative, Some(negative_seed));
-            difference_rows(positive, negative, &difference.key_vars)
+            difference_stream(positive, negative, &difference.key_vars)
         }
         RelPlanKind::Union(union) => {
             let mut branches = union
@@ -254,7 +257,7 @@ fn rel_stream(
                 .iter()
                 .map(|branch| {
                     let branch = rel_stream(fact_input, branch, incoming.clone());
-                    project_stream(branch.rows, &branch.vars, &plan.output_vars)
+                    project_stream(branch.stream, &branch.vars, &plan.output_vars)
                 })
                 .collect::<Vec<_>>();
             let first = branches.remove(0);
@@ -263,7 +266,7 @@ fn rel_stream(
     };
 
     PlannedWhereStream {
-        rows,
+        stream,
         vars: plan.output_vars.clone(),
     }
 }
@@ -283,7 +286,7 @@ pub(crate) fn query_find_stream(
 ) -> Stream<RootCircuit, RowZSet> {
     let find_positions = positions(&where_stream.vars, find_vars);
     where_stream
-        .rows
+        .stream
         .map(move |row| select_row_positions(row, &find_positions))
 }
 
@@ -337,8 +340,8 @@ impl QueryCircuit {
         let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
-            let rows = query_find_stream(where_stream, &plan.find_vars);
-            Ok((handle, rows.output()))
+            let stream = query_find_stream(where_stream, &plan.find_vars);
+            Ok((handle, stream.output()))
         })
         .map_err(anyhow::Error::from)?;
 
@@ -381,8 +384,8 @@ mod tests {
         pattern: PatternPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = pattern_stream(&input, pattern);
-        Ok((handle, rows.output()))
+        let stream = pattern_stream(&input, pattern);
+        Ok((handle, stream.output()))
     }
 
     fn build_where_circuit(
@@ -390,8 +393,8 @@ mod tests {
         plan: IncrementalQueryPlan,
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
-        let rows = query_where_stream(&input, &plan).rows;
-        Ok((handle, rows.output()))
+        let stream = query_where_stream(&input, &plan).stream;
+        Ok((handle, stream.output()))
     }
 
     fn build_find_circuit(
@@ -400,8 +403,8 @@ mod tests {
     ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let where_stream = query_where_stream(&input, &plan);
-        let rows = query_find_stream(where_stream, &plan.find_vars);
-        Ok((handle, rows.output()))
+        let stream = query_find_stream(where_stream, &plan.find_vars);
+        Ok((handle, stream.output()))
     }
 
     fn build_test_circuit<T, F>(constructor: F) -> (DBSPHandle, T, TempDir)
@@ -875,9 +878,9 @@ mod tests {
 
         let _ = build_test_circuit(move |circuit| {
             let (facts, _) = circuit.add_input_zset::<EncodedTriple>();
-            let (rows, _) = circuit.add_input_zset::<EncodedRow>();
+            let (stream, _) = circuit.add_input_zset::<EncodedRow>();
             let incoming = PlannedWhereStream {
-                rows,
+                stream,
                 vars: vec!["?name".to_var(), "?e".to_var()],
             };
             let _ = rel_stream(&facts, &extending_pattern, Some(incoming));
