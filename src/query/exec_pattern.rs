@@ -40,8 +40,10 @@ impl Default for Proposal {
 pub(crate) trait ExecPattern: Send + Sync {
     fn id(&self) -> PatternId;
 
+    // The variables this pattern participates in.
     fn variables(&self) -> &[Variable];
 
+    // Updates per-row proposals only when this pattern has a strictly cheaper positive count.
     fn count(
         &self,
         input: &BindingBag,
@@ -49,7 +51,8 @@ pub(crate) trait ExecPattern: Send + Sync {
         proposals: &mut [Proposal],
     ) -> Result<()>;
 
-    /// An empty `added` existentially validates the current binding prefix; unbound pattern variables remain for later stages.
+    // Extends the `input`` when `added` is non-empty; otherwise filters `input` without changing its layout.
+    /// An empty `added` existentially validates the current `input` binding prefix; unbound pattern variables remain for later stages.
     fn join(
         &self,
         input: &BindingBag,
