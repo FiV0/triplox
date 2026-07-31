@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
@@ -11,6 +12,7 @@ use dbsp::{
 use edn::query::Variable;
 
 use crate::codec::Decode;
+use crate::expr::{evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
@@ -181,6 +183,39 @@ fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>)
     );
 }
 
+fn filter_predicate_stream(
+    stream: Stream<RootCircuit, RowZSet>,
+    vars: &[Variable],
+    expr: Expr,
+) -> Stream<RootCircuit, RowZSet> {
+    let variable_positions = expr_variables(&expr)
+        .into_iter()
+        .map(|variable| {
+            let position = vars
+                .iter()
+                .position(|candidate| candidate == &variable)
+                .expect("predicate variable must be present in the incoming row");
+            (variable, position)
+        })
+        .collect::<Vec<_>>();
+
+    stream.filter(move |row| {
+        let values = variable_positions
+            .iter()
+            .map(|(variable, position)| {
+                let value = DataType::decode(&row[*position])
+                    .expect("incremental predicate value should decode");
+                (variable.clone(), value)
+            })
+            .collect::<Vec<_>>();
+        let bindings = values
+            .iter()
+            .map(|(variable, value)| (variable.clone(), value))
+            .collect::<HashMap<_, _>>();
+        evaluate_as_bool(&expr, &EvalContext::new(bindings))
+    })
+}
+
 fn difference_stream(
     positive: PlannedWhereStream,
     negative: PlannedWhereStream,
@@ -224,6 +259,10 @@ fn rel_stream(
                 ),
                 None => pattern_stream,
             }
+        }
+        RelPlanKind::Filter { expr } => {
+            let incoming = incoming.expect("filter plan requires an incoming relation");
+            filter_predicate_stream(incoming.stream, &incoming.vars, expr.clone())
         }
         RelPlanKind::Chain { children } => {
             let relation = children
@@ -659,6 +698,33 @@ mod tests {
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
             vec![(vec![DataType::Long(43), DataType::Long(30)], 1)]
+        );
+    }
+
+    #[test]
+    fn predicate_stream_filters_rows_and_preserves_retractions() {
+        let plan = query_plan("[:find ?age :where [?e :age ?age] [(< ?age 50)]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(2, AGE, DataType::Long(50)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(30)], 1)]
+        );
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(30)], -1)]
         );
     }
 

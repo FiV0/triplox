@@ -15,7 +15,7 @@ mod planner;
 pub(crate) use descriptor::PatternSlot;
 pub(crate) use planner::{PatternPlan, RelPlan, RelPlanKind};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
     pub find_vars: Vec<Variable>,
     pub where_plan: RelPlan,
@@ -89,6 +89,7 @@ fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
 fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
     match clause {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
+        WhereClause::Pred(_) => Ok(()),
         WhereClause::NotJoin(not) => {
             for clause in &not.clauses {
                 reject_unsupported_where_clause(clause)?;
@@ -97,7 +98,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
-            "Incremental queries currently support only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
+            "Incremental queries currently support only triple patterns, predicate clauses, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
         ),
     }
 }
@@ -753,6 +754,71 @@ mod tests {
     }
 
     #[test]
+    fn plans_predicates_as_bound_filter_leaves() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?age
+                  :where
+                  [(< ?age 50)]
+                  [?e :age ?age]
+                  [?e :name ?name]]",
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        assert!(matches!(children[0].kind, RelPlanKind::Pattern(_)));
+        let filter = &children[1];
+        assert_eq!(
+            filter.incoming_vars,
+            Some(vec!["?e".to_var(), "?age".to_var()])
+        );
+        assert_eq!(filter.output_vars, vec!["?e".to_var(), "?age".to_var()]);
+        assert!(matches!(filter.kind, RelPlanKind::Filter { .. }));
+        assert!(matches!(children[2].kind, RelPlanKind::Pattern(_)));
+
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?age
+                  :where
+                  [?e :age ?age]
+                  (or
+                    (and [(> ?age 10)]
+                         (not [(< ?age 30)]))
+                    [(= ?age 42)])]",
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
+            panic!("expected top-level chain");
+        };
+        let RelPlanKind::Union { branches } = &children[1].kind else {
+            panic!("expected union");
+        };
+        let RelPlanKind::Chain {
+            children: branch_children,
+        } = &branches[0].kind
+        else {
+            panic!("expected and branch");
+        };
+        assert!(matches!(
+            branch_children[0].kind,
+            RelPlanKind::Filter { .. }
+        ));
+        let RelPlanKind::Difference { negative, .. } = &branch_children[1].kind else {
+            panic!("expected difference");
+        };
+        assert!(matches!(negative.kind, RelPlanKind::Filter { .. }));
+        assert!(matches!(branches[1].kind, RelPlanKind::Filter { .. }));
+    }
+
+    #[test]
     fn accepts_entid_attribute() {
         let schema = test_schema();
         let plan = plan_query(&parse_query("[:find ?e :where [?e 10 ?name]]"), &schema).unwrap();
@@ -803,8 +869,8 @@ mod tests {
     #[test]
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#,
-            "only triple patterns, implicit `not` clauses, `or` clauses, and `and` clauses",
+            r#"[:find ?e :where [?e :name "Alice"] [(+ 1 2) ?sum]]"#,
+            "only triple patterns, predicate clauses, implicit `not` clauses, `or` clauses, and `and` clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
