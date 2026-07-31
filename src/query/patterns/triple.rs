@@ -11,7 +11,7 @@ use crate::codec;
 use crate::index::IndexType;
 use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
-use crate::query::binding_bag::{BindingRow, BindingBag};
+use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 use crate::util::make_extractor;
 
@@ -609,7 +609,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            pattern.join(&partial, &[], partial.variables)?,
+            pattern.join(&partial, &[], &partial.variables)?,
             binding_bag(
                 &["?outer", "?e"],
                 vec![
@@ -635,7 +635,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            pattern.join(&full, &[], full.variables)?,
+            pattern.join(&full, &[], &full.variables)?,
             binding_bag(
                 &["?v", "?outer", "?e"],
                 vec![vec![

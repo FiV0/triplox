@@ -4,7 +4,7 @@ use anyhow::{ensure, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 
-use crate::query::binding_bag::{BindingRow, BindingBag};
+use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 
 pub(crate) struct RelationPattern {
@@ -62,7 +62,7 @@ impl RelationPattern {
         let mut seen = HashSet::<Bytes>::new();
         let mut candidates = Vec::new();
 
-        for relation_row in self.relation.rows {
+        for relation_row in &self.relation.rows {
             let matches_prefix =
                 input_prefix_indexes
                     .iter()
@@ -243,7 +243,7 @@ mod tests {
             RelationPattern::new(7, binding_bag(&["?x", "?y"], &[&["a", "1"], &["a", "2"]]));
         let input = binding_bag(&["?outer", "?x"], &[&["u", "a"], &["u", "a"], &["v", "b"]]);
 
-        let validated = pattern.join(&input, &[], input.variables).unwrap();
+        let validated = pattern.join(&input, &[], &input.variables).unwrap();
 
         assert_eq!(
             validated,
@@ -260,9 +260,9 @@ mod tests {
         let unit = RelationPattern::new(1, BindingBag::unit());
         let empty = RelationPattern::new(2, BindingBag::empty(vec![]).unwrap());
 
-        assert_eq!(unit.join(&input, &[], input.variables).unwrap(), input);
+        assert_eq!(unit.join(&input, &[], &input.variables).unwrap(), input);
         assert_eq!(
-            empty.join(&input, &[], input.variables).unwrap(),
+            empty.join(&input, &[], &input.variables).unwrap(),
             BindingBag::empty(vec!["?x".to_var()]).unwrap()
         );
     }
