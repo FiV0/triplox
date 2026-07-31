@@ -15,7 +15,8 @@
    {:db/ident :last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
-   {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])
+   {:db/ident :friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+   {:db/ident :alias :db/valueType :db.type/string :db/cardinality :db.cardinality/many}])
 
 (def residence-schema
   [{:db/ident :person/name
@@ -27,10 +28,6 @@
 
 (def edge-schema
   [{:db/ident :g/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
-
-(def aliases-schema
-  [{:db/ident :alias :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
-   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
 
 (def triangle-relation-schema
   [{:db/ident :node/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -172,7 +169,7 @@
 
 (deftest not-suppresses-positive-side-addition+retraction
   (with-open [conn (connect)]
-    (api/transact conn aliases-schema)
+    (api/transact conn people-schema)
     (with-open [sub (api/subscribe conn '{:find [?alias]
                                           :where [[?e :alias ?alias]
                                                   (not [?e :age 30])]})]
