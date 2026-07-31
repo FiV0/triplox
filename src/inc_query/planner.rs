@@ -189,8 +189,8 @@ fn plan_difference(
         .filter(|variable| descriptor.variables.contains(variable))
         .cloned()
         .collect::<Vec<_>>();
-    let mut negative = plan_scope(&not.scope, Some(key_vars.clone()))?;
-    negative.output_vars = key_vars.clone();
+    let negative = plan_scope(&not.scope, Some(key_vars.clone()))?;
+    debug_assert_eq!(negative.output_vars, key_vars);
 
     Ok(RelPlan {
         incoming_vars: Some(incoming_vars.clone()),
