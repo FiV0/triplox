@@ -151,7 +151,13 @@ pub(crate) mod test_support {
     use edn::kw;
     use edn::query::ParsedQuery;
 
+    use crate::ops::Entid;
     use crate::schema::{Attribute, Schema, ValueType};
+
+    pub(crate) const NAME_ATTR_ID: Entid = 10;
+    pub(crate) const AGE_ATTR_ID: Entid = 11;
+    pub(crate) const FOLLOWS_ATTR_ID: Entid = 12;
+    pub(crate) const TYPE_ATTR_ID: Entid = 13;
 
     pub(crate) fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
@@ -159,10 +165,10 @@ pub(crate) mod test_support {
 
     pub(crate) fn test_schema() -> Schema {
         let attrs = [
-            (kw!(:name), 10, ValueType::String),
-            (kw!(:age), 11, ValueType::Long),
-            (kw!(:follows), 12, ValueType::Ref),
-            (kw!(:type), 13, ValueType::Keyword),
+            (kw!(:name), NAME_ATTR_ID, ValueType::String),
+            (kw!(:age), AGE_ATTR_ID, ValueType::Long),
+            (kw!(:follows), FOLLOWS_ATTR_ID, ValueType::Ref),
+            (kw!(:type), TYPE_ATTR_ID, ValueType::Keyword),
         ];
         let mut ident_map = HashMap::new();
         let mut entid_map = HashMap::new();
