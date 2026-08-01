@@ -29,12 +29,6 @@ incremental queries and a further more retraining check for incremental queries
 that at some point should get removed when parity between the two query paths
 is reached.
 
-Predicate clauses reuse the standard query engine's compiled expression tree
-and boolean evaluation semantics. Every variable referenced by a predicate
-must already be bound by a positive relation. A row passes the predicate only
-when evaluation produces boolean `true`; incompatible types, unbound values,
-and non-boolean results do not pass.
-
 Any approach for incremental query compilation should be first tested in hooray
 (https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
 in Triplox.
