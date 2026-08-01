@@ -3,16 +3,16 @@ use edn::query::Variable;
 
 use super::binding_bag::BindingBag;
 
-pub(crate) type PatternId = usize;
+pub(crate) type ParticipantIndex = usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Proposal {
-    proposer: Option<PatternId>,
+    proposer: Option<ParticipantIndex>,
     count: usize,
 }
 
 impl Proposal {
-    pub(crate) fn proposer(&self) -> Option<PatternId> {
+    pub(crate) fn proposer(&self) -> Option<ParticipantIndex> {
         self.proposer
     }
 
@@ -20,7 +20,7 @@ impl Proposal {
         self.count
     }
 
-    pub(crate) fn consider(&mut self, proposer: PatternId, count: usize) {
+    pub(crate) fn consider(&mut self, proposer: ParticipantIndex, count: usize) {
         if count > 0 && count < self.count {
             self.proposer = Some(proposer);
             self.count = count;
@@ -38,8 +38,6 @@ impl Default for Proposal {
 }
 
 pub(crate) trait ExecPattern: Send + Sync {
-    fn id(&self) -> PatternId;
-
     // The variables this pattern participates in.
     fn variables(&self) -> &[Variable];
 
@@ -48,6 +46,7 @@ pub(crate) trait ExecPattern: Send + Sync {
         &self,
         input: &BindingBag,
         added: &[Variable],
+        participant_index: ParticipantIndex,
         proposals: &mut [Proposal],
     ) -> Result<()>;
 

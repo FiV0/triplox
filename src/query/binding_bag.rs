@@ -133,8 +133,8 @@ impl BindingBag {
     }
 
     pub(crate) fn project(&self, variables: &[Variable]) -> Result<Self> {
-        if (variables == self.variables) {
-            return Ok(self.clone());
+        if variables == self.variables {
+            Ok(self.clone())
         } else {
             let indexes = self.projection_indexes(variables)?;
             let rows = self
