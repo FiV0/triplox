@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn count_is_a_noop_for_non_prefix_proposals_and_checks_sidecar_length() {
+    fn count_is_a_noop_for_non_prefix_proposals_and_checks_proposal_length() {
         let pattern = RelationPattern::new(7, binding_bag(&["?x", "?y"], &[&["a", "1"]]));
         let input = binding_bag(&["?y"], &[&["1"]]);
         let mut proposals = vec![Proposal::default()];
