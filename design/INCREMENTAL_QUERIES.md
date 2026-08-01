@@ -23,16 +23,11 @@ query unless explicitly stated otherwise.
 
 ## Current Scope
 
-The incremental query engine will lag behind the standard query engine in most
-cases. The idea is use the same validation logic for standard queries also for
+The incremental query engine will lag behind the standard query engine in features in most
+cases. The idea is to use the same validation logic for standard queries also for
 incremental queries and a further more retraining check for incremental queries
 that at some point should get removed when parity between the two query paths
 is reached.
-
-Current `not` validation differs from Datomic's existential semantics: every
-variable mentioned inside an implicit `not` must also be bound by a positive
-clause. For example, `(not [?e :age ?age])` is rejected unless both `?e` and
-`?age` are already positively bound.
 
 Any approach for incremental query compilation should be first tested in hooray
 (https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
