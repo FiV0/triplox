@@ -35,8 +35,8 @@ pub(super) struct Descriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DescriptorKind {
     Pattern(PatternDescriptor),
-    Not(NotDescriptor),
-    Or(OrDescriptor),
+    Not { scope: ScopeDescriptor },
+    Or { branches: Vec<ScopeDescriptor> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,16 +44,6 @@ pub(super) struct PatternDescriptor {
     pub attribute: i64,
     pub entity: PatternSlot,
     pub value: PatternSlot,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct OrDescriptor {
-    pub branches: Vec<ScopeDescriptor>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct NotDescriptor {
-    pub scope: ScopeDescriptor,
 }
 
 fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
@@ -158,7 +148,7 @@ fn describe_not(not: &NotJoin, schema: &Schema) -> Result<Descriptor> {
     Ok(Descriptor {
         variables: scope.variables.clone(),
         groundable: Vec::new(),
-        kind: DescriptorKind::Not(NotDescriptor { scope }),
+        kind: DescriptorKind::Not { scope },
     })
 }
 
@@ -196,7 +186,7 @@ fn describe_or(or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
     Ok(Descriptor {
         variables,
         groundable,
-        kind: DescriptorKind::Or(OrDescriptor { branches }),
+        kind: DescriptorKind::Or { branches },
     })
 }
 
@@ -268,11 +258,11 @@ mod tests {
 
         assert_eq!(descriptor.variables, vec!["?e".to_var(), "?v".to_var()]);
         assert_eq!(descriptor.groundable, descriptor.variables);
-        let DescriptorKind::Or(or) = &descriptor.kind else {
+        let DescriptorKind::Or { branches } = &descriptor.kind else {
             panic!("expected or descriptor");
         };
-        assert_eq!(or.branches[0].variables, vec!["?e".to_var(), "?v".to_var()]);
-        assert_eq!(or.branches[1].variables, vec!["?v".to_var(), "?e".to_var()]);
+        assert_eq!(branches[0].variables, vec!["?e".to_var(), "?v".to_var()]);
+        assert_eq!(branches[1].variables, vec!["?v".to_var(), "?e".to_var()]);
     }
 
     #[test]
@@ -283,10 +273,10 @@ mod tests {
 
         assert_eq!(descriptor.variables, vec!["?e".to_var(), "?age".to_var()]);
         assert!(descriptor.groundable.is_empty());
-        let DescriptorKind::Not(not) = &descriptor.kind else {
+        let DescriptorKind::Not { scope } = &descriptor.kind else {
             panic!("expected not descriptor");
         };
-        assert_eq!(not.scope.variables, vec!["?e".to_var(), "?age".to_var()]);
-        assert_eq!(not.scope.groundable, not.scope.variables);
+        assert_eq!(scope.variables, vec!["?e".to_var(), "?age".to_var()]);
+        assert_eq!(scope.groundable, scope.variables);
     }
 }

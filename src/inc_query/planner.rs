@@ -4,9 +4,7 @@ use std::collections::HashSet;
 use anyhow::{anyhow, bail, Result};
 use edn::query::Variable;
 
-use super::descriptor::{
-    Descriptor, DescriptorKind, NotDescriptor, PatternDescriptor, ScopeDescriptor,
-};
+use super::descriptor::{Descriptor, DescriptorKind, PatternDescriptor, ScopeDescriptor};
 use super::PatternSlot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,7 +177,7 @@ fn plan_union(
 
 fn plan_difference(
     descriptor: &Descriptor,
-    not: &NotDescriptor,
+    scope: &ScopeDescriptor,
     incoming_vars: Option<Vec<Variable>>,
 ) -> Result<RelPlan> {
     let incoming_vars =
@@ -189,7 +187,7 @@ fn plan_difference(
         .filter(|variable| descriptor.variables.contains(variable))
         .cloned()
         .collect::<Vec<_>>();
-    let negative = plan_scope(&not.scope, Some(key_vars.clone()))?;
+    let negative = plan_scope(scope, Some(key_vars.clone()))?;
     debug_assert_eq!(negative.output_vars, key_vars);
 
     Ok(RelPlan {
@@ -208,8 +206,8 @@ fn plan_descriptor(
 ) -> Result<RelPlan> {
     match &descriptor.kind {
         DescriptorKind::Pattern(pattern) => Ok(plan_pattern(descriptor, pattern, incoming_vars)),
-        DescriptorKind::Not(not) => plan_difference(descriptor, not, incoming_vars),
-        DescriptorKind::Or(or) => plan_union(descriptor, &or.branches, incoming_vars),
+        DescriptorKind::Not { scope } => plan_difference(descriptor, scope, incoming_vars),
+        DescriptorKind::Or { branches } => plan_union(descriptor, branches, incoming_vars),
     }
 }
 
