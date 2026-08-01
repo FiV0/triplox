@@ -133,13 +133,17 @@ impl BindingBag {
     }
 
     pub(crate) fn project(&self, variables: &[Variable]) -> Result<Self> {
-        let indexes = self.projection_indexes(variables)?;
-        let rows = self
-            .rows
-            .iter()
-            .map(|row| indexes.iter().map(|index| row[*index].clone()).collect())
-            .collect();
-        Self::new(variables.to_vec(), rows)
+        if (variables == self.variables) {
+            return Ok(self.clone());
+        } else {
+            let indexes = self.projection_indexes(variables)?;
+            let rows = self
+                .rows
+                .iter()
+                .map(|row| indexes.iter().map(|index| row[*index].clone()).collect())
+                .collect();
+            Self::new(variables.to_vec(), rows)
+        }
     }
 
     pub(crate) fn reorder(&self, variables: &[Variable]) -> Result<Self> {
