@@ -10,7 +10,7 @@ pub(crate) type BindingRow = Vec<Bytes>;
 pub(crate) struct BindingBag {
     pub(crate) variables: Vec<Variable>,
     pub(crate) rows: Vec<BindingRow>,
-    column_indexes: HashMap<Variable, usize>,
+    pub(crate) column_indexes: HashMap<Variable, usize>,
 }
 
 impl BindingBag {

@@ -9,12 +9,14 @@ use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 /// A pattern that matches a relation (set of rows) with a fixed set of variables.
 ///
 /// Bound variables are read from the input in this relation's variable order, regardless of
-/// their input column order or unrelated interleaved columns. For proposals, the bound variables
+/// column order in the input or unrelated interleaved columns. For proposals, the bound variables
 /// followed by the introduced variables must form a relation prefix. Validation requires the bound
 /// variables themselves to form a relation prefix.
 pub(crate) struct RelationPattern {
     id: PatternId,
     variables: Vec<Variable>,
+    // The only reason we have this field is to distinguish between an empty relation `{}` and a relation with no rows `{()}`.
+    // An empty trie can not distinguish between the two.
     has_rows: bool,
     trie: Trie<Bytes>,
 }
@@ -35,38 +37,21 @@ impl RelationPattern {
         }
     }
 
-    fn bound_prefix_len(&self, input: &BindingBag) -> Option<usize> {
-        let mut prefix_len = 0;
-        let mut missing_prefix = false;
+    fn prefix_indexes(&self, input: &BindingBag, added: &[Variable]) -> Option<Vec<usize>> {
+        let mut indexes = Vec::new();
+        let mut saw_unbound = false;
+
         for variable in &self.variables {
-            if input.variables.contains(variable) {
-                if missing_prefix {
-                    return None;
-                }
-                prefix_len += 1;
-            } else {
-                missing_prefix = true;
+            match input.column_indexes.get(variable).copied() {
+                Some(_) if saw_unbound => return None,
+                Some(index) => indexes.push(index),
+                None => saw_unbound = true,
             }
         }
-        Some(prefix_len)
-    }
 
-    fn prefix_indexes_or_none(
-        &self,
-        input: &BindingBag,
-        added: &[Variable],
-    ) -> Result<Option<Vec<usize>>> {
-        let Some(prefix_len) = self.bound_prefix_len(input) else {
-            return Ok(None);
-        };
-        if !self.variables[prefix_len..].starts_with(added) {
-            return Ok(None);
-        }
-        self.variables[..prefix_len]
-            .iter()
-            .map(|variable| input.column_index(variable))
-            .collect::<Result<Vec<_>>>()
-            .map(Some)
+        self.variables[indexes.len()..]
+            .starts_with(added)
+            .then_some(indexes)
     }
 
     fn trie_node_for(
@@ -144,7 +129,7 @@ impl ExecPattern for RelationPattern {
         if added.is_empty() {
             return Ok(());
         }
-        let Some(prefix_indexes) = self.prefix_indexes_or_none(input, added)? else {
+        let Some(prefix_indexes) = self.prefix_indexes(input, added) else {
             return Ok(());
         };
 
@@ -169,7 +154,7 @@ impl ExecPattern for RelationPattern {
                 target_variables == input.variables,
                 "Relation validation must preserve the input layout"
             );
-            let prefix_indexes = self.prefix_indexes_or_none(input, added)?.ok_or_else(|| {
+            let prefix_indexes = self.prefix_indexes(input, added).ok_or_else(|| {
                 anyhow::anyhow!("Relation validation requires bound variables to form a prefix")
             })?;
             let matches = if self.has_rows {
@@ -189,7 +174,7 @@ impl ExecPattern for RelationPattern {
             return input.select_rows(&matches);
         }
 
-        let prefix_indexes = self.prefix_indexes_or_none(input, added)?.ok_or_else(|| {
+        let prefix_indexes = self.prefix_indexes(input, added).ok_or_else(|| {
             anyhow::anyhow!("Relation cannot propose the requested variables: {added:?}")
         })?;
         let extensions = input
