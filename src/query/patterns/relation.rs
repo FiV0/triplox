@@ -15,8 +15,9 @@ use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 pub(crate) struct RelationPattern {
     id: PatternId,
     variables: Vec<Variable>,
-    // The only reason we have this field is to distinguish between an empty relation `{}` and a relation with no rows `{()}`.
-    // An empty trie can not distinguish between the two.
+    // The reason we have this field is to distinguish between an the unit relation`{()}` and an empty relation `{}`.
+    // More generally, an empty bound prefix reaches the trie root whether the relation has
+    // columns or not, so emptiness must be tracked separately. An empty trie can not distinguish between the two.
     has_rows: bool,
     trie: Trie<Bytes>,
 }
@@ -60,7 +61,7 @@ impl RelationPattern {
         prefix_indexes: &[usize],
     ) -> Option<&TrieNode<Bytes>> {
         self.trie
-            .node(prefix_indexes.iter().map(|index| &input_row[*index]))
+            .node(prefix_indexes.iter().map(|&index| &input_row[index]))
     }
 
     fn count_extensions(node: &TrieNode<Bytes>, depth: usize) -> usize {
