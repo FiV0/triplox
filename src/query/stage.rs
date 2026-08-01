@@ -72,6 +72,7 @@ impl Stage {
         &self.target_variables
     }
 
+    // TODO: Is this necessary? Currently it's only used in tests.
     pub(crate) fn validate_input(&self, input: &BindingBag) -> Result<()> {
         for variable in &self.added {
             ensure!(
