@@ -21,6 +21,10 @@ pub(crate) enum RelPlanKind {
     Filter {
         expr: Expr,
     },
+    Function {
+        expr: Expr,
+        output_var: Variable,
+    },
     Chain {
         children: Vec<RelPlan>,
     },
@@ -158,6 +162,24 @@ fn plan_filter(expr: &Expr, incoming_vars: Option<Vec<Variable>>) -> Result<RelP
     })
 }
 
+fn plan_function(
+    expr: &Expr,
+    output_var: &Variable,
+    incoming_vars: Option<Vec<Variable>>,
+) -> Result<RelPlan> {
+    let incoming_vars =
+        incoming_vars.ok_or_else(|| anyhow!("Cannot plan function without a positive relation"))?;
+    let output_vars = append_new_variables(&incoming_vars, std::slice::from_ref(output_var));
+    Ok(RelPlan {
+        incoming_vars: Some(incoming_vars),
+        output_vars,
+        kind: RelPlanKind::Function {
+            expr: expr.clone(),
+            output_var: output_var.clone(),
+        },
+    })
+}
+
 fn plan_union(
     descriptor: &Descriptor,
     branches: &[ScopeDescriptor],
@@ -212,6 +234,9 @@ fn plan_descriptor(
     match &descriptor.kind {
         DescriptorKind::Pattern(pattern) => Ok(plan_pattern(descriptor, pattern, incoming_vars)),
         DescriptorKind::Predicate { expr } => plan_filter(expr, incoming_vars),
+        DescriptorKind::Function { expr, output_var } => {
+            plan_function(expr, output_var, incoming_vars)
+        }
         DescriptorKind::Not { scope } => plan_difference(descriptor, scope, incoming_vars),
         DescriptorKind::Or { branches } => plan_union(descriptor, branches, incoming_vars),
     }
@@ -255,6 +280,7 @@ pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'
     match &plan.kind {
         RelPlanKind::Pattern(pattern) => patterns.push(pattern),
         RelPlanKind::Filter { .. } => {}
+        RelPlanKind::Function { .. } => {}
         RelPlanKind::Chain { children } => {
             for child in children {
                 collect_leaf_patterns(child, patterns);

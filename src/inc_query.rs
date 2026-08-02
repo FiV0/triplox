@@ -89,7 +89,7 @@ fn reject_unsupported_pattern_shape(pattern: &Pattern) -> Result<()> {
 fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
     match clause {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
-        WhereClause::Pred(_) => Ok(()),
+        WhereClause::Pred(_) | WhereClause::WhereFn(_) => Ok(()),
         WhereClause::NotJoin(not) => {
             for clause in &not.clauses {
                 reject_unsupported_where_clause(clause)?;
@@ -98,7 +98,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         _ => bail!(
-            "Incremental queries currently support only triple patterns, predicate clauses, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
+            "Incremental queries currently support only triple patterns, predicate clauses, function clauses, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
         ),
     }
 }
@@ -819,6 +819,89 @@ mod tests {
     }
 
     #[test]
+    fn plans_function_applications_after_their_inputs_are_bound() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?quarter-age
+                  :where
+                  [(quot ?age 2) ?half-age]
+                  [(quot ?half-age 2) ?quarter-age]
+                  [?e :age ?age]]",
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        assert!(matches!(children[0].kind, RelPlanKind::Pattern(_)));
+        let RelPlanKind::Function { output_var, .. } = &children[1].kind else {
+            panic!("expected first function plan");
+        };
+        assert_eq!(output_var, &"?half-age".to_var());
+        assert_eq!(
+            children[1].output_vars,
+            vec!["?e".to_var(), "?age".to_var(), "?half-age".to_var()]
+        );
+        let RelPlanKind::Function { output_var, .. } = &children[2].kind else {
+            panic!("expected second function plan");
+        };
+        assert_eq!(output_var, &"?quarter-age".to_var());
+        assert_eq!(
+            children[2].output_vars,
+            vec![
+                "?e".to_var(),
+                "?age".to_var(),
+                "?half-age".to_var(),
+                "?quarter-age".to_var()
+            ]
+        );
+    }
+
+    #[test]
+    fn plans_function_applications_as_filters_for_bound_results() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?name
+                  :where
+                  [?e :age ?age]
+                  [?e :name ?name]
+                  [(str ?age) ?name]]",
+            ),
+            &schema,
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        let function = &children[2];
+        assert_eq!(
+            function.incoming_vars,
+            Some(vec!["?e".to_var(), "?age".to_var(), "?name".to_var()])
+        );
+        assert_eq!(
+            function.output_vars,
+            vec!["?e".to_var(), "?age".to_var(), "?name".to_var()]
+        );
+        let RelPlanKind::Function { output_var, .. } = &function.kind else {
+            panic!("expected function plan");
+        };
+        assert_eq!(output_var, &"?name".to_var());
+    }
+
+    #[test]
+    fn rejects_function_without_a_positive_relation() {
+        assert_plan_err(
+            "[:find ?result :where [(+ 1 2) ?result]]",
+            "Cannot plan function without a positive relation",
+        );
+    }
+
+    #[test]
     fn accepts_entid_attribute() {
         let schema = test_schema();
         let plan = plan_query(&parse_query("[:find ?e :where [?e 10 ?name]]"), &schema).unwrap();
@@ -869,8 +952,8 @@ mod tests {
     #[test]
     fn rejects_unsupported_where_forms() {
         assert_plan_err(
-            r#"[:find ?e :where [?e :name "Alice"] [(+ 1 2) ?sum]]"#,
-            "only triple patterns, predicate clauses, implicit `not` clauses, `or` clauses, and `and` clauses",
+            "[:find ?e :where [?e :age ?age] [(type ?age :db.type/long)]]",
+            "only triple patterns, predicate clauses, function clauses, implicit `not` clauses, `or` clauses, and `and` clauses",
         );
         assert_plan_err(
             r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,

@@ -11,8 +11,8 @@ use dbsp::{
 };
 use edn::query::Variable;
 
-use crate::codec::Decode;
-use crate::expr::{evaluate_as_bool, expr_variables, EvalContext, Expr};
+use crate::codec::{Decode, Encode};
+use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
@@ -183,33 +183,74 @@ fn assert_incoming_layout(plan: &RelPlan, incoming: &Option<PlannedWhereStream>)
     );
 }
 
-fn filter_predicate_stream(
-    stream: Stream<RootCircuit, RowZSet>,
-    vars: &[Variable],
-    expr: Expr,
-) -> Stream<RootCircuit, RowZSet> {
-    let variable_positions = expr_variables(&expr)
+fn expression_variable_positions(vars: &[Variable], expr: &Expr) -> Vec<(Variable, usize)> {
+    expr_variables(expr)
         .into_iter()
         .map(|variable| {
             let position = vars
                 .iter()
                 .position(|candidate| candidate == &variable)
-                .expect("predicate variable must be present in the incoming row");
+                .expect("expression variable must be present in the incoming row");
             (variable, position)
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn expression_bindings(
+    row: &EncodedRow,
+    variable_positions: &[(Variable, usize)],
+) -> HashMap<Variable, DataType> {
+    variable_positions
+        .iter()
+        .map(|(variable, position)| {
+            let value = DataType::decode(&row[*position])
+                .expect("incremental expression value should decode");
+            (variable.clone(), value)
+        })
+        .collect()
+}
+
+fn evaluate_row_expression(
+    row: &EncodedRow,
+    variable_positions: &[(Variable, usize)],
+    expr: &Expr,
+) -> Option<DataType> {
+    let bindings = expression_bindings(row, variable_positions);
+    evaluate(expr, &EvalContext::new(&bindings)).map(|result| result.into_owned())
+}
+
+fn filter_predicate_stream(
+    stream: Stream<RootCircuit, RowZSet>,
+    vars: &[Variable],
+    expr: Expr,
+) -> Stream<RootCircuit, RowZSet> {
+    let variable_positions = expression_variable_positions(vars, &expr);
 
     stream.filter(move |row| {
-        let values = variable_positions
-            .iter()
-            .map(|(variable, position)| {
-                let value = DataType::decode(&row[*position])
-                    .expect("incremental predicate value should decode");
-                (variable.clone(), value)
-            })
-            .collect::<HashMap<_, _>>();
-        evaluate_as_bool(&expr, &EvalContext::new(&values))
+        let bindings = expression_bindings(row, &variable_positions);
+        evaluate_as_bool(&expr, &EvalContext::new(&bindings))
     })
+}
+
+fn apply_function_stream(
+    stream: Stream<RootCircuit, RowZSet>,
+    vars: &[Variable],
+    expr: Expr,
+    output_var: &Variable,
+) -> Stream<RootCircuit, RowZSet> {
+    let variable_positions = expression_variable_positions(vars, &expr);
+    match vars.iter().position(|variable| variable == output_var) {
+        Some(output_position) => stream.filter(move |row| {
+            evaluate_row_expression(row, &variable_positions, &expr)
+                .is_some_and(|result| result.encode().as_slice() == row[output_position].as_slice())
+        }),
+        None => stream.flat_map(move |row| {
+            let result = evaluate_row_expression(row, &variable_positions, &expr)?;
+            let mut output = row.clone();
+            output.push(result.encode());
+            Some(output)
+        }),
+    }
 }
 
 fn difference_stream(
@@ -259,6 +300,10 @@ fn rel_stream(
         RelPlanKind::Filter { expr } => {
             let incoming = incoming.expect("filter plan requires an incoming relation");
             filter_predicate_stream(incoming.stream, &incoming.vars, expr.clone())
+        }
+        RelPlanKind::Function { expr, output_var } => {
+            let incoming = incoming.expect("function plan requires an incoming relation");
+            apply_function_stream(incoming.stream, &incoming.vars, expr.clone(), output_var)
         }
         RelPlanKind::Chain { children } => {
             let relation = children
@@ -721,6 +766,139 @@ mod tests {
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
             vec![(vec![DataType::Long(30)], -1)]
+        );
+    }
+
+    #[test]
+    fn function_stream_appends_results_and_preserves_retractions() {
+        let plan = query_plan("[:find ?half :where [?e :age ?age] [(quot ?age 2) ?half]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(2, AGE, DataType::Long(40)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|(row, _weight)| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(15)], 1), (vec![DataType::Long(20)], 1)]
+        );
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(15)], -1)]
+        );
+    }
+
+    #[test]
+    fn function_stream_filters_already_bound_results() {
+        let plan = query_plan(
+            "[:find ?name
+              :where
+              [?e :age ?age]
+              [?e :name ?name]
+              [(str ?age) ?name]]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(1, NAME, DataType::String("30".to_string())), 1),
+                (triple(2, AGE, DataType::Long(40)), 1),
+                (triple(2, NAME, DataType::String("forty".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("30".to_string())], 1)]
+        );
+
+        append(
+            &handle,
+            [(triple(2, NAME, DataType::String("40".to_string())), 1)],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("40".to_string())], 1)]
+        );
+    }
+
+    #[test]
+    fn function_stream_drops_rows_when_evaluation_fails() {
+        let plan = query_plan("[:find ?result :where [?e :age ?age] [(quot ?age 0) ?result]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+
+        assert!(decode_output_rows(&output.consolidate())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn function_stream_composes_with_union() {
+        let plan = query_plan(
+            "[:find ?result
+              :where
+              [?e :age ?age]
+              (or [(+ ?age 1) ?result]
+                  [(- ?age 1) ?result])]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(&handle, [(triple(1, AGE, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+
+        let mut rows = decode_output_rows(&output.consolidate()).unwrap();
+        rows.sort_by_key(|(row, _weight)| format!("{:?}", row));
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(29)], 1), (vec![DataType::Long(31)], 1)]
+        );
+    }
+
+    #[test]
+    fn function_stream_composes_with_difference() {
+        let plan = query_plan(
+            "[:find ?name
+              :where
+              [?e :age ?age]
+              [?e :name ?name]
+              (not [(str ?age) ?name])]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(30)), 1),
+                (triple(1, NAME, DataType::String("30".to_string())), 1),
+                (triple(2, AGE, DataType::Long(40)), 1),
+                (triple(2, NAME, DataType::String("forty".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::String("forty".to_string())], 1)]
         );
     }
 

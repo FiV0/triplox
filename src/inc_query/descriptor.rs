@@ -3,14 +3,14 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use edn::query::{
     NotJoin, OrJoin, OrWhereClause, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
-    Variable, WhereClause,
+    Variable, WhereClause, WhereFn,
 };
 
 use crate::codec::Encode;
 use crate::expr::{expr_variables, Expr};
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
-use crate::query::{convert_predicate, non_integer_constant_to_datatype};
+use crate::query::{convert_predicate, convert_where_fn, non_integer_constant_to_datatype};
 use crate::schema::Schema;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +37,7 @@ pub(super) struct Descriptor {
 pub(super) enum DescriptorKind {
     Pattern(PatternDescriptor),
     Predicate { expr: Expr },
+    Function { expr: Expr, output_var: Variable },
     Not { scope: ScopeDescriptor },
     Or { branches: Vec<ScopeDescriptor> },
 }
@@ -138,6 +139,29 @@ fn describe_predicate(predicate: &Predicate) -> Result<Descriptor> {
     })
 }
 
+fn describe_function(function: &WhereFn) -> Result<Descriptor> {
+    let function = convert_where_fn(function)?;
+    let mut variables = function.input_variables();
+    let output_is_input = variables.contains(&function.output);
+    if !output_is_input {
+        variables.push(function.output.clone());
+    }
+    let groundable = if output_is_input {
+        Vec::new()
+    } else {
+        vec![function.output.clone()]
+    };
+
+    Ok(Descriptor {
+        variables,
+        groundable,
+        kind: DescriptorKind::Function {
+            expr: function.expr,
+            output_var: function.output,
+        },
+    })
+}
+
 fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descriptor> {
     match clause {
         WhereClause::Pattern(pattern) => {
@@ -150,6 +174,7 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
             })
         }
         WhereClause::Pred(predicate) => describe_predicate(predicate),
+        WhereClause::WhereFn(function) => describe_function(function),
         WhereClause::NotJoin(not) => describe_not(not, schema),
         WhereClause::OrJoin(or) => describe_or(or, schema),
         _ => unreachable!("unsupported clauses are rejected before planning"),
@@ -305,5 +330,32 @@ mod tests {
             panic!("expected predicate descriptor");
         };
         assert_eq!(crate::expr::expr_variables(expr), vec!["?age".to_var()]);
+    }
+
+    #[test]
+    fn function_metadata_grounds_only_new_result_variables() {
+        let query = parse_query(
+            "[:find ?next
+              :where
+              [(+ ?age 1) ?next]
+              [(+ ?next 1) ?next]]",
+        );
+        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+
+        let new_result = &scope.descriptors[0];
+        assert_eq!(
+            new_result.variables,
+            vec!["?age".to_var(), "?next".to_var()]
+        );
+        assert_eq!(new_result.groundable, vec!["?next".to_var()]);
+        let DescriptorKind::Function { expr, output_var } = &new_result.kind else {
+            panic!("expected function descriptor");
+        };
+        assert_eq!(crate::expr::expr_variables(expr), vec!["?age".to_var()]);
+        assert_eq!(output_var, &"?next".to_var());
+
+        let self_referential = &scope.descriptors[1];
+        assert_eq!(self_referential.variables, vec!["?next".to_var()]);
+        assert!(self_referential.groundable.is_empty());
     }
 }
