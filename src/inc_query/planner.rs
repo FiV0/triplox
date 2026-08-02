@@ -17,9 +17,16 @@ pub(crate) struct RelPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RelPlanKind {
     Pattern(PatternPlan),
-    Chain(ChainPlan),
-    Difference(DifferencePlan),
-    Union(UnionPlan),
+    Chain {
+        children: Vec<RelPlan>,
+    },
+    Difference {
+        key_vars: Vec<Variable>,
+        negative: Box<RelPlan>,
+    },
+    Union {
+        branches: Vec<RelPlan>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,22 +35,6 @@ pub(crate) struct PatternPlan {
     pub entity: PatternSlot,
     pub value: PatternSlot,
     pub pattern_vars: Vec<Variable>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ChainPlan {
-    pub children: Vec<RelPlan>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DifferencePlan {
-    pub key_vars: Vec<Variable>,
-    pub negative: Box<RelPlan>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UnionPlan {
-    pub branches: Vec<RelPlan>,
 }
 
 fn append_new_variables(base: &[Variable], additional: &[Variable]) -> Vec<Variable> {
@@ -171,7 +162,7 @@ fn plan_union(
     Ok(RelPlan {
         incoming_vars,
         output_vars,
-        kind: RelPlanKind::Union(UnionPlan { branches }),
+        kind: RelPlanKind::Union { branches },
     })
 }
 
@@ -193,10 +184,10 @@ fn plan_difference(
     Ok(RelPlan {
         incoming_vars: Some(incoming_vars.clone()),
         output_vars: incoming_vars,
-        kind: RelPlanKind::Difference(DifferencePlan {
+        kind: RelPlanKind::Difference {
             key_vars,
             negative: Box::new(negative),
-        }),
+        },
     })
 }
 
@@ -241,23 +232,23 @@ pub(super) fn plan_scope(
     Ok(RelPlan {
         incoming_vars,
         output_vars,
-        kind: RelPlanKind::Chain(ChainPlan { children }),
+        kind: RelPlanKind::Chain { children },
     })
 }
 
 pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'a PatternPlan>) {
     match &plan.kind {
         RelPlanKind::Pattern(pattern) => patterns.push(pattern),
-        RelPlanKind::Chain(chain) => {
-            for child in &chain.children {
+        RelPlanKind::Chain { children } => {
+            for child in children {
                 collect_leaf_patterns(child, patterns);
             }
         }
-        RelPlanKind::Difference(difference) => {
-            collect_leaf_patterns(&difference.negative, patterns);
+        RelPlanKind::Difference { negative, .. } => {
+            collect_leaf_patterns(negative, patterns);
         }
-        RelPlanKind::Union(union) => {
-            for branch in &union.branches {
+        RelPlanKind::Union { branches } => {
+            for branch in branches {
                 collect_leaf_patterns(branch, patterns);
             }
         }

@@ -225,9 +225,8 @@ fn rel_stream(
                 None => pattern_stream,
             }
         }
-        RelPlanKind::Chain(chain) => {
-            let relation = chain
-                .children
+        RelPlanKind::Chain { children } => {
+            let relation = children
                 .iter()
                 .fold(incoming, |running, child| {
                     Some(rel_stream(fact_input, child, running))
@@ -235,23 +234,19 @@ fn rel_stream(
                 .expect("chain plan must contain at least one child");
             project_stream(relation.stream, &relation.vars, &plan.output_vars)
         }
-        RelPlanKind::Difference(difference) => {
+        RelPlanKind::Difference { key_vars, negative } => {
             let positive = incoming.expect("difference plan requires an incoming relation");
-            let negative_seed_stream = project_stream(
-                positive.stream.clone(),
-                &positive.vars,
-                &difference.key_vars,
-            );
+            let negative_seed_stream =
+                project_stream(positive.stream.clone(), &positive.vars, key_vars);
             let negative_seed = PlannedWhereStream {
                 stream: negative_seed_stream,
-                vars: difference.key_vars.clone(),
+                vars: key_vars.clone(),
             };
-            let negative = rel_stream(fact_input, &difference.negative, Some(negative_seed));
-            difference_stream(positive, negative, &difference.key_vars)
+            let negative = rel_stream(fact_input, negative, Some(negative_seed));
+            difference_stream(positive, negative, key_vars)
         }
-        RelPlanKind::Union(union) => {
-            let mut branches = union
-                .branches
+        RelPlanKind::Union { branches } => {
+            let mut branches = branches
                 .iter()
                 .map(|branch| {
                     let branch = rel_stream(fact_input, branch, incoming.clone());
@@ -871,10 +866,10 @@ mod tests {
     #[should_panic(expected = "running relation layout does not match planned incoming layout")]
     fn assembly_rejects_incoming_layout_mismatch() {
         let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let RelPlanKind::Chain(chain) = plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = plan.where_plan.kind else {
             panic!("expected chain plan");
         };
-        let extending_pattern = chain.children[1].clone();
+        let extending_pattern = children[1].clone();
 
         let _ = build_test_circuit(move |circuit| {
             let (facts, _) = circuit.add_input_zset::<EncodedTriple>();

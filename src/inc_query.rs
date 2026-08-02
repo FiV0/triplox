@@ -13,7 +13,7 @@ mod descriptor;
 mod planner;
 
 pub(crate) use descriptor::PatternSlot;
-pub(crate) use planner::{ChainPlan, DifferencePlan, PatternPlan, RelPlan, RelPlanKind, UnionPlan};
+pub(crate) use planner::{PatternPlan, RelPlan, RelPlanKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
@@ -242,21 +242,21 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(chain.children.len(), 2);
-        assert_eq!(chain.children[0].incoming_vars, None);
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].incoming_vars, None);
         assert_eq!(
-            chain.children[1].incoming_vars,
+            children[1].incoming_vars,
             Some(vec!["?e".to_var(), "?name".to_var()])
         );
-        let RelPlanKind::Pattern(age) = &chain.children[1].kind else {
+        let RelPlanKind::Pattern(age) = &children[1].kind else {
             panic!("expected extending pattern");
         };
         assert_eq!(age.pattern_vars, vec!["?e".to_var(), "?age".to_var()]);
         assert_eq!(
-            chain.children[1].output_vars,
+            children[1].output_vars,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
         );
     }
@@ -272,10 +272,10 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        let RelPlanKind::Pattern(friend_name) = &chain.children[1].kind else {
+        let RelPlanKind::Pattern(friend_name) = &children[1].kind else {
             panic!("expected extending pattern");
         };
         assert_eq!(
@@ -283,7 +283,7 @@ mod tests {
             vec!["?friend".to_var(), "?friend-name".to_var()]
         );
         assert_eq!(
-            chain.children[1].output_vars,
+            children[1].output_vars,
             vec!["?e".to_var(), "?friend".to_var(), "?friend-name".to_var()]
         );
     }
@@ -297,13 +297,12 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(chain.children.len(), 4);
+        assert_eq!(children.len(), 4);
         assert_eq!(
-            chain
-                .children
+            children
                 .iter()
                 .map(|child| child.output_vars.clone())
                 .collect::<Vec<_>>(),
@@ -354,10 +353,10 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        let RelPlanKind::Pattern(pattern) = &chain.children[1].kind else {
+        let RelPlanKind::Pattern(pattern) = &children[1].kind else {
             panic!("expected extending pattern");
         };
         assert_eq!(
@@ -365,7 +364,7 @@ mod tests {
             vec!["?other".to_var(), "?age".to_var()]
         );
         assert_eq!(
-            chain.children[1].output_vars,
+            children[1].output_vars,
             vec![
                 "?e".to_var(),
                 "?name".to_var(),
@@ -389,11 +388,10 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
-        let attributes = chain
-            .children
+        let attributes = children
             .iter()
             .map(|child| {
                 let RelPlanKind::Pattern(pattern) = &child.kind else {
@@ -415,17 +413,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.find_vars, vec!["?e".to_var()]);
-        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+        let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(plan.where_plan.incoming_vars, None);
-        assert_eq!(union.branches.len(), 2);
-        assert!(union
-            .branches
-            .iter()
-            .all(|branch| branch.incoming_vars.is_none()));
-        assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
-        assert!(matches!(union.branches[1].kind, RelPlanKind::Pattern(_)));
+        assert_eq!(branches.len(), 2);
+        assert!(branches.iter().all(|branch| branch.incoming_vars.is_none()));
+        assert!(matches!(branches[0].kind, RelPlanKind::Pattern(_)));
+        assert!(matches!(branches[1].kind, RelPlanKind::Pattern(_)));
         let leaf_patterns = plan.leaf_patterns();
         assert_eq!(leaf_patterns.len(), 2);
         assert_eq!(leaf_patterns[0].attribute, 10);
@@ -446,13 +441,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.leaf_patterns().len(), 3);
-        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+        let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(plan.where_plan.incoming_vars, None);
-        assert_eq!(union.branches.len(), 2);
-        assert!(matches!(union.branches[0].kind, RelPlanKind::Pattern(_)));
-        assert!(matches!(union.branches[1].kind, RelPlanKind::Union(_)));
+        assert_eq!(branches.len(), 2);
+        assert!(matches!(branches[0].kind, RelPlanKind::Pattern(_)));
+        assert!(matches!(branches[1].kind, RelPlanKind::Union { .. }));
     }
 
     #[test]
@@ -464,7 +459,7 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
+        let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(plan.where_plan.incoming_vars, None);
@@ -472,8 +467,8 @@ mod tests {
             plan.where_plan.output_vars,
             vec!["?e".to_var(), "?v".to_var()]
         );
-        assert_eq!(or.branches[0].output_vars, &["?e".to_var(), "?v".to_var()]);
-        assert_eq!(or.branches[1].output_vars, &["?v".to_var(), "?e".to_var()]);
+        assert_eq!(branches[0].output_vars, &["?e".to_var(), "?v".to_var()]);
+        assert_eq!(branches[1].output_vars, &["?v".to_var(), "?e".to_var()]);
     }
 
     #[test]
@@ -487,30 +482,33 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Union(or) = &plan.where_plan.kind else {
+        let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
-        assert_eq!(or.branches.len(), 2);
-        let RelPlanKind::Chain(and_branch) = &or.branches[0].kind else {
-            panic!("expected chain branch, got {:?}", &or.branches[0].kind);
+        assert_eq!(branches.len(), 2);
+        let RelPlanKind::Chain {
+            children: branch_children,
+        } = &branches[0].kind
+        else {
+            panic!("expected chain branch, got {:?}", &branches[0].kind);
         };
-        assert_eq!(and_branch.children.len(), 2);
-        let RelPlanKind::Pattern(second) = &and_branch.children[1].kind else {
+        assert_eq!(branch_children.len(), 2);
+        let RelPlanKind::Pattern(second) = &branch_children[1].kind else {
             panic!("expected extending pattern");
         };
         assert_eq!(second.pattern_vars, vec!["?y".to_var(), "?x".to_var()]);
-        assert!(matches!(or.branches[1].kind, RelPlanKind::Pattern(_)));
+        assert!(matches!(branches[1].kind, RelPlanKind::Pattern(_)));
         assert_eq!(plan.leaf_patterns().len(), 3);
         assert_eq!(
             plan.where_plan.output_vars,
             vec!["?y".to_var(), "?x".to_var()]
         );
-        assert_eq!(or.branches[0].output_vars, &["?y".to_var(), "?x".to_var()]);
+        assert_eq!(branches[0].output_vars, &["?y".to_var(), "?x".to_var()]);
         assert_eq!(
-            and_branch.children[1].output_vars,
+            branch_children[1].output_vars,
             vec!["?y".to_var(), "?x".to_var()]
         );
-        assert_eq!(or.branches[1].output_vars, &["?x".to_var(), "?y".to_var()]);
+        assert_eq!(branches[1].output_vars, &["?x".to_var(), "?y".to_var()]);
     }
 
     #[test]
@@ -528,17 +526,17 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan, got {:?}", &plan.where_plan.kind);
         };
         let incoming = vec!["?e".to_var(), "?name".to_var()];
-        let union = &chain.children[1];
-        assert_eq!(union.incoming_vars, Some(incoming.clone()));
-        assert_eq!(union.output_vars, incoming);
-        let RelPlanKind::Union(union) = &union.kind else {
+        let union_plan = &children[1];
+        assert_eq!(union_plan.incoming_vars, Some(incoming.clone()));
+        assert_eq!(union_plan.output_vars, incoming);
+        let RelPlanKind::Union { branches } = &union_plan.kind else {
             panic!("expected union child");
         };
-        for branch in &union.branches {
+        for branch in branches {
             assert_eq!(
                 branch.incoming_vars,
                 Some(vec!["?e".to_var(), "?name".to_var()])
@@ -564,27 +562,30 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected top-level chain");
         };
-        let RelPlanKind::Union(union) = &chain.children[1].kind else {
+        let RelPlanKind::Union { branches } = &children[1].kind else {
             panic!("expected union child");
         };
-        let branch_plan = &union.branches[0];
-        let RelPlanKind::Chain(branch) = &branch_plan.kind else {
+        let branch_plan = &branches[0];
+        let RelPlanKind::Chain {
+            children: branch_children,
+        } = &branch_plan.kind
+        else {
             panic!("expected and branch chain");
         };
         assert_eq!(
             branch_plan.incoming_vars,
             Some(vec!["?e".to_var(), "?name".to_var()])
         );
-        assert_eq!(branch.children.len(), 2);
+        assert_eq!(branch_children.len(), 2);
         assert_eq!(
-            branch.children[0].incoming_vars,
+            branch_children[0].incoming_vars,
             Some(vec!["?e".to_var(), "?name".to_var()])
         );
         assert_eq!(
-            branch.children[1].incoming_vars,
+            branch_children[1].incoming_vars,
             Some(vec!["?e".to_var(), "?name".to_var(), "?friend".to_var()])
         );
         assert_eq!(
@@ -614,20 +615,25 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected top-level chain");
         };
-        let RelPlanKind::Union(outer) = &chain.children[1].kind else {
+        let RelPlanKind::Union {
+            branches: outer_branches,
+        } = &children[1].kind
+        else {
             panic!("expected outer union");
         };
-        let RelPlanKind::Union(inner) = &outer.branches[0].kind else {
+        let RelPlanKind::Union {
+            branches: inner_branches,
+        } = &outer_branches[0].kind
+        else {
             panic!("expected inner union");
         };
         let incoming = Some(vec!["?e".to_var(), "?name".to_var()]);
-        assert_eq!(chain.children[1].incoming_vars, incoming);
-        assert_eq!(outer.branches[0].incoming_vars, incoming);
-        assert!(inner
-            .branches
+        assert_eq!(children[1].incoming_vars, incoming);
+        assert_eq!(outer_branches[0].incoming_vars, incoming);
+        assert!(inner_branches
             .iter()
             .all(|branch| branch.incoming_vars == incoming));
     }
@@ -641,11 +647,11 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan");
         };
-        assert!(matches!(chain.children[0].kind, RelPlanKind::Pattern(_)));
-        let difference = &chain.children[1];
+        assert!(matches!(children[0].kind, RelPlanKind::Pattern(_)));
+        let difference = &children[1];
         assert_eq!(
             difference.incoming_vars,
             Some(vec!["?e".to_var(), "?name".to_var()])
@@ -654,12 +660,12 @@ mod tests {
             difference.output_vars,
             vec!["?e".to_var(), "?name".to_var()]
         );
-        let RelPlanKind::Difference(difference) = &difference.kind else {
+        let RelPlanKind::Difference { key_vars, negative } = &difference.kind else {
             panic!("expected difference plan");
         };
-        assert_eq!(difference.key_vars, vec!["?e".to_var()]);
-        assert_eq!(difference.negative.incoming_vars, Some(vec!["?e".to_var()]));
-        assert_eq!(difference.negative.output_vars, vec!["?e".to_var()]);
+        assert_eq!(key_vars, &vec!["?e".to_var()]);
+        assert_eq!(negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(negative.output_vars, vec!["?e".to_var()]);
     }
 
     #[test]
@@ -671,17 +677,17 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan");
         };
-        let RelPlanKind::Difference(difference) = &chain.children[1].kind else {
+        let RelPlanKind::Difference { key_vars, .. } = &children[1].kind else {
             panic!("expected difference plan");
         };
         assert_eq!(
-            chain.children[1].incoming_vars,
+            children[1].incoming_vars,
             Some(vec!["?name".to_var(), "?e".to_var()])
         );
-        assert_eq!(difference.key_vars, vec!["?e".to_var()]);
+        assert_eq!(key_vars, &vec!["?e".to_var()]);
     }
 
     #[test]
@@ -693,19 +699,27 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Chain(chain) = &plan.where_plan.kind else {
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan");
         };
-        let RelPlanKind::Difference(outer) = &chain.children[1].kind else {
+        let RelPlanKind::Difference {
+            key_vars: outer_key_vars,
+            negative: outer_negative,
+        } = &children[1].kind
+        else {
             panic!("expected outer difference");
         };
-        let RelPlanKind::Difference(inner) = &outer.negative.kind else {
+        let RelPlanKind::Difference {
+            key_vars: inner_key_vars,
+            negative: inner_negative,
+        } = &outer_negative.kind
+        else {
             panic!("expected inner difference");
         };
-        assert_eq!(outer.key_vars, vec!["?e".to_var()]);
-        assert_eq!(outer.negative.incoming_vars, Some(vec!["?e".to_var()]));
-        assert_eq!(inner.key_vars, vec!["?e".to_var()]);
-        assert_eq!(inner.negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(outer_key_vars, &vec!["?e".to_var()]);
+        assert_eq!(outer_negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(inner_key_vars, &vec!["?e".to_var()]);
+        assert_eq!(inner_negative.incoming_vars, Some(vec!["?e".to_var()]));
     }
 
     #[test]
@@ -723,15 +737,18 @@ mod tests {
         )
         .unwrap();
 
-        let RelPlanKind::Union(union) = &plan.where_plan.kind else {
+        let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan");
         };
-        let RelPlanKind::Chain(branch) = &union.branches[0].kind else {
+        let RelPlanKind::Chain {
+            children: branch_children,
+        } = &branches[0].kind
+        else {
             panic!("expected and branch");
         };
         assert!(matches!(
-            branch.children[1].kind,
-            RelPlanKind::Difference(_)
+            branch_children[1].kind,
+            RelPlanKind::Difference { .. }
         ));
     }
 
