@@ -44,6 +44,15 @@ impl Stage {
             );
         }
 
+        let mut participant_indexes = HashSet::with_capacity(participants.len());
+        for participant in &participants {
+            ensure!(
+                participant_indexes.insert(participant.index()),
+                "Stage participant indexes must be distinct: {}",
+                participant.index()
+            );
+        }
+
         Ok(Self {
             added,
             participants,
@@ -92,21 +101,27 @@ mod tests {
 
     use super::Stage;
     use crate::query::binding_bag::BindingBag;
-    use crate::query::exec_pattern::{ExecPattern, ParticipantIndex, Proposal};
+    use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
     struct TestPattern {
+        index: PatternIndex,
         variables: Vec<Variable>,
     }
 
     impl TestPattern {
-        fn shared(variables: &[&str]) -> Arc<dyn ExecPattern> {
+        fn shared(index: PatternIndex, variables: &[&str]) -> Arc<dyn ExecPattern> {
             Arc::new(Self {
+                index,
                 variables: variables.iter().map(|variable| variable.to_var()).collect(),
             })
         }
     }
 
     impl ExecPattern for TestPattern {
+        fn index(&self) -> PatternIndex {
+            self.index
+        }
+
         fn variables(&self) -> &[Variable] {
             &self.variables
         }
@@ -115,7 +130,6 @@ mod tests {
             &self,
             _input: &BindingBag,
             _added: &[Variable],
-            _participant_index: ParticipantIndex,
             _proposals: &mut [Proposal],
         ) -> Result<()> {
             Ok(())
@@ -133,7 +147,7 @@ mod tests {
 
     #[test]
     fn stage_construction_enforces_static_invariants() {
-        let pattern = TestPattern::shared(&["?x"]);
+        let pattern = TestPattern::shared(1, &["?x"]);
 
         assert!(Stage::new(vec![], vec![], vec![]).is_err());
         assert!(Stage::new(
@@ -150,7 +164,13 @@ mod tests {
         .is_err());
         assert!(Stage::new(
             vec!["?missing".to_var()],
-            vec![pattern],
+            vec![Arc::clone(&pattern)],
+            vec!["?x".to_var()],
+        )
+        .is_err());
+        assert!(Stage::new(
+            vec!["?x".to_var()],
+            vec![Arc::clone(&pattern), pattern],
             vec!["?x".to_var()],
         )
         .is_err());
@@ -160,7 +180,7 @@ mod tests {
     fn stage_validates_each_input_layout_transition() {
         let stage = Stage::new(
             vec!["?y".to_var()],
-            vec![TestPattern::shared(&["?x", "?y"])],
+            vec![TestPattern::shared(1, &["?x", "?y"])],
             vec!["?y".to_var(), "?x".to_var()],
         )
         .unwrap();

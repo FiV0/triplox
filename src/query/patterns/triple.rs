@@ -12,7 +12,7 @@ use crate::index::IndexType;
 use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, ParticipantIndex, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 use crate::util::make_extractor;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +62,7 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
+    index: PatternIndex,
     variables: Vec<Variable>,
     entity: TripleTerm,
     attribute: i64,
@@ -77,7 +78,9 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        index: PatternIndex,
         entity: TripleTerm,
         attribute: i64,
         value: TripleTerm,
@@ -88,11 +91,11 @@ where
     ) -> Result<Self> {
         ensure!(
             !matches!(entity, TripleTerm::Placeholder),
-            "Triple pattern does not support an entity placeholder"
+            "Triple pattern {index} does not support an entity placeholder"
         );
         ensure!(
             !matches!(value, TripleTerm::Placeholder),
-            "Triple pattern does not support a value placeholder"
+            "Triple pattern {index} does not support a value placeholder"
         );
 
         let mut variables = Vec::new();
@@ -102,12 +105,13 @@ where
         if let Some(variable) = value.variable() {
             ensure!(
                 !variables.contains(variable),
-                "Triple pattern repeats variable {variable}"
+                "Triple pattern {index} repeats variable {variable}"
             );
             variables.push(variable.clone());
         }
 
         Ok(Self {
+            index,
             variables,
             entity,
             attribute,
@@ -279,6 +283,10 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
+    fn index(&self) -> PatternIndex {
+        self.index
+    }
+
     fn variables(&self) -> &[Variable] {
         &self.variables
     }
@@ -287,12 +295,12 @@ where
         &self,
         input: &BindingBag,
         added: &[Variable],
-        participant_index: ParticipantIndex,
         proposals: &mut [Proposal],
     ) -> Result<()> {
         ensure!(
             proposals.len() == input.rows.len(),
-            "Triple pattern received {} proposals for {} input rows",
+            "Triple pattern {} received {} proposals for {} input rows",
+            self.index,
             proposals.len(),
             input.rows.len()
         );
@@ -305,7 +313,7 @@ where
 
         for (row, proposal) in input.rows.iter().zip(proposals) {
             let count = self.candidate_extensions(input, row, position)?.len();
-            proposal.consider(participant_index, count);
+            proposal.consider(self.index, count);
         }
         Ok(())
     }
@@ -319,7 +327,8 @@ where
         if added.is_empty() {
             ensure!(
                 target_variables == input.variables,
-                "Triple pattern validation must preserve the input layout"
+                "Triple pattern {} validation must preserve the input layout",
+                self.index
             );
             let mut matches = Vec::new();
             for (row_index, row) in input.rows.iter().enumerate() {
@@ -332,15 +341,21 @@ where
 
         ensure!(
             added.len() == 1,
-            "Triple pattern can propose exactly one variable, got {added:?}"
+            "Triple pattern {} can propose exactly one variable, got {added:?}",
+            self.index
         );
         ensure!(
             !input.variables.contains(&added[0]),
-            "Triple pattern cannot add already-bound variable {}",
+            "Triple pattern {} cannot add already-bound variable {}",
+            self.index,
             added[0]
         );
         let position = self.position_for_variable(&added[0]).ok_or_else(|| {
-            anyhow::anyhow!("Triple pattern cannot propose variable {}", added[0])
+            anyhow::anyhow!(
+                "Triple pattern {} cannot propose variable {}",
+                self.index,
+                added[0]
+            )
         })?;
         let extensions = input
             .rows
@@ -466,6 +481,7 @@ mod tests {
 
         let (entity, value) = variables("?e", "?v");
         let pattern = TriplePattern::new(
+            7,
             entity,
             42,
             value,
@@ -476,12 +492,7 @@ mod tests {
         )?;
 
         let mut entity_proposal = vec![Proposal::default()];
-        pattern.count(
-            &BindingBag::unit(),
-            &["?e".to_var()],
-            7,
-            &mut entity_proposal,
-        )?;
+        pattern.count(&BindingBag::unit(), &["?e".to_var()], &mut entity_proposal)?;
         assert_eq!(entity_proposal[0].count(), 2);
         assert_eq!(
             pattern.join(&BindingBag::unit(), &["?e".to_var()], &["?e".to_var()])?,
@@ -495,12 +506,7 @@ mod tests {
         );
 
         let mut value_proposal = vec![Proposal::default()];
-        pattern.count(
-            &BindingBag::unit(),
-            &["?v".to_var()],
-            7,
-            &mut value_proposal,
-        )?;
+        pattern.count(&BindingBag::unit(), &["?v".to_var()], &mut value_proposal)?;
         assert_eq!(value_proposal[0].count(), 3);
 
         let input = binding_bag(
@@ -513,7 +519,7 @@ mod tests {
         );
         let mut proposals = vec![Proposal::default(); 3];
 
-        pattern.count(&input, &["?v".to_var()], 7, &mut proposals)?;
+        pattern.count(&input, &["?v".to_var()], &mut proposals)?;
         assert_eq!(proposals[0].count(), 2);
         assert_eq!(proposals[1].count(), 1);
         assert_eq!(proposals[2].proposer(), None);
@@ -585,6 +591,7 @@ mod tests {
 
         let (entity, value) = variables("?e", "?v");
         let pattern = TriplePattern::new(
+            7,
             entity,
             42,
             value,
@@ -655,6 +662,7 @@ mod tests {
         ))?;
 
         let entity_pattern = TriplePattern::new(
+            1,
             TripleTerm::Variable("?e".to_var()),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
@@ -671,6 +679,7 @@ mod tests {
         );
 
         let value_pattern = TriplePattern::new(
+            2,
             TripleTerm::Constant(encoded(DataType::Long(1))),
             42,
             TripleTerm::Variable("?v".to_var()),
@@ -689,6 +698,7 @@ mod tests {
         );
 
         let existing = TriplePattern::new(
+            3,
             TripleTerm::Constant(encoded(DataType::Long(1))),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
@@ -703,6 +713,7 @@ mod tests {
         );
 
         let missing = TriplePattern::new(
+            4,
             TripleTerm::Constant(encoded(DataType::Long(2))),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
@@ -743,8 +754,9 @@ mod tests {
             .await
         })?;
 
-        let make_pattern = |as_of| {
+        let make_pattern = |index, as_of| {
             TriplePattern::new(
+                index,
                 TripleTerm::Constant(encoded(DataType::Long(1))),
                 42,
                 TripleTerm::Constant(encoded(DataType::String("alice".into()))),
@@ -756,15 +768,15 @@ mod tests {
         };
 
         assert_eq!(
-            make_pattern(9)?.join(&BindingBag::unit(), &[], &[])?,
+            make_pattern(1, 9)?.join(&BindingBag::unit(), &[], &[])?,
             BindingBag::empty(Vec::<Variable>::new())?
         );
         assert_eq!(
-            make_pattern(10)?.join(&BindingBag::unit(), &[], &[])?,
+            make_pattern(2, 10)?.join(&BindingBag::unit(), &[], &[])?,
             BindingBag::unit()
         );
         assert_eq!(
-            make_pattern(20)?.join(&BindingBag::unit(), &[], &[])?,
+            make_pattern(3, 20)?.join(&BindingBag::unit(), &[], &[])?,
             BindingBag::empty(Vec::<Variable>::new())?
         );
         Ok(())
@@ -776,6 +788,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let new = |entity, value| {
             TriplePattern::new(
+                7,
                 entity,
                 42,
                 value,

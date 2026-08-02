@@ -4,7 +4,7 @@ use edn::query::Variable;
 
 use crate::algo::trie::{Trie, TrieNode};
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, ParticipantIndex, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
 /// A pattern that matches a relation (set of rows) with a fixed set of variables.
 ///
@@ -13,6 +13,7 @@ use crate::query::exec_pattern::{ExecPattern, ParticipantIndex, Proposal};
 /// followed by the introduced variables must form a relation prefix. Validation requires the bound
 /// variables themselves to form a relation prefix.
 pub(crate) struct RelationPattern {
+    index: PatternIndex,
     variables: Vec<Variable>,
     // The reason we have this field is to distinguish between an the unit relation`{()}` and an empty relation `{}`.
     // More generally, an empty bound prefix reaches the trie root whether the relation has
@@ -22,7 +23,7 @@ pub(crate) struct RelationPattern {
 }
 
 impl RelationPattern {
-    pub(crate) fn new(relation: BindingBag) -> Self {
+    pub(crate) fn new(index: PatternIndex, relation: BindingBag) -> Self {
         let has_rows = !relation.rows.is_empty();
         let variables = relation.variables;
         let mut trie = Trie::new();
@@ -30,6 +31,7 @@ impl RelationPattern {
             trie.insert(row);
         }
         Self {
+            index,
             variables,
             has_rows,
             trie,
@@ -105,6 +107,10 @@ impl RelationPattern {
 }
 
 impl ExecPattern for RelationPattern {
+    fn index(&self) -> PatternIndex {
+        self.index
+    }
+
     fn variables(&self) -> &[Variable] {
         &self.variables
     }
@@ -113,7 +119,6 @@ impl ExecPattern for RelationPattern {
         &self,
         input: &BindingBag,
         added: &[Variable],
-        participant_index: ParticipantIndex,
         proposals: &mut [Proposal],
     ) -> Result<()> {
         ensure!(
@@ -134,7 +139,7 @@ impl ExecPattern for RelationPattern {
                 .trie_node_for(input_row, &prefix_indexes)
                 .map(|node| Self::count_extensions(node, added.len()))
                 .unwrap_or(0);
-            proposal.consider(participant_index, count);
+            proposal.consider(self.index, count);
         }
         Ok(())
     }
@@ -218,15 +223,18 @@ mod tests {
 
     #[test]
     fn count_updates_each_row_with_its_distinct_positive_candidate_count() {
-        let pattern = RelationPattern::new(binding_bag(
-            &["?x", "?y"],
-            &[&["a", "1"], &["a", "1"], &["a", "2"], &["b", "3"]],
-        ));
+        let pattern = RelationPattern::new(
+            7,
+            binding_bag(
+                &["?x", "?y"],
+                &[&["a", "1"], &["a", "1"], &["a", "2"], &["b", "3"]],
+            ),
+        );
         let input = binding_bag(&["?x"], &[&["a"], &["b"], &["c"]]);
         let mut proposals = vec![Proposal::default(); input.rows.len()];
 
         pattern
-            .count(&input, &["?y".to_var()], 7, &mut proposals)
+            .count(&input, &["?y".to_var()], &mut proposals)
             .unwrap();
 
         assert_eq!(proposals[0].proposer(), Some(7));
@@ -238,26 +246,27 @@ mod tests {
 
     #[test]
     fn count_is_a_noop_for_non_prefix_proposals_and_checks_proposal_length() {
-        let pattern = RelationPattern::new(binding_bag(&["?x", "?y"], &[&["a", "1"]]));
+        let pattern = RelationPattern::new(7, binding_bag(&["?x", "?y"], &[&["a", "1"]]));
         let input = binding_bag(&["?y"], &[&["1"]]);
         let mut proposals = vec![Proposal::default()];
 
         pattern
-            .count(&input, &["?x".to_var()], 7, &mut proposals)
+            .count(&input, &["?x".to_var()], &mut proposals)
             .unwrap();
         assert_eq!(proposals, vec![Proposal::default()]);
 
-        assert!(pattern.count(&input, &["?x".to_var()], 7, &mut []).is_err());
+        assert!(pattern.count(&input, &["?x".to_var()], &mut []).is_err());
     }
 
     #[test]
     fn multi_variable_non_prefix_proposals_are_ignored_and_rejected() {
-        let pattern = RelationPattern::new(binding_bag(&["?x", "?y", "?z"], &[&["a", "1", "red"]]));
+        let pattern =
+            RelationPattern::new(7, binding_bag(&["?x", "?y", "?z"], &[&["a", "1", "red"]]));
         let input = BindingBag::unit();
         let added = ["?y".to_var(), "?z".to_var()];
         let mut proposals = vec![Proposal::default()];
 
-        pattern.count(&input, &added, 7, &mut proposals).unwrap();
+        pattern.count(&input, &added, &mut proposals).unwrap();
 
         assert_eq!(proposals, vec![Proposal::default()]);
         assert!(pattern.join(&input, &added, &added).is_err());
@@ -265,21 +274,24 @@ mod tests {
 
     #[test]
     fn counts_and_proposes_distinct_multi_variable_prefixes_from_the_root() {
-        let pattern = RelationPattern::new(binding_bag(
-            &["?x", "?y", "?z"],
-            &[
-                &["a", "1", "red"],
-                &["a", "1", "blue"],
-                &["a", "1", "red"],
-                &["a", "2", "green"],
-                &["b", "3", "black"],
-            ],
-        ));
+        let pattern = RelationPattern::new(
+            7,
+            binding_bag(
+                &["?x", "?y", "?z"],
+                &[
+                    &["a", "1", "red"],
+                    &["a", "1", "blue"],
+                    &["a", "1", "red"],
+                    &["a", "2", "green"],
+                    &["b", "3", "black"],
+                ],
+            ),
+        );
         let input = binding_bag(&["?outer"], &[&["seed"], &["seed"]]);
         let added = ["?x".to_var(), "?y".to_var()];
         let mut proposals = vec![Proposal::default(); input.rows.len()];
 
-        pattern.count(&input, &added, 7, &mut proposals).unwrap();
+        pattern.count(&input, &added, &mut proposals).unwrap();
 
         assert_eq!(proposals[0].proposer(), Some(7));
         assert_eq!(proposals[0].count(), 3);
@@ -311,15 +323,18 @@ mod tests {
 
     #[test]
     fn counts_and_proposes_multiple_variables_below_a_reordered_bound_prefix() {
-        let pattern = RelationPattern::new(binding_bag(
-            &["?w", "?x", "?y", "?z"],
-            &[
-                &["a", "1", "m", "red"],
-                &["a", "1", "m", "blue"],
-                &["a", "1", "n", "green"],
-                &["b", "2", "o", "black"],
-            ],
-        ));
+        let pattern = RelationPattern::new(
+            9,
+            binding_bag(
+                &["?w", "?x", "?y", "?z"],
+                &[
+                    &["a", "1", "m", "red"],
+                    &["a", "1", "m", "blue"],
+                    &["a", "1", "n", "green"],
+                    &["b", "2", "o", "black"],
+                ],
+            ),
+        );
         let input = binding_bag(
             &["?x", "?outer", "?w"],
             &[&["1", "first", "a"], &["9", "second", "a"]],
@@ -327,7 +342,7 @@ mod tests {
         let added = ["?y".to_var(), "?z".to_var()];
         let mut proposals = vec![Proposal::default(); input.rows.len()];
 
-        pattern.count(&input, &added, 9, &mut proposals).unwrap();
+        pattern.count(&input, &added, &mut proposals).unwrap();
 
         assert_eq!(proposals[0].proposer(), Some(9));
         assert_eq!(proposals[0].count(), 3);
@@ -361,10 +376,10 @@ mod tests {
 
     #[test]
     fn proposing_join_preserves_outer_columns_multiplicity_and_target_order() {
-        let pattern = RelationPattern::new(binding_bag(
-            &["?x", "?y"],
-            &[&["a", "1"], &["a", "2"], &["b", "3"]],
-        ));
+        let pattern = RelationPattern::new(
+            7,
+            binding_bag(&["?x", "?y"], &[&["a", "1"], &["a", "2"], &["b", "3"]]),
+        );
         let input = binding_bag(
             &["?outer", "?x"],
             &[&["u", "a"], &["v", "a"], &["w", "missing"]],
@@ -394,7 +409,8 @@ mod tests {
 
     #[test]
     fn validating_join_filters_prefixes_without_changing_layout_or_bag_semantics() {
-        let pattern = RelationPattern::new(binding_bag(&["?x", "?y"], &[&["a", "1"], &["a", "2"]]));
+        let pattern =
+            RelationPattern::new(7, binding_bag(&["?x", "?y"], &[&["a", "1"], &["a", "2"]]));
         let input = binding_bag(&["?outer", "?x"], &[&["u", "a"], &["u", "a"], &["v", "b"]]);
 
         let validated = pattern.join(&input, &[], &input.variables).unwrap();
@@ -410,10 +426,13 @@ mod tests {
 
     #[test]
     fn validating_join_matches_complete_rows_independent_of_input_column_order() {
-        let pattern = RelationPattern::new(binding_bag(
-            &["?x", "?y", "?z"],
-            &[&["a", "1", "red"], &["b", "2", "blue"]],
-        ));
+        let pattern = RelationPattern::new(
+            7,
+            binding_bag(
+                &["?x", "?y", "?z"],
+                &[&["a", "1", "red"], &["b", "2", "blue"]],
+            ),
+        );
         let input = binding_bag(
             &["?z", "?outer", "?x", "?y"],
             &[
@@ -437,8 +456,8 @@ mod tests {
     #[test]
     fn zero_column_relations_validate_by_existence() {
         let input = binding_bag(&["?x"], &[&["a"], &["a"]]);
-        let unit = RelationPattern::new(BindingBag::unit());
-        let empty = RelationPattern::new(BindingBag::empty(vec![]).unwrap());
+        let unit = RelationPattern::new(7, BindingBag::unit());
+        let empty = RelationPattern::new(8, BindingBag::empty(vec![]).unwrap());
 
         assert_eq!(unit.join(&input, &[], &input.variables).unwrap(), input);
         assert_eq!(
