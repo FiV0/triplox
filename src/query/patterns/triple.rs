@@ -19,14 +19,13 @@ use crate::util::make_extractor;
 pub(crate) enum TripleTerm {
     Variable(Variable),
     Constant(Bytes),
-    Placeholder,
 }
 
 impl TripleTerm {
     fn variable(&self) -> Option<&Variable> {
         match self {
             Self::Variable(variable) => Some(variable),
-            Self::Constant(_) | Self::Placeholder => None,
+            Self::Constant(_) => None,
         }
     }
 
@@ -40,7 +39,6 @@ impl TripleTerm {
                 }
             }
             Self::Constant(value) => Ok(Some(value.clone())),
-            Self::Placeholder => Ok(None),
         }
     }
 }
@@ -89,15 +87,6 @@ where
         as_of: i64,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self> {
-        ensure!(
-            !matches!(entity, TripleTerm::Placeholder),
-            "Triple pattern {index} does not support an entity placeholder"
-        );
-        ensure!(
-            !matches!(value, TripleTerm::Placeholder),
-            "Triple pattern {index} does not support a value placeholder"
-        );
-
         let mut variables = Vec::new();
         if let Some(variable) = entity.variable() {
             variables.push(variable.clone());
@@ -783,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn constructor_rejects_unsupported_and_repeated_shapes() -> Result<()> {
+    fn constructor_rejects_repeated_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         let new = |entity, value| {
@@ -799,8 +788,6 @@ mod tests {
             )
         };
 
-        assert!(new(TripleTerm::Placeholder, TripleTerm::Variable("?v".to_var())).is_err());
-        assert!(new(TripleTerm::Variable("?e".to_var()), TripleTerm::Placeholder).is_err());
         assert!(new(
             TripleTerm::Variable("?x".to_var()),
             TripleTerm::Variable("?x".to_var())
