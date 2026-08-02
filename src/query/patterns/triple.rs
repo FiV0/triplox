@@ -55,6 +55,38 @@ struct ScanSpec {
     extractor_position: usize,
 }
 
+/// Immutable database value used by triple-pattern scans.
+pub(crate) struct DbValue<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
+    slate: Arc<D>,
+    handle: Handle,
+    as_of: i64,
+    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+}
+
+impl<D, M> DbValue<D, M>
+where
+    D: DbReadOps + Send + Sync + 'static,
+    M: DbMetadataOps + Send + Sync + 'static,
+{
+    pub(crate) fn new(
+        slate: Arc<D>,
+        handle: Handle,
+        as_of: i64,
+        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    ) -> Self {
+        Self {
+            slate,
+            handle,
+            as_of,
+            range_stats,
+        }
+    }
+}
+
 pub(crate) struct TriplePattern<D, M>
 where
     D: DbReadOps + Send + Sync + 'static,
@@ -65,10 +97,7 @@ where
     entity: TripleTerm,
     attribute: i64,
     value: TripleTerm,
-    slate: Arc<D>,
-    handle: Handle,
-    as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    db: Arc<DbValue<D, M>>,
 }
 
 impl<D, M> TriplePattern<D, M>
@@ -76,16 +105,12 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         index: PatternIndex,
         entity: TripleTerm,
         attribute: i64,
         value: TripleTerm,
-        slate: Arc<D>,
-        handle: Handle,
-        as_of: i64,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+        db: Arc<DbValue<D, M>>,
     ) -> Result<Self> {
         let mut variables = Vec::new();
         if let Some(variable) = entity.variable() {
@@ -105,10 +130,7 @@ where
             entity,
             attribute,
             value,
-            slate,
-            handle,
-            as_of,
-            range_stats,
+            db,
         })
     }
 
@@ -215,19 +237,19 @@ where
         match index_type {
             IndexType::AE | IndexType::AV => Ok(Box::new(SlateIterator::new(
                 &spec.prefix,
-                self.slate.as_ref(),
-                self.handle.clone(),
+                self.db.slate.as_ref(),
+                self.db.handle.clone(),
                 extractor,
-                self.range_stats.clone(),
+                self.db.range_stats.clone(),
             )?)),
             IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
                 Ok(Box::new(TemporalFilterIterator::new(
                     &spec.prefix,
-                    self.slate.as_ref(),
-                    self.handle.clone(),
+                    self.db.slate.as_ref(),
+                    self.db.handle.clone(),
                     extractor,
-                    self.as_of,
-                    self.range_stats.clone(),
+                    self.db.as_of,
+                    self.db.range_stats.clone(),
                 )?))
             }
         }
@@ -360,12 +382,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use anyhow::Result;
     use bytes::Bytes;
     use edn::query::{ToVariable, Variable};
     use slatedb::Db;
 
-    use super::{TriplePattern, TripleTerm};
+    use super::{DbValue, TriplePattern, TripleTerm};
     use crate::codec::{self, Encode};
     use crate::ops::DataType;
     use crate::query::binding_bag::BindingBag;
@@ -469,16 +493,13 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let pattern = TriplePattern::new(
-            7,
-            entity,
-            42,
-            value,
+        let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
             10,
             components.range_stats,
-        )?;
+        ));
+        let pattern = TriplePattern::new(7, entity, 42, value, db)?;
 
         let mut entity_proposal = vec![Proposal::default()];
         pattern.count(&BindingBag::unit(), &["?e".to_var()], &mut entity_proposal)?;
@@ -579,16 +600,13 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let pattern = TriplePattern::new(
-            7,
-            entity,
-            42,
-            value,
+        let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
             20,
             components.range_stats,
-        )?;
+        ));
+        let pattern = TriplePattern::new(7, entity, 42, value, db)?;
         let partial = binding_bag(
             &["?outer", "?e"],
             vec![
@@ -650,15 +668,18 @@ mod tests {
             codec::ADD,
         ))?;
 
+        let db = Arc::new(DbValue::new(
+            components.db,
+            runtime.handle().clone(),
+            10,
+            components.range_stats,
+        ));
         let entity_pattern = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-            components.db.clone(),
-            runtime.handle().clone(),
-            10,
-            components.range_stats.clone(),
+            db.clone(),
         )?;
         let entities =
             entity_pattern.join(&BindingBag::unit(), &["?e".to_var()], &["?e".to_var()])?;
@@ -672,10 +693,7 @@ mod tests {
             TripleTerm::Constant(encoded(DataType::Long(1))),
             42,
             TripleTerm::Variable("?v".to_var()),
-            components.db.clone(),
-            runtime.handle().clone(),
-            10,
-            components.range_stats.clone(),
+            db.clone(),
         )?;
         let values = value_pattern.join(&BindingBag::unit(), &["?v".to_var()], &["?v".to_var()])?;
         assert_eq!(
@@ -691,10 +709,7 @@ mod tests {
             TripleTerm::Constant(encoded(DataType::Long(1))),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-            components.db.clone(),
-            runtime.handle().clone(),
-            10,
-            components.range_stats.clone(),
+            db.clone(),
         )?;
         assert_eq!(
             existing.join(&BindingBag::unit(), &[], &[])?,
@@ -706,10 +721,7 @@ mod tests {
             TripleTerm::Constant(encoded(DataType::Long(2))),
             42,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-            components.db,
-            runtime.handle().clone(),
-            10,
-            components.range_stats,
+            db,
         )?;
         assert_eq!(
             missing.join(&BindingBag::unit(), &[], &[])?,
@@ -749,10 +761,12 @@ mod tests {
                 TripleTerm::Constant(encoded(DataType::Long(1))),
                 42,
                 TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-                components.db.clone(),
-                runtime.handle().clone(),
-                as_of,
-                components.range_stats.clone(),
+                Arc::new(DbValue::new(
+                    components.db.clone(),
+                    runtime.handle().clone(),
+                    as_of,
+                    components.range_stats.clone(),
+                )),
             )
         };
 
@@ -775,18 +789,13 @@ mod tests {
     fn constructor_rejects_repeated_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
-        let new = |entity, value| {
-            TriplePattern::new(
-                7,
-                entity,
-                42,
-                value,
-                components.db.clone(),
-                runtime.handle().clone(),
-                10,
-                components.range_stats.clone(),
-            )
-        };
+        let db = Arc::new(DbValue::new(
+            components.db,
+            runtime.handle().clone(),
+            10,
+            components.range_stats,
+        ));
+        let new = |entity, value| TriplePattern::new(7, entity, 42, value, db.clone());
 
         assert!(new(
             TripleTerm::Variable("?x".to_var()),
