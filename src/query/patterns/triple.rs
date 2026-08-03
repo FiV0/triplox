@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{ensure, Result};
@@ -263,13 +262,10 @@ where
         position: TriplePosition,
     ) -> Result<Vec<BindingRow>> {
         let mut iterator = self.create_iterator(self.proposal_scan(input, row, position)?)?;
-        let mut seen = HashSet::new();
         let mut extensions = Vec::new();
 
         while let Some(value) = iterator.get_value()? {
-            if seen.insert(value.clone()) {
-                extensions.push(vec![value]);
-            }
+            extensions.push(vec![value]);
             iterator.next()?;
         }
         Ok(extensions)
