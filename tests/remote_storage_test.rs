@@ -16,14 +16,14 @@ use triplox::TransactionResult;
 async fn test_remote_node_with_s3_storage() {
     triplox::logging::init();
 
-    // Start RustFS container
-    let container = GenericImage::new("rustfs/rustfs", "1.0.0-alpha.93")
+    // Start MinIO container
+    let container = GenericImage::new("minio/minio", "RELEASE.2025-09-07T16-13-09Z")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/health/ready").with_expected_status_code(200u16),
+            HttpWaitStrategy::new("/minio/health/live").with_expected_status_code(200u16),
         ))
-        .with_env_var("RUSTFS_ROOT_USER", "minioadmin")
-        .with_env_var("RUSTFS_ROOT_PASSWORD", "minioadmin")
+        .with_env_var("MINIO_ROOT_USER", "minioadmin")
+        .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
         .with_cmd(vec!["server", "/data"])
         .with_startup_timeout(std::time::Duration::from_secs(30))
         .start()
