@@ -21,7 +21,7 @@ impl Proposal {
     }
 
     pub(crate) fn consider(&mut self, proposer: PatternIndex, count: usize) {
-        if count > 0 && count < self.count {
+        if self.proposer.is_none() || count < self.count {
             self.proposer = Some(proposer);
             self.count = count;
         }
@@ -44,7 +44,7 @@ pub(crate) trait ExecPattern: Send + Sync {
     // The variables this pattern participates in.
     fn variables(&self) -> &[Variable];
 
-    // Updates per-row proposals only when this pattern has a strictly cheaper positive count.
+    // Updates proposals without a proposer or with a strictly higher count.
     fn count(
         &self,
         input: &BindingBag,
@@ -67,19 +67,21 @@ mod tests {
     use super::Proposal;
 
     #[test]
-    fn proposal_keeps_the_first_strictly_cheapest_positive_count() {
+    fn proposal_keeps_the_first_strictly_cheapest_count() {
         let mut proposal = Proposal::default();
 
-        proposal.consider(4, 0);
-        assert_eq!(proposal.proposer(), None);
-
-        proposal.consider(4, 3);
-        proposal.consider(5, 3);
+        proposal.consider(4, usize::MAX);
+        proposal.consider(5, usize::MAX);
         assert_eq!(proposal.proposer(), Some(4));
+        assert_eq!(proposal.count(), usize::MAX);
+
+        proposal.consider(5, 3);
+        proposal.consider(6, 3);
+        assert_eq!(proposal.proposer(), Some(5));
         assert_eq!(proposal.count(), 3);
 
-        proposal.consider(5, 2);
-        assert_eq!(proposal.proposer(), Some(5));
-        assert_eq!(proposal.count(), 2);
+        proposal.consider(6, 0);
+        assert_eq!(proposal.proposer(), Some(6));
+        assert_eq!(proposal.count(), 0);
     }
 }

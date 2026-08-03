@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn count_updates_each_row_with_its_distinct_positive_candidate_count() {
+    fn count_updates_each_row_with_its_distinct_candidate_count() {
         let pattern = RelationPattern::new(
             7,
             binding_bag(
@@ -241,7 +241,8 @@ mod tests {
         assert_eq!(proposals[0].count(), 2);
         assert_eq!(proposals[1].proposer(), Some(7));
         assert_eq!(proposals[1].count(), 1);
-        assert_eq!(proposals[2].proposer(), None);
+        assert_eq!(proposals[2].proposer(), Some(7));
+        assert_eq!(proposals[2].count(), 0);
     }
 
     #[test]
@@ -346,7 +347,8 @@ mod tests {
 
         assert_eq!(proposals[0].proposer(), Some(9));
         assert_eq!(proposals[0].count(), 3);
-        assert_eq!(proposals[1].proposer(), None);
+        assert_eq!(proposals[1].proposer(), Some(9));
+        assert_eq!(proposals[1].count(), 0);
 
         let joined = pattern
             .join(

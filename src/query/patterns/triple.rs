@@ -512,6 +512,10 @@ mod tests {
         ));
         let pattern = TriplePattern::new(7, entity, 42, value, db)?;
 
+        let mut entity_proposal = vec![Proposal::default()];
+        pattern.count(&BindingBag::unit(), &["?e".to_var()], &mut entity_proposal)?;
+        assert_eq!(entity_proposal[0].proposer(), Some(7));
+        assert_eq!(entity_proposal[0].count(), 0);
         assert_eq!(
             pattern.join(&BindingBag::unit(), &["?e".to_var()], &["?e".to_var()])?,
             binding_bag(
