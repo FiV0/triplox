@@ -22,7 +22,7 @@
 </p>
 
 > 🚧 **WARNING: Alpha Software** 🚧
-> Triplox is alpha software. The index encoding has not yet stabilized. There will be bugs. There will be ingestion and congestion issues. Incremental queries will likely be slow. Do **not** use this in production.
+> Triplox is alpha software. The index encoding has not yet stabilized. There will be bugs. There will be ingestion and congestion issues. Incremental queries will likely be slow.
 
 # Triplox
 
