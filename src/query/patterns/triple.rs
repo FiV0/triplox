@@ -56,6 +56,7 @@ struct ScanSpec {
 }
 
 /// Immutable database value used by triple-pattern scans.
+/// Maybe unify with DB struct in node.rs
 pub(crate) struct DbValue<D, M>
 where
     D: DbReadOps + Send + Sync + 'static,
