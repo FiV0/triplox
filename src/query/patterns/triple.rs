@@ -275,6 +275,16 @@ where
         Ok(extensions)
     }
 
+    fn candidate_count(
+        &self,
+        input: &BindingBag,
+        row: &BindingRow,
+        position: TriplePosition,
+    ) -> Result<usize> {
+        let iterator = self.create_iterator(self.proposal_scan(input, row, position)?)?;
+        Ok(usize::try_from(iterator.count()?)?)
+    }
+
     fn matches(&self, input: &BindingBag, row: &BindingRow) -> Result<bool> {
         let (scan, expected) = self.validation_scan(input, row)?;
         let mut iterator = self.create_iterator(scan)?;
@@ -324,7 +334,7 @@ where
         };
 
         for (row, proposal) in input.rows.iter().zip(proposals) {
-            let count = self.candidate_extensions(input, row, position)?.len();
+            let count = self.candidate_count(input, row, position)?;
             proposal.consider(self.index, count);
         }
         Ok(())
@@ -390,7 +400,7 @@ mod tests {
     use edn::query::{ToVariable, Variable};
     use slatedb::Db;
 
-    use super::{DbValue, TriplePattern, TripleTerm};
+    use super::{DbValue, TriplePattern, TriplePosition, TripleTerm};
     use crate::codec::{self, Encode};
     use crate::ops::DataType;
     use crate::query::binding_bag::BindingBag;
@@ -460,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn proposes_and_counts_each_row_through_the_matching_index() -> Result<()> {
+    fn proposes_each_row_through_the_matching_index() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(async {
@@ -502,9 +512,6 @@ mod tests {
         ));
         let pattern = TriplePattern::new(7, entity, 42, value, db)?;
 
-        let mut entity_proposal = vec![Proposal::default()];
-        pattern.count(&BindingBag::unit(), &["?e".to_var()], &mut entity_proposal)?;
-        assert_eq!(entity_proposal[0].count(), 2);
         assert_eq!(
             pattern.join(&BindingBag::unit(), &["?e".to_var()], &["?e".to_var()])?,
             binding_bag(
@@ -516,10 +523,6 @@ mod tests {
             )
         );
 
-        let mut value_proposal = vec![Proposal::default()];
-        pattern.count(&BindingBag::unit(), &["?v".to_var()], &mut value_proposal)?;
-        assert_eq!(value_proposal[0].count(), 3);
-
         let input = binding_bag(
             &["?outer", "?e"],
             vec![
@@ -528,13 +531,6 @@ mod tests {
                 vec![encoded(DataType::Long(92)), encoded(DataType::Long(3))],
             ],
         );
-        let mut proposals = vec![Proposal::default(); 3];
-
-        pattern.count(&input, &["?v".to_var()], &mut proposals)?;
-        assert_eq!(proposals[0].count(), 2);
-        assert_eq!(proposals[1].count(), 1);
-        assert_eq!(proposals[2].proposer(), None);
-
         let joined = pattern.join(
             &input,
             &["?v".to_var()],
@@ -563,6 +559,70 @@ mod tests {
                 ],
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn count_uses_the_iterator_estimate_without_materializing_candidates() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        runtime.block_on(async {
+            insert_version(
+                components.db.as_ref(),
+                42,
+                1,
+                &DataType::String("alice".into()),
+                10,
+                codec::ADD,
+            )
+            .await?;
+            insert_version(
+                components.db.as_ref(),
+                42,
+                1,
+                &DataType::String("alice".into()),
+                20,
+                codec::RETRACT,
+            )
+            .await?;
+            components
+                .db
+                .flush_with_options(slatedb::config::FlushOptions {
+                    flush_type: slatedb::config::FlushType::MemTable,
+                })
+                .await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        let (entity, value) = variables("?e", "?v");
+        let pattern = TriplePattern::new(
+            7,
+            entity,
+            42,
+            value,
+            Arc::new(DbValue::new(
+                components.db,
+                runtime.handle().clone(),
+                20,
+                components.range_stats,
+            )),
+        )?;
+        let input = binding_bag(&["?e"], vec![vec![encoded(DataType::Long(1))]]);
+        let expected = usize::try_from(
+            pattern
+                .create_iterator(pattern.proposal_scan(
+                    &input,
+                    &input.rows[0],
+                    TriplePosition::Value,
+                )?)?
+                .count()?,
+        )?;
+        let mut proposals = vec![Proposal::default()];
+
+        pattern.count(&input, &["?v".to_var()], &mut proposals)?;
+
+        assert_eq!(proposals[0].proposer(), Some(7));
+        assert_eq!(proposals[0].count(), expected);
         Ok(())
     }
 
