@@ -158,9 +158,9 @@ The folks at [Feldera](https://github.com/feldera/feldera) have created the very
 ### Compatibility
 
 The goal is not to have a 1-to-1 correspondence of features with Datomic. Datomic is the main inspiration and we'll strive to stay
-close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There are also some edge
-cases with tempid + upsert resolution that I am currently not dealing correctly with. There are two separate query
-engines at play at the moment, one for standard queries and one for incremental queries (at some point in the future these [might converge](https://triplox.xyz/roadmap/roadmap/#collapsing-the-dbsp-gap-and-removing-the-standard-query-engine)).
+close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences will currently show up in the transaction pipeline. I am currently not dealing with schema updates. They might also be edge cases where the
+transaction pipeline semantics slightly differ. There are currently two separate query
+engines at play, one for standard queries and one for incremental queries (at some point in the future these [might converge](https://triplox.xyz/roadmap/roadmap/#collapsing-the-dbsp-gap-and-removing-the-standard-query-engine)).
 It should generally be the case that the standard query engine supports a superset of queries the incremental engine supports.
 
 There are some more open questions that I tried to write down on the [website](https://triplox.xyz/roadmap/open-questions/)
