@@ -11,7 +11,7 @@ incremental query engine described in
 
 The engine is row-oriented. It plans a query without opening storage, assembles
 that plan into runtime patterns for the selected database basis, and executes a
-sequence of layout transitions over `BindingSet` values.
+sequence of layout transitions over `BindingBag` values.
 
 ```text
 ParsedQuery + QueryArg values + database basis
@@ -29,7 +29,7 @@ ParsedQuery + QueryArg values + database basis
                     |
                     v
             GenericJoinEngine
-                 BindingSet
+                 BindingBag
                     |
                     v
        projection / aggregation / order / limit
@@ -39,19 +39,19 @@ ParsedQuery + QueryArg values + database basis
 ```
 
 `execute_query` in `src/query.rs` owns this orchestration. The planner and
-runtime implementation live under `src/query/standard/`; final result
-processing remains in `src/query.rs`.
+runtime implementation live under `src/query/`; final result processing
+remains in `src/query.rs`.
 
 ---
 
 ## Execution Value
 
-`BindingSet` is the value passed between stages:
+`BindingBag` is the value passed between stages:
 
 ```rust
 type BindingRow = Vec<Bytes>;
 
-struct BindingSet {
+struct BindingBag {
     variables: Vec<Variable>,
     rows: Vec<BindingRow>,
     column_indexes: HashMap<Variable, usize>,
@@ -69,7 +69,7 @@ joins. Only expression patterns and final result processing decode values into
 
 ### Relational operations
 
-`BindingSet` provides the operations needed by executable patterns:
+`BindingBag` provides the operations needed by executable patterns:
 
 - row selection and one-to-many extension;
 - projection and layout reorder;
@@ -81,14 +81,14 @@ joins. Only expression patterns and final result processing decode values into
 Natural join keeps the left layout and appends right-only variables. Semijoin
 and antijoin preserve the complete left row and never multiply it.
 
-`BindingSet::unit()` is the zero-column relation with one empty row.
-`BindingSet::empty(variables)` has the requested layout and no rows. These
+`BindingBag::unit()` is the zero-column relation with one empty row.
+`BindingBag::empty(variables)` has the requested layout and no rows. These
 values follow the usual relational rules: unit is the identity for natural
 join, while an empty zero-column relation annihilates it.
 
 ### Multiplicity
 
-`BindingSet` has bag semantics. A natural join can multiply rows, and projection
+`BindingBag` has bag semantics. A natural join can multiply rows, and projection
 does not implicitly deduplicate them. This multiplicity reaches ordinary
 `:find` projection and aggregation.
 
@@ -114,7 +114,7 @@ objects, or runtime stages.
 ### Descriptors
 
 Every input and where clause is lowered to a descriptor with a stable
-`PatternId`, an ordered variable list, and descriptor-specific data:
+`PatternIndex`, an ordered variable list, and descriptor-specific data:
 
 ```text
 Triple(Pattern)
@@ -185,7 +185,7 @@ struct LogicalStage {
 }
 
 enum ParticipantRef {
-    Pattern(PatternId),
+    Pattern(PatternIndex),
     Incoming,
 }
 ```
@@ -228,7 +228,7 @@ layout leave the proposal sidecar unchanged.
 - constructs predicate and function patterns from the existing expression
   representation;
 - recursively assembles OR and NOT patterns;
-- replaces descriptor IDs with shared `Arc<dyn ExecPattern>` values.
+- replaces descriptor indexes with shared `Arc<dyn ExecPattern>` values.
 
 Assembly also checks that every runtime pattern exposes exactly the variables
 recorded by its descriptor.
@@ -257,11 +257,11 @@ into concrete `Stage` values.
 Nested templates remain on their owning `OrPattern` or `NotPattern`. On each
 invocation, the composite pattern:
 
-1. projects the current outer `BindingSet` to the planned incoming variables;
+1. projects the current outer `BindingBag` to the planned incoming variables;
 2. wraps that projection in one `RelationPattern`;
 3. substitutes the same relation pattern into every `Incoming` slot;
 4. validates and creates concrete stages;
-5. executes those stages from `BindingSet::unit()`.
+5. executes those stages from `BindingBag::unit()`.
 
 The templates are reusable, while the incoming relation and concrete stages
 exist only for that invocation. `GenericJoinEngine` never receives an
@@ -277,22 +277,22 @@ All runtime patterns implement:
 
 ```rust
 trait ExecPattern: Send + Sync {
-    fn id(&self) -> PatternId;
+    fn index(&self) -> PatternIndex;
     fn variables(&self) -> &[Variable];
 
     fn count(
         &self,
-        input: &BindingSet,
+        input: &BindingBag,
         added: &[Variable],
         proposals: &mut [Proposal],
     ) -> anyhow::Result<()>;
 
     fn join(
         &self,
-        input: &BindingSet,
+        input: &BindingBag,
         added: &[Variable],
         target_variables: &[Variable],
-    ) -> anyhow::Result<BindingSet>;
+    ) -> anyhow::Result<BindingBag>;
 }
 ```
 
@@ -305,7 +305,7 @@ complete `added` list. Otherwise it is a no-op.
   `target_variables`;
 - empty `added` validates or filters rows and must preserve the input layout.
 
-Execution always starts from `BindingSet::unit()`. There is no separate seed
+Execution always starts from `BindingBag::unit()`. There is no separate seed
 path for top-level inputs or nested correlations.
 
 ### Stages
@@ -320,7 +320,7 @@ struct Stage {
 }
 ```
 
-Its participant IDs, added variables, and target variables must be unique. At
+Its participant indexes, added variables, and target variables must be unique. At
 execution time, the target variable set must equal the input variables plus
 the added variables. A stage with an empty `added` list is a first-class
 validation-only stage.
@@ -332,21 +332,21 @@ input row:
 
 ```rust
 struct Proposal {
-    proposer: Option<PatternId>,
+    proposer: Option<PatternIndex>,
     count: usize,
 }
 ```
 
-The initial value is `(None, usize::MAX)`. A participant replaces it only with
-a strictly cheaper positive count. Equal counts retain the earlier participant
-in stage order. `None` after counting means that no participant can extend
-that row, so the row is dropped.
+The initial value is `(None, usize::MAX)`. A participant replaces it with its
+first estimate or a strictly cheaper count, including zero. Equal counts retain
+the earlier participant in stage order. `None` after counting means that no
+participant can extend that row, so the row is dropped.
 
 ---
 
 ## Stage Execution
 
-`GenericJoinEngine` folds concrete stages over an input `BindingSet`.
+`GenericJoinEngine` folds concrete stages over an input `BindingBag`.
 
 ### Validation-only stage
 
@@ -364,8 +364,8 @@ OR does not implement a useful proposal count.
 
 1. Allocate one empty proposal per input row.
 2. Ask every participant to count the requested extension.
-3. Drop rows with no positive proposer.
-4. Group the remaining row indexes by winning `PatternId`.
+3. Drop rows that no participant considered.
+4. Group the remaining row indexes by winning `PatternIndex`.
 5. Ask each winner to extend its input shard.
 6. Run every other participant as a validator on that extended shard.
 7. Bag-union the validated shards in the target layout.
@@ -458,12 +458,12 @@ function dependencies, aggregate arguments, ordering, and variable limits.
 
 The later layers retain defensive checks:
 
-- `BindingSet` checks schemas and row arity;
+- `BindingBag` checks schemas and row arity;
 - planning rejects insufficient bindings and unplaced descriptors;
-- assembly checks descriptor IDs, pattern variables, and participant roles;
-- stages check layout transitions and distinct participant IDs;
+- assembly checks descriptor indexes, pattern variables, and participant roles;
+- stages check layout transitions and distinct participant indexes;
 - patterns check proposal sidecar lengths and their `join` mode;
-- the engine checks proposer IDs and every returned layout.
+- the engine checks proposer indexes and every returned layout.
 
 Storage, decoding, expression-conversion, and contract failures are returned
 through `anyhow::Result` with pattern or stage context. A well-formed runtime
@@ -499,7 +499,7 @@ changes do not automatically apply to subscriptions.
 
 The current implementation favors explicit contracts and correctness:
 
-- intermediate `BindingSet` rows are materialized;
+- intermediate `BindingBag` rows are materialized;
 - projection and joins clone row vectors and cheap `Bytes` handles;
 - triple proposals may repeat equivalent SlateDB scans for different input
   rows;
@@ -517,13 +517,13 @@ These internals can be optimized without changing the logical-plan,
 |------|----------------|
 | `src/query.rs` | Query orchestration, expression lowering, variable order, final projection, aggregation, ordering, and limits. |
 | `src/query_validation.rs` | Validation shared by the standard query entry point. |
-| `src/query/standard/binding_set.rs` | Checked row relation and relational operations. |
-| `src/query/standard/plan.rs` | Descriptors, groundability, logical scopes, and recursive planning. |
-| `src/query/standard/assembly.rs` | Database-basis-dependent pattern construction and stage-template assembly. |
-| `src/query/standard/exec_pattern.rs` | `PatternId`, proposal sidecar, and `ExecPattern` contract. |
-| `src/query/standard/stage.rs` | Concrete stages and deferred nested stage templates. |
-| `src/query/standard/engine.rs` | Stage fold and per-row proposer arbitration. |
-| `src/query/standard/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
+| `src/query/binding_bag.rs` | Checked row relation and relational operations. |
+| `src/query/plan.rs` | Descriptors, groundability, logical scopes, and recursive planning. |
+| `src/query/assembly.rs` | Database-basis-dependent pattern construction and stage-template assembly. |
+| `src/query/exec_pattern.rs` | `PatternIndex`, proposal sidecar, and `ExecPattern` contract. |
+| `src/query/stage.rs` | Concrete stages and deferred nested stage templates. |
+| `src/query/engine.rs` | Stage fold and per-row proposer arbitration. |
+| `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
 
 Unit tests live beside each contract and runtime pattern. Public parity and
 regression coverage for the standard engine also lives in
