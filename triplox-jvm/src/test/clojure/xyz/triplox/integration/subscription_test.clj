@@ -184,6 +184,31 @@
         (api/transact conn [[:db/retract alice-id :age 30]])
         (is (= [[["Alicia"] 1]] (take-delta! sub)))))))
 
+(deftest predicates-compose-with-and+or+not
+  (with-open [conn (connect)]
+    (api/transact conn people-schema)
+    (with-open [sub (api/subscribe conn '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  [?e :age ?age]
+                                                  (or
+                                                   (and [(> ?age 20)]
+                                                        [(< ?age 40)])
+                                                   (not [(< ?age 30)]))]})]
+      (api/transact conn [{:name "Alice" :age 20}
+                          {:name "Bob" :age 25}
+                          {:name "Cara" :age 35}
+                          {:name "Dave" :age 50}])
+      (is (= [[["Bob"] 1]
+              [["Cara"] 1]
+              [["Dave"] 1]]
+             (take-delta! sub)))
+
+      (let [cara-id (single-value conn '{:find [?e]
+                                         :where [[?e :name "Cara"]]})]
+        (api/transact conn [[:db/retract cara-id :age 35]])
+        (is (= [[["Cara"] -1]]
+               (take-delta! sub)))))))
+
 (deftest test-not-negative-scope-layouts
   (testing "Multi-clause negative scope"
     (with-open [conn (connect)]

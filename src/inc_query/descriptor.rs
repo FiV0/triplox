@@ -2,14 +2,15 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 use edn::query::{
-    NotJoin, OrJoin, OrWhereClause, Pattern, PatternNonValuePlace, PatternValuePlace, Variable,
-    WhereClause,
+    NotJoin, OrJoin, OrWhereClause, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
+    Variable, WhereClause,
 };
 
 use crate::codec::Encode;
+use crate::expr::{expr_variables, Expr};
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
-use crate::query::non_integer_constant_to_datatype;
+use crate::query::{convert_predicate, non_integer_constant_to_datatype};
 use crate::schema::Schema;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,23 +19,24 @@ pub(crate) enum PatternSlot {
     Constant(EncodedValue),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct ScopeDescriptor {
     pub descriptors: Vec<Descriptor>,
     pub variables: Vec<Variable>,
     pub groundable: Vec<Variable>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Descriptor {
     pub variables: Vec<Variable>,
     pub groundable: Vec<Variable>,
     pub kind: DescriptorKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum DescriptorKind {
     Pattern(PatternDescriptor),
+    Predicate { expr: Expr },
     Not { scope: ScopeDescriptor },
     Or { branches: Vec<ScopeDescriptor> },
 }
@@ -126,6 +128,16 @@ fn ordered_union<'a>(variables: impl IntoIterator<Item = &'a Variable>) -> Vec<V
     result
 }
 
+fn describe_predicate(predicate: &Predicate) -> Result<Descriptor> {
+    let expr = convert_predicate(predicate)?;
+    let variables = expr_variables(&expr);
+    Ok(Descriptor {
+        variables,
+        groundable: Vec::new(),
+        kind: DescriptorKind::Predicate { expr },
+    })
+}
+
 fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descriptor> {
     match clause {
         WhereClause::Pattern(pattern) => {
@@ -137,6 +149,7 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
                 kind: DescriptorKind::Pattern(pattern),
             })
         }
+        WhereClause::Pred(predicate) => describe_predicate(predicate),
         WhereClause::NotJoin(not) => describe_not(not, schema),
         WhereClause::OrJoin(or) => describe_or(or, schema),
         _ => unreachable!("unsupported clauses are rejected before planning"),
@@ -278,5 +291,19 @@ mod tests {
         };
         assert_eq!(scope.variables, vec!["?e".to_var(), "?age".to_var()]);
         assert_eq!(scope.groundable, scope.variables);
+    }
+
+    #[test]
+    fn predicate_metadata_mentions_variables_without_grounding_them() {
+        let query = parse_query("[:find ?age :where [?e :age ?age] [(< ?age 30)]]");
+        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let descriptor = &scope.descriptors[1];
+
+        assert_eq!(descriptor.variables, vec!["?age".to_var()]);
+        assert!(descriptor.groundable.is_empty());
+        let DescriptorKind::Predicate { expr } = &descriptor.kind else {
+            panic!("expected predicate descriptor");
+        };
+        assert_eq!(crate::expr::expr_variables(expr), vec!["?age".to_var()]);
     }
 }

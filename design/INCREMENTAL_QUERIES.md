@@ -105,6 +105,7 @@ Descriptor {
     variables: [Variable],
     groundable: [Variable],
     kind: Pattern
+        | Predicate { expr: Expr }
         | Not { scope: ScopeDescriptor }
         | Or { branches: [ScopeDescriptor] },
 }
@@ -119,8 +120,8 @@ child descriptors and has no descriptor representation of its own. An implicit
 order. `groundable` lists the variables that the descriptor can produce
 without receiving them from an incoming relation. A pattern can ground all of
 its variables. An `or` can ground the intersection of variables groundable by
-all branches. A `not` grounds no variables, so every variable it mentions must
-already be available from the enclosing positive relation.
+all branches. Predicates and `not` ground no variables, so every variable they
+mention must already be available from the enclosing positive relation.
 
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
@@ -136,7 +137,7 @@ Every physical relation plan records:
 RelPlan {
     incoming_vars: optional [Variable],
     output_vars: [Variable],
-    kind: Pattern | Chain | Difference | Union,
+    kind: Pattern | Filter | Chain | Difference | Union,
 }
 ```
 
@@ -147,6 +148,8 @@ zero-column relation.
 - `Pattern` filters the fact input by attribute and constants. With an incoming
   relation, circuit assembly joins the filtered pattern rows to that relation
   using the plan's incoming, pattern, and output layouts.
+- `Filter` evaluates one compiled predicate against each incoming row and
+  preserves the row and its weight only when the predicate returns true.
 - `Chain` represents a scope with multiple descriptors and passes each child's
   output relation to the next child.
 - `Difference` preserves the incoming relation and removes rows whose selected
@@ -156,7 +159,8 @@ zero-column relation.
   output layout for all branch results.
 
 `Chain` is a physical plan shape rather than a DBSP operator. Circuit assembly
-uses the existing `flat_map`, join, projection, sum, and distinct operators.
+uses the existing `flat_map`, filter, join, projection, antijoin, sum, and
+distinct operators.
 
 ### Row layouts
 
@@ -185,6 +189,8 @@ and the optional incoming relation:
 
 - a pattern creates matching rows with `flat_map` and joins them to the
   incoming rows when present.
+- a filter decodes its referenced columns, evaluates the compiled expression,
+  and filters the incoming rows without changing their layout or weights.
 - a chain folds the running relation through its children.
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming

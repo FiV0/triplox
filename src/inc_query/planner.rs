@@ -6,17 +6,21 @@ use edn::query::Variable;
 
 use super::descriptor::{Descriptor, DescriptorKind, PatternDescriptor, ScopeDescriptor};
 use super::PatternSlot;
+use crate::expr::Expr;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RelPlan {
     pub incoming_vars: Option<Vec<Variable>>,
     pub output_vars: Vec<Variable>,
     pub kind: RelPlanKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RelPlanKind {
     Pattern(PatternPlan),
+    Filter {
+        expr: Expr,
+    },
     Chain {
         children: Vec<RelPlan>,
     },
@@ -144,6 +148,16 @@ fn plan_pattern(
     }
 }
 
+fn plan_filter(expr: &Expr, incoming_vars: Option<Vec<Variable>>) -> Result<RelPlan> {
+    let incoming_vars = incoming_vars
+        .ok_or_else(|| anyhow!("Cannot plan predicate without a positive relation"))?;
+    Ok(RelPlan {
+        incoming_vars: Some(incoming_vars.clone()),
+        output_vars: incoming_vars,
+        kind: RelPlanKind::Filter { expr: expr.clone() },
+    })
+}
+
 fn plan_union(
     descriptor: &Descriptor,
     branches: &[ScopeDescriptor],
@@ -197,6 +211,7 @@ fn plan_descriptor(
 ) -> Result<RelPlan> {
     match &descriptor.kind {
         DescriptorKind::Pattern(pattern) => Ok(plan_pattern(descriptor, pattern, incoming_vars)),
+        DescriptorKind::Predicate { expr } => plan_filter(expr, incoming_vars),
         DescriptorKind::Not { scope } => plan_difference(descriptor, scope, incoming_vars),
         DescriptorKind::Or { branches } => plan_union(descriptor, branches, incoming_vars),
     }
@@ -239,6 +254,7 @@ pub(super) fn plan_scope(
 pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'a PatternPlan>) {
     match &plan.kind {
         RelPlanKind::Pattern(pattern) => patterns.push(pattern),
+        RelPlanKind::Filter { .. } => {}
         RelPlanKind::Chain { children } => {
             for child in children {
                 collect_leaf_patterns(child, patterns);
