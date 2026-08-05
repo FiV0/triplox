@@ -50,6 +50,7 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
+        // Decode prefix bindings once; overwrite the extension binding for every candidate.
         let mut values = self
             .prefix_vars
             .iter()

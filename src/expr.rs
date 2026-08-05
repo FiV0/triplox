@@ -374,8 +374,7 @@ mod tests {
     #[test]
     fn test_evaluate_variable() {
         let expr = var("?x");
-        let x = DataType::Long(10);
-        let ctx_bindings = HashMap::from([("?x".to_var(), x.clone())]);
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
@@ -391,11 +390,9 @@ mod tests {
     #[test]
     fn test_evaluate_lt() {
         let expr = binary(var("?age"), BinaryOp::Lt, lit_long(30));
-        let young = DataType::Long(25);
-        let ctx_young_bindings = HashMap::from([("?age".to_var(), young.clone())]);
+        let ctx_young_bindings = HashMap::from([("?age".to_var(), DataType::Long(25))]);
         let ctx_young = EvalContext::new(&ctx_young_bindings);
-        let old = DataType::Long(35);
-        let ctx_old_bindings = HashMap::from([("?age".to_var(), old.clone())]);
+        let ctx_old_bindings = HashMap::from([("?age".to_var(), DataType::Long(35))]);
         let ctx_old = EvalContext::new(&ctx_old_bindings);
         assert_eq!(eval(&expr, &ctx_young), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_old), Some(DataType::Boolean(false)));
@@ -404,14 +401,11 @@ mod tests {
     #[test]
     fn test_evaluate_lteq() {
         let expr = binary(var("?x"), BinaryOp::LtEq, lit_long(10));
-        let val_eq = DataType::Long(10);
-        let val_less = DataType::Long(5);
-        let val_greater = DataType::Long(15);
-        let ctx_eq_bindings = HashMap::from([("?x".to_var(), val_eq.clone())]);
+        let ctx_eq_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
         let ctx_eq = EvalContext::new(&ctx_eq_bindings);
-        let ctx_less_bindings = HashMap::from([("?x".to_var(), val_less.clone())]);
+        let ctx_less_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
         let ctx_less = EvalContext::new(&ctx_less_bindings);
-        let ctx_greater_bindings = HashMap::from([("?x".to_var(), val_greater.clone())]);
+        let ctx_greater_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
         let ctx_greater = EvalContext::new(&ctx_greater_bindings);
         assert_eq!(eval(&expr, &ctx_eq), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_less), Some(DataType::Boolean(true)));
@@ -424,12 +418,13 @@ mod tests {
         let expr_neq = binary(var("?a"), BinaryOp::NotEq, var("?b"));
 
         let five = DataType::Long(5);
-        let ten = DataType::Long(10);
         let ctx_same_bindings =
             HashMap::from([("?a".to_var(), five.clone()), ("?b".to_var(), five.clone())]);
         let ctx_same = EvalContext::new(&ctx_same_bindings);
-        let ctx_diff_bindings =
-            HashMap::from([("?a".to_var(), five.clone()), ("?b".to_var(), ten)]);
+        let ctx_diff_bindings = HashMap::from([
+            ("?a".to_var(), five.clone()),
+            ("?b".to_var(), DataType::Long(10)),
+        ]);
         let ctx_diff = EvalContext::new(&ctx_diff_bindings);
         assert_eq!(eval(&expr_eq, &ctx_same), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr_eq, &ctx_diff), Some(DataType::Boolean(false)));
@@ -442,11 +437,9 @@ mod tests {
         let gt = binary(var("?x"), BinaryOp::Gt, lit_long(10));
         let gteq = binary(var("?x"), BinaryOp::GtEq, lit_long(10));
 
-        let val_eq = DataType::Long(10);
-        let val_gt = DataType::Long(15);
-        let ctx_eq_bindings = HashMap::from([("?x".to_var(), val_eq.clone())]);
+        let ctx_eq_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
         let ctx_eq = EvalContext::new(&ctx_eq_bindings);
-        let ctx_gt_bindings = HashMap::from([("?x".to_var(), val_gt.clone())]);
+        let ctx_gt_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
         let ctx_gt = EvalContext::new(&ctx_gt_bindings);
         assert_eq!(eval(&gt, &ctx_eq), Some(DataType::Boolean(false)));
         assert_eq!(eval(&gt, &ctx_gt), Some(DataType::Boolean(true)));
@@ -476,11 +469,9 @@ mod tests {
     fn test_evaluate_nested_not_lt() {
         // NOT (< ?x 10)
         let expr = unary(UnaryOp::Not, binary(var("?x"), BinaryOp::Lt, lit_long(10)));
-        let low = DataType::Long(5);
-        let high = DataType::Long(15);
-        let ctx_low_bindings = HashMap::from([("?x".to_var(), low.clone())]);
+        let ctx_low_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
         let ctx_low = EvalContext::new(&ctx_low_bindings);
-        let ctx_high_bindings = HashMap::from([("?x".to_var(), high.clone())]);
+        let ctx_high_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
         let ctx_high = EvalContext::new(&ctx_high_bindings);
         assert_eq!(eval(&expr, &ctx_low), Some(DataType::Boolean(false)));
         assert_eq!(eval(&expr, &ctx_high), Some(DataType::Boolean(true)));
@@ -501,11 +492,9 @@ mod tests {
     #[test]
     fn test_evaluate_as_bool() {
         let expr = binary(var("?x"), BinaryOp::Lt, lit_long(10));
-        let low = DataType::Long(5);
-        let high = DataType::Long(15);
-        let ctx_low_bindings = HashMap::from([("?x".to_var(), low.clone())]);
+        let ctx_low_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
         let ctx_low = EvalContext::new(&ctx_low_bindings);
-        let ctx_high_bindings = HashMap::from([("?x".to_var(), high.clone())]);
+        let ctx_high_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
         let ctx_high = EvalContext::new(&ctx_high_bindings);
         assert!(evaluate_as_bool(&expr, &ctx_low));
         assert!(!evaluate_as_bool(&expr, &ctx_high));
@@ -772,8 +761,7 @@ mod tests {
             BinaryOp::Add,
             lit_long(10),
         );
-        let x = DataType::Long(5);
-        let ctx_bindings = HashMap::from([("?x".to_var(), x.clone())]);
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(20)));
     }
@@ -781,8 +769,7 @@ mod tests {
     #[test]
     fn test_arithmetic_with_variable() {
         let expr = binary(var("?age"), BinaryOp::Add, lit_long(1));
-        let age = DataType::Long(25);
-        let ctx_bindings = HashMap::from([("?age".to_var(), age.clone())]);
+        let ctx_bindings = HashMap::from([("?age".to_var(), DataType::Long(25))]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(26)));
     }
@@ -848,8 +835,10 @@ mod tests {
     #[test]
     fn test_regexp_like_match() {
         let expr = regexp_like("^.*BRASS$", var("?ptype"));
-        let ptype = DataType::String("STANDARD POLISHED BRASS".to_string());
-        let ctx_bindings = HashMap::from([("?ptype".to_var(), ptype.clone())]);
+        let ctx_bindings = HashMap::from([(
+            "?ptype".to_var(),
+            DataType::String("STANDARD POLISHED BRASS".to_string()),
+        )]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
     }
@@ -857,8 +846,10 @@ mod tests {
     #[test]
     fn test_regexp_like_no_match() {
         let expr = regexp_like("^.*BRASS$", var("?ptype"));
-        let ptype = DataType::String("STANDARD POLISHED COPPER".to_string());
-        let ctx_bindings = HashMap::from([("?ptype".to_var(), ptype.clone())]);
+        let ctx_bindings = HashMap::from([(
+            "?ptype".to_var(),
+            DataType::String("STANDARD POLISHED COPPER".to_string()),
+        )]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(false)));
     }
@@ -866,11 +857,13 @@ mod tests {
     #[test]
     fn test_regexp_like_substring() {
         let expr = regexp_like(".*green.*", var("?name"));
-        let matches = DataType::String("forest green pine".to_string());
-        let misses = DataType::String("aqua blue".to_string());
-        let ctx_match_bindings = HashMap::from([("?name".to_var(), matches.clone())]);
+        let ctx_match_bindings = HashMap::from([(
+            "?name".to_var(),
+            DataType::String("forest green pine".to_string()),
+        )]);
         let ctx_match = EvalContext::new(&ctx_match_bindings);
-        let ctx_miss_bindings = HashMap::from([("?name".to_var(), misses.clone())]);
+        let ctx_miss_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("aqua blue".to_string()))]);
         let ctx_miss = EvalContext::new(&ctx_miss_bindings);
         assert_eq!(eval(&expr, &ctx_match), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_miss), Some(DataType::Boolean(false)));
@@ -879,8 +872,10 @@ mod tests {
     #[test]
     fn test_regexp_like_case_insensitive_inline_flag() {
         let expr = regexp_like("(?i)^.*green.*", var("?name"));
-        let val = DataType::String("Forest GREEN pine".to_string());
-        let ctx_bindings = HashMap::from([("?name".to_var(), val.clone())]);
+        let ctx_bindings = HashMap::from([(
+            "?name".to_var(),
+            DataType::String("Forest GREEN pine".to_string()),
+        )]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
     }
@@ -888,8 +883,7 @@ mod tests {
     #[test]
     fn test_regexp_like_non_string_subject_drops() {
         let expr = regexp_like(".*", var("?n"));
-        let n = DataType::Long(42);
-        let ctx_bindings = HashMap::from([("?n".to_var(), n.clone())]);
+        let ctx_bindings = HashMap::from([("?n".to_var(), DataType::Long(42))]);
         let ctx = EvalContext::new(&ctx_bindings);
         // Non-String subject -> None (row dropped). See issue #222.
         assert_eq!(eval(&expr, &ctx), None);
@@ -912,11 +906,11 @@ mod tests {
     #[test]
     fn test_regexp_like_evaluate_as_bool() {
         let expr = regexp_like("^foo", var("?name"));
-        let hit = DataType::String("foobar".to_string());
-        let miss = DataType::String("bar".to_string());
-        let ctx_hit_bindings = HashMap::from([("?name".to_var(), hit.clone())]);
+        let ctx_hit_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("foobar".to_string()))]);
         let ctx_hit = EvalContext::new(&ctx_hit_bindings);
-        let ctx_miss_bindings = HashMap::from([("?name".to_var(), miss.clone())]);
+        let ctx_miss_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("bar".to_string()))]);
         let ctx_miss = EvalContext::new(&ctx_miss_bindings);
         assert!(evaluate_as_bool(&expr, &ctx_hit));
         assert!(!evaluate_as_bool(&expr, &ctx_miss));
@@ -939,8 +933,7 @@ mod tests {
             lit_long(10),
             lit_long(0),
         );
-        let x = DataType::Long(1);
-        let ctx_bindings = HashMap::from([("?x".to_var(), x.clone())]);
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(1))]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
@@ -953,8 +946,7 @@ mod tests {
             lit_long(10),
             lit_long(0),
         );
-        let x = DataType::Long(99);
-        let ctx_bindings = HashMap::from([("?x".to_var(), x.clone())]);
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(99))]);
         let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(0)));
     }
@@ -967,13 +959,11 @@ mod tests {
             var("?age"),
             lit_long(0),
         );
-        let old = DataType::Long(40);
-        let ctx_old_bindings = HashMap::from([("?age".to_var(), old.clone())]);
+        let ctx_old_bindings = HashMap::from([("?age".to_var(), DataType::Long(40))]);
         let ctx_old = EvalContext::new(&ctx_old_bindings);
         assert_eq!(eval(&expr, &ctx_old), Some(DataType::Long(40)));
 
-        let young = DataType::Long(20);
-        let ctx_young_bindings = HashMap::from([("?age".to_var(), young.clone())]);
+        let ctx_young_bindings = HashMap::from([("?age".to_var(), DataType::Long(20))]);
         let ctx_young = EvalContext::new(&ctx_young_bindings);
         assert_eq!(eval(&expr, &ctx_young), Some(DataType::Long(0)));
     }
