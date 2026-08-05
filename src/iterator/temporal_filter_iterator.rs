@@ -194,7 +194,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::codec::Encode;
+    use crate::ops::DataType;
     use crate::slate::in_memory_slate;
 
     const PFX: &[u8] = b"\x04"; // AV prefix
@@ -209,6 +213,164 @@ mod tests {
 
     fn make_test_extractor(prefix_len: usize) -> Extractor {
         Box::new(move |key: Bytes| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX))
+    }
+
+    fn attribute_prefix(index: u8, attribute: i64) -> Vec<u8> {
+        let mut prefix = vec![index];
+        prefix.extend_from_slice(&codec::encode_i64_bytes(attribute));
+        prefix
+    }
+
+    fn pair_key(prefix: &[u8], first: &[u8], second: &[u8], tx_eid: i64, op: u8) -> Vec<u8> {
+        let mut key = prefix.to_vec();
+        key.extend_from_slice(first);
+        key.extend_from_slice(second);
+        key.extend_from_slice(&codec::encode_i64_bytes(tx_eid));
+        key.push(op);
+        key
+    }
+
+    fn pair(first: &Bytes, second: &Bytes) -> Bytes {
+        let mut pair = first.to_vec();
+        pair.extend_from_slice(second);
+        Bytes::from(pair)
+    }
+
+    fn encoded(value: DataType) -> Bytes {
+        Bytes::from(value.encode())
+    }
+
+    fn collect_current_group<M>(
+        iter: &mut TemporalFilterIterator<M>,
+        first: &Bytes,
+    ) -> Result<Vec<Bytes>, Error>
+    where
+        M: DbMetadataOps + Send + Sync,
+    {
+        let mut pairs = Vec::new();
+        while let Some(current) = iter.get_value()? {
+            if !current.starts_with(first) {
+                break;
+            }
+            pairs.push(current);
+            iter.next()?;
+        }
+        Ok(pairs)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attribute_prefix_aev_iterates_and_seeks_ev_pairs() {
+        let components = in_memory_slate().await;
+        let prefix = attribute_prefix(codec::AEV, 42);
+        let entity_1 = encoded(DataType::Long(1));
+        let entity_2 = encoded(DataType::Long(2));
+        let entity_3 = encoded(DataType::Long(3));
+        let alice = encoded(DataType::String("alice".into()));
+        let ally = encoded(DataType::String("ally".into()));
+        let bob = encoded(DataType::String("bob".into()));
+        let carol = encoded(DataType::String("carol".into()));
+
+        components
+            .db
+            .put(&pair_key(&prefix, &entity_1, &alice, 10, codec::ADD), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &entity_1, &ally, 10, codec::ADD), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &entity_2, &bob, 10, codec::ADD), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &entity_2, &bob, 20, codec::RETRACT), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &entity_3, &carol, 10, codec::ADD), b"")
+            .await;
+
+        let prefix_len = prefix.len();
+        let db = components.db;
+        let range_stats = components.range_stats;
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let entity_1_pairs = vec![pair(&entity_1, &alice), pair(&entity_1, &ally)];
+            let entity_3_pairs = vec![pair(&entity_3, &carol)];
+            let expected = BTreeMap::from([
+                (entity_1, entity_1_pairs),
+                (entity_2, Vec::new()),
+                (entity_3, entity_3_pairs),
+            ]);
+            let mut iter = TemporalFilterIterator::new(
+                &prefix,
+                db.as_ref(),
+                handle,
+                make_test_extractor(prefix_len),
+                20,
+                range_stats,
+            )?;
+
+            for (entity, expected_pairs) in expected {
+                iter.seek(entity.clone())?;
+                assert_eq!(collect_current_group(&mut iter, &entity)?, expected_pairs);
+            }
+            Ok::<_, Error>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attribute_prefix_ave_iterates_ve_pairs_and_seeks_exact_pairs() {
+        let components = in_memory_slate().await;
+        let prefix = attribute_prefix(codec::AVE, 42);
+        let entity_1 = encoded(DataType::Long(1));
+        let entity_2 = encoded(DataType::Long(2));
+        let alice = encoded(DataType::String("alice".into()));
+        let bob = encoded(DataType::String("bob".into()));
+
+        components
+            .db
+            .put(&pair_key(&prefix, &alice, &entity_1, 10, codec::ADD), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &alice, &entity_2, 10, codec::ADD), b"")
+            .await;
+        components
+            .db
+            .put(&pair_key(&prefix, &bob, &entity_2, 10, codec::ADD), b"")
+            .await;
+
+        let exact = pair(&alice, &entity_2);
+        let prefix_len = prefix.len();
+        let db = components.db;
+        let range_stats = components.range_stats;
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let mut iter = TemporalFilterIterator::new(
+                &prefix,
+                db.as_ref(),
+                handle,
+                make_test_extractor(prefix_len),
+                10,
+                range_stats,
+            )?;
+
+            iter.seek(exact.clone())?;
+            assert_eq!(iter.get_value()?, Some(exact));
+            iter.next()?;
+            assert_eq!(iter.get_value()?, Some(pair(&alice, &entity_1)));
+            iter.next()?;
+            assert_eq!(iter.get_value()?, Some(pair(&bob, &entity_2)));
+            Ok::<_, Error>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{ensure, Result};
@@ -46,12 +47,6 @@ impl TripleTerm {
 enum TriplePosition {
     Entity,
     Value,
-}
-
-struct ScanSpec {
-    prefix: Bytes,
-    index_type: IndexType,
-    extractor_position: usize,
 }
 
 /// Immutable database value used by triple-pattern scans.
@@ -150,93 +145,53 @@ where
         Ok(prefix)
     }
 
-    fn proposal_scan(
-        &self,
-        input: &BindingBag,
-        row: &BindingRow,
-        position: TriplePosition,
-    ) -> Result<ScanSpec> {
-        match position {
-            TriplePosition::Entity => {
-                if let Some(value) = self.value.resolve(input, row)? {
-                    let mut prefix = self.base_prefix(IndexType::AVE)?;
-                    prefix.extend_from_slice(&value);
-                    Ok(ScanSpec {
-                        prefix: Bytes::from(prefix),
-                        index_type: IndexType::AVE,
-                        extractor_position: 2,
-                    })
-                } else {
-                    Ok(ScanSpec {
-                        prefix: Bytes::from(self.base_prefix(IndexType::AE)?),
-                        index_type: IndexType::AE,
-                        extractor_position: 1,
-                    })
-                }
-            }
-            TriplePosition::Value => {
-                if let Some(entity) = self.entity.resolve(input, row)? {
-                    let mut prefix = self.base_prefix(IndexType::AEV)?;
-                    prefix.extend_from_slice(&entity);
-                    Ok(ScanSpec {
-                        prefix: Bytes::from(prefix),
-                        index_type: IndexType::AEV,
-                        extractor_position: 2,
-                    })
-                } else {
-                    Ok(ScanSpec {
-                        prefix: Bytes::from(self.base_prefix(IndexType::AV)?),
-                        index_type: IndexType::AV,
-                        extractor_position: 1,
-                    })
-                }
-            }
+    fn term_is_resolved(term: &TripleTerm, input: &BindingBag) -> bool {
+        match term {
+            TripleTerm::Variable(variable) => input.column_indexes.contains_key(variable),
+            TripleTerm::Constant(_) => true,
         }
     }
 
-    fn validation_scan(
-        &self,
+    fn group_rows_by_term(
+        term: &TripleTerm,
         input: &BindingBag,
-        row: &BindingRow,
-    ) -> Result<(ScanSpec, Option<Bytes>)> {
-        let entity = self.entity.resolve(input, row)?;
-        let value = self.value.resolve(input, row)?;
+    ) -> Result<BTreeMap<Bytes, Vec<usize>>> {
+        let mut groups = BTreeMap::new();
+        for (row_index, row) in input.rows.iter().enumerate() {
+            let value = term
+                .resolve(input, row)?
+                .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound triple term"))?;
+            groups.entry(value).or_insert_with(Vec::new).push(row_index);
+        }
+        Ok(groups)
+    }
 
-        if let Some(entity) = entity {
-            let mut prefix = self.base_prefix(IndexType::AEV)?;
-            prefix.extend_from_slice(&entity);
-            Ok((
-                ScanSpec {
-                    prefix: Bytes::from(prefix),
-                    index_type: IndexType::AEV,
-                    extractor_position: 2,
-                },
-                value,
-            ))
-        } else {
-            let mut prefix = self.base_prefix(IndexType::AVE)?;
-            if let Some(value) = value {
-                prefix.extend_from_slice(&value);
-            }
-            Ok((
-                ScanSpec {
-                    prefix: Bytes::from(prefix),
-                    index_type: IndexType::AVE,
-                    extractor_position: 2,
-                },
-                None,
-            ))
+    fn proposal_index(position: TriplePosition, other_resolved: bool) -> IndexType {
+        match (position, other_resolved) {
+            (TriplePosition::Entity, false) => IndexType::AE,
+            (TriplePosition::Entity, true) => IndexType::AVE,
+            (TriplePosition::Value, false) => IndexType::AV,
+            (TriplePosition::Value, true) => IndexType::AEV,
         }
     }
 
-    fn create_iterator(&self, spec: ScanSpec) -> Result<Box<dyn Index>> {
-        let index_type = spec.index_type;
-        let position = spec.extractor_position;
-        let extractor: Extractor = Box::new(move |key| make_extractor(position, index_type)(key));
+    fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
+        let count = self
+            .db
+            .handle
+            .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
+        Ok(usize::try_from(count)?)
+    }
 
+    fn create_iterator(
+        &self,
+        prefix: Bytes,
+        index_type: IndexType,
+        extractor: Extractor,
+    ) -> Result<Box<dyn Index>> {
         match index_type {
             IndexType::AE | IndexType::AV => Ok(Box::new(SlateIterator::new(
-                &spec.prefix,
+                &prefix,
                 self.db.slate.as_ref(),
                 self.db.handle.clone(),
                 extractor,
@@ -244,7 +199,7 @@ where
             )?)),
             IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
                 Ok(Box::new(TemporalFilterIterator::new(
-                    &spec.prefix,
+                    &prefix,
                     self.db.slate.as_ref(),
                     self.db.handle.clone(),
                     extractor,
@@ -255,15 +210,31 @@ where
         }
     }
 
-    fn candidate_extensions(
-        &self,
-        input: &BindingBag,
-        row: &BindingRow,
-        position: TriplePosition,
-    ) -> Result<Vec<BindingRow>> {
-        let mut iterator = self.create_iterator(self.proposal_scan(input, row, position)?)?;
-        let mut extensions = Vec::new();
+    fn component_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
+        ensure!(
+            matches!(index_type, IndexType::AE | IndexType::AV),
+            "Component iterator requires an AE or AV index"
+        );
+        let prefix = Bytes::from(self.base_prefix(index_type)?);
+        let extractor: Extractor = Box::new(move |key| make_extractor(1, index_type)(key));
+        self.create_iterator(prefix, index_type, extractor)
+    }
 
+    fn pair_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
+        ensure!(
+            matches!(index_type, IndexType::AEV | IndexType::AVE),
+            "Pair iterator requires an AEV or AVE index"
+        );
+        let prefix = Bytes::from(self.base_prefix(index_type)?);
+        let prefix_len = prefix.len();
+        let extractor: Extractor =
+            Box::new(move |key| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX));
+        self.create_iterator(prefix, index_type, extractor)
+    }
+
+    fn scan_components(&self, index_type: IndexType) -> Result<Vec<BindingRow>> {
+        let mut iterator = self.component_iterator(index_type)?;
+        let mut extensions = Vec::new();
         while let Some(value) = iterator.get_value()? {
             extensions.push(vec![value]);
             iterator.next()?;
@@ -271,28 +242,223 @@ where
         Ok(extensions)
     }
 
-    fn candidate_count(
+    fn grouped_extensions(
         &self,
-        input: &BindingBag,
-        row: &BindingRow,
-        position: TriplePosition,
-    ) -> Result<usize> {
-        let iterator = self.create_iterator(self.proposal_scan(input, row, position)?)?;
-        Ok(usize::try_from(iterator.count()?)?)
+        index_type: IndexType,
+        groups: BTreeMap<Bytes, Vec<usize>>,
+        row_count: usize,
+    ) -> Result<Vec<Vec<BindingRow>>> {
+        let mut extensions = vec![Vec::new(); row_count];
+        if groups.is_empty() {
+            return Ok(extensions);
+        }
+
+        let mut iterator = self.pair_iterator(index_type)?;
+        for (first, row_indexes) in groups {
+            if !iterator.has_next() {
+                break;
+            }
+            iterator.seek(first.clone())?;
+
+            let mut group_extensions = Vec::new();
+            while let Some(pair) = iterator.get_value()? {
+                if !pair.starts_with(&first) {
+                    break;
+                }
+                group_extensions.push(vec![pair.slice(first.len()..)]);
+                iterator.next()?;
+            }
+
+            for row_index in row_indexes {
+                extensions[row_index] = group_extensions.clone();
+            }
+        }
+        Ok(extensions)
     }
 
-    fn matches(&self, input: &BindingBag, row: &BindingRow) -> Result<bool> {
-        let (scan, expected) = self.validation_scan(input, row)?;
-        let mut iterator = self.create_iterator(scan)?;
-        if let Some(expected) = expected {
+    fn candidate_extensions(
+        &self,
+        input: &BindingBag,
+        position: TriplePosition,
+    ) -> Result<Vec<Vec<BindingRow>>> {
+        if input.rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let other = match position {
+            TriplePosition::Entity => &self.value,
+            TriplePosition::Value => &self.entity,
+        };
+        let other_resolved = Self::term_is_resolved(other, input);
+        let index_type = Self::proposal_index(position, other_resolved);
+        if other_resolved {
+            self.grouped_extensions(
+                index_type,
+                Self::group_rows_by_term(other, input)?,
+                input.rows.len(),
+            )
+        } else {
+            let candidates = self.scan_components(index_type)?;
+            Ok(vec![candidates; input.rows.len()])
+        }
+    }
+
+    fn group_rows_by_pair(&self, input: &BindingBag) -> Result<BTreeMap<Bytes, Vec<usize>>> {
+        let mut groups = BTreeMap::new();
+        for (row_index, row) in input.rows.iter().enumerate() {
+            let entity = self
+                .entity
+                .resolve(input, row)?
+                .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound entity"))?;
+            let value = self
+                .value
+                .resolve(input, row)?
+                .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound value"))?;
+            let mut pair = entity.to_vec();
+            pair.extend_from_slice(&value);
+            groups
+                .entry(Bytes::from(pair))
+                .or_insert_with(Vec::new)
+                .push(row_index);
+        }
+        Ok(groups)
+    }
+
+    fn matching_group_rows<F>(
+        row_count: usize,
+        groups: BTreeMap<Bytes, Vec<usize>>,
+        mut iterator: Box<dyn Index>,
+        matches_expected: F,
+    ) -> Result<Vec<bool>>
+    where
+        F: Fn(&Bytes, &Bytes) -> bool,
+    {
+        let mut matches = vec![false; row_count];
+        for (expected, row_indexes) in groups {
             if !iterator.has_next() {
-                return Ok(false);
+                break;
             }
             iterator.seek(expected.clone())?;
-            Ok(iterator.get_value()?.as_ref() == Some(&expected))
-        } else {
-            Ok(iterator.has_next())
+            if iterator
+                .get_value()?
+                .as_ref()
+                .is_some_and(|actual| matches_expected(actual, &expected))
+            {
+                for row_index in row_indexes {
+                    matches[row_index] = true;
+                }
+            }
         }
+        Ok(matches)
+    }
+
+    fn matching_component_rows(
+        &self,
+        input: &BindingBag,
+        term: &TripleTerm,
+        index_type: IndexType,
+    ) -> Result<Vec<bool>> {
+        Self::matching_group_rows(
+            input.rows.len(),
+            Self::group_rows_by_term(term, input)?,
+            self.component_iterator(index_type)?,
+            |actual, expected| actual == expected,
+        )
+    }
+
+    fn matching_first_component_rows(
+        &self,
+        input: &BindingBag,
+        term: &TripleTerm,
+        index_type: IndexType,
+    ) -> Result<Vec<bool>> {
+        Self::matching_group_rows(
+            input.rows.len(),
+            Self::group_rows_by_term(term, input)?,
+            self.pair_iterator(index_type)?,
+            |actual, expected| actual.starts_with(expected),
+        )
+    }
+
+    fn matching_pair_rows(&self, input: &BindingBag) -> Result<Vec<bool>> {
+        Self::matching_group_rows(
+            input.rows.len(),
+            self.group_rows_by_pair(input)?,
+            self.pair_iterator(IndexType::AEV)?,
+            |actual, expected| actual == expected,
+        )
+    }
+
+    fn matching_rows(&self, input: &BindingBag) -> Result<Vec<usize>> {
+        if input.rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entity_resolved = Self::term_is_resolved(&self.entity, input);
+        let value_resolved = Self::term_is_resolved(&self.value, input);
+        // Partial two-variable checks use additive candidates; the full pair is validated later.
+        let matches = match (entity_resolved, value_resolved) {
+            (true, true) => self.matching_pair_rows(input)?,
+            (true, false) if self.entity.variable().is_some() => {
+                self.matching_component_rows(input, &self.entity, IndexType::AE)?
+            }
+            (false, true) if self.value.variable().is_some() => {
+                self.matching_component_rows(input, &self.value, IndexType::AV)?
+            }
+            (true, false) => {
+                self.matching_first_component_rows(input, &self.entity, IndexType::AEV)?
+            }
+            (false, true) => {
+                self.matching_first_component_rows(input, &self.value, IndexType::AVE)?
+            }
+            (false, false) => {
+                let has_match = self.pair_iterator(IndexType::AEV)?.has_next();
+                vec![has_match; input.rows.len()]
+            }
+        };
+        Ok(matches
+            .into_iter()
+            .enumerate()
+            .filter_map(|(row_index, matches)| matches.then_some(row_index))
+            .collect())
+    }
+
+    fn validate(&self, input: &BindingBag, target_variables: &[Variable]) -> Result<BindingBag> {
+        ensure!(
+            target_variables == input.variables,
+            "Triple pattern {} validation must preserve the input layout",
+            self.index
+        );
+        input.select_rows(&self.matching_rows(input)?)
+    }
+
+    fn propose(
+        &self,
+        input: &BindingBag,
+        added: &[Variable],
+        target_variables: &[Variable],
+    ) -> Result<BindingBag> {
+        ensure!(
+            added.len() == 1,
+            "Triple pattern {} can propose exactly one variable, got {added:?}",
+            self.index
+        );
+        ensure!(
+            !input.variables.contains(&added[0]),
+            "Triple pattern {} cannot add already-bound variable {}",
+            self.index,
+            added[0]
+        );
+        let position = self.position_for_variable(&added[0]).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Triple pattern {} cannot propose variable {}",
+                self.index,
+                added[0]
+            )
+        })?;
+        input
+            .extend_rows(added.to_vec(), self.candidate_extensions(input, position)?)?
+            .reorder(target_variables)
     }
 }
 
@@ -328,10 +494,32 @@ where
         let Some(position) = self.position_for_variable(&added[0]) else {
             return Ok(());
         };
+        if input.rows.is_empty() {
+            return Ok(());
+        }
 
-        for (row, proposal) in input.rows.iter().zip(proposals) {
-            let count = self.candidate_count(input, row, position)?;
-            proposal.consider(self.index, count);
+        let other = match position {
+            TriplePosition::Entity => &self.value,
+            TriplePosition::Value => &self.entity,
+        };
+        let other_resolved = Self::term_is_resolved(other, input);
+        let index_type = Self::proposal_index(position, other_resolved);
+        let base_prefix = self.base_prefix(index_type)?;
+
+        if other_resolved {
+            for (value, row_indexes) in Self::group_rows_by_term(other, input)? {
+                let mut prefix = base_prefix.clone();
+                prefix.extend_from_slice(&value);
+                let count = self.estimate_count(&prefix)?;
+                for row_index in row_indexes {
+                    proposals[row_index].consider(self.index, count);
+                }
+            }
+        } else {
+            let count = self.estimate_count(&base_prefix)?;
+            for proposal in proposals {
+                proposal.consider(self.index, count);
+            }
         }
         Ok(())
     }
@@ -343,47 +531,10 @@ where
         target_variables: &[Variable],
     ) -> Result<BindingBag> {
         if added.is_empty() {
-            ensure!(
-                target_variables == input.variables,
-                "Triple pattern {} validation must preserve the input layout",
-                self.index
-            );
-            let mut matches = Vec::new();
-            for (row_index, row) in input.rows.iter().enumerate() {
-                if self.matches(input, row)? {
-                    matches.push(row_index);
-                }
-            }
-            return input.select_rows(&matches);
+            self.validate(input, target_variables)
+        } else {
+            self.propose(input, added, target_variables)
         }
-
-        ensure!(
-            added.len() == 1,
-            "Triple pattern {} can propose exactly one variable, got {added:?}",
-            self.index
-        );
-        ensure!(
-            !input.variables.contains(&added[0]),
-            "Triple pattern {} cannot add already-bound variable {}",
-            self.index,
-            added[0]
-        );
-        let position = self.position_for_variable(&added[0]).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Triple pattern {} cannot propose variable {}",
-                self.index,
-                added[0]
-            )
-        })?;
-        let extensions = input
-            .rows
-            .iter()
-            .map(|row| self.candidate_extensions(input, row, position))
-            .collect::<Result<Vec<_>>>()?;
-
-        input
-            .extend_rows(added.to_vec(), extensions)?
-            .reorder(target_variables)
     }
 }
 
@@ -396,7 +547,7 @@ mod tests {
     use edn::query::{ToVariable, Variable};
     use slatedb::Db;
 
-    use super::{DbValue, TriplePattern, TriplePosition, TripleTerm};
+    use super::{DbValue, TriplePattern, TripleTerm};
     use crate::codec::{self, Encode};
     use crate::ops::DataType;
     use crate::query::binding_bag::BindingBag;
@@ -528,6 +679,7 @@ mod tests {
             vec![
                 vec![encoded(DataType::Long(90)), encoded(DataType::Long(1))],
                 vec![encoded(DataType::Long(91)), encoded(DataType::Long(2))],
+                vec![encoded(DataType::Long(93)), encoded(DataType::Long(1))],
                 vec![encoded(DataType::Long(92)), encoded(DataType::Long(3))],
             ],
         );
@@ -556,6 +708,56 @@ mod tests {
                         encoded(DataType::Long(91)),
                         encoded(DataType::Long(2)),
                     ],
+                    vec![
+                        encoded(DataType::String("alice".into())),
+                        encoded(DataType::Long(93)),
+                        encoded(DataType::Long(1)),
+                    ],
+                    vec![
+                        encoded(DataType::String("ally".into())),
+                        encoded(DataType::Long(93)),
+                        encoded(DataType::Long(1)),
+                    ],
+                ],
+            )
+        );
+
+        let value_input = binding_bag(
+            &["?outer", "?v"],
+            vec![
+                vec![
+                    encoded(DataType::Long(94)),
+                    encoded(DataType::String("bob".into())),
+                ],
+                vec![
+                    encoded(DataType::Long(95)),
+                    encoded(DataType::String("alice".into())),
+                ],
+                vec![
+                    encoded(DataType::Long(96)),
+                    encoded(DataType::String("missing".into())),
+                ],
+            ],
+        );
+        assert_eq!(
+            pattern.join(
+                &value_input,
+                &["?e".to_var()],
+                &["?e".to_var(), "?outer".to_var(), "?v".to_var()],
+            )?,
+            binding_bag(
+                &["?e", "?outer", "?v"],
+                vec![
+                    vec![
+                        encoded(DataType::Long(2)),
+                        encoded(DataType::Long(94)),
+                        encoded(DataType::String("bob".into())),
+                    ],
+                    vec![
+                        encoded(DataType::Long(1)),
+                        encoded(DataType::Long(95)),
+                        encoded(DataType::String("alice".into())),
+                    ],
                 ],
             )
         );
@@ -563,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn count_uses_the_iterator_estimate_without_materializing_candidates() -> Result<()> {
+    fn count_uses_one_range_estimate_for_duplicate_bound_terms() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(async {
@@ -594,6 +796,18 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
+        let entity_1 = encoded(DataType::Long(1));
+        let mut prefix = vec![codec::AEV];
+        prefix.extend_from_slice(&codec::encode_i64_bytes(42));
+        prefix.extend_from_slice(&entity_1);
+        let expected = usize::try_from(
+            runtime.block_on(
+                components
+                    .range_stats
+                    .estimate_key_count_with_prefix(&prefix),
+            )?,
+        )?;
+
         let (entity, value) = variables("?e", "?v");
         let pattern = TriplePattern::new(
             7,
@@ -607,27 +821,19 @@ mod tests {
                 components.range_stats,
             )),
         )?;
-        let input = binding_bag(&["?e"], vec![vec![encoded(DataType::Long(1))]]);
-        let expected = usize::try_from(
-            pattern
-                .create_iterator(pattern.proposal_scan(
-                    &input,
-                    &input.rows[0],
-                    TriplePosition::Value,
-                )?)?
-                .count()?,
-        )?;
-        let mut proposals = vec![Proposal::default()];
+        let input = binding_bag(&["?e"], vec![vec![entity_1.clone()], vec![entity_1]]);
+        let mut proposals = vec![Proposal::default(); 2];
 
         pattern.count(&input, &["?v".to_var()], &mut proposals)?;
 
         assert_eq!(proposals[0].proposer(), Some(7));
         assert_eq!(proposals[0].count(), expected);
+        assert_eq!(proposals[1], proposals[0]);
         Ok(())
     }
 
     #[test]
-    fn validation_is_temporal_existential_and_layout_independent() -> Result<()> {
+    fn partial_validation_is_additive_and_full_validation_is_temporal() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(async {
@@ -676,15 +882,24 @@ mod tests {
                 vec![encoded(DataType::Long(8)), encoded(DataType::Long(2))],
             ],
         );
-        assert_eq!(
-            pattern.join(&partial, &[], &partial.variables)?,
-            binding_bag(
-                &["?outer", "?e"],
+        assert_eq!(pattern.join(&partial, &[], &partial.variables)?, partial);
+
+        let partial_values = binding_bag(
+            &["?outer", "?v"],
+            vec![
                 vec![
-                    vec![encoded(DataType::Long(9)), encoded(DataType::Long(1))],
-                    vec![encoded(DataType::Long(9)), encoded(DataType::Long(1))],
+                    encoded(DataType::Long(9)),
+                    encoded(DataType::String("alice".into())),
                 ],
-            )
+                vec![
+                    encoded(DataType::Long(8)),
+                    encoded(DataType::String("bob".into())),
+                ],
+            ],
+        );
+        assert_eq!(
+            pattern.join(&partial_values, &[], &partial_values.variables)?,
+            partial_values
         );
 
         let full = binding_bag(
@@ -699,6 +914,11 @@ mod tests {
                     encoded(DataType::String("wrong".into())),
                     encoded(DataType::Long(8)),
                     encoded(DataType::Long(1)),
+                ],
+                vec![
+                    encoded(DataType::String("bob".into())),
+                    encoded(DataType::Long(7)),
+                    encoded(DataType::Long(2)),
                 ],
             ],
         );
@@ -748,6 +968,10 @@ mod tests {
             entities,
             binding_bag(&["?e"], vec![vec![encoded(DataType::Long(1))]])
         );
+        assert_eq!(
+            entity_pattern.join(&BindingBag::unit(), &[], &[])?,
+            BindingBag::unit()
+        );
 
         let value_pattern = TriplePattern::new(
             2,
@@ -763,6 +987,10 @@ mod tests {
                 &["?v"],
                 vec![vec![encoded(DataType::String("alice".into()))]]
             )
+        );
+        assert_eq!(
+            value_pattern.join(&BindingBag::unit(), &[], &[])?,
+            BindingBag::unit()
         );
 
         let existing = TriplePattern::new(
