@@ -198,15 +198,16 @@
                           {:name "Bob" :age 25}
                           {:name "Cara" :age 35}
                           {:name "Dave" :age 50}])
-      (is (= #{[["Bob"] 1]
-               [["Cara"] 1]
-               [["Dave"] 1]}
-             (delta-set! sub)))
+      (is (= [[["Bob"] 1]
+              [["Cara"] 1]
+              [["Dave"] 1]]
+             (take-delta! sub)))
 
       (let [cara-id (single-value conn '{:find [?e]
-                                          :where [[?e :name "Cara"]]})]
+                                         :where [[?e :name "Cara"]]})]
         (api/transact conn [[:db/retract cara-id :age 35]])
-        (is (= [[["Cara"] -1]] (take-delta! sub)))))))
+        (is (= [[["Cara"] -1]]
+               (take-delta! sub)))))))
 
 (deftest test-not-negative-scope-layouts
   (testing "Multi-clause negative scope"
