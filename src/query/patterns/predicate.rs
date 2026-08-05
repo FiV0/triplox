@@ -4,18 +4,18 @@ use edn::query::Variable;
 use super::evaluation::{decode_bindings, eval_context};
 use crate::expr::{evaluate_as_bool, expr_variables, Expr};
 use crate::query::binding_bag::BindingBag;
-use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
 pub(crate) struct PredicatePattern {
-    id: PatternId,
+    index: PatternIndex,
     variables: Vec<Variable>,
     expression: Expr,
 }
 
 impl PredicatePattern {
-    pub(crate) fn new(id: PatternId, expression: Expr) -> Self {
+    pub(crate) fn new(index: PatternIndex, expression: Expr) -> Self {
         Self {
-            id,
+            index,
             variables: expr_variables(&expression),
             expression,
         }
@@ -28,8 +28,8 @@ impl PredicatePattern {
 }
 
 impl ExecPattern for PredicatePattern {
-    fn id(&self) -> PatternId {
-        self.id
+    fn index(&self) -> PatternIndex {
+        self.index
     }
 
     fn variables(&self) -> &[Variable] {
@@ -45,7 +45,7 @@ impl ExecPattern for PredicatePattern {
         ensure!(
             proposals.len() == input.rows.len(),
             "Predicate pattern {} received {} proposals for {} input rows",
-            self.id,
+            self.index,
             proposals.len(),
             input.rows.len()
         );
@@ -61,18 +61,18 @@ impl ExecPattern for PredicatePattern {
         ensure!(
             added.is_empty(),
             "Predicate pattern {} cannot propose variables: {added:?}",
-            self.id
+            self.index
         );
         ensure!(
             target_variables == input.variables,
             "Predicate pattern {} validation must preserve the input layout",
-            self.id
+            self.index
         );
         for variable in &self.variables {
             ensure!(
                 input.variables.contains(variable),
                 "Predicate pattern {} requires bound variable {variable}",
-                self.id
+                self.index
             );
         }
 

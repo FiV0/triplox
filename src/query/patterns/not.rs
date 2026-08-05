@@ -7,18 +7,18 @@ use edn::query::Variable;
 use super::relation::RelationPattern;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
-use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 use crate::query::stage::StageTemplate;
 
 pub(crate) struct NotPattern {
-    id: PatternId,
+    index: PatternIndex,
     variables: Vec<Variable>,
     body: Vec<StageTemplate>,
 }
 
 impl NotPattern {
     pub(crate) fn new(
-        id: PatternId,
+        index: PatternIndex,
         variables: Vec<Variable>,
         body: Vec<StageTemplate>,
     ) -> Result<Self> {
@@ -43,7 +43,7 @@ impl NotPattern {
             "NOT body has no Incoming participant"
         );
         Ok(Self {
-            id,
+            index,
             variables,
             body,
         })
@@ -51,22 +51,24 @@ impl NotPattern {
 
     fn execute_body(&self, input: &BindingBag) -> Result<BindingBag> {
         let projected = input.project(&self.variables)?;
-        let incoming: Arc<dyn ExecPattern> = Arc::new(RelationPattern::new(self.id, projected));
+        let incoming: Arc<dyn ExecPattern> = Arc::new(RelationPattern::new(self.index, projected));
         let stages = self
             .body
             .iter()
             .map(|template| template.materialize(&incoming))
             .collect::<Result<Vec<_>>>()
-            .with_context(|| format!("NOT pattern {} failed to materialize its body", self.id))?;
+            .with_context(|| {
+                format!("NOT pattern {} failed to materialize its body", self.index)
+            })?;
         GenericJoinEngine::execute(&stages, BindingBag::unit())
-            .with_context(|| format!("NOT pattern {} body failed", self.id))?
+            .with_context(|| format!("NOT pattern {} body failed", self.index))?
             .reorder(&self.variables)
     }
 }
 
 impl ExecPattern for NotPattern {
-    fn id(&self) -> PatternId {
-        self.id
+    fn index(&self) -> PatternIndex {
+        self.index
     }
 
     fn variables(&self) -> &[Variable] {
@@ -82,7 +84,7 @@ impl ExecPattern for NotPattern {
         ensure!(
             proposals.len() == input.rows.len(),
             "NOT pattern {} received {} proposals for {} input rows",
-            self.id,
+            self.index,
             proposals.len(),
             input.rows.len()
         );
@@ -98,19 +100,19 @@ impl ExecPattern for NotPattern {
         ensure!(
             added.is_empty(),
             "NOT pattern {} cannot propose variables: {added:?}",
-            self.id
+            self.index
         );
         ensure!(
             target_variables == input.variables,
             "NOT pattern {} validation must preserve the input layout",
-            self.id
+            self.index
         );
         ensure!(
             self.variables
                 .iter()
                 .all(|variable| input.variables.contains(variable)),
             "NOT pattern {} requires every correlated variable to be bound",
-            self.id
+            self.index
         );
         input.antijoin(&self.execute_body(input)?)
     }

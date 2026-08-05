@@ -7,11 +7,11 @@ use edn::query::Variable;
 use super::relation::RelationPattern;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
-use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 use crate::query::stage::StageTemplate;
 
 pub(crate) struct OrPattern {
-    id: PatternId,
+    index: PatternIndex,
     variables: Vec<Variable>,
     incoming_variables: Vec<Variable>,
     branches: Vec<Vec<StageTemplate>>,
@@ -19,7 +19,7 @@ pub(crate) struct OrPattern {
 
 impl OrPattern {
     pub(crate) fn new(
-        id: PatternId,
+        index: PatternIndex,
         variables: Vec<Variable>,
         incoming_variables: Vec<Variable>,
         branches: Vec<Vec<StageTemplate>>,
@@ -52,7 +52,7 @@ impl OrPattern {
             );
         }
         Ok(Self {
-            id,
+            index,
             variables,
             incoming_variables,
             branches,
@@ -64,14 +64,14 @@ impl OrPattern {
             ensure!(
                 input.variables.contains(variable),
                 "OR pattern {} requires incoming variable {variable}",
-                self.id
+                self.index
             );
         }
         for variable in &self.variables {
             ensure!(
                 !input.variables.contains(variable) || self.incoming_variables.contains(variable),
                 "OR pattern {} received unplanned bound variable {variable}",
-                self.id
+                self.index
             );
         }
         Ok(())
@@ -80,7 +80,7 @@ impl OrPattern {
     fn execute_branches(&self, input: &BindingBag) -> Result<BindingBag> {
         self.validate_invocation(input)?;
         let projected = input.project(&self.incoming_variables)?;
-        let incoming: Arc<dyn ExecPattern> = Arc::new(RelationPattern::new(self.id, projected));
+        let incoming: Arc<dyn ExecPattern> = Arc::new(RelationPattern::new(self.index, projected));
         let mut result = BindingBag::empty(self.variables.clone())?;
 
         for (branch_index, templates) in self.branches.iter().enumerate() {
@@ -91,11 +91,13 @@ impl OrPattern {
                 .with_context(|| {
                     format!(
                         "OR pattern {} failed to materialize branch {branch_index}",
-                        self.id
+                        self.index
                     )
                 })?;
             let branch = GenericJoinEngine::execute(&stages, BindingBag::unit())
-                .with_context(|| format!("OR pattern {} failed in branch {branch_index}", self.id))?
+                .with_context(|| {
+                    format!("OR pattern {} failed in branch {branch_index}", self.index)
+                })?
                 .reorder(&self.variables)?;
             result = result.distinct_union(&branch)?;
         }
@@ -112,8 +114,8 @@ fn ensure_unique(label: &str, variables: &[Variable]) -> Result<()> {
 }
 
 impl ExecPattern for OrPattern {
-    fn id(&self) -> PatternId {
-        self.id
+    fn index(&self) -> PatternIndex {
+        self.index
     }
 
     fn variables(&self) -> &[Variable] {
@@ -129,7 +131,7 @@ impl ExecPattern for OrPattern {
         ensure!(
             proposals.len() == input.rows.len(),
             "OR pattern {} received {} proposals for {} input rows",
-            self.id,
+            self.index,
             proposals.len(),
             input.rows.len()
         );
@@ -146,14 +148,14 @@ impl ExecPattern for OrPattern {
             ensure!(
                 target_variables == input.variables,
                 "OR pattern {} validation must preserve the input layout",
-                self.id
+                self.index
             );
             ensure!(
                 self.variables
                     .iter()
                     .all(|variable| input.variables.contains(variable)),
                 "OR pattern {} validation requires every OR variable to be bound",
-                self.id
+                self.index
             );
             return input.semijoin(&self.execute_branches(input)?);
         }
@@ -166,7 +168,7 @@ impl ExecPattern for OrPattern {
         ensure!(
             added.iter().collect::<HashSet<_>>() == expected_added,
             "OR pattern {} must propose every missing OR variable",
-            self.id
+            self.index
         );
         input
             .natural_join(&self.execute_branches(input)?)?
@@ -207,8 +209,17 @@ mod tests {
         .unwrap()
     }
 
-    fn relation(id: usize, variables: &[&str], rows: Vec<Vec<Bytes>>) -> Arc<dyn ExecPattern> {
-        Arc::new(RelationPattern::new(id, binding_bag(variables, rows)))
+    fn assert_bag_eq_unordered(actual: BindingBag, expected: BindingBag) {
+        assert_eq!(actual.variables, expected.variables);
+        let mut actual_rows = actual.rows;
+        let mut expected_rows = expected.rows;
+        actual_rows.sort();
+        expected_rows.sort();
+        assert_eq!(actual_rows, expected_rows);
+    }
+
+    fn relation(index: usize, variables: &[&str], rows: Vec<Vec<Bytes>>) -> Arc<dyn ExecPattern> {
+        Arc::new(RelationPattern::new(index, binding_bag(variables, rows)))
     }
 
     fn incoming_stage() -> StageTemplate {
@@ -295,7 +306,7 @@ mod tests {
         .unwrap();
         let outer = binding_bag(&["?outer"], vec![vec![bytes("u")], vec![bytes("u")]]);
 
-        assert_eq!(
+        assert_bag_eq_unordered(
             proposing
                 .join(
                     &outer,
@@ -311,7 +322,7 @@ mod tests {
                     vec![bytes("a"), bytes("u")],
                     vec![bytes("b"), bytes("u")],
                 ],
-            )
+            ),
         );
 
         let allowed = relation(2, &["?x"], vec![vec![bytes("a")]]);
@@ -365,9 +376,9 @@ mod tests {
                 vec![encoded(DataType::Long(3))],
             ],
         );
-        let equals = |id, value| -> Arc<dyn ExecPattern> {
+        let equals = |index, value| -> Arc<dyn ExecPattern> {
             Arc::new(PredicatePattern::new(
-                id,
+                index,
                 Expr::BinaryExpr(BinaryExpr {
                     left: Box::new(Expr::Variable("?x".to_var())),
                     op: BinaryOp::Eq,

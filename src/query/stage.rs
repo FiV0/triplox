@@ -124,14 +124,14 @@ impl StageTemplate {
             );
         }
 
-        let mut pattern_ids = HashSet::new();
+        let mut pattern_indexes = HashSet::new();
         let mut has_incoming = false;
         for participant in &participants {
             match participant {
                 ParticipantTemplate::Pattern(pattern) => ensure!(
-                    pattern_ids.insert(pattern.id()),
-                    "Stage template pattern IDs must be distinct: {}",
-                    pattern.id()
+                    pattern_indexes.insert(pattern.index()),
+                    "Stage template pattern indexes must be distinct: {}",
+                    pattern.index()
                 ),
                 ParticipantTemplate::Incoming => ensure!(
                     !std::mem::replace(&mut has_incoming, true),
@@ -326,8 +326,8 @@ mod tests {
             .collect::<Result<Vec<_>>>()
             .unwrap();
 
-        assert_eq!(stages[0].participants()[0].id(), 9);
-        assert_eq!(stages[1].participants()[0].id(), 9);
+        assert_eq!(stages[0].participants()[0].index(), 9);
+        assert_eq!(stages[1].participants()[0].index(), 9);
         assert!(Arc::ptr_eq(
             &stages[0].participants()[0],
             &stages[1].participants()[0]

@@ -8,13 +8,13 @@ use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use super::binding_bag::BindingBag;
-use super::exec_pattern::{ExecPattern, PatternId};
+use super::exec_pattern::{ExecPattern, PatternIndex};
 use super::patterns::function::FunctionPattern;
 use super::patterns::not::NotPattern;
 use super::patterns::or::OrPattern;
 use super::patterns::predicate::PredicatePattern;
 use super::patterns::relation::RelationPattern;
-use super::patterns::triple::{TriplePattern, TripleTerm};
+use super::patterns::triple::{DbValue, TriplePattern, TripleTerm};
 use super::plan::{
     Descriptor, DescriptorKind, LogicalPlan, LogicalScope, LogicalStage, NestedScopes,
     ParticipantRef,
@@ -48,7 +48,9 @@ fn encoded_term(value: crate::ops::DataType) -> TripleTerm {
 fn entity_term(place: &PatternNonValuePlace) -> Result<TripleTerm> {
     match place {
         PatternNonValuePlace::Variable(variable) => Ok(TripleTerm::Variable(variable.clone())),
-        PatternNonValuePlace::Placeholder => Ok(TripleTerm::Placeholder),
+        PatternNonValuePlace::Placeholder => {
+            anyhow::bail!("Triple entity placeholders are not executable")
+        }
         PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_) => {
             non_value_place_to_datatype(place)
                 .map(encoded_term)
@@ -60,7 +62,9 @@ fn entity_term(place: &PatternNonValuePlace) -> Result<TripleTerm> {
 fn value_term(place: &PatternValuePlace) -> Result<TripleTerm> {
     match place {
         PatternValuePlace::Variable(variable) => Ok(TripleTerm::Variable(variable.clone())),
-        PatternValuePlace::Placeholder => Ok(TripleTerm::Placeholder),
+        PatternValuePlace::Placeholder => {
+            anyhow::bail!("Triple value placeholders are not executable")
+        }
         PatternValuePlace::EntidOrInteger(_)
         | PatternValuePlace::IdentOrKeyword(_)
         | PatternValuePlace::Constant(_) => value_place_to_datatype(place)
@@ -75,11 +79,8 @@ where
     M: DbMetadataOps + Send + Sync + 'static,
 {
     plan: &'a LogicalPlan,
-    slate: &'a Arc<D>,
-    handle: &'a Handle,
+    db: Arc<DbValue<D, M>>,
     ident_map: &'a IdentMap,
-    as_of: i64,
-    range_stats: &'a Arc<slatedb_estimates::RangeStats<M>>,
 }
 
 impl<D, M> RuntimeAssembler<'_, D, M>
@@ -93,16 +94,13 @@ where
         pattern: &edn::query::Pattern,
     ) -> Result<Arc<dyn ExecPattern>> {
         let attribute = resolve_attribute_from_pattern(&pattern.attribute, self.ident_map)
-            .with_context(|| format!("Failed to resolve triple pattern {}", descriptor.id()))?;
+            .with_context(|| format!("Failed to resolve triple pattern {}", descriptor.index()))?;
         Ok(Arc::new(TriplePattern::new(
-            descriptor.id(),
+            descriptor.index(),
             entity_term(&pattern.entity)?,
             attribute,
             value_term(&pattern.value)?,
-            Arc::clone(self.slate),
-            self.handle.clone(),
-            self.as_of,
-            Arc::clone(self.range_stats),
+            Arc::clone(&self.db),
         )?))
     }
 
@@ -120,18 +118,18 @@ where
             })
             .collect();
         let relation = BindingBag::new(descriptor.variables().to_vec(), encoded_rows)
-            .with_context(|| format!("Invalid relation descriptor {}", descriptor.id()))?;
-        Ok(Arc::new(RelationPattern::new(descriptor.id(), relation)))
+            .with_context(|| format!("Invalid relation descriptor {}", descriptor.index()))?;
+        Ok(Arc::new(RelationPattern::new(descriptor.index(), relation)))
     }
 
     fn nested_scopes(&self, descriptor: &Descriptor) -> Result<&NestedScopes> {
         self.plan
             .nested_scopes()
-            .get(&descriptor.id())
+            .get(&descriptor.index())
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "Composite descriptor {} has no nested logical scope",
-                    descriptor.id()
+                    descriptor.index()
                 )
             })
     }
@@ -142,12 +140,15 @@ where
         branches: &[Vec<Descriptor>],
     ) -> Result<Arc<dyn ExecPattern>> {
         let NestedScopes::Or(branch_scopes) = self.nested_scopes(descriptor)? else {
-            anyhow::bail!("Descriptor {} expected OR nested scopes", descriptor.id());
+            anyhow::bail!(
+                "Descriptor {} expected OR nested scopes",
+                descriptor.index()
+            );
         };
         ensure!(
             branches.len() == branch_scopes.len(),
             "OR descriptor {} has {} branches but {} planned scopes",
-            descriptor.id(),
+            descriptor.index(),
             branches.len(),
             branch_scopes.len()
         );
@@ -158,14 +159,14 @@ where
             let incoming = scope.incoming_variables().ok_or_else(|| {
                 anyhow::anyhow!(
                     "OR descriptor {} branch {branch_index} has no incoming layout",
-                    descriptor.id()
+                    descriptor.index()
                 )
             })?;
             if let Some(expected) = incoming_variables.as_deref() {
                 ensure!(
                     incoming == expected,
                     "OR descriptor {} branches have different incoming layouts",
-                    descriptor.id()
+                    descriptor.index()
                 );
             } else {
                 incoming_variables = Some(incoming.to_vec());
@@ -173,13 +174,13 @@ where
             branch_templates.push(self.assemble_scope(scope, branch).with_context(|| {
                 format!(
                     "Failed to assemble OR descriptor {} branch {branch_index}",
-                    descriptor.id()
+                    descriptor.index()
                 )
             })?);
         }
 
         Ok(Arc::new(OrPattern::new(
-            descriptor.id(),
+            descriptor.index(),
             descriptor.variables().to_vec(),
             incoming_variables.unwrap_or_default(),
             branch_templates,
@@ -192,21 +193,27 @@ where
         children: &[Descriptor],
     ) -> Result<Arc<dyn ExecPattern>> {
         let NestedScopes::Not(scope) = self.nested_scopes(descriptor)? else {
-            anyhow::bail!("Descriptor {} expected NOT nested scope", descriptor.id());
+            anyhow::bail!(
+                "Descriptor {} expected NOT nested scope",
+                descriptor.index()
+            );
         };
         let incoming = scope.incoming_variables().ok_or_else(|| {
-            anyhow::anyhow!("NOT descriptor {} has no incoming layout", descriptor.id())
+            anyhow::anyhow!(
+                "NOT descriptor {} has no incoming layout",
+                descriptor.index()
+            )
         })?;
         ensure!(
             incoming == descriptor.variables(),
             "NOT descriptor {} incoming layout does not contain every correlated variable",
-            descriptor.id()
+            descriptor.index()
         );
         Ok(Arc::new(NotPattern::new(
-            descriptor.id(),
+            descriptor.index(),
             descriptor.variables().to_vec(),
             self.assemble_scope(scope, children).with_context(|| {
-                format!("Failed to assemble NOT descriptor {}", descriptor.id())
+                format!("Failed to assemble NOT descriptor {}", descriptor.index())
             })?,
         )?))
     }
@@ -215,13 +222,14 @@ where
         let pattern: Arc<dyn ExecPattern> = match descriptor.kind() {
             DescriptorKind::Triple(triple) => self.assemble_triple(descriptor, triple)?,
             DescriptorKind::Relation { rows } => self.assemble_relation(descriptor, rows)?,
-            DescriptorKind::Predicate { expression } => {
-                Arc::new(PredicatePattern::new(descriptor.id(), expression.clone()))
-            }
+            DescriptorKind::Predicate { expression } => Arc::new(PredicatePattern::new(
+                descriptor.index(),
+                expression.clone(),
+            )),
             DescriptorKind::Function {
                 expression, output, ..
             } => Arc::new(FunctionPattern::new(
-                descriptor.id(),
+                descriptor.index(),
                 expression.clone(),
                 output.clone(),
             )?),
@@ -231,7 +239,7 @@ where
         ensure!(
             pattern.variables() == descriptor.variables(),
             "Runtime pattern {} variables {:?} do not match descriptor variables {:?}",
-            descriptor.id(),
+            descriptor.index(),
             pattern.variables(),
             descriptor.variables()
         );
@@ -241,16 +249,16 @@ where
     fn assemble_patterns(
         &self,
         descriptors: &[Descriptor],
-    ) -> Result<HashMap<PatternId, Arc<dyn ExecPattern>>> {
+    ) -> Result<HashMap<PatternIndex, Arc<dyn ExecPattern>>> {
         let mut patterns = HashMap::with_capacity(descriptors.len());
         for descriptor in descriptors {
             let pattern = self
                 .assemble_descriptor(descriptor)
-                .with_context(|| format!("Failed to assemble descriptor {}", descriptor.id()))?;
+                .with_context(|| format!("Failed to assemble descriptor {}", descriptor.index()))?;
             ensure!(
-                patterns.insert(descriptor.id(), pattern).is_none(),
-                "Duplicate descriptor ID {} in one scope",
-                descriptor.id()
+                patterns.insert(descriptor.index(), pattern).is_none(),
+                "Duplicate descriptor index {} in one scope",
+                descriptor.index()
             );
         }
         Ok(patterns)
@@ -286,18 +294,18 @@ where
     fn assemble_stage(
         &self,
         stage: &LogicalStage,
-        patterns: &HashMap<PatternId, Arc<dyn ExecPattern>>,
+        patterns: &HashMap<PatternIndex, Arc<dyn ExecPattern>>,
     ) -> Result<StageTemplate> {
         self.validate_roles(stage)?;
         let participants = stage
             .participants()
             .iter()
             .map(|participant| match participant {
-                ParticipantRef::Pattern(id) => patterns
-                    .get(id)
+                ParticipantRef::Pattern(index) => patterns
+                    .get(index)
                     .cloned()
                     .map(ParticipantTemplate::Pattern)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown logical stage pattern ID {id}")),
+                    .ok_or_else(|| anyhow::anyhow!("Unknown logical stage pattern index {index}")),
                 ParticipantRef::Incoming => Ok(ParticipantTemplate::Incoming),
             })
             .collect::<Result<Vec<_>>>()?;
@@ -371,11 +379,8 @@ where
 {
     RuntimeAssembler {
         plan,
-        slate: &slate,
-        handle: &handle,
+        db: Arc::new(DbValue::new(slate, handle, as_of, range_stats)),
         ident_map,
-        as_of,
-        range_stats: &range_stats,
     }
     .assemble()
 }
@@ -416,7 +421,7 @@ mod tests {
         assert_eq!(executable.stages().len(), 2);
         let first = &executable.stages()[0].participants()[0];
         let second = &executable.stages()[1].participants()[0];
-        assert_eq!(first.id(), logical.descriptors()[0].id());
+        assert_eq!(first.index(), logical.descriptors()[0].index());
         assert!(Arc::ptr_eq(first, second));
         Ok(())
     }

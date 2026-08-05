@@ -9,18 +9,18 @@ use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{convert_predicate, convert_where_fn, pattern_variables, query_variable_order};
 
-use super::exec_pattern::PatternId;
+use super::exec_pattern::PatternIndex;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Descriptor {
-    id: PatternId,
+    index: PatternIndex,
     variables: Vec<Variable>,
     kind: DescriptorKind,
 }
 
 impl Descriptor {
-    pub(crate) fn id(&self) -> PatternId {
-        self.id
+    pub(crate) fn index(&self) -> PatternIndex {
+        self.index
     }
 
     pub(crate) fn variables(&self) -> &[Variable] {
@@ -105,7 +105,7 @@ pub(crate) enum DescriptorKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ParticipantRef {
-    Pattern(PatternId),
+    Pattern(PatternIndex),
     Incoming,
 }
 
@@ -162,7 +162,7 @@ pub(crate) struct LogicalPlan {
     variable_order: Vec<Variable>,
     descriptors: Vec<Descriptor>,
     root_scope: LogicalScope,
-    nested_scopes: BTreeMap<PatternId, NestedScopes>,
+    nested_scopes: BTreeMap<PatternIndex, NestedScopes>,
 }
 
 impl LogicalPlan {
@@ -178,28 +178,28 @@ impl LogicalPlan {
         &self.root_scope
     }
 
-    pub(crate) fn nested_scopes(&self) -> &BTreeMap<PatternId, NestedScopes> {
+    pub(crate) fn nested_scopes(&self) -> &BTreeMap<PatternIndex, NestedScopes> {
         &self.nested_scopes
     }
 }
 
 struct DescriptorBuilder<'a> {
     variable_order: &'a [Variable],
-    next_id: PatternId,
+    next_index: PatternIndex,
 }
 
 impl<'a> DescriptorBuilder<'a> {
     fn new(variable_order: &'a [Variable]) -> Self {
         Self {
             variable_order,
-            next_id: 0,
+            next_index: 0,
         }
     }
 
-    fn allocate_id(&mut self) -> PatternId {
-        let id = self.next_id;
-        self.next_id += 1;
-        id
+    fn allocate_index(&mut self) -> PatternIndex {
+        let index = self.next_index;
+        self.next_index += 1;
+        index
     }
 
     fn ordered_variables(&self, variables: impl IntoIterator<Item = Variable>) -> Vec<Variable> {
@@ -242,7 +242,7 @@ impl<'a> DescriptorBuilder<'a> {
             }
         };
         Ok(Descriptor {
-            id: self.allocate_id(),
+            index: self.allocate_index(),
             variables: vec![variable],
             kind: DescriptorKind::Relation { rows },
         })
@@ -280,7 +280,7 @@ impl<'a> DescriptorBuilder<'a> {
             "Repeated variables in a single pattern are not supported"
         );
         Ok(Descriptor {
-            id: self.allocate_id(),
+            index: self.allocate_index(),
             variables,
             kind: DescriptorKind::Triple(pattern.clone()),
         })
@@ -299,7 +299,7 @@ impl<'a> DescriptorBuilder<'a> {
             WhereClause::Pred(predicate) => {
                 let expression = convert_predicate(predicate)?;
                 Ok(Descriptor {
-                    id: self.allocate_id(),
+                    index: self.allocate_index(),
                     variables: expr_variables(&expression),
                     kind: DescriptorKind::Predicate { expression },
                 })
@@ -315,7 +315,7 @@ impl<'a> DescriptorBuilder<'a> {
                 let mut variables = input_variables.clone();
                 variables.push(function.output.clone());
                 Ok(Descriptor {
-                    id: self.allocate_id(),
+                    index: self.allocate_index(),
                     variables,
                     kind: DescriptorKind::Function {
                         expression: function.expr,
@@ -333,7 +333,7 @@ impl<'a> DescriptorBuilder<'a> {
                     !or.clauses.is_empty(),
                     "OR must contain at least one branch"
                 );
-                let id = self.allocate_id();
+                let index = self.allocate_index();
                 let branches = or
                     .clauses
                     .iter()
@@ -354,13 +354,13 @@ impl<'a> DescriptorBuilder<'a> {
                 );
                 let variables = self.ordered_variables(branch_sets[0].iter().cloned());
                 Ok(Descriptor {
-                    id,
+                    index,
                     variables,
                     kind: DescriptorKind::Or { branches },
                 })
             }
             WhereClause::NotJoin(not) => {
-                let id = self.allocate_id();
+                let index = self.allocate_index();
                 let children = self.where_clauses(&not.clauses)?;
                 let variables = self.ordered_variables(
                     children
@@ -368,7 +368,7 @@ impl<'a> DescriptorBuilder<'a> {
                         .flat_map(|descriptor| descriptor.variables.iter().cloned()),
                 );
                 Ok(Descriptor {
-                    id,
+                    index,
                     variables,
                     kind: DescriptorKind::Not { children },
                 })
@@ -431,7 +431,7 @@ impl PlanningParticipant<'_> {
     fn reference(&self) -> ParticipantRef {
         match self {
             Self::Incoming(_) => ParticipantRef::Incoming,
-            Self::Pattern(descriptor) => ParticipantRef::Pattern(descriptor.id),
+            Self::Pattern(descriptor) => ParticipantRef::Pattern(descriptor.index),
         }
     }
 
@@ -655,7 +655,7 @@ fn composite_incoming_layout(
     descriptor: &Descriptor,
     scope: &LogicalScope,
 ) -> Result<Vec<Variable>> {
-    let reference = ParticipantRef::Pattern(descriptor.id);
+    let reference = ParticipantRef::Pattern(descriptor.index);
     let mut previous_layout = Vec::new();
     for stage in &scope.stages {
         if stage.participants.contains(&reference) {
@@ -674,7 +674,7 @@ fn composite_incoming_layout(
     }
     bail!(
         "Composite descriptor {} was not placed in its owning scope",
-        descriptor.id
+        descriptor.index
     )
 }
 
@@ -682,7 +682,7 @@ fn plan_nested_scopes(
     descriptors: &[Descriptor],
     scope: &LogicalScope,
     variable_order: &[Variable],
-    nested_scopes: &mut BTreeMap<PatternId, NestedScopes>,
+    nested_scopes: &mut BTreeMap<PatternIndex, NestedScopes>,
 ) -> Result<()> {
     for descriptor in descriptors {
         match &descriptor.kind {
@@ -696,10 +696,10 @@ fn plan_nested_scopes(
                 }
                 ensure!(
                     nested_scopes
-                        .insert(descriptor.id, NestedScopes::Or(branch_scopes))
+                        .insert(descriptor.index, NestedScopes::Or(branch_scopes))
                         .is_none(),
-                    "Duplicate nested scope ID {}",
-                    descriptor.id
+                    "Duplicate nested scope index {}",
+                    descriptor.index
                 );
             }
             DescriptorKind::Not { children } => {
@@ -708,10 +708,10 @@ fn plan_nested_scopes(
                 plan_nested_scopes(children, &nested_scope, variable_order, nested_scopes)?;
                 ensure!(
                     nested_scopes
-                        .insert(descriptor.id, NestedScopes::Not(nested_scope))
+                        .insert(descriptor.index, NestedScopes::Not(nested_scope))
                         .is_none(),
-                    "Duplicate nested scope ID {}",
-                    descriptor.id
+                    "Duplicate nested scope index {}",
+                    descriptor.index
                 );
             }
             DescriptorKind::Triple(_)
@@ -773,31 +773,31 @@ mod tests {
         name.to_var()
     }
 
-    fn relation(id: PatternId, variables: &[&str]) -> Descriptor {
+    fn relation(index: PatternIndex, variables: &[&str]) -> Descriptor {
         Descriptor {
-            id,
+            index,
             variables: variables.iter().map(|name| var(name)).collect(),
             kind: DescriptorKind::Relation { rows: Vec::new() },
         }
     }
 
-    fn predicate(id: PatternId, variables: &[&str]) -> Descriptor {
+    fn predicate(index: PatternIndex, variables: &[&str]) -> Descriptor {
         let expression = variables
             .first()
             .map(|name| Expr::Variable(var(name)))
             .unwrap_or(Expr::Literal(DataType::Boolean(true)));
         Descriptor {
-            id,
+            index,
             variables: variables.iter().map(|name| var(name)).collect(),
             kind: DescriptorKind::Predicate { expression },
         }
     }
 
-    fn function(id: PatternId, input: &str, output: &str) -> Descriptor {
+    fn function(index: PatternIndex, input: &str, output: &str) -> Descriptor {
         let input = var(input);
         let output = var(output);
         Descriptor {
-            id,
+            index,
             variables: vec![input.clone(), output.clone()],
             kind: DescriptorKind::Function {
                 expression: Expr::Variable(input.clone()),
@@ -807,24 +807,28 @@ mod tests {
         }
     }
 
-    fn or(id: PatternId, variables: &[&str], branches: Vec<Vec<Descriptor>>) -> Descriptor {
+    fn or(index: PatternIndex, variables: &[&str], branches: Vec<Vec<Descriptor>>) -> Descriptor {
         Descriptor {
-            id,
+            index,
             variables: variables.iter().map(|name| var(name)).collect(),
             kind: DescriptorKind::Or { branches },
         }
     }
 
-    fn not(id: PatternId, variables: &[&str], children: Vec<Descriptor>) -> Descriptor {
+    fn not(index: PatternIndex, variables: &[&str], children: Vec<Descriptor>) -> Descriptor {
         Descriptor {
-            id,
+            index,
             variables: variables.iter().map(|name| var(name)).collect(),
             kind: DescriptorKind::Not { children },
         }
     }
 
-    fn refs(ids: &[PatternId]) -> Vec<ParticipantRef> {
-        ids.iter().copied().map(ParticipantRef::Pattern).collect()
+    fn refs(indexes: &[PatternIndex]) -> Vec<ParticipantRef> {
+        indexes
+            .iter()
+            .copied()
+            .map(ParticipantRef::Pattern)
+            .collect()
     }
 
     #[test]
@@ -852,36 +856,36 @@ mod tests {
             vec![var("?name"), var("?age"), var("?e"), var("?next")]
         );
         assert_eq!(plan.descriptors.len(), 6);
-        assert_eq!(plan.descriptors[0].id, 0);
+        assert_eq!(plan.descriptors[0].index, 0);
         assert!(matches!(
             plan.descriptors[0].kind,
             DescriptorKind::Relation { .. }
         ));
-        assert_eq!(plan.descriptors[1].id, 1);
+        assert_eq!(plan.descriptors[1].index, 1);
         assert!(matches!(
             plan.descriptors[1].kind,
             DescriptorKind::Relation { .. }
         ));
-        assert_eq!(plan.descriptors[2].id, 2);
+        assert_eq!(plan.descriptors[2].index, 2);
         assert!(matches!(
             plan.descriptors[2].kind,
             DescriptorKind::Triple(_)
         ));
-        assert_eq!(plan.descriptors[3].id, 3);
+        assert_eq!(plan.descriptors[3].index, 3);
         assert!(matches!(
             plan.descriptors[3].kind,
             DescriptorKind::Predicate { .. }
         ));
-        assert_eq!(plan.descriptors[4].id, 4);
+        assert_eq!(plan.descriptors[4].index, 4);
         assert!(matches!(
             plan.descriptors[4].kind,
             DescriptorKind::Function { .. }
         ));
-        assert_eq!(plan.descriptors[5].id, 5);
+        assert_eq!(plan.descriptors[5].index, 5);
         let DescriptorKind::Not { children } = &plan.descriptors[5].kind else {
             panic!("expected NOT descriptor");
         };
-        assert_eq!(children[0].id, 6);
+        assert_eq!(children[0].index, 6);
         assert!(matches!(children[0].kind, DescriptorKind::Triple(_)));
     }
 
@@ -896,9 +900,9 @@ mod tests {
         let DescriptorKind::Or { branches } = &plan.descriptors[0].kind else {
             panic!("expected OR descriptor");
         };
-        assert_eq!(plan.descriptors[0].id, 0);
-        assert_eq!(branches[0][0].id, 1);
-        assert_eq!(branches[1][0].id, 2);
+        assert_eq!(plan.descriptors[0].index, 0);
+        assert_eq!(branches[0][0].index, 1);
+        assert_eq!(branches[1][0].index, 2);
 
         let explicit = edn::parse::parse_query(
             r#"[:find ?e :where (or-join [?e] [?e :person/name "A"] [?e :person/name "B"])]"#,
@@ -1192,7 +1196,7 @@ mod tests {
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let descriptor = Descriptor {
-            id: 0,
+            index: 0,
             variables: vec![var("?x")],
             kind: DescriptorKind::Predicate {
                 expression: expression.clone(),
