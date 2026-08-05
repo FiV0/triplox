@@ -197,7 +197,7 @@ fn filter_predicate_stream(
                 .expect("predicate variable must be present in the incoming row");
             (variable, position)
         })
-        .collect::<Vec<_>>();
+        .collect::<HashMap<_, _>>();
 
     stream.filter(move |row| {
         let values = variable_positions
@@ -207,12 +207,8 @@ fn filter_predicate_stream(
                     .expect("incremental predicate value should decode");
                 (variable.clone(), value)
             })
-            .collect::<Vec<_>>();
-        let bindings = values
-            .iter()
-            .map(|(variable, value)| (variable.clone(), value))
             .collect::<HashMap<_, _>>();
-        evaluate_as_bool(&expr, &EvalContext::new(bindings))
+        evaluate_as_bool(&expr, &EvalContext::new(&values))
     })
 }
 
