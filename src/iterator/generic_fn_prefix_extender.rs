@@ -37,21 +37,17 @@ impl GenericFnPrefixExtender {
 
     /// Evaluate the expression against the given prefix, returning the serialized result.
     fn compute(&self, prefix: &Prefix) -> Option<Extension> {
-        let prefix_values: Vec<(Variable, DataType)> = self
+        let values = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
-                (var.clone(), dt)
+                let value =
+                    DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
+                (var.clone(), value)
             })
-            .collect();
+            .collect::<HashMap<_, _>>();
 
-        let bindings: HashMap<Variable, &DataType> = prefix_values
-            .iter()
-            .map(|(var, dt)| (var.clone(), dt))
-            .collect();
-
-        let ctx = EvalContext::new(bindings);
+        let ctx = EvalContext::new(&values);
         let result = evaluate(&self.expr, &ctx)?;
         Some(Bytes::from(result.as_ref().encode()))
     }

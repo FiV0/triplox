@@ -138,18 +138,18 @@ fn collect_vars(expr: &Expr, seen: &mut HashSet<Variable>, vars: &mut Vec<Variab
     }
 }
 
-/// Row-at-a-time evaluation context. Holds variable bindings as references.
+/// Row-at-a-time evaluation context.
 pub struct EvalContext<'a> {
-    bindings: HashMap<Variable, &'a DataType>,
+    bindings: &'a HashMap<Variable, DataType>,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(bindings: HashMap<Variable, &'a DataType>) -> Self {
+    pub fn new(bindings: &'a HashMap<Variable, DataType>) -> Self {
         Self { bindings }
     }
 
     pub fn resolve(&self, var: &Variable) -> Option<&DataType> {
-        self.bindings.get(var).copied()
+        self.bindings.get(var)
     }
 }
 
@@ -366,32 +366,34 @@ mod tests {
     #[test]
     fn test_evaluate_literal() {
         let expr = lit_long(42);
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(42)));
     }
 
     #[test]
     fn test_evaluate_variable() {
         let expr = var("?x");
-        let x = DataType::Long(10);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
 
     #[test]
     fn test_evaluate_unbound_variable() {
         let expr = var("?missing");
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_evaluate_lt() {
         let expr = binary(var("?age"), BinaryOp::Lt, lit_long(30));
-        let young = DataType::Long(25);
-        let ctx_young = EvalContext::new(HashMap::from([("?age".to_var(), &young)]));
-        let old = DataType::Long(35);
-        let ctx_old = EvalContext::new(HashMap::from([("?age".to_var(), &old)]));
+        let ctx_young_bindings = HashMap::from([("?age".to_var(), DataType::Long(25))]);
+        let ctx_young = EvalContext::new(&ctx_young_bindings);
+        let ctx_old_bindings = HashMap::from([("?age".to_var(), DataType::Long(35))]);
+        let ctx_old = EvalContext::new(&ctx_old_bindings);
         assert_eq!(eval(&expr, &ctx_young), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_old), Some(DataType::Boolean(false)));
     }
@@ -399,12 +401,12 @@ mod tests {
     #[test]
     fn test_evaluate_lteq() {
         let expr = binary(var("?x"), BinaryOp::LtEq, lit_long(10));
-        let val_eq = DataType::Long(10);
-        let val_less = DataType::Long(5);
-        let val_greater = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
-        let ctx_less = EvalContext::new(HashMap::from([("?x".to_var(), &val_less)]));
-        let ctx_greater = EvalContext::new(HashMap::from([("?x".to_var(), &val_greater)]));
+        let ctx_eq_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
+        let ctx_eq = EvalContext::new(&ctx_eq_bindings);
+        let ctx_less_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
+        let ctx_less = EvalContext::new(&ctx_less_bindings);
+        let ctx_greater_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
+        let ctx_greater = EvalContext::new(&ctx_greater_bindings);
         assert_eq!(eval(&expr, &ctx_eq), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_less), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_greater), Some(DataType::Boolean(false)));
@@ -416,15 +418,14 @@ mod tests {
         let expr_neq = binary(var("?a"), BinaryOp::NotEq, var("?b"));
 
         let five = DataType::Long(5);
-        let ten = DataType::Long(10);
-        let ctx_same = EvalContext::new(HashMap::from([
-            ("?a".to_var(), &five),
-            ("?b".to_var(), &five),
-        ]));
-        let ctx_diff = EvalContext::new(HashMap::from([
-            ("?a".to_var(), &five),
-            ("?b".to_var(), &ten),
-        ]));
+        let ctx_same_bindings =
+            HashMap::from([("?a".to_var(), five.clone()), ("?b".to_var(), five.clone())]);
+        let ctx_same = EvalContext::new(&ctx_same_bindings);
+        let ctx_diff_bindings = HashMap::from([
+            ("?a".to_var(), five.clone()),
+            ("?b".to_var(), DataType::Long(10)),
+        ]);
+        let ctx_diff = EvalContext::new(&ctx_diff_bindings);
         assert_eq!(eval(&expr_eq, &ctx_same), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr_eq, &ctx_diff), Some(DataType::Boolean(false)));
         assert_eq!(eval(&expr_neq, &ctx_same), Some(DataType::Boolean(false)));
@@ -436,10 +437,10 @@ mod tests {
         let gt = binary(var("?x"), BinaryOp::Gt, lit_long(10));
         let gteq = binary(var("?x"), BinaryOp::GtEq, lit_long(10));
 
-        let val_eq = DataType::Long(10);
-        let val_gt = DataType::Long(15);
-        let ctx_eq = EvalContext::new(HashMap::from([("?x".to_var(), &val_eq)]));
-        let ctx_gt = EvalContext::new(HashMap::from([("?x".to_var(), &val_gt)]));
+        let ctx_eq_bindings = HashMap::from([("?x".to_var(), DataType::Long(10))]);
+        let ctx_eq = EvalContext::new(&ctx_eq_bindings);
+        let ctx_gt_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
+        let ctx_gt = EvalContext::new(&ctx_gt_bindings);
         assert_eq!(eval(&gt, &ctx_eq), Some(DataType::Boolean(false)));
         assert_eq!(eval(&gt, &ctx_gt), Some(DataType::Boolean(true)));
         assert_eq!(eval(&gteq, &ctx_eq), Some(DataType::Boolean(true)));
@@ -448,7 +449,8 @@ mod tests {
     #[test]
     fn test_evaluate_not() {
         let expr = unary(UnaryOp::Not, lit_bool(true));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(false)));
 
         let expr2 = unary(UnaryOp::Not, lit_bool(false));
@@ -458,7 +460,8 @@ mod tests {
     #[test]
     fn test_evaluate_not_non_boolean() {
         let expr = unary(UnaryOp::Not, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
@@ -466,10 +469,10 @@ mod tests {
     fn test_evaluate_nested_not_lt() {
         // NOT (< ?x 10)
         let expr = unary(UnaryOp::Not, binary(var("?x"), BinaryOp::Lt, lit_long(10)));
-        let low = DataType::Long(5);
-        let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x".to_var(), &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x".to_var(), &high)]));
+        let ctx_low_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
+        let ctx_low = EvalContext::new(&ctx_low_bindings);
+        let ctx_high_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
+        let ctx_high = EvalContext::new(&ctx_high_bindings);
         assert_eq!(eval(&expr, &ctx_low), Some(DataType::Boolean(false)));
         assert_eq!(eval(&expr, &ctx_high), Some(DataType::Boolean(true)));
     }
@@ -481,17 +484,18 @@ mod tests {
             BinaryOp::Lt,
             lit_long(10),
         );
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_evaluate_as_bool() {
         let expr = binary(var("?x"), BinaryOp::Lt, lit_long(10));
-        let low = DataType::Long(5);
-        let high = DataType::Long(15);
-        let ctx_low = EvalContext::new(HashMap::from([("?x".to_var(), &low)]));
-        let ctx_high = EvalContext::new(HashMap::from([("?x".to_var(), &high)]));
+        let ctx_low_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
+        let ctx_low = EvalContext::new(&ctx_low_bindings);
+        let ctx_high_bindings = HashMap::from([("?x".to_var(), DataType::Long(15))]);
+        let ctx_high = EvalContext::new(&ctx_high_bindings);
         assert!(evaluate_as_bool(&expr, &ctx_low));
         assert!(!evaluate_as_bool(&expr, &ctx_high));
     }
@@ -535,91 +539,104 @@ mod tests {
     #[test]
     fn test_add_long() {
         let expr = binary(lit_long(3), BinaryOp::Add, lit_long(4));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(7)));
     }
 
     #[test]
     fn test_sub_long() {
         let expr = binary(lit_long(10), BinaryOp::Sub, lit_long(3));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(7)));
     }
 
     #[test]
     fn test_mul_long() {
         let expr = binary(lit_long(5), BinaryOp::Mul, lit_long(6));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(30)));
     }
 
     #[test]
     fn test_div_long() {
         let expr = binary(lit_long(10), BinaryOp::Div, lit_long(3));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(3)));
     }
 
     #[test]
     fn test_div_by_zero_long() {
         let expr = binary(lit_long(10), BinaryOp::Div, lit_long(0));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_mod_long() {
         let expr = binary(lit_long(10), BinaryOp::Mod, lit_long(3));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(1)));
     }
 
     #[test]
     fn test_mod_by_zero() {
         let expr = binary(lit_long(10), BinaryOp::Mod, lit_long(0));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_add_double() {
         let expr = binary(lit_double(1.5), BinaryOp::Add, lit_double(2.5));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.0)));
     }
 
     #[test]
     fn test_div_by_zero_double() {
         let expr = binary(lit_double(1.0), BinaryOp::Div, lit_double(0.0));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_add_mixed_long_double() {
         let expr = binary(lit_long(3), BinaryOp::Add, lit_double(1.5));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.5)));
     }
 
     #[test]
     fn test_add_mixed_double_long() {
         let expr = binary(lit_double(1.5), BinaryOp::Add, lit_long(3));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Double(4.5)));
     }
 
     #[test]
     fn test_arithmetic_incompatible_types() {
         let expr = binary(lit_string("hello"), BinaryOp::Add, lit_long(1));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_concat() {
         let expr = binary(lit_string("hello"), BinaryOp::Concat, lit_string(" world"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("hello world".to_string()))
@@ -629,7 +646,8 @@ mod tests {
     #[test]
     fn test_concat_non_strings() {
         let expr = binary(lit_long(1), BinaryOp::Concat, lit_string("x"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
@@ -638,35 +656,40 @@ mod tests {
     #[test]
     fn test_abs_positive_long() {
         let expr = unary(UnaryOp::Abs, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(42)));
     }
 
     #[test]
     fn test_abs_negative_long() {
         let expr = unary(UnaryOp::Abs, lit_long(-42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(42)));
     }
 
     #[test]
     fn test_abs_double() {
         let expr = unary(UnaryOp::Abs, lit_double(-3.15));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Double(3.15)));
     }
 
     #[test]
     fn test_abs_non_numeric() {
         let expr = unary(UnaryOp::Abs, lit_string("hello"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_upper() {
         let expr = unary(UnaryOp::Upper, lit_string("hello"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("HELLO".to_string()))
@@ -676,7 +699,8 @@ mod tests {
     #[test]
     fn test_lower() {
         let expr = unary(UnaryOp::Lower, lit_string("HELLO"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("hello".to_string()))
@@ -686,28 +710,32 @@ mod tests {
     #[test]
     fn test_strlen() {
         let expr = unary(UnaryOp::Strlen, lit_string("hello"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(5)));
     }
 
     #[test]
     fn test_strlen_non_string() {
         let expr = unary(UnaryOp::Strlen, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_str_from_long() {
         let expr = unary(UnaryOp::Str, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::String("42".to_string())));
     }
 
     #[test]
     fn test_str_from_double() {
         let expr = unary(UnaryOp::Str, lit_double(3.15));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("3.15".to_string()))
@@ -717,7 +745,8 @@ mod tests {
     #[test]
     fn test_str_from_bool() {
         let expr = unary(UnaryOp::Str, lit_bool(true));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(
             eval(&expr, &ctx),
             Some(DataType::String("true".to_string()))
@@ -732,16 +761,16 @@ mod tests {
             BinaryOp::Add,
             lit_long(10),
         );
-        let x = DataType::Long(5);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(5))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(20)));
     }
 
     #[test]
     fn test_arithmetic_with_variable() {
         let expr = binary(var("?age"), BinaryOp::Add, lit_long(1));
-        let age = DataType::Long(25);
-        let ctx = EvalContext::new(HashMap::from([("?age".to_var(), &age)]));
+        let ctx_bindings = HashMap::from([("?age".to_var(), DataType::Long(25))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(26)));
     }
 
@@ -752,7 +781,8 @@ mod tests {
         use chrono::TimeZone;
         let dt = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
         let expr = unary(UnaryOp::Year, Expr::Literal(DataType::Instant(dt)));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(2024)));
     }
 
@@ -761,21 +791,24 @@ mod tests {
         use chrono::TimeZone;
         let dt = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
         let expr = unary(UnaryOp::Month, Expr::Literal(DataType::Instant(dt)));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(6)));
     }
 
     #[test]
     fn test_year_non_instant() {
         let expr = unary(UnaryOp::Year, lit_long(42));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
     #[test]
     fn test_month_non_instant() {
         let expr = unary(UnaryOp::Month, lit_string("2024-06-15"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
@@ -802,26 +835,36 @@ mod tests {
     #[test]
     fn test_regexp_like_match() {
         let expr = regexp_like("^.*BRASS$", var("?ptype"));
-        let ptype = DataType::String("STANDARD POLISHED BRASS".to_string());
-        let ctx = EvalContext::new(HashMap::from([("?ptype".to_var(), &ptype)]));
+        let ctx_bindings = HashMap::from([(
+            "?ptype".to_var(),
+            DataType::String("STANDARD POLISHED BRASS".to_string()),
+        )]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
     }
 
     #[test]
     fn test_regexp_like_no_match() {
         let expr = regexp_like("^.*BRASS$", var("?ptype"));
-        let ptype = DataType::String("STANDARD POLISHED COPPER".to_string());
-        let ctx = EvalContext::new(HashMap::from([("?ptype".to_var(), &ptype)]));
+        let ctx_bindings = HashMap::from([(
+            "?ptype".to_var(),
+            DataType::String("STANDARD POLISHED COPPER".to_string()),
+        )]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(false)));
     }
 
     #[test]
     fn test_regexp_like_substring() {
         let expr = regexp_like(".*green.*", var("?name"));
-        let matches = DataType::String("forest green pine".to_string());
-        let misses = DataType::String("aqua blue".to_string());
-        let ctx_match = EvalContext::new(HashMap::from([("?name".to_var(), &matches)]));
-        let ctx_miss = EvalContext::new(HashMap::from([("?name".to_var(), &misses)]));
+        let ctx_match_bindings = HashMap::from([(
+            "?name".to_var(),
+            DataType::String("forest green pine".to_string()),
+        )]);
+        let ctx_match = EvalContext::new(&ctx_match_bindings);
+        let ctx_miss_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("aqua blue".to_string()))]);
+        let ctx_miss = EvalContext::new(&ctx_miss_bindings);
         assert_eq!(eval(&expr, &ctx_match), Some(DataType::Boolean(true)));
         assert_eq!(eval(&expr, &ctx_miss), Some(DataType::Boolean(false)));
     }
@@ -829,16 +872,19 @@ mod tests {
     #[test]
     fn test_regexp_like_case_insensitive_inline_flag() {
         let expr = regexp_like("(?i)^.*green.*", var("?name"));
-        let val = DataType::String("Forest GREEN pine".to_string());
-        let ctx = EvalContext::new(HashMap::from([("?name".to_var(), &val)]));
+        let ctx_bindings = HashMap::from([(
+            "?name".to_var(),
+            DataType::String("Forest GREEN pine".to_string()),
+        )]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Boolean(true)));
     }
 
     #[test]
     fn test_regexp_like_non_string_subject_drops() {
         let expr = regexp_like(".*", var("?n"));
-        let n = DataType::Long(42);
-        let ctx = EvalContext::new(HashMap::from([("?n".to_var(), &n)]));
+        let ctx_bindings = HashMap::from([("?n".to_var(), DataType::Long(42))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         // Non-String subject -> None (row dropped). See issue #222.
         assert_eq!(eval(&expr, &ctx), None);
     }
@@ -846,7 +892,8 @@ mod tests {
     #[test]
     fn test_regexp_like_unbound_subject() {
         let expr = regexp_like(".*", var("?missing"));
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), None);
     }
 
@@ -859,10 +906,12 @@ mod tests {
     #[test]
     fn test_regexp_like_evaluate_as_bool() {
         let expr = regexp_like("^foo", var("?name"));
-        let hit = DataType::String("foobar".to_string());
-        let miss = DataType::String("bar".to_string());
-        let ctx_hit = EvalContext::new(HashMap::from([("?name".to_var(), &hit)]));
-        let ctx_miss = EvalContext::new(HashMap::from([("?name".to_var(), &miss)]));
+        let ctx_hit_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("foobar".to_string()))]);
+        let ctx_hit = EvalContext::new(&ctx_hit_bindings);
+        let ctx_miss_bindings =
+            HashMap::from([("?name".to_var(), DataType::String("bar".to_string()))]);
+        let ctx_miss = EvalContext::new(&ctx_miss_bindings);
         assert!(evaluate_as_bool(&expr, &ctx_hit));
         assert!(!evaluate_as_bool(&expr, &ctx_miss));
     }
@@ -884,8 +933,8 @@ mod tests {
             lit_long(10),
             lit_long(0),
         );
-        let x = DataType::Long(1);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(1))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(10)));
     }
 
@@ -897,8 +946,8 @@ mod tests {
             lit_long(10),
             lit_long(0),
         );
-        let x = DataType::Long(99);
-        let ctx = EvalContext::new(HashMap::from([("?x".to_var(), &x)]));
+        let ctx_bindings = HashMap::from([("?x".to_var(), DataType::Long(99))]);
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(0)));
     }
 
@@ -910,12 +959,12 @@ mod tests {
             var("?age"),
             lit_long(0),
         );
-        let old = DataType::Long(40);
-        let ctx_old = EvalContext::new(HashMap::from([("?age".to_var(), &old)]));
+        let ctx_old_bindings = HashMap::from([("?age".to_var(), DataType::Long(40))]);
+        let ctx_old = EvalContext::new(&ctx_old_bindings);
         assert_eq!(eval(&expr, &ctx_old), Some(DataType::Long(40)));
 
-        let young = DataType::Long(20);
-        let ctx_young = EvalContext::new(HashMap::from([("?age".to_var(), &young)]));
+        let ctx_young_bindings = HashMap::from([("?age".to_var(), DataType::Long(20))]);
+        let ctx_young = EvalContext::new(&ctx_young_bindings);
         assert_eq!(eval(&expr, &ctx_young), Some(DataType::Long(0)));
     }
 
@@ -927,7 +976,8 @@ mod tests {
             lit_long(10),
             lit_long(0),
         );
-        let ctx = EvalContext::new(HashMap::new());
+        let ctx_bindings = HashMap::new();
+        let ctx = EvalContext::new(&ctx_bindings);
         assert_eq!(eval(&expr, &ctx), Some(DataType::Long(0)));
     }
 

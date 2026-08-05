@@ -50,28 +50,25 @@ impl PrefixExtender for GenericPredicatePrefixExtender {
     }
 
     fn intersect(&self, prefix: &Prefix, extensions: &[Extension]) -> Vec<Extension> {
-        // Pre-decode prefix variables once (same for all extensions).
-        let prefix_values: Vec<(Variable, DataType)> = self
+        // Decode prefix bindings once; overwrite the extension binding for every candidate.
+        let mut values = self
             .prefix_vars
             .iter()
             .map(|(var, idx)| {
-                let dt = DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
-                (var.clone(), dt)
+                let value =
+                    DataType::decode(&prefix[*idx]).expect("failed to decode prefix variable");
+                (var.clone(), value)
             })
-            .collect();
+            .collect::<HashMap<_, _>>();
 
         extensions
             .iter()
             .filter(|ext| {
-                let ext_val = DataType::decode(ext).expect("failed to decode extension value");
+                let extension_value =
+                    DataType::decode(ext).expect("failed to decode extension value");
+                values.insert(self.extension_var.clone(), extension_value);
 
-                let mut bindings: HashMap<Variable, &DataType> = prefix_values
-                    .iter()
-                    .map(|(var, dt)| (var.clone(), dt))
-                    .collect();
-                bindings.insert(self.extension_var.clone(), &ext_val);
-
-                let ctx = EvalContext::new(bindings);
+                let ctx = EvalContext::new(&values);
                 evaluate_as_bool(&self.expr, &ctx)
             })
             .cloned()
