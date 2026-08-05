@@ -197,7 +197,7 @@ fn filter_predicate_stream(
                 .expect("predicate variable must be present in the incoming row");
             (variable, position)
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<Vec<_>>();
 
     stream.filter(move |row| {
         let values = variable_positions
