@@ -1,6 +1,7 @@
 (ns graph.graph-gen
   "Small graph generators for Triplox ingestion benchmarks."
-  (:require [clojure.math.combinatorics :as combo]))
+  (:require [clojure.math.combinatorics :as combo]
+            [graph.gnp :as gnp]))
 
 (def graph-schema
   [{:db/ident :g/id
@@ -43,7 +44,7 @@
      [i (inc i)])))
 
 (defn random-graph [n p]
-  (filter (fn [_] (<= (rand) p)) (complete-graph n)))
+  (gnp/gnp-edges n p))
 
 (defn complete-independents [n k]
   (let [k1 (quot n k)
