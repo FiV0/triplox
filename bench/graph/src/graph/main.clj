@@ -2,6 +2,7 @@
   "Graph ingestion benchmark entry point."
   (:require [clojure.tools.cli :as cli]
             [clojure.tools.logging :as log]
+            [clojure.math :as m]
             [graph.graph-gen :as gg]
             [xyz.triplox.api :as tc])
   (:import [java.lang AutoCloseable]))
@@ -97,8 +98,17 @@
 (comment
   (def conn (tc/connect "localhost" 5490))
 
-  (ingest-graph! conn {:vertices 10000 :probability 0.00182 :batch-size 1000})
-  (ingest-graph! conn {:vertices 1000 :probability 0.01 :batch-size 1000})
+  (defn probability
+    "Probability for a random graph to get roughly n/10 triangles."
+    [n]
+    (/ (double 0.843) (m/pow (double n) (/ 2 3))))
+
+
+  (ingest-graph! conn {:vertices 30000 :probability (probability 30000) :batch-size 1000})
+  (ingest-graph! conn {:vertices 25000 :probability (probability 25000) :batch-size 1000})
+  (ingest-graph! conn {:vertices 20000 :probability (probability 20000) :batch-size 1000})
+  (ingest-graph! conn {:vertices 10000 :probability (probability 10000) :batch-size 1000})
+  (ingest-graph! conn {:vertices 1000 :probability (probability 1000) :batch-size 1000})
 
   (time
    (let [db (tc/db conn)]
