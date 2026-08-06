@@ -485,7 +485,7 @@ where
         &value_buf,
     ]);
     let mut iter = sdb
-        .scan_prefix_with_options(&ave_prefix, &DEFAULT_SCAN_OPTIONS)
+        .scan_prefix_with_options(&ave_prefix, .., &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut tx_eid: Option<i64> = None;
     while let Some(kv) = iter.next().await? {
@@ -509,7 +509,7 @@ where
     encode_datatype(&DataType::Long(tx_eid), &mut entity_buf);
     let eav_prefix = concat_bytes(&[&[codec::EAV], &entity_buf]);
     let mut iter = sdb
-        .scan_prefix_with_options(&eav_prefix, &DEFAULT_SCAN_OPTIONS)
+        .scan_prefix_with_options(&eav_prefix, .., &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut tx_result: Option<i64> = None;
     let mut tx_error: Option<String> = None;

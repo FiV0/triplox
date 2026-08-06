@@ -46,7 +46,7 @@ pub(crate) async fn scan_partition_counters(slatedb: &Db) -> Result<PartitionMap
 
         let prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(partition)]);
         let mut iter = slatedb
-            .scan_prefix_with_options(&prefix, &DEFAULT_SCAN_OPTIONS)
+            .scan_prefix_with_options(&prefix, .., &DEFAULT_SCAN_OPTIONS)
             .await
             .context("Failed to scan EAV partition prefix")?;
 

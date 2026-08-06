@@ -47,9 +47,9 @@ rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"]
 serde = { workspace = true, features = ["derive"] }
 size-of = { version = "0.1.7", package = "feldera-size-of" }
 # slatedb = { version = "0.12.0", features = ["wal_disable"] }
-slatedb = { version = "0.13.1", features = ["aws", "wal_disable"] }
-slatedb_estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "d8c46bab7f26302afe6505202ef4c8360b890547" }
-# slatedb_estimates = { path = "../slatedb-estimates" }
+slatedb = { version = "0.15.0", features = ["aws", "wal_disable"] }
+slatedb-estimates = "0.1.0-alpha.1"
+# slatedb-estimates = { path = "../slatedb-estimates" }
 thiserror = { workspace = true }
 toml = "0.8"
 tokio = { version = "1.40.0", features = ["full"] }

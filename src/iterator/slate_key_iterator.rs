@@ -11,7 +11,7 @@ pub(crate) struct SlateKeyIterator {
 impl SlateKeyIterator {
     pub async fn scan_prefix(db: &slatedb::Db, prefix: &[u8]) -> Result<Self> {
         let mut inner = db
-            .scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS)
+            .scan_prefix_with_options(prefix, .., &DEFAULT_SCAN_OPTIONS)
             .await?;
         let current_key = inner.next().await?.map(|kv| kv.key);
         Ok(Self { inner, current_key })

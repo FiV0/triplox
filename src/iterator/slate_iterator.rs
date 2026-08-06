@@ -47,7 +47,7 @@ where
     {
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let mut iterator =
-            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
+            handle.block_on(slate.scan_prefix_with_options(prefix, .., &DEFAULT_SCAN_OPTIONS))?;
         let mut current_key = None;
         if let Some(next_key) = handle.block_on(iterator.next())? {
             current_key = Some(next_key.key.clone());

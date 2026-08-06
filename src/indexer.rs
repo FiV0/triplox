@@ -159,7 +159,7 @@ where
 {
     let eav_tx_prefix = concat_bytes(&[&[codec::EAV], &partition_entity_prefix(TX_PARTITION)]);
     let mut iter = sdb
-        .scan_prefix_with_options(&eav_tx_prefix, &DEFAULT_SCAN_OPTIONS)
+        .scan_prefix_with_options(&eav_tx_prefix, .., &DEFAULT_SCAN_OPTIONS)
         .await?;
     let mut first_eid: Option<i64> = None;
     let mut system_time: Option<crate::clock::Instant> = None;
@@ -830,7 +830,7 @@ mod tests {
     async fn find_first_user_entity(slate: &Db) -> Result<i64, Error> {
         let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         while let Some(kv) = iter.next().await? {
             let (eid, _, _, _, _) = eav_key_to_parts(kv.key.clone())?;
@@ -850,7 +850,7 @@ mod tests {
         attr_id: Entid,
     ) -> Result<(u32, u32), Error> {
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         let mut add_count = 0;
         let mut retract_count = 0;
@@ -895,7 +895,7 @@ mod tests {
 
         // Find the EAV entry for the user entity (skip bootstrap/schema entries)
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await
             .unwrap();
         let mut found = false;
@@ -960,7 +960,7 @@ mod tests {
         // Count EAV entries in USER_PARTITION (should be 2: name + age)
         let user_base = crate::partition::USER_PARTITION as i64 * (1i64 << 42);
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await
             .unwrap();
         let mut eav_count = 0;
@@ -1476,7 +1476,7 @@ mod tests {
 
         // Scan EAV for entity — expect: alice ADD, alice RETRACT, bob ADD
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         let mut alice_add = false;
         let mut alice_retract = false;
@@ -1733,7 +1733,7 @@ mod tests {
         assert_eq!(attr.value_type, crate::schema::ValueType::String);
 
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         while let Some(kv) = iter.next().await? {
             let (entity, attribute, value, _tx, op) = eav_key_to_parts(kv.key)?;
@@ -1832,7 +1832,7 @@ mod tests {
 
         let mut seen = std::collections::HashSet::new();
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         while let Some(kv) = iter.next().await? {
             let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
@@ -1940,7 +1940,7 @@ mod tests {
             .0;
         let mut seen = std::collections::HashSet::new();
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         while let Some(kv) = iter.next().await? {
             let (eid, attribute, value, _ts, op) = eav_key_to_parts(kv.key)?;
@@ -2125,7 +2125,7 @@ mod tests {
         let mut saw_email = false;
         let mut saw_name = false;
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::VAE], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::VAE], .., &ScanOptions::default())
             .await?;
         while let Some(kv) = iter.next().await? {
             let (_value, attribute, _entity, _tx, op) = vae_key_to_parts(kv.key)?;
@@ -2163,7 +2163,7 @@ mod tests {
         attribute_id: i64,
     ) -> Result<Vec<(DataType, i64, u8)>, Error> {
         let mut iter = slate
-            .scan_prefix_with_options(&[codec::EAV], &ScanOptions::default())
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
             .await?;
         let mut entries = Vec::new();
         while let Some(kv) = iter.next().await? {

@@ -59,7 +59,7 @@ where
         let prefix_bytes = Bytes::from(prefix.to_vec());
         let as_of_encoded = codec::encode_i64_bytes(as_of);
         let iterator =
-            handle.block_on(slate.scan_prefix_with_options(prefix, &DEFAULT_SCAN_OPTIONS))?;
+            handle.block_on(slate.scan_prefix_with_options(prefix, .., &DEFAULT_SCAN_OPTIONS))?;
 
         let mut iter = Self {
             inner: iterator,
