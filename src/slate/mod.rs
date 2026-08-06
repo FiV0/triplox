@@ -19,6 +19,7 @@ use crate::util::random_string;
 
 pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_META_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+pub const DEFAULT_RANGE_STATS_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub fn default_db_cache() -> Arc<dyn DbCache> {
     let block_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
@@ -32,6 +33,18 @@ pub fn default_db_cache() -> Arc<dyn DbCache> {
     Arc::new(
         SplitCache::new()
             .with_block_cache(Some(Arc::new(block_cache)))
+            .with_meta_cache(Some(Arc::new(meta_cache)))
+            .build(),
+    )
+}
+
+pub fn default_range_stats_cache() -> Arc<dyn DbCache> {
+    let meta_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
+        max_capacity: DEFAULT_RANGE_STATS_CACHE_BYTES,
+        ..Default::default()
+    });
+    Arc::new(
+        SplitCache::new()
             .with_meta_cache(Some(Arc::new(meta_cache)))
             .build(),
     )
@@ -66,7 +79,7 @@ pub async fn in_memory_slate() -> SlateComponents {
         db.clone(),
         path.clone(),
         object_store.clone(),
-        None,
+        Some(default_range_stats_cache()),
         None,
     ));
     SlateComponents {
@@ -92,7 +105,7 @@ pub async fn local_slate(root_path: &Path) -> SlateComponents {
         db.clone(),
         slate_path.clone(),
         object_store.clone(),
-        None,
+        Some(default_range_stats_cache()),
         None,
     ));
     SlateComponents {
@@ -149,7 +162,7 @@ pub async fn remote_slate(
         db.clone(),
         path.clone(),
         object_store.clone(),
-        None,
+        Some(default_range_stats_cache()),
         None,
     ));
     Ok(SlateComponents {
