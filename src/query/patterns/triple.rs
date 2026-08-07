@@ -232,56 +232,11 @@ where
         self.create_iterator(prefix, index_type, extractor)
     }
 
-    fn scan_components(&self, index_type: IndexType) -> Result<Vec<BindingRow>> {
-        let mut iterator = self.component_iterator(index_type)?;
-        let mut extensions = Vec::new();
-        while let Some(value) = iterator.get_value()? {
-            extensions.push(vec![value]);
-            iterator.next()?;
-        }
-        Ok(extensions)
-    }
-
-    fn grouped_extensions(
-        &self,
-        index_type: IndexType,
-        groups: BTreeMap<Bytes, Vec<usize>>,
-        row_count: usize,
-    ) -> Result<Vec<Vec<BindingRow>>> {
-        let mut extensions = vec![Vec::new(); row_count];
-        if groups.is_empty() {
-            return Ok(extensions);
-        }
-
-        let mut iterator = self.pair_iterator(index_type)?;
-        for (first, row_indexes) in groups {
-            if !iterator.has_next() {
-                break;
-            }
-            iterator.seek(first.clone())?;
-
-            let mut group_extensions = Vec::new();
-            while let Some(pair) = iterator.get_value()? {
-                if !pair.starts_with(&first) {
-                    break;
-                }
-                group_extensions.push(vec![pair.slice(first.len()..)]);
-                iterator.next()?;
-            }
-
-            for row_index in row_indexes {
-                extensions[row_index] = group_extensions.clone();
-            }
-        }
-        Ok(extensions)
-    }
-
     fn candidate_extensions(
         &self,
         input: &BindingBag,
         position: TriplePosition,
     ) -> Result<Vec<Vec<BindingRow>>> {
-
         if input.rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -293,14 +248,47 @@ where
 
         let other_resolved = Self::term_is_resolved(other, input);
         let index_type = Self::index_type(position, other_resolved);
-        if other_resolved {
-            self.grouped_extensions(
-                index_type,
-                Self::group_rows_by_term(other, input)?,
-                input.rows.len(),
-            )
+
+        if let Some(other_var) = other.variable() {
+            let mut groups = BTreeMap::new();
+            let index = input.column_index(other_var)?;
+            for (row_index, row) in input.rows.iter().enumerate() {
+                groups.entry(&row[index]).or_insert_with(Vec::new).push(row_index);
+            }
+
+            let mut extensions = vec![Vec::new(); input.rows.len()];
+            if groups.is_empty() {
+                return Ok(extensions);
+            }
+
+            let mut iterator = self.pair_iterator(index_type)?;
+            for (first, row_indexes) in groups {
+                if !iterator.has_next() {
+                    break;
+                }
+                iterator.seek(first.clone())?;
+
+                let mut group_extensions = Vec::new();
+                while let Some(pair) = iterator.get_value()? {
+                    if !pair.starts_with(&first) {
+                        break;
+                    }
+                    group_extensions.push(vec![pair.slice(first.len()..)]);
+                    iterator.next()?;
+                }
+
+                for row_index in row_indexes {
+                    extensions[row_index] = group_extensions.clone();
+                }
+            }
+            Ok(extensions)
         } else {
-            let candidates = self.scan_components(index_type)?;
+            let mut iterator = self.component_iterator(index_type)?;
+            let mut candidates = Vec::new();
+            while let Some(value) = iterator.get_value()? {
+                candidates.push(vec![value]);
+                iterator.next()?;
+            }
             Ok(vec![candidates; input.rows.len()])
         }
     }
@@ -429,11 +417,7 @@ where
         input.select_rows(&self.matching_rows(input)?)
     }
 
-    fn propose(
-        &self,
-        input: &BindingBag,
-        added: &[Variable]
-    ) -> Result<BindingBag> {
+    fn propose(&self, input: &BindingBag, added: &[Variable]) -> Result<BindingBag> {
         ensure!(
             added.len() == 1,
             "Triple pattern {} can propose exactly one variable, got {added:?}",
@@ -506,7 +490,7 @@ where
 
         if let Some(other_var) = other.variable() {
             // 1 variable already bound
-            if input.variables.contains(&other_var) {
+            if input.variables.contains(other_var) {
                 let index = input.column_index(other_var)?;
                 for (row_index, row) in input.rows.iter().enumerate() {
                     let mut prefix = base_prefix.clone();
