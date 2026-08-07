@@ -228,63 +228,79 @@ where
             TriplePosition::Value => &self.entity,
         };
 
-        let other_resolved = Self::term_is_resolved(other, input);
-        let index_type = Self::index_type(position, other_resolved);
-
-        if let Some(other_var) = other.variable() {
-            // TODO: once we pass to a sorted columnar trie, the BTreeMap will likely go away
-            // We likely also can get rid of the to vec<index> mapping
-            let mut groups = BTreeMap::new();
-            let index = input.column_index(other_var)?;
-            for (row_index, row) in input.rows.iter().enumerate() {
-                groups
-                    .entry(&row[index])
-                    .or_insert_with(Vec::new)
-                    .push(row_index);
-            }
-
-            let mut extensions = vec![Vec::new(); input.rows.len()];
-            if groups.is_empty() {
-                return Ok(extensions);
-            }
-
-            let mut iterator = self.attr_var_pair_iterator(index_type)?;
-            // a bound E or V is constraining, we still scan once through a sorted iteration
-            for (first, row_indexes) in groups {
-                if !iterator.has_next() {
-                    break;
+        match other {
+            TripleTerm::Variable(other_var) if input.variables.contains(other_var) => {
+                let index_type = Self::index_type(position, true);
+                // TODO: once we pass to a sorted columnar trie, the BTreeMap will likely go away
+                // We likely also can get rid of the to vec<index> mapping
+                let mut groups = BTreeMap::new();
+                let index = input.column_index(other_var)?;
+                for (row_index, row) in input.rows.iter().enumerate() {
+                    groups
+                        .entry(&row[index])
+                        .or_insert_with(Vec::new)
+                        .push(row_index);
                 }
-                iterator.seek(first.clone())?;
 
-                let mut group_extensions = Vec::new();
-                while let Some(var_pair) = iterator.get_value()? {
-                    if !var_pair.starts_with(first) {
+                let mut extensions = vec![Vec::new(); input.rows.len()];
+                if groups.is_empty() {
+                    return Ok(extensions);
+                }
+
+                let mut iterator = self.attr_var_pair_iterator(index_type)?;
+                // A bound E or V constrains the scan, which still advances only once.
+                for (first, row_indexes) in groups {
+                    if !iterator.has_next() {
                         break;
                     }
-                    // the second part of the pair are the new values
-                    group_extensions.push(vec![var_pair.slice(first.len()..)]);
+                    iterator.seek(first.clone())?;
+
+                    let mut group_extensions = Vec::new();
+                    while let Some(var_pair) = iterator.get_value()? {
+                        if !var_pair.starts_with(first) {
+                            break;
+                        }
+                        group_extensions.push(vec![var_pair.slice(first.len()..)]);
+                        iterator.next()?;
+                    }
+
+                    for row_index in row_indexes {
+                        extensions[row_index] = group_extensions.clone();
+                    }
+                }
+                Ok(extensions)
+            }
+            TripleTerm::Variable(_) => {
+                let index_type = Self::index_type(position, false);
+                let mut iterator = self.attr_var_iterator(index_type)?;
+                let mut candidates = Vec::new();
+                while let Some(value) = iterator.get_value()? {
+                    candidates.push(vec![value]);
                     iterator.next()?;
                 }
-
-                for row_index in row_indexes {
-                    extensions[row_index] = group_extensions.clone();
+                Ok(vec![candidates; input.rows.len()])
+            }
+            TripleTerm::Constant(constant) => {
+                let index_type = Self::index_type(position, true);
+                let mut prefix = self.base_prefix(index_type)?;
+                prefix.extend_from_slice(constant);
+                let prefix_len = prefix.len();
+                let extractor: Extractor =
+                    Box::new(move |key| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX));
+                let mut iterator =
+                    self.create_iterator(Bytes::from(prefix), index_type, extractor)?;
+                let mut candidates = Vec::new();
+                while let Some(value) = iterator.get_value()? {
+                    candidates.push(vec![value]);
+                    iterator.next()?;
                 }
+                Ok(vec![candidates; input.rows.len()])
             }
-            Ok(extensions)
-        } else {
-            // only the attribute is constraining in this case. We simply walk the iterator.
-            let mut iterator = self.attr_var_iterator(index_type)?;
-            let mut candidates = Vec::new();
-            while let Some(value) = iterator.get_value()? {
-                candidates.push(vec![value]);
-                iterator.next()?;
-            }
-            Ok(vec![candidates; input.rows.len()])
         }
     }
 
-    // The code below is explicitly kept very dumb and with lots of code duplication. 
-    // We can optimize and refactor once things stabilize. It will very likely change anyway when 
+    // The code below is explicitly kept very dumb and with lots of code duplication.
+    // We can optimize and refactor once things stabilize. It will very likely change anyway when
     // we introduce a columnar trie.
 
     // Partial two-variable checks use additive candidates; the full pair is validated later.
