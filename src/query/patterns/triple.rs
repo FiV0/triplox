@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{bail, ensure, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
@@ -308,216 +308,219 @@ where
         let entity_is_variable = self.entity.is_variable();
         let value_is_variable = self.value.is_variable();
 
-        let matches = match (
-            entity_is_variable,
-            entity_has_value,
-            value_is_variable,
-            value_has_value,
-        ) {
-            // Constant entity, constant value.
-            (false, true, false, true) => {
-                let TripleTerm::Constant(entity) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Constant(value) = &self.value else {
-                    unreachable!()
-                };
-                let mut prefix = self.base_prefix(IndexType::AEV)?;
-                prefix.extend_from_slice(entity);
-                let extractor: Extractor =
-                    Box::new(move |key| make_extractor(2, IndexType::AEV)(key));
-                let mut iterator =
-                    self.create_iterator(Bytes::from(prefix), IndexType::AEV, extractor)?;
-                let has_match = if iterator.has_next() {
-                    iterator.seek(value.clone())?;
-                    iterator.get_value()?.as_ref() == Some(value)
-                } else {
-                    false
-                };
-                vec![has_match; input.rows.len()]
-            }
-
-            // Bound entity variable, constant value.
-            (true, true, false, true) => {
-                let mut groups = BTreeMap::new();
-                let TripleTerm::Variable(entity_var) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Constant(value) = &self.value else {
-                    unreachable!()
-                };
-                let entity_index = input.column_index(entity_var)?;
-                for (row_index, row) in input.rows.iter().enumerate() {
-                    let mut pair = BytesMut::with_capacity(value.len() + row[entity_index].len());
-                    pair.extend_from_slice(value);
-                    pair.extend_from_slice(&row[entity_index]);
-                    groups
-                        .entry(pair.freeze())
-                        .or_insert_with(Vec::new)
-                        .push(row_index);
+        let matches =
+            match (
+                entity_is_variable,
+                entity_has_value,
+                value_is_variable,
+                value_has_value,
+            ) {
+                // Constant entity, constant value.
+                (false, true, false, true) => {
+                    let TripleTerm::Constant(entity) = &self.entity else {
+                        unreachable!()
+                    };
+                    let TripleTerm::Constant(value) = &self.value else {
+                        unreachable!()
+                    };
+                    let mut prefix = self.base_prefix(IndexType::AEV)?;
+                    prefix.extend_from_slice(entity);
+                    let extractor: Extractor =
+                        Box::new(move |key| make_extractor(2, IndexType::AEV)(key));
+                    let mut iterator =
+                        self.create_iterator(Bytes::from(prefix), IndexType::AEV, extractor)?;
+                    let has_match = if iterator.has_next() {
+                        iterator.seek(value.clone())?;
+                        iterator.get_value()?.as_ref() == Some(value)
+                    } else {
+                        false
+                    };
+                    vec![has_match; input.rows.len()]
                 }
 
-                let mut iterator = self.attr_var_pair_iterator(IndexType::AVE)?;
-                let mut matches = vec![false; input.rows.len()];
-                for (expected, row_indexes) in groups {
-                    if !iterator.has_next() {
-                        break;
+                // Bound entity variable, constant value.
+                (true, true, false, true) => {
+                    let mut groups = BTreeMap::new();
+                    let TripleTerm::Variable(entity_var) = &self.entity else {
+                        unreachable!()
+                    };
+                    let TripleTerm::Constant(value) = &self.value else {
+                        unreachable!()
+                    };
+                    let entity_index = input.column_index(entity_var)?;
+                    for (row_index, row) in input.rows.iter().enumerate() {
+                        groups
+                            .entry(&row[entity_index])
+                            .or_insert_with(Vec::new)
+                            .push(row_index);
                     }
-                    iterator.seek(expected.clone())?;
-                    if iterator
-                        .get_value()?
-                        .as_ref()
-                        .is_some_and(|actual| actual == &expected)
-                    {
-                        for row_index in row_indexes {
-                            matches[row_index] = true;
+
+                    let mut prefix = self.base_prefix(IndexType::AVE)?;
+                    prefix.extend_from_slice(value);
+                    let extractor: Extractor =
+                        Box::new(move |key| make_extractor(2, IndexType::AVE)(key));
+                    let mut iterator =
+                        self.create_iterator(Bytes::from(prefix), IndexType::AVE, extractor)?;
+                    let mut matches = vec![false; input.rows.len()];
+                    for (expected, row_indexes) in groups {
+                        if !iterator.has_next() {
+                            break;
+                        }
+                        iterator.seek(expected.clone())?;
+                        if iterator.get_value()?.as_ref() == Some(expected) {
+                            for row_index in row_indexes {
+                                matches[row_index] = true;
+                            }
                         }
                     }
-                }
-                matches
-            }
-
-            // Constant entity, bound value variable.
-            (false, true, true, true) => {
-                let mut groups = BTreeMap::new();
-                let TripleTerm::Constant(entity) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Variable(value_var) = &self.value else {
-                    unreachable!()
-                };
-                let value_index = input.column_index(value_var)?;
-                for (row_index, row) in input.rows.iter().enumerate() {
-                    let mut pair = BytesMut::with_capacity(entity.len() + row[value_index].len());
-                    pair.extend_from_slice(entity);
-                    pair.extend_from_slice(&row[value_index]);
-                    groups
-                        .entry(pair.freeze())
-                        .or_insert_with(Vec::new)
-                        .push(row_index);
+                    matches
                 }
 
-                let mut iterator = self.attr_var_pair_iterator(IndexType::AEV)?;
-                let mut matches = vec![false; input.rows.len()];
-                for (expected, row_indexes) in groups {
-                    if !iterator.has_next() {
-                        break;
+                // Constant entity, bound value variable.
+                (false, true, true, true) => {
+                    let mut groups = BTreeMap::new();
+                    let TripleTerm::Constant(entity) = &self.entity else {
+                        unreachable!()
+                    };
+                    let TripleTerm::Variable(value_var) = &self.value else {
+                        unreachable!()
+                    };
+                    let value_index = input.column_index(value_var)?;
+                    for (row_index, row) in input.rows.iter().enumerate() {
+                        groups
+                            .entry(&row[value_index])
+                            .or_insert_with(Vec::new)
+                            .push(row_index);
                     }
-                    iterator.seek(expected.clone())?;
-                    if iterator
-                        .get_value()?
-                        .as_ref()
-                        .is_some_and(|actual| actual == &expected)
-                    {
-                        for row_index in row_indexes {
-                            matches[row_index] = true;
+
+                    let mut prefix = self.base_prefix(IndexType::AEV)?;
+                    prefix.extend_from_slice(entity);
+                    let extractor: Extractor =
+                        Box::new(move |key| make_extractor(2, IndexType::AEV)(key));
+                    let mut iterator =
+                        self.create_iterator(Bytes::from(prefix), IndexType::AEV, extractor)?;
+                    let mut matches = vec![false; input.rows.len()];
+                    for (expected, row_indexes) in groups {
+                        if !iterator.has_next() {
+                            break;
+                        }
+                        iterator.seek(expected.clone())?;
+                        if iterator.get_value()?.as_ref() == Some(expected) {
+                            for row_index in row_indexes {
+                                matches[row_index] = true;
+                            }
                         }
                     }
+                    matches
                 }
-                matches
-            }
-            // Bound entity variable, unbound value variable.
-            (true, true, true, false) => {
-                let mut groups = BTreeMap::new();
-                for (row_index, row) in input.rows.iter().enumerate() {
-                    let value = self.entity.resolve(input, row)?.ok_or_else(|| {
-                        anyhow::anyhow!("Cannot group rows by an unbound triple term")
-                    })?;
-                    groups.entry(value).or_insert_with(Vec::new).push(row_index);
-                }
-
-                let mut iterator = self.attr_var_iterator(IndexType::AE)?;
-                let mut matches = vec![false; input.rows.len()];
-                for (expected, row_indexes) in groups {
-                    if !iterator.has_next() {
-                        break;
+                // Bound entity variable, unbound value variable.
+                (true, true, true, false) => {
+                    let mut groups = BTreeMap::new();
+                    let TripleTerm::Variable(entity_var) = &self.entity else {
+                        unreachable!()
+                    };
+                    let entity_index = input.column_index(entity_var)?;
+                    for (row_index, row) in input.rows.iter().enumerate() {
+                        groups
+                            .entry(&row[entity_index])
+                            .or_insert_with(Vec::new)
+                            .push(row_index);
                     }
-                    iterator.seek(expected.clone())?;
-                    if iterator
-                        .get_value()?
-                        .as_ref()
-                        .is_some_and(|actual| actual == &expected)
-                    {
-                        for row_index in row_indexes {
-                            matches[row_index] = true;
+
+                    let mut iterator = self.attr_var_iterator(IndexType::AE)?;
+                    let mut matches = vec![false; input.rows.len()];
+                    for (expected, row_indexes) in groups {
+                        if !iterator.has_next() {
+                            break;
+                        }
+                        iterator.seek(expected.clone())?;
+                        if iterator
+                            .get_value()?
+                            .as_ref()
+                            .is_some_and(|actual| actual == expected)
+                        {
+                            for row_index in row_indexes {
+                                matches[row_index] = true;
+                            }
                         }
                     }
+                    matches
                 }
-                matches
-            }
-            // Unbound entity variable, bound value variable.
-            (true, false, true, true) => {
-                let mut groups = BTreeMap::new();
-                for (row_index, row) in input.rows.iter().enumerate() {
-                    let value = self.value.resolve(input, row)?.ok_or_else(|| {
-                        anyhow::anyhow!("Cannot group rows by an unbound triple term")
-                    })?;
-                    groups.entry(value).or_insert_with(Vec::new).push(row_index);
-                }
-
-                let mut iterator = self.attr_var_iterator(IndexType::AV)?;
-                let mut matches = vec![false; input.rows.len()];
-                for (expected, row_indexes) in groups {
-                    if !iterator.has_next() {
-                        break;
+                // Unbound entity variable, bound value variable.
+                (true, false, true, true) => {
+                    let mut groups = BTreeMap::new();
+                    let TripleTerm::Variable(value_var) = &self.value else {
+                        unreachable!()
+                    };
+                    let value_index = input.column_index(value_var)?;
+                    for (row_index, row) in input.rows.iter().enumerate() {
+                        groups
+                            .entry(&row[value_index])
+                            .or_insert_with(Vec::new)
+                            .push(row_index);
                     }
-                    iterator.seek(expected.clone())?;
-                    if iterator
-                        .get_value()?
-                        .as_ref()
-                        .is_some_and(|actual| actual == &expected)
-                    {
-                        for row_index in row_indexes {
-                            matches[row_index] = true;
+
+                    let mut iterator = self.attr_var_iterator(IndexType::AV)?;
+                    let mut matches = vec![false; input.rows.len()];
+                    for (expected, row_indexes) in groups {
+                        if !iterator.has_next() {
+                            break;
+                        }
+                        iterator.seek(expected.clone())?;
+                        if iterator
+                            .get_value()?
+                            .as_ref()
+                            .is_some_and(|actual| actual == expected)
+                        {
+                            for row_index in row_indexes {
+                                matches[row_index] = true;
+                            }
                         }
                     }
+                    matches
                 }
-                matches
-            }
-            // Bound entity variable, bound value variable.
-            (true, true, true, true) => {
-                let mut groups = BTreeMap::new();
-                for (row_index, row) in input.rows.iter().enumerate() {
-                    let entity = self
-                        .entity
-                        .resolve(input, row)?
-                        .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound entity"))?;
-                    let value = self
-                        .value
-                        .resolve(input, row)?
-                        .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound value"))?;
-                    let mut pair = entity.to_vec();
-                    pair.extend_from_slice(&value);
-                    groups
-                        .entry(Bytes::from(pair))
-                        .or_insert_with(Vec::new)
-                        .push(row_index);
-                }
-
-                let mut iterator = self.attr_var_pair_iterator(IndexType::AEV)?;
-                let mut matches = vec![false; input.rows.len()];
-                for (expected, row_indexes) in groups {
-                    if !iterator.has_next() {
-                        break;
+                // Bound entity variable, bound value variable.
+                (true, true, true, true) => {
+                    let mut groups = BTreeMap::new();
+                    for (row_index, row) in input.rows.iter().enumerate() {
+                        let entity = self.entity.resolve(input, row)?.ok_or_else(|| {
+                            anyhow::anyhow!("Cannot group rows by an unbound entity")
+                        })?;
+                        let value = self.value.resolve(input, row)?.ok_or_else(|| {
+                            anyhow::anyhow!("Cannot group rows by an unbound value")
+                        })?;
+                        let mut pair = entity.to_vec();
+                        pair.extend_from_slice(&value);
+                        groups
+                            .entry(Bytes::from(pair))
+                            .or_insert_with(Vec::new)
+                            .push(row_index);
                     }
-                    iterator.seek(expected.clone())?;
-                    if iterator
-                        .get_value()?
-                        .as_ref()
-                        .is_some_and(|actual| actual == &expected)
-                    {
-                        for row_index in row_indexes {
-                            matches[row_index] = true;
+
+                    let mut iterator = self.attr_var_pair_iterator(IndexType::AEV)?;
+                    let mut matches = vec![false; input.rows.len()];
+                    for (expected, row_indexes) in groups {
+                        if !iterator.has_next() {
+                            break;
+                        }
+                        iterator.seek(expected.clone())?;
+                        if iterator
+                            .get_value()?
+                            .as_ref()
+                            .is_some_and(|actual| actual == &expected)
+                        {
+                            for row_index in row_indexes {
+                                matches[row_index] = true;
+                            }
                         }
                     }
+                    matches
                 }
-                matches
-            }
-            _ => bail!(
-                "Triple pattern {} has no bound variables to validate",
-                self.index
-            ),
-        };
+                _ => bail!(
+                    "Triple pattern {} has no bound variables to validate",
+                    self.index
+                ),
+            };
         let matched: Vec<usize> = matches
             .into_iter()
             .enumerate()
@@ -1045,6 +1048,80 @@ mod tests {
                     encoded(DataType::Long(9)),
                     encoded(DataType::Long(1)),
                 ]],
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn constant_term_validation_matches_bound_rows() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        runtime.block_on(async {
+            insert_version(
+                components.db.as_ref(),
+                42,
+                1,
+                &DataType::String("alice".into()),
+                10,
+                codec::ADD,
+            )
+            .await?;
+            insert_version(
+                components.db.as_ref(),
+                42,
+                2,
+                &DataType::String("bob".into()),
+                10,
+                codec::ADD,
+            )
+            .await
+        })?;
+
+        let db = Arc::new(DbValue::new(
+            components.db,
+            runtime.handle().clone(),
+            10,
+            components.range_stats,
+        ));
+        let entity_pattern = TriplePattern::new(
+            1,
+            TripleTerm::Variable("?e".to_var()),
+            42,
+            TripleTerm::Constant(encoded(DataType::String("alice".into()))),
+            db.clone(),
+        )?;
+        let entities = binding_bag(
+            &["?e"],
+            vec![
+                vec![encoded(DataType::Long(1))],
+                vec![encoded(DataType::Long(2))],
+            ],
+        );
+        assert_eq!(
+            entity_pattern.validate(&entities)?,
+            binding_bag(&["?e"], vec![vec![encoded(DataType::Long(1))]])
+        );
+
+        let value_pattern = TriplePattern::new(
+            2,
+            TripleTerm::Constant(encoded(DataType::Long(1))),
+            42,
+            TripleTerm::Variable("?v".to_var()),
+            db,
+        )?;
+        let values = binding_bag(
+            &["?v"],
+            vec![
+                vec![encoded(DataType::String("alice".into()))],
+                vec![encoded(DataType::String("bob".into()))],
+            ],
+        );
+        assert_eq!(
+            value_pattern.validate(&values)?,
+            binding_bag(
+                &["?v"],
+                vec![vec![encoded(DataType::String("alice".into()))]]
             )
         );
         Ok(())
