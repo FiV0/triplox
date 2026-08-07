@@ -169,21 +169,6 @@ where
         }
     }
 
-    fn group_rows_by_term(
-        term: &TripleTerm,
-        input: &BindingBag,
-    ) -> Result<BTreeMap<Bytes, Vec<usize>>> {
-        let mut groups = BTreeMap::new();
-        for (row_index, row) in input.rows.iter().enumerate() {
-            let value = term
-                .resolve(input, row)?
-                .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound triple term"))?;
-            groups.entry(value).or_insert_with(Vec::new).push(row_index);
-        }
-        Ok(groups)
-    }
-
-
     fn create_iterator(
         &self,
         prefix: Bytes,
@@ -211,7 +196,8 @@ where
         }
     }
 
-    fn component_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
+    // serves to iterate AE/AV indexes
+    fn attr_var_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
         ensure!(
             matches!(index_type, IndexType::AE | IndexType::AV),
             "Component iterator requires an AE or AV index"
@@ -221,7 +207,8 @@ where
         self.create_iterator(prefix, index_type, extractor)
     }
 
-    fn pair_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
+    // serves to iterate AVE/AEV indexes
+    fn attr_var_pair_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
         ensure!(
             matches!(index_type, IndexType::AEV | IndexType::AVE),
             "Pair iterator requires an AEV or AVE index"
@@ -252,6 +239,7 @@ where
 
         if let Some(other_var) = other.variable() {
             // TODO: once we pass to a sorted columnar trie, the BTreeMap will likely go away 
+            // We likely also can get rid of the to vec<index> mapping
             let mut groups = BTreeMap::new();
             let index = input.column_index(other_var)?;
             for (row_index, row) in input.rows.iter().enumerate() {
@@ -263,7 +251,8 @@ where
                 return Ok(extensions);
             }
 
-            let mut iterator = self.pair_iterator(index_type)?;
+            let mut iterator = self.attr_var_pair_iterator(index_type)?;
+            // a bound E or V is constraining, we still scan once through a sorted iteration
             for (first, row_indexes) in groups {
                 if !iterator.has_next() {
                     break;
@@ -271,11 +260,12 @@ where
                 iterator.seek(first.clone())?;
 
                 let mut group_extensions = Vec::new();
-                while let Some(pair) = iterator.get_value()? {
-                    if !pair.starts_with(&first) {
+                while let Some(var_pair) = iterator.get_value()? {
+                    if !var_pair.starts_with(&first) {
                         break;
                     }
-                    group_extensions.push(vec![pair.slice(first.len()..)]);
+                    // the second part of the pair are the new values
+                    group_extensions.push(vec![var_pair.slice(first.len()..)]);
                     iterator.next()?;
                 }
 
@@ -286,7 +276,7 @@ where
             Ok(extensions)
         } else {
             // only the attribute is constraining in this case. We simply walk the iterator.
-            let mut iterator = self.component_iterator(index_type)?;
+            let mut iterator = self.attr_var_iterator(index_type)?;
             let mut candidates = Vec::new();
             while let Some(value) = iterator.get_value()? {
                 candidates.push(vec![value]);
@@ -294,6 +284,20 @@ where
             }
             Ok(vec![candidates; input.rows.len()])
         }
+    }
+
+    fn group_rows_by_term(
+        term: &TripleTerm,
+        input: &BindingBag,
+    ) -> Result<BTreeMap<Bytes, Vec<usize>>> {
+        let mut groups = BTreeMap::new();
+        for (row_index, row) in input.rows.iter().enumerate() {
+            let value = term
+                .resolve(input, row)?
+                .ok_or_else(|| anyhow::anyhow!("Cannot group rows by an unbound triple term"))?;
+            groups.entry(value).or_insert_with(Vec::new).push(row_index);
+        }
+        Ok(groups)
     }
 
     fn group_rows_by_pair(&self, input: &BindingBag) -> Result<BTreeMap<Bytes, Vec<usize>>> {
@@ -354,7 +358,7 @@ where
         Self::matching_group_rows(
             input.rows.len(),
             Self::group_rows_by_term(term, input)?,
-            self.component_iterator(index_type)?,
+            self.attr_var_iterator(index_type)?,
             |actual, expected| actual == expected,
         )
     }
@@ -368,7 +372,7 @@ where
         Self::matching_group_rows(
             input.rows.len(),
             Self::group_rows_by_term(term, input)?,
-            self.pair_iterator(index_type)?,
+            self.attr_var_pair_iterator(index_type)?,
             |actual, expected| actual.starts_with(expected),
         )
     }
@@ -377,7 +381,7 @@ where
         Self::matching_group_rows(
             input.rows.len(),
             self.group_rows_by_pair(input)?,
-            self.pair_iterator(IndexType::AEV)?,
+            self.attr_var_pair_iterator(IndexType::AEV)?,
             |actual, expected| actual == expected,
         )
     }
@@ -405,7 +409,7 @@ where
                 self.matching_first_component_rows(input, &self.value, IndexType::AVE)?
             }
             (false, false) => {
-                let has_match = self.pair_iterator(IndexType::AEV)?.has_next();
+                let has_match = self.attr_var_pair_iterator(IndexType::AEV)?.has_next();
                 vec![has_match; input.rows.len()]
             }
         };
