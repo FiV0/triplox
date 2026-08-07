@@ -281,6 +281,7 @@ where
         input: &BindingBag,
         position: TriplePosition,
     ) -> Result<Vec<Vec<BindingRow>>> {
+
         if input.rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -289,6 +290,7 @@ where
             TriplePosition::Entity => &self.value,
             TriplePosition::Value => &self.entity,
         };
+
         let other_resolved = Self::term_is_resolved(other, input);
         let index_type = Self::index_type(position, other_resolved);
         if other_resolved {
@@ -423,20 +425,14 @@ where
             .collect())
     }
 
-    fn validate(&self, input: &BindingBag, target_variables: &[Variable]) -> Result<BindingBag> {
-        ensure!(
-            target_variables == input.variables,
-            "Triple pattern {} validation must preserve the input layout",
-            self.index
-        );
+    fn validate(&self, input: &BindingBag) -> Result<BindingBag> {
         input.select_rows(&self.matching_rows(input)?)
     }
 
     fn propose(
         &self,
         input: &BindingBag,
-        added: &[Variable],
-        target_variables: &[Variable],
+        added: &[Variable]
     ) -> Result<BindingBag> {
         ensure!(
             added.len() == 1,
@@ -456,9 +452,7 @@ where
                 added[0]
             )
         })?;
-        input
-            .extend_rows(added.to_vec(), self.candidate_extensions(input, position)?)?
-            .reorder(target_variables)
+        input.extend_rows(added.to_vec(), self.candidate_extensions(input, position)?)
     }
 }
 
@@ -549,11 +543,18 @@ where
         added: &[Variable],
         target_variables: &[Variable],
     ) -> Result<BindingBag> {
-        if added.is_empty() {
-            self.validate(input, target_variables)
+        let res = if added.is_empty() {
+            self.validate(input)
         } else {
-            self.propose(input, added, target_variables)
-        }
+            self.propose(input, added)
+        }?;
+        ensure!(
+            target_variables == res.variables,
+            "Triple pattern target_layout {:?} doesnt' match the computed layout {:?}",
+            target_variables,
+            res.variables
+        );
+        res.reorder(target_variables)
     }
 }
 
