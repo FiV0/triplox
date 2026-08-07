@@ -151,6 +151,14 @@ where
         }
     }
 
+    fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
+        let count = self
+            .db
+            .handle
+            .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
+        Ok(usize::try_from(count)?)
+    }
+
     fn position_for_variable(&self, variable: &Variable) -> Option<TriplePosition> {
         if self.entity.variable() == Some(variable) {
             Some(TriplePosition::Entity)
@@ -175,13 +183,6 @@ where
         Ok(groups)
     }
 
-    fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
-        let count = self
-            .db
-            .handle
-            .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
-        Ok(usize::try_from(count)?)
-    }
 
     fn create_iterator(
         &self,
@@ -250,6 +251,7 @@ where
         let index_type = Self::index_type(position, other_resolved);
 
         if let Some(other_var) = other.variable() {
+            // TODO: once we pass to a sorted columnar trie, the BTreeMap will likely go away 
             let mut groups = BTreeMap::new();
             let index = input.column_index(other_var)?;
             for (row_index, row) in input.rows.iter().enumerate() {
@@ -283,6 +285,7 @@ where
             }
             Ok(extensions)
         } else {
+            // only the attribute is constraining in this case. We simply walk the iterator.
             let mut iterator = self.component_iterator(index_type)?;
             let mut candidates = Vec::new();
             while let Some(value) = iterator.get_value()? {
