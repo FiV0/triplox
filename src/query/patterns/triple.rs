@@ -35,19 +35,6 @@ impl TripleTerm {
             Self::Constant(_) => None,
         }
     }
-
-    fn resolve(&self, input: &BindingBag, row: &BindingRow) -> Result<Option<Bytes>> {
-        match self {
-            Self::Variable(variable) => {
-                if input.variables.contains(variable) {
-                    Ok(Some(row[input.column_index(variable)?].clone()))
-                } else {
-                    Ok(None)
-                }
-            }
-            Self::Constant(value) => Ok(Some(value.clone())),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
