@@ -296,6 +296,10 @@ where
         }
     }
 
+    // The code below is explicitly kept very dumb and with lots of code duplication. 
+    // We can optimize and refactor once things stabilize. It will very likely change anyway when 
+    // we introduce a columnar trie.
+
     // Partial two-variable checks use additive candidates; the full pair is validated later.
     fn validate(&self, input: &BindingBag) -> Result<BindingBag> {
         if input.rows.is_empty() {
