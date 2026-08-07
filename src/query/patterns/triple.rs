@@ -482,13 +482,18 @@ where
                 // Bound entity variable, bound value variable.
                 (true, true, true, true) => {
                     let mut groups = BTreeMap::new();
+                    let TripleTerm::Variable(entity_var) = &self.entity else {
+                        unreachable!()
+                    };
+                    let TripleTerm::Variable(value_var) = &self.value else {
+                        unreachable!()
+                    };
+                    let entity_index = input.column_index(entity_var)?;
+                    let value_index = input.column_index(value_var)?;
+
                     for (row_index, row) in input.rows.iter().enumerate() {
-                        let entity = self.entity.resolve(input, row)?.ok_or_else(|| {
-                            anyhow::anyhow!("Cannot group rows by an unbound entity")
-                        })?;
-                        let value = self.value.resolve(input, row)?.ok_or_else(|| {
-                            anyhow::anyhow!("Cannot group rows by an unbound value")
-                        })?;
+                        let entity = &row[entity_index];
+                        let value = &row[value_index];
                         let mut pair = entity.to_vec();
                         pair.extend_from_slice(&value);
                         groups
