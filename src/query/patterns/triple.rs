@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::{ensure, Result};
+use anyhow::{bail, ensure, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
@@ -129,16 +129,6 @@ where
         })
     }
 
-    fn position_for_variable(&self, variable: &Variable) -> Option<TriplePosition> {
-        if self.entity.variable() == Some(variable) {
-            Some(TriplePosition::Entity)
-        } else if self.value.variable() == Some(variable) {
-            Some(TriplePosition::Value)
-        } else {
-            None
-        }
-    }
-
     fn base_prefix(&self, index_type: IndexType) -> Result<Vec<u8>> {
         let mut prefix = vec![codec::index_type_to_prefix(index_type)?];
         codec::encode_i64(self.attribute, &mut prefix);
@@ -149,6 +139,25 @@ where
         match term {
             TripleTerm::Variable(variable) => input.column_indexes.contains_key(variable),
             TripleTerm::Constant(_) => true,
+        }
+    }
+
+    fn index_type(position: TriplePosition, other_resolved: bool) -> IndexType {
+        match (position, other_resolved) {
+            (TriplePosition::Entity, false) => IndexType::AE,
+            (TriplePosition::Entity, true) => IndexType::AVE,
+            (TriplePosition::Value, false) => IndexType::AV,
+            (TriplePosition::Value, true) => IndexType::AEV,
+        }
+    }
+
+    fn position_for_variable(&self, variable: &Variable) -> Option<TriplePosition> {
+        if self.entity.variable() == Some(variable) {
+            Some(TriplePosition::Entity)
+        } else if self.value.variable() == Some(variable) {
+            Some(TriplePosition::Value)
+        } else {
+            None
         }
     }
 
@@ -164,15 +173,6 @@ where
             groups.entry(value).or_insert_with(Vec::new).push(row_index);
         }
         Ok(groups)
-    }
-
-    fn proposal_index(position: TriplePosition, other_resolved: bool) -> IndexType {
-        match (position, other_resolved) {
-            (TriplePosition::Entity, false) => IndexType::AE,
-            (TriplePosition::Entity, true) => IndexType::AVE,
-            (TriplePosition::Value, false) => IndexType::AV,
-            (TriplePosition::Value, true) => IndexType::AEV,
-        }
     }
 
     fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
@@ -290,7 +290,7 @@ where
             TriplePosition::Value => &self.entity,
         };
         let other_resolved = Self::term_is_resolved(other, input);
-        let index_type = Self::proposal_index(position, other_resolved);
+        let index_type = Self::index_type(position, other_resolved);
         if other_resolved {
             self.grouped_extensions(
                 index_type,
@@ -488,11 +488,15 @@ where
             proposals.len(),
             input.rows.len()
         );
-        if added.len() != 1 || input.variables.contains(&added[0]) {
-            return Ok(());
-        }
+        ensure!(
+            added.len() == 1,
+            "Triple pattern {} can count exactly one variable, got {added:?}",
+            self.index
+        );
         let Some(position) = self.position_for_variable(&added[0]) else {
-            return Ok(());
+            let added = &added[0];
+            let vars = &self.variables;
+            bail!("Triple pattern can only count variables it can propose. Received {added}, variables {vars:?}")
         };
         if input.rows.is_empty() {
             return Ok(());
@@ -503,20 +507,35 @@ where
             TriplePosition::Value => &self.entity,
         };
         let other_resolved = Self::term_is_resolved(other, input);
-        let index_type = Self::proposal_index(position, other_resolved);
+        let index_type = Self::index_type(position, other_resolved);
         let base_prefix = self.base_prefix(index_type)?;
 
-        if other_resolved {
-            for (value, row_indexes) in Self::group_rows_by_term(other, input)? {
-                let mut prefix = base_prefix.clone();
-                prefix.extend_from_slice(&value);
-                let count = self.estimate_count(&prefix)?;
-                for row_index in row_indexes {
+        if let Some(other_var) = other.variable() {
+            // 1 variable already bound
+            if input.variables.contains(&other_var) {
+                let index = input.column_index(other_var)?;
+                for (row_index, row) in input.rows.iter().enumerate() {
+                    let mut prefix = base_prefix.clone();
+                    prefix.extend_from_slice(&row[index]);
+                    let count = self.estimate_count(&prefix)?;
                     proposals[row_index].consider(self.index, count);
                 }
+            // nothing bound
+            } else {
+                let count = self.estimate_count(&base_prefix)?;
+                for proposal in proposals {
+                    proposal.consider(self.index, count);
+                }
             }
+        // other is a constant
         } else {
-            let count = self.estimate_count(&base_prefix)?;
+            let mut prefix = base_prefix.clone();
+            let constant = match other {
+                TripleTerm::Constant(bytes) => bytes,
+                TripleTerm::Variable(_) => unreachable!(),
+            };
+            prefix.extend_from_slice(constant);
+            let count = self.estimate_count(&prefix)?;
             for proposal in proposals {
                 proposal.consider(self.index, count);
             }
