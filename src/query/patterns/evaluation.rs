@@ -12,7 +12,7 @@ pub(super) fn decode_bindings(
     input: &BindingBag,
     row: &BindingRow,
     variables: &[Variable],
-) -> Result<Vec<(Variable, DataType)>> {
+) -> Result<HashMap<Variable, DataType>> {
     variables
         .iter()
         .map(|variable| {
@@ -24,11 +24,6 @@ pub(super) fn decode_bindings(
         .collect()
 }
 
-pub(super) fn eval_context(bindings: &[(Variable, DataType)]) -> EvalContext<'_> {
-    EvalContext::new(
-        bindings
-            .iter()
-            .map(|(variable, value)| (variable.clone(), value))
-            .collect::<HashMap<_, _>>(),
-    )
+pub(super) fn eval_context(bindings: &HashMap<Variable, DataType>) -> EvalContext<'_> {
+    EvalContext::new(bindings)
 }
