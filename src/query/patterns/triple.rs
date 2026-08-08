@@ -637,6 +637,7 @@ mod tests {
 
     use super::{DbValue, TriplePattern, TripleTerm};
     use crate::codec::{self, Encode};
+    use crate::inc_query::test_support::NAME_ATTR_ID as NAME;
     use crate::ops::DataType;
     use crate::query::binding_bag::BindingBag;
     use crate::query::exec_pattern::{ExecPattern, Proposal};
@@ -711,7 +712,7 @@ mod tests {
         runtime.block_on(async {
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 10,
@@ -720,7 +721,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("ally".into()),
                 10,
@@ -729,7 +730,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 2,
                 &DataType::String("bob".into()),
                 10,
@@ -745,7 +746,7 @@ mod tests {
             10,
             components.range_stats,
         ));
-        let pattern = TriplePattern::new(7, entity, 42, value, db)?;
+        let pattern = TriplePattern::new(7, entity, NAME, value, db)?;
 
         let mut entity_proposal = vec![Proposal::default()];
         pattern.count(&BindingBag::unit(), &["?e".to_var()], &mut entity_proposal)?;
@@ -859,7 +860,7 @@ mod tests {
         runtime.block_on(async {
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 10,
@@ -868,7 +869,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 20,
@@ -886,7 +887,7 @@ mod tests {
 
         let entity_1 = encoded(DataType::Long(1));
         let mut prefix = vec![codec::AEV];
-        prefix.extend_from_slice(&codec::encode_i64_bytes(42));
+        prefix.extend_from_slice(&codec::encode_i64_bytes(NAME));
         prefix.extend_from_slice(&entity_1);
         let expected = usize::try_from(
             runtime.block_on(
@@ -900,7 +901,7 @@ mod tests {
         let pattern = TriplePattern::new(
             7,
             entity,
-            42,
+            NAME,
             value,
             Arc::new(DbValue::new(
                 components.db,
@@ -927,7 +928,7 @@ mod tests {
         runtime.block_on(async {
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 10,
@@ -936,7 +937,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 2,
                 &DataType::String("bob".into()),
                 10,
@@ -945,7 +946,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 2,
                 &DataType::String("bob".into()),
                 20,
@@ -961,7 +962,7 @@ mod tests {
             20,
             components.range_stats,
         ));
-        let pattern = TriplePattern::new(7, entity, 42, value, db)?;
+        let pattern = TriplePattern::new(7, entity, NAME, value, db)?;
         let partial = binding_bag(
             &["?outer", "?e"],
             vec![
@@ -1031,7 +1032,7 @@ mod tests {
         runtime.block_on(async {
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 10,
@@ -1040,7 +1041,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 2,
                 &DataType::String("bob".into()),
                 10,
@@ -1058,7 +1059,7 @@ mod tests {
         let entity_pattern = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
@@ -1077,7 +1078,7 @@ mod tests {
         let value_pattern = TriplePattern::new(
             2,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Variable("?v".to_var()),
             db,
         )?;
@@ -1111,14 +1112,14 @@ mod tests {
         let entity_unbound = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
         let value_unbound = TriplePattern::new(
             2,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Variable("?v".to_var()),
             db,
         )?;
@@ -1146,7 +1147,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(insert_version(
             components.db.as_ref(),
-            42,
+            NAME,
             1,
             &DataType::String("alice".into()),
             10,
@@ -1162,21 +1163,21 @@ mod tests {
         let existing = TriplePattern::new(
             1,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
         let wrong_entity = TriplePattern::new(
             2,
             TripleTerm::Constant(encoded(DataType::Long(2))),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
         let wrong_value = TriplePattern::new(
             3,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("bob".into()))),
             db,
         )?;
@@ -1199,7 +1200,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(insert_version(
             components.db.as_ref(),
-            42,
+            NAME,
             1,
             &DataType::String("alice".into()),
             10,
@@ -1215,7 +1216,7 @@ mod tests {
         let entity_pattern = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
@@ -1236,7 +1237,7 @@ mod tests {
         let value_pattern = TriplePattern::new(
             2,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Variable("?v".to_var()),
             db.clone(),
         )?;
@@ -1259,7 +1260,7 @@ mod tests {
         let existing = TriplePattern::new(
             3,
             TripleTerm::Constant(encoded(DataType::Long(1))),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db.clone(),
         )?;
@@ -1271,7 +1272,7 @@ mod tests {
         let missing = TriplePattern::new(
             4,
             TripleTerm::Constant(encoded(DataType::Long(2))),
-            42,
+            NAME,
             TripleTerm::Constant(encoded(DataType::String("alice".into()))),
             db,
         )?;
@@ -1289,7 +1290,7 @@ mod tests {
         runtime.block_on(async {
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 10,
@@ -1298,7 +1299,7 @@ mod tests {
             .await?;
             insert_version(
                 components.db.as_ref(),
-                42,
+                NAME,
                 1,
                 &DataType::String("alice".into()),
                 20,
@@ -1311,7 +1312,7 @@ mod tests {
             TriplePattern::new(
                 index,
                 TripleTerm::Constant(encoded(DataType::Long(1))),
-                42,
+                NAME,
                 TripleTerm::Constant(encoded(DataType::String("alice".into()))),
                 Arc::new(DbValue::new(
                     components.db.clone(),
@@ -1347,7 +1348,7 @@ mod tests {
             10,
             components.range_stats,
         ));
-        let new = |entity, value| TriplePattern::new(7, entity, 42, value, db.clone());
+        let new = |entity, value| TriplePattern::new(7, entity, NAME, value, db.clone());
 
         assert!(new(
             TripleTerm::Variable("?x".to_var()),
