@@ -10,7 +10,7 @@ pub(crate) type BindingRow = Vec<Bytes>;
 pub(crate) struct BindingBag {
     pub(crate) variables: Vec<Variable>,
     pub(crate) rows: Vec<BindingRow>,
-    column_indexes: HashMap<Variable, usize>,
+    pub(crate) column_indexes: HashMap<Variable, usize>,
 }
 
 impl BindingBag {
@@ -133,13 +133,17 @@ impl BindingBag {
     }
 
     pub(crate) fn project(&self, variables: &[Variable]) -> Result<Self> {
-        let indexes = self.projection_indexes(variables)?;
-        let rows = self
-            .rows
-            .iter()
-            .map(|row| indexes.iter().map(|index| row[*index].clone()).collect())
-            .collect();
-        Self::new(variables.to_vec(), rows)
+        if variables == self.variables {
+            Ok(self.clone())
+        } else {
+            let indexes = self.projection_indexes(variables)?;
+            let rows = self
+                .rows
+                .iter()
+                .map(|row| indexes.iter().map(|index| row[*index].clone()).collect())
+                .collect();
+            Self::new(variables.to_vec(), rows)
+        }
     }
 
     pub(crate) fn reorder(&self, variables: &[Variable]) -> Result<Self> {

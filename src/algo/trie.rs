@@ -80,6 +80,12 @@ impl<T> Default for TrieNode<T> {
     }
 }
 
+impl<T> TrieNode<T> {
+    pub(crate) fn children(&self) -> impl Iterator<Item = (&T, &TrieNode<T>)> {
+        self.children.iter()
+    }
+}
+
 impl<T> TrieNode<T>
 where
     T: Eq + Hash,
@@ -91,6 +97,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::Trie;
 
     #[test]
@@ -165,5 +173,25 @@ mod tests {
         assert!(trie.contains_prefix(["a", "x"].iter()));
         assert!(trie.contains_prefix(["a", "y"].iter()));
         assert!(!trie.contains_prefix(["y"].iter()));
+    }
+
+    #[test]
+    fn node_children_expose_unique_values_and_subtrees() {
+        let mut trie = Trie::new();
+        trie.insert(["a", "x", "1"]);
+        trie.insert(["a", "x", "2"]);
+        trie.insert(["a", "x", "2"]);
+        trie.insert(["a", "y", "3"]);
+
+        let a = trie.node(["a"].iter()).unwrap();
+        let children: HashSet<_> = a.children().map(|(value, _)| *value).collect();
+        assert_eq!(children, HashSet::from(["x", "y"]));
+
+        let x = a
+            .children()
+            .find_map(|(value, child)| (*value == "x").then_some(child))
+            .unwrap();
+        let descendants: HashSet<_> = x.children().map(|(value, _)| *value).collect();
+        assert_eq!(descendants, HashSet::from(["1", "2"]));
     }
 }
