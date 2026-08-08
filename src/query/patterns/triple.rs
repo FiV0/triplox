@@ -22,13 +22,6 @@ pub(crate) enum TripleTerm {
 }
 
 impl TripleTerm {
-    fn is_variable(&self) -> bool {
-        match self {
-            Self::Variable(_) => true,
-            Self::Constant(_) => false,
-        }
-    }
-
     fn variable(&self) -> Option<&Variable> {
         match self {
             Self::Variable(variable) => Some(variable),
@@ -309,26 +302,11 @@ where
             return input.select_rows(&Vec::new());
         }
 
-        let entity_has_value = Self::term_is_resolved(&self.entity, input);
-        let value_has_value = Self::term_is_resolved(&self.value, input);
+        let is_bound = |variable| input.column_indexes.contains_key(variable);
 
-        let entity_is_variable = self.entity.is_variable();
-        let value_is_variable = self.value.is_variable();
-
-        let matches = match (
-            entity_is_variable,
-            entity_has_value,
-            value_is_variable,
-            value_has_value,
-        ) {
+        let matches = match (&self.entity, &self.value) {
             // Constant entity, constant value.
-            (false, true, false, true) => {
-                let TripleTerm::Constant(entity) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Constant(value) = &self.value else {
-                    unreachable!()
-                };
+            (TripleTerm::Constant(entity), TripleTerm::Constant(value)) => {
                 let mut prefix = self.base_prefix(IndexType::AEV)?;
                 prefix.extend_from_slice(entity);
                 let extractor: Extractor =
@@ -345,14 +323,10 @@ where
             }
 
             // Bound entity variable, constant value.
-            (true, true, false, true) => {
+            (TripleTerm::Variable(entity_var), TripleTerm::Constant(value))
+                if is_bound(entity_var) =>
+            {
                 let mut groups = BTreeMap::new();
-                let TripleTerm::Variable(entity_var) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Constant(value) = &self.value else {
-                    unreachable!()
-                };
                 let entity_index = input.column_index(entity_var)?;
                 for (row_index, row) in input.rows.iter().enumerate() {
                     groups
@@ -383,14 +357,10 @@ where
             }
 
             // Constant entity, bound value variable.
-            (false, true, true, true) => {
+            (TripleTerm::Constant(entity), TripleTerm::Variable(value_var))
+                if is_bound(value_var) =>
+            {
                 let mut groups = BTreeMap::new();
-                let TripleTerm::Constant(entity) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Variable(value_var) = &self.value else {
-                    unreachable!()
-                };
                 let value_index = input.column_index(value_var)?;
                 for (row_index, row) in input.rows.iter().enumerate() {
                     groups
@@ -420,11 +390,10 @@ where
                 matches
             }
             // Bound entity variable, unbound value variable.
-            (true, true, true, false) => {
+            (TripleTerm::Variable(entity_var), TripleTerm::Variable(value_var))
+                if is_bound(entity_var) && !is_bound(value_var) =>
+            {
                 let mut groups = BTreeMap::new();
-                let TripleTerm::Variable(entity_var) = &self.entity else {
-                    unreachable!()
-                };
                 let entity_index = input.column_index(entity_var)?;
                 for (row_index, row) in input.rows.iter().enumerate() {
                     groups
@@ -453,11 +422,10 @@ where
                 matches
             }
             // Unbound entity variable, bound value variable.
-            (true, false, true, true) => {
+            (TripleTerm::Variable(entity_var), TripleTerm::Variable(value_var))
+                if !is_bound(entity_var) && is_bound(value_var) =>
+            {
                 let mut groups = BTreeMap::new();
-                let TripleTerm::Variable(value_var) = &self.value else {
-                    unreachable!()
-                };
                 let value_index = input.column_index(value_var)?;
                 for (row_index, row) in input.rows.iter().enumerate() {
                     groups
@@ -486,14 +454,10 @@ where
                 matches
             }
             // Bound entity variable, bound value variable.
-            (true, true, true, true) => {
+            (TripleTerm::Variable(entity_var), TripleTerm::Variable(value_var))
+                if is_bound(entity_var) && is_bound(value_var) =>
+            {
                 let mut groups = BTreeMap::new();
-                let TripleTerm::Variable(entity_var) = &self.entity else {
-                    unreachable!()
-                };
-                let TripleTerm::Variable(value_var) = &self.value else {
-                    unreachable!()
-                };
                 let entity_index = input.column_index(entity_var)?;
                 let value_index = input.column_index(value_var)?;
 
