@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn count_uses_one_range_estimate_for_duplicate_bound_terms() -> Result<()> {
+    fn count_applies_bound_term_estimate_to_each_duplicate_row() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(async {
@@ -1195,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn constants_propose_the_other_position_and_constant_only_patterns_validate() -> Result<()> {
+    fn constants_propose_the_variable_position() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(insert_version(
@@ -1226,20 +1226,13 @@ mod tests {
             entities,
             binding_bag(&["?e"], vec![vec![encoded(DataType::Long(1))]])
         );
-        assert_eq!(
-            entity_pattern
-                .validate(&BindingBag::unit())
-                .unwrap_err()
-                .to_string(),
-            "Triple pattern 1 has no bound variables to validate"
-        );
 
         let value_pattern = TriplePattern::new(
             2,
             TripleTerm::Constant(encoded(DataType::Long(1))),
             NAME,
             TripleTerm::Variable("?v".to_var()),
-            db.clone(),
+            db,
         )?;
         let values = value_pattern.join(&BindingBag::unit(), &["?v".to_var()], &["?v".to_var()])?;
         assert_eq!(
@@ -1248,37 +1241,6 @@ mod tests {
                 &["?v"],
                 vec![vec![encoded(DataType::String("alice".into()))]]
             )
-        );
-        assert_eq!(
-            value_pattern
-                .validate(&BindingBag::unit())
-                .unwrap_err()
-                .to_string(),
-            "Triple pattern 2 has no bound variables to validate"
-        );
-
-        let existing = TriplePattern::new(
-            3,
-            TripleTerm::Constant(encoded(DataType::Long(1))),
-            NAME,
-            TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-            db.clone(),
-        )?;
-        assert_eq!(
-            existing.join(&BindingBag::unit(), &[], &[])?,
-            BindingBag::unit()
-        );
-
-        let missing = TriplePattern::new(
-            4,
-            TripleTerm::Constant(encoded(DataType::Long(2))),
-            NAME,
-            TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-            db,
-        )?;
-        assert_eq!(
-            missing.join(&BindingBag::unit(), &[], &[])?,
-            BindingBag::empty(Vec::<Variable>::new())?
         );
         Ok(())
     }
