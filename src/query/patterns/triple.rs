@@ -534,6 +534,7 @@ where
         &self.variables
     }
 
+    // NOTE: planning never introduces more than one variable for a TriplePattern.
     fn count(
         &self,
         input: &BindingBag,
