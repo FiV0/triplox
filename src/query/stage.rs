@@ -92,6 +92,109 @@ impl Stage {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum ParticipantTemplate {
+    Pattern(Arc<dyn ExecPattern>),
+    Incoming,
+}
+
+#[derive(Clone)]
+pub(crate) struct StageTemplate {
+    added: Vec<Variable>,
+    participants: Vec<ParticipantTemplate>,
+    target_variables: Vec<Variable>,
+}
+
+impl StageTemplate {
+    pub(crate) fn new(
+        added: Vec<Variable>,
+        participants: Vec<ParticipantTemplate>,
+        target_variables: Vec<Variable>,
+    ) -> Result<Self> {
+        ensure_unique("Added", &added)?;
+        ensure_unique("Target", &target_variables)?;
+        ensure!(
+            !participants.is_empty(),
+            "Stage template participants must not be empty"
+        );
+        for variable in &added {
+            ensure!(
+                target_variables.contains(variable),
+                "Added variable {variable} is missing from the template target layout"
+            );
+        }
+
+        let mut pattern_indexes = HashSet::new();
+        let mut has_incoming = false;
+        for participant in &participants {
+            match participant {
+                ParticipantTemplate::Pattern(pattern) => ensure!(
+                    pattern_indexes.insert(pattern.index()),
+                    "Stage template pattern indexes must be distinct: {}",
+                    pattern.index()
+                ),
+                ParticipantTemplate::Incoming => ensure!(
+                    !std::mem::replace(&mut has_incoming, true),
+                    "A stage template can contain Incoming only once"
+                ),
+            }
+        }
+        Ok(Self {
+            added,
+            participants,
+            target_variables,
+        })
+    }
+
+    pub(crate) fn added(&self) -> &[Variable] {
+        &self.added
+    }
+
+    pub(crate) fn participants(&self) -> &[ParticipantTemplate] {
+        &self.participants
+    }
+
+    pub(crate) fn target_variables(&self) -> &[Variable] {
+        &self.target_variables
+    }
+
+    pub(crate) fn contains_incoming(&self) -> bool {
+        self.participants
+            .iter()
+            .any(|participant| matches!(participant, ParticipantTemplate::Incoming))
+    }
+
+    pub(crate) fn materialize(&self, incoming: &Arc<dyn ExecPattern>) -> Result<Stage> {
+        let participants = self
+            .participants
+            .iter()
+            .map(|participant| match participant {
+                ParticipantTemplate::Pattern(pattern) => Arc::clone(pattern),
+                ParticipantTemplate::Incoming => Arc::clone(incoming),
+            })
+            .collect();
+        Stage::new(
+            self.added.clone(),
+            participants,
+            self.target_variables.clone(),
+        )
+    }
+
+    pub(crate) fn into_stage(self) -> Result<Stage> {
+        let participants = self
+            .participants
+            .into_iter()
+            .map(|participant| match participant {
+                ParticipantTemplate::Pattern(pattern) => Ok(pattern),
+                ParticipantTemplate::Incoming => {
+                    Err(anyhow::anyhow!("Top-level stage cannot contain Incoming"))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Stage::new(self.added, participants, self.target_variables)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -99,7 +202,7 @@ mod tests {
     use anyhow::Result;
     use edn::query::{ToVariable, Variable};
 
-    use super::Stage;
+    use super::{ParticipantTemplate, Stage, StageTemplate};
     use crate::query::binding_bag::BindingBag;
     use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
@@ -193,5 +296,68 @@ mod tests {
 
         let wrong_input = BindingBag::empty(vec!["?z".to_var()]).unwrap();
         assert!(stage.validate_input(&wrong_input).is_err());
+    }
+
+    #[test]
+    fn stage_template_materializes_every_incoming_slot_with_the_same_pattern() {
+        let first = TestPattern::shared(1, &["?x"]);
+        let incoming = TestPattern::shared(9, &["?x", "?y"]);
+        let templates = [
+            StageTemplate::new(
+                vec!["?x".to_var()],
+                vec![
+                    ParticipantTemplate::Incoming,
+                    ParticipantTemplate::Pattern(first),
+                ],
+                vec!["?x".to_var()],
+            )
+            .unwrap(),
+            StageTemplate::new(
+                vec!["?y".to_var()],
+                vec![ParticipantTemplate::Incoming],
+                vec!["?x".to_var(), "?y".to_var()],
+            )
+            .unwrap(),
+        ];
+
+        let stages = templates
+            .iter()
+            .map(|template| template.materialize(&incoming))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(stages[0].participants()[0].index(), 9);
+        assert_eq!(stages[1].participants()[0].index(), 9);
+        assert!(Arc::ptr_eq(
+            &stages[0].participants()[0],
+            &stages[1].participants()[0]
+        ));
+    }
+
+    #[test]
+    fn stage_template_rejects_duplicate_slots_and_top_level_incoming() {
+        let pattern = TestPattern::shared(1, &["?x"]);
+        assert!(StageTemplate::new(vec![], vec![], vec![]).is_err());
+        assert!(StageTemplate::new(
+            vec![],
+            vec![
+                ParticipantTemplate::Pattern(Arc::clone(&pattern)),
+                ParticipantTemplate::Pattern(pattern),
+            ],
+            vec![],
+        )
+        .is_err());
+        assert!(StageTemplate::new(
+            vec![],
+            vec![ParticipantTemplate::Incoming, ParticipantTemplate::Incoming,],
+            vec![],
+        )
+        .is_err());
+        assert!(
+            StageTemplate::new(vec![], vec![ParticipantTemplate::Incoming], vec![],)
+                .unwrap()
+                .into_stage()
+                .is_err()
+        );
     }
 }
