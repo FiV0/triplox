@@ -122,6 +122,16 @@ where
         Ok(prefix)
     }
 
+    fn position_for_variable(&self, variable: &Variable) -> Option<TriplePosition> {
+        if self.entity.variable() == Some(variable) {
+            Some(TriplePosition::Entity)
+        } else if self.value.variable() == Some(variable) {
+            Some(TriplePosition::Value)
+        } else {
+            None
+        }
+    }
+
     fn index_type(position: TriplePosition, other_resolved: bool) -> IndexType {
         match (position, other_resolved) {
             (TriplePosition::Entity, false) => IndexType::AE,
@@ -137,16 +147,6 @@ where
             .handle
             .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
         Ok(usize::try_from(count)?)
-    }
-
-    fn position_for_variable(&self, variable: &Variable) -> Option<TriplePosition> {
-        if self.entity.variable() == Some(variable) {
-            Some(TriplePosition::Entity)
-        } else if self.value.variable() == Some(variable) {
-            Some(TriplePosition::Value)
-        } else {
-            None
-        }
     }
 
     fn create_iterator(
