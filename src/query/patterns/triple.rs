@@ -122,13 +122,6 @@ where
         Ok(prefix)
     }
 
-    fn term_is_resolved(term: &TripleTerm, input: &BindingBag) -> bool {
-        match term {
-            TripleTerm::Variable(variable) => input.column_indexes.contains_key(variable),
-            TripleTerm::Constant(_) => true,
-        }
-    }
-
     fn index_type(position: TriplePosition, other_resolved: bool) -> IndexType {
         match (position, other_resolved) {
             (TriplePosition::Entity, false) => IndexType::AE,
@@ -572,7 +565,10 @@ where
             TriplePosition::Entity => &self.value,
             TriplePosition::Value => &self.entity,
         };
-        let other_resolved = Self::term_is_resolved(other, input);
+        let other_resolved = match other {
+            TripleTerm::Variable(variable) => input.column_indexes.contains_key(variable),
+            TripleTerm::Constant(_) => true,
+        };
         let index_type = Self::index_type(position, other_resolved);
         let base_prefix = self.base_prefix(index_type)?;
 
