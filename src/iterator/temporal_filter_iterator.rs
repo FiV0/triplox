@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn attribute_prefix_ave_iterates_ve_pairs_and_seeks_exact_pairs() {
+    async fn attribute_prefix_ave_seeks_ve_pair_and_continues_iteration() {
         let components = in_memory_slate().await;
         let prefix = attribute_prefix(codec::AVE, 42);
         let entity_1 = encoded(DataType::Long(1));
