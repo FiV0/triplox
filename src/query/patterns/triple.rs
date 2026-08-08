@@ -814,37 +814,37 @@ mod tests {
         let joined = pattern.join(
             &input,
             &["?v".to_var()],
-            &["?v".to_var(), "?outer".to_var(), "?e".to_var()],
+            &["?outer".to_var(), "?e".to_var(), "?v".to_var()],
         )?;
         assert_eq!(
             joined,
             binding_bag(
-                &["?v", "?outer", "?e"],
+                &["?outer", "?e", "?v"],
                 vec![
                     vec![
+                        encoded(DataType::Long(90)),
+                        encoded(DataType::Long(1)),
                         encoded(DataType::String("alice".into())),
-                        encoded(DataType::Long(90)),
-                        encoded(DataType::Long(1)),
                     ],
                     vec![
+                        encoded(DataType::Long(90)),
+                        encoded(DataType::Long(1)),
                         encoded(DataType::String("ally".into())),
-                        encoded(DataType::Long(90)),
-                        encoded(DataType::Long(1)),
                     ],
                     vec![
-                        encoded(DataType::String("bob".into())),
                         encoded(DataType::Long(91)),
                         encoded(DataType::Long(2)),
+                        encoded(DataType::String("bob".into())),
                     ],
                     vec![
+                        encoded(DataType::Long(93)),
+                        encoded(DataType::Long(1)),
                         encoded(DataType::String("alice".into())),
-                        encoded(DataType::Long(93)),
-                        encoded(DataType::Long(1)),
                     ],
                     vec![
-                        encoded(DataType::String("ally".into())),
                         encoded(DataType::Long(93)),
                         encoded(DataType::Long(1)),
+                        encoded(DataType::String("ally".into())),
                     ],
                 ],
             )
@@ -871,20 +871,20 @@ mod tests {
             pattern.join(
                 &value_input,
                 &["?e".to_var()],
-                &["?e".to_var(), "?outer".to_var(), "?v".to_var()],
+                &["?outer".to_var(), "?v".to_var(), "?e".to_var()],
             )?,
             binding_bag(
-                &["?e", "?outer", "?v"],
+                &["?outer", "?v", "?e"],
                 vec![
                     vec![
-                        encoded(DataType::Long(2)),
                         encoded(DataType::Long(94)),
                         encoded(DataType::String("bob".into())),
+                        encoded(DataType::Long(2)),
                     ],
                     vec![
-                        encoded(DataType::Long(1)),
                         encoded(DataType::Long(95)),
                         encoded(DataType::String("alice".into())),
+                        encoded(DataType::Long(1)),
                     ],
                 ],
             )
