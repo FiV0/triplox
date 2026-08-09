@@ -291,11 +291,16 @@ where
 
     // Partial two-variable checks use additive candidates; the full pair is validated later.
     fn validate(&self, input: &BindingBag) -> Result<BindingBag> {
+        let is_bound = |variable| input.column_indexes.contains_key(variable);
+
+        ensure!(
+            self.variables.iter().any(&is_bound),
+            "Triple pattern {} has no bound variables to validate",
+            self.index
+        );
         if input.rows.is_empty() {
             return input.select_rows(&Vec::new());
         }
-
-        let is_bound = |variable| input.column_indexes.contains_key(variable);
 
         let matches = match (&self.entity, &self.value) {
             // Constant entity, constant value.
@@ -1131,6 +1136,17 @@ mod tests {
                 .validate(&BindingBag::unit())
                 .unwrap_err()
                 .to_string(),
+            "Triple pattern 2 has no bound variables to validate"
+        );
+
+        // The rejection does not depend on the input having rows.
+        let no_rows = BindingBag::empty(vec!["?other".to_var()])?;
+        assert_eq!(
+            entity_unbound.validate(&no_rows).unwrap_err().to_string(),
+            "Triple pattern 1 has no bound variables to validate"
+        );
+        assert_eq!(
+            value_unbound.validate(&no_rows).unwrap_err().to_string(),
             "Triple pattern 2 has no bound variables to validate"
         );
         Ok(())
