@@ -6,11 +6,11 @@ use super::evaluation::{decode_bindings, eval_context};
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, expr_variables, Expr};
 use crate::ops::DataType;
-use crate::query::binding_bag::{BindingRow, BindingBag};
-use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
+use crate::query::binding_bag::{BindingBag, BindingRow};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
 pub(crate) struct FunctionPattern {
-    id: PatternId,
+    index: PatternIndex,
     variables: Vec<Variable>,
     input_variables: Vec<Variable>,
     output: Variable,
@@ -18,16 +18,16 @@ pub(crate) struct FunctionPattern {
 }
 
 impl FunctionPattern {
-    pub(crate) fn new(id: PatternId, expression: Expr, output: Variable) -> Result<Self> {
+    pub(crate) fn new(index: PatternIndex, expression: Expr, output: Variable) -> Result<Self> {
         let input_variables = expr_variables(&expression);
         ensure!(
             !input_variables.contains(&output),
-            "Function pattern {id} output {output} is also an input"
+            "Function pattern {index} output {output} is also an input"
         );
         let mut variables = input_variables.clone();
         variables.push(output.clone());
         Ok(Self {
-            id,
+            index,
             variables,
             input_variables,
             output,
@@ -40,7 +40,7 @@ impl FunctionPattern {
             ensure!(
                 input.variables.contains(variable),
                 "Function pattern {} requires bound input {variable}",
-                self.id
+                self.index
             );
         }
         Ok(())
@@ -53,8 +53,8 @@ impl FunctionPattern {
 }
 
 impl ExecPattern for FunctionPattern {
-    fn id(&self) -> PatternId {
-        self.id
+    fn index(&self) -> PatternIndex {
+        self.index
     }
 
     fn variables(&self) -> &[Variable] {
@@ -70,7 +70,7 @@ impl ExecPattern for FunctionPattern {
         ensure!(
             proposals.len() == input.rows.len(),
             "Function pattern {} received {} proposals for {} input rows",
-            self.id,
+            self.index,
             proposals.len(),
             input.rows.len()
         );
@@ -86,7 +86,7 @@ impl ExecPattern for FunctionPattern {
 
         for (row, proposal) in input.rows.iter().zip(proposals) {
             if self.compute(input, row)?.is_some() {
-                proposal.consider(self.id, 1);
+                proposal.consider(self.index, 1);
             }
         }
         Ok(())
@@ -104,12 +104,12 @@ impl ExecPattern for FunctionPattern {
             ensure!(
                 target_variables == input.variables,
                 "Function pattern {} validation must preserve the input layout",
-                self.id
+                self.index
             );
             ensure!(
                 input.variables.contains(&self.output),
                 "Function pattern {} validation requires bound output {}",
-                self.id,
+                self.index,
                 self.output
             );
             let output_column = input.column_index(&self.output)?;
@@ -118,7 +118,7 @@ impl ExecPattern for FunctionPattern {
                 let output = DataType::decode(&row[output_column]).with_context(|| {
                     format!(
                         "Failed to decode function pattern {} output {}",
-                        self.id, self.output
+                        self.index, self.output
                     )
                 })?;
                 if self.compute(input, row)?.as_ref() == Some(&output) {
@@ -131,13 +131,13 @@ impl ExecPattern for FunctionPattern {
         ensure!(
             added == std::slice::from_ref(&self.output),
             "Function pattern {} can only propose output {}",
-            self.id,
+            self.index,
             self.output
         );
         ensure!(
             !input.variables.contains(&self.output),
             "Function pattern {} cannot add already-bound output {}",
-            self.id,
+            self.index,
             self.output
         );
         let extensions = input
@@ -253,7 +253,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pattern.join(&input, &[], input.variables).unwrap(),
+            pattern.join(&input, &[], &input.variables).unwrap(),
             BindingBag::new(input.variables.to_vec(), vec![input.rows[0].clone()]).unwrap()
         );
     }
@@ -303,7 +303,7 @@ mod tests {
         let bound_input =
             BindingBag::new(vec!["?x".to_var()], vec![vec![encoded(DataType::Long(1))]]).unwrap();
         assert!(pattern
-            .join(&bound_input, &[], bound_input.variables)
+            .join(&bound_input, &[], &bound_input.variables)
             .is_err());
         assert!(pattern
             .join(
@@ -322,7 +322,7 @@ mod tests {
         )
         .unwrap();
         assert!(pattern
-            .join(&malformed_output, &[], malformed_output.variables)
+            .join(&malformed_output, &[], &malformed_output.variables)
             .is_err());
     }
 }
