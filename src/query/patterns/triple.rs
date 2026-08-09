@@ -621,7 +621,7 @@ where
             let res = self.validate(input)?;
             ensure!(
                 target_variables == res.variables,
-                "Triple pattern target_layout {:?} doesnt' match the computed layout {:?}",
+                "Triple pattern target_layout {:?} doesn't match the computed layout {:?}",
                 target_variables,
                 res.variables
             );
