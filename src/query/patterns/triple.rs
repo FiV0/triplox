@@ -617,12 +617,6 @@ where
         } else {
             self.propose(input, added)
         }?;
-        ensure!(
-            target_variables == res.variables,
-            "Triple pattern target_layout {:?} doesnt' match the computed layout {:?}",
-            target_variables,
-            res.variables
-        );
         res.reorder(target_variables)
     }
 }
