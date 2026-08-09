@@ -52,7 +52,7 @@ pub(crate) trait ExecPattern: Send + Sync {
         proposals: &mut [Proposal],
     ) -> Result<()>;
 
-    // Extends the `input`` when `added` is non-empty; otherwise filters `input` potentially changing the layout via target_variables.
+    // Extends the `input`` when `added` is non-empty; otherwise filters `input` without changing its layout.
     /// An empty `added` existentially validates the current `input` binding prefix; unbound pattern variables remain for later stages.
     fn join(
         &self,
