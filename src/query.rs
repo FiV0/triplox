@@ -1,6 +1,9 @@
 #![allow(unused)]
 
 pub(crate) mod binding_bag;
+pub(crate) mod exec_pattern;
+pub(crate) mod patterns;
+pub(crate) mod stage;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
