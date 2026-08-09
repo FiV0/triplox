@@ -294,7 +294,7 @@ where
         let is_bound = |variable| input.column_indexes.contains_key(variable);
 
         ensure!(
-            self.variables.iter().any(&is_bound),
+            self.variables.is_empty() || self.variables.iter().any(&is_bound),
             "Triple pattern {} has no bound variables to validate",
             self.index
         );
