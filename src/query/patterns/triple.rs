@@ -1212,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn constants_propose_the_variable_position() -> Result<()> {
+    fn propose_with_constant_and_variable() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         runtime.block_on(insert_version(
