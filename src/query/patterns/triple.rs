@@ -617,12 +617,18 @@ where
         added: &[Variable],
         target_variables: &[Variable],
     ) -> Result<BindingBag> {
-        let res = if added.is_empty() {
-            self.validate(input)
+        if added.is_empty() {
+            let res = self.validate(input)?;
+            ensure!(
+                target_variables == res.variables,
+                "Triple pattern target_layout {:?} doesnt' match the computed layout {:?}",
+                target_variables,
+                res.variables
+            );
+            Ok(res)
         } else {
             self.propose(input, added)
-        }?;
-        res.reorder(target_variables)
+        }
     }
 }
 
