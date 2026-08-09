@@ -627,7 +627,7 @@ where
             );
             Ok(res)
         } else {
-            self.propose(input, added)
+            self.propose(input, added)?.reorder(target_variables)
         }
     }
 }
