@@ -210,47 +210,46 @@
         (is (= [[["Cara"] -1]]
                (take-delta! sub)))))))
 
-(deftest functions-append-computed-values
+(deftest datalog-functions
   (with-open [conn (connect)]
     (api/transact conn people-schema)
-    (with-open [sub (api/subscribe conn '{:find [?name ?half]
-                                          :where [[?e :name ?name]
-                                                  [?e :age ?age]
-                                                  [(quot ?age 2) ?half]
-                                                  [(< ?half 20)]]})]
-      (api/transact conn [{:name "Ivan" :age 30}
-                          {:name "Bob" :age 40}])
-      (is (= [[["Ivan" 15] 1]] (take-delta! sub)))
+    (testing "Function produces the variable"
+      (with-open [sub (api/subscribe conn '{:find [?name ?half]
+                                            :where [[?e :name ?name]
+                                                    [?e :age ?age]
+                                                    [(quot ?age 2) ?half]
+                                                    [(< ?half 20)]]})]
+        (api/transact conn [{:name "Ivan" :age 30}
+                            {:name "Bob" :age 40}])
+        (is (= [[["Ivan" 15] 1]] (take-delta! sub)))
 
-      (let [ivan-id (single-value conn '{:find [?e]
-                                         :where [[?e :name "Ivan"]]})]
-        (api/transact conn [[:db/add ivan-id :age 31]])
-        (is (= ::api/timeout (take-delta! sub 300)))
+        (let [ivan-id (single-value conn '{:find [?e]
+                                           :where [[?e :name "Ivan"]]})]
+          (api/transact conn [[:db/add ivan-id :age 31]])
+          (is (= ::api/timeout (take-delta! sub 300)))
 
-        (api/transact conn [[:db/add ivan-id :age 32]])
-        (is (= #{[["Ivan" 15] -1]
-                 [["Ivan" 16] 1]}
-               (set (take-delta! sub))))))))
+          (api/transact conn [[:db/add ivan-id :age 32]])
+          (is (= #{[["Ivan" 15] -1]
+                   [["Ivan" 16] 1]}
+                 (set (take-delta! sub)))))))
 
-(deftest functions-filter-already-bound-results
-  (with-open [conn (connect)]
-    (api/transact conn people-schema)
-    (with-open [sub (api/subscribe conn '{:find [?name]
-                                          :where [[?e :age ?age]
-                                                  [?e :name ?name]
-                                                  [?e :salary ?salary]
-                                                  [(quot ?age 2) ?salary]]})]
-      (api/transact conn [{:name "Eq" :age 30 :salary 15}
-                          {:name "Neq" :age 30 :salary 20}])
-      (is (= [[["Eq"] 1]] (take-delta! sub)))
+    (testing "function filters the variable"
+      (with-open [sub (api/subscribe conn '{:find [?name]
+                                            :where [[?e :age ?age]
+                                                    [?e :name ?name]
+                                                    [?e :salary ?salary]
+                                                    [(quot ?age 2) ?salary]]})]
+        (api/transact conn [{:name "Eq" :age 30 :salary 15}
+                            {:name "Neq" :age 30 :salary 20}])
+        (is (= [[["Eq"] 1]] (take-delta! sub)))
 
-      (let [eq-id (single-value conn '{:find [?e] :where [[?e :name "Eq"]]})
-            neq-id (single-value conn '{:find [?e] :where [[?e :name "Neq"]]})]
-        (api/transact conn [[:db/add neq-id :salary 15]])
-        (is (= [[["Neq"] 1]] (take-delta! sub)))
+        (let [eq-id (single-value conn '{:find [?e] :where [[?e :name "Eq"]]})
+              neq-id (single-value conn '{:find [?e] :where [[?e :name "Neq"]]})]
+          (api/transact conn [[:db/add neq-id :salary 15]])
+          (is (= [[["Neq"] 1]] (take-delta! sub)))
 
-        (api/transact conn [[:db/add eq-id :salary 20]])
-        (is (= [[["Eq"] -1]] (take-delta! sub)))))))
+          (api/transact conn [[:db/add eq-id :salary 20]])
+          (is (= [[["Eq"] -1]] (take-delta! sub))))))))
 
 (deftest test-not-negative-scope-layouts
   (testing "Multi-clause negative scope"
