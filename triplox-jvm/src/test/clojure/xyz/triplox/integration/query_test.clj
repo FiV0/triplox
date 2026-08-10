@@ -17,6 +17,17 @@
    {:db/ident :salary :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
    {:db/ident :city :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
 
+(def issues-schema
+  [{:db/ident :issue/title
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :issue/status
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :status/open}
+   {:db/ident :status/in-progress}
+   {:db/ident :status/closed}])
+
 (defn connect []
   (let [host (System/getProperty "triplox.host" "localhost")
         port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
@@ -751,3 +762,20 @@
                   :in [?age]
                   :where [[(>= ?age 21)]]}
                 22))))))
+
+#_
+(deftest ident-constants-in-ref-value-position
+  (tc/transact *conn* issues-schema)
+  (tc/transact *conn*
+               [{:issue/title "Incremental joins allocate per delta"
+                 :issue/status :status/open}
+                {:issue/title "Document the tutorial schema"
+                 :issue/status :status/in-progress}
+                {:issue/title "WAL replay is quadratic"
+                 :issue/status :status/closed}])
+  (is (= #{["Incremental joins allocate per delta"]
+           ["Document the tutorial schema"]}
+         (q '{:find [?title]
+              :where [[?i :issue/title ?title]
+                      (or [?i :issue/status :status/open]
+                          [?i :issue/status :status/in-progress])]}))))
