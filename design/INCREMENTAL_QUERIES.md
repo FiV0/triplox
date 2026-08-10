@@ -106,6 +106,7 @@ Descriptor {
     groundable: [Variable],
     kind: Pattern
         | Predicate { expr: Expr }
+        | Function { expr: Expr, output_var: Variable }
         | Not { scope: ScopeDescriptor }
         | Or { branches: [ScopeDescriptor] },
 }
@@ -119,9 +120,11 @@ child descriptors and has no descriptor representation of its own. An implicit
 `variables` lists the variables mentioned by a descriptor in stable semantic
 order. `groundable` lists the variables that the descriptor can produce
 without receiving them from an incoming relation. A pattern can ground all of
-its variables. An `or` can ground the intersection of variables groundable by
-all branches. Predicates and `not` ground no variables, so every variable they
-mention must already be available from the enclosing positive relation.
+its variables. A function grounds its result variable unless the expression
+also reads that variable. An `or` can ground the intersection of variables
+groundable by all branches. Predicates and `not` ground no variables, so every
+variable they mention must already be available from the enclosing positive
+relation.
 
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
@@ -137,7 +140,7 @@ Every physical relation plan records:
 RelPlan {
     incoming_vars: optional [Variable],
     output_vars: [Variable],
-    kind: Pattern | Filter | Chain | Difference | Union,
+    kind: Pattern | Filter | Function | Chain | Difference | Union,
 }
 ```
 
@@ -150,6 +153,8 @@ zero-column relation.
   using the plan's incoming, pattern, and output layouts.
 - `Filter` evaluates one compiled predicate against each incoming row and
   preserves the row and its weight only when the predicate returns true.
+- `Function` evaluates one compiled expression against each incoming row. It
+  appends a new result column or filters against an existing result binding.
 - `Chain` represents a scope with multiple descriptors and passes each child's
   output relation to the next child.
 - `Difference` preserves the incoming relation and removes rows whose selected
@@ -191,6 +196,9 @@ and the optional incoming relation:
   incoming rows when present.
 - a filter decodes its referenced columns, evaluates the compiled expression,
   and filters the incoming rows without changing their layout or weights.
+- a function decodes its inputs and either appends the encoded result with
+  `flat_map` or filters rows whose existing result binding differs. Failed
+  expression evaluation drops the row.
 - a chain folds the running relation through its children.
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming
