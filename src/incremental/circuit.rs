@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -196,60 +197,77 @@ fn expression_variable_positions(vars: &[Variable], expr: &Expr) -> Vec<(Variabl
         .collect()
 }
 
-fn expression_bindings(
+fn update_expression_bindings(
     row: &EncodedRow,
     variable_positions: &[(Variable, usize)],
-) -> HashMap<Variable, DataType> {
-    variable_positions
-        .iter()
-        .map(|(variable, position)| {
-            let value = DataType::decode(&row[*position])
-                .expect("incremental expression value should decode");
-            (variable.clone(), value)
-        })
-        .collect()
+    bindings: &mut HashMap<Variable, DataType>,
+) {
+    for (variable, position) in variable_positions {
+        let value =
+            DataType::decode(&row[*position]).expect("incremental expression value should decode");
+        if let Some(binding) = bindings.get_mut(variable) {
+            *binding = value;
+        } else {
+            bindings.insert(variable.clone(), value);
+        }
+    }
 }
 
 fn evaluate_row_expression(
     row: &EncodedRow,
     variable_positions: &[(Variable, usize)],
+    bindings: &mut HashMap<Variable, DataType>,
     expr: &Expr,
 ) -> Option<DataType> {
-    let bindings = expression_bindings(row, variable_positions);
-    evaluate(expr, &EvalContext::new(&bindings)).map(|result| result.into_owned())
+    update_expression_bindings(row, variable_positions, bindings);
+    evaluate(expr, &EvalContext::new(bindings)).map(|result| result.into_owned())
 }
 
 fn filter_predicate_stream(
     stream: Stream<RootCircuit, RowZSet>,
-    vars: &[Variable],
+    incoming_vars: &[Variable],
     expr: Expr,
 ) -> Stream<RootCircuit, RowZSet> {
-    let variable_positions = expression_variable_positions(vars, &expr);
+    let variable_positions = expression_variable_positions(incoming_vars, &expr);
+    let bindings = RefCell::new(HashMap::with_capacity(variable_positions.len()));
 
     stream.filter(move |row| {
-        let bindings = expression_bindings(row, &variable_positions);
+        let mut bindings = bindings.borrow_mut();
+        update_expression_bindings(row, &variable_positions, &mut bindings);
         evaluate_as_bool(&expr, &EvalContext::new(&bindings))
     })
 }
 
 fn apply_function_stream(
     stream: Stream<RootCircuit, RowZSet>,
-    vars: &[Variable],
+    incoming_vars: &[Variable],
     expr: Expr,
     output_var: &Variable,
 ) -> Stream<RootCircuit, RowZSet> {
-    let variable_positions = expression_variable_positions(vars, &expr);
-    match vars.iter().position(|variable| variable == output_var) {
-        Some(output_position) => stream.filter(move |row| {
-            evaluate_row_expression(row, &variable_positions, &expr)
-                .is_some_and(|result| result.encode().as_slice() == row[output_position].as_slice())
-        }),
-        None => stream.flat_map(move |row| {
-            let result = evaluate_row_expression(row, &variable_positions, &expr)?;
-            let mut output = row.clone();
-            output.push(result.encode());
-            Some(output)
-        }),
+    let variable_positions = expression_variable_positions(incoming_vars, &expr);
+    match incoming_vars
+        .iter()
+        .position(|variable| variable == output_var)
+    {
+        Some(output_position) => {
+            let bindings = RefCell::new(HashMap::with_capacity(variable_positions.len()));
+            stream.filter(move |row| {
+                let mut bindings = bindings.borrow_mut();
+                evaluate_row_expression(row, &variable_positions, &mut bindings, &expr).is_some_and(
+                    |result| result.encode().as_slice() == row[output_position].as_slice(),
+                )
+            })
+        }
+        None => {
+            let mut bindings = HashMap::with_capacity(variable_positions.len());
+            stream.flat_map(move |row| {
+                let result =
+                    evaluate_row_expression(row, &variable_positions, &mut bindings, &expr)?;
+                let mut output = row.clone();
+                output.push(result.encode());
+                Some(output)
+            })
+        }
     }
 }
 
