@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_function_applications_as_filters_for_bound_results() {
+    fn plans_bound_function_result_without_extending_layout() {
         let schema = test_schema();
         let plan = plan_query(
             &parse_query(
