@@ -175,9 +175,6 @@ variables in semantic order. Join keys are the variables shared by both sides,
 in incoming-layout order. A join without shared variables is a Cartesian
 product over the empty key.
 
-A function preserves its incoming layout when its result variable is already
-present. Otherwise it appends the result variable as the final column.
-
 A chain's output layout is its last child's output layout. A standalone union
 uses its descriptor variable order. A union with an incoming relation preserves
 the incoming layout and appends its remaining descriptor variables; descriptor
