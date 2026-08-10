@@ -177,7 +177,9 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
         WhereClause::WhereFn(function) => describe_function(function),
         WhereClause::NotJoin(not) => describe_not(not, schema),
         WhereClause::OrJoin(or) => describe_or(or, schema),
-        _ => unreachable!("unsupported clauses are rejected before planning"),
+        WhereClause::TypeAnnotation(_) | WhereClause::RuleExpr => {
+            unreachable!("unsupported clauses are rejected before planning")
+        }
     }
 }
 

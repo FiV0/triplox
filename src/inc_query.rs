@@ -97,7 +97,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
             Ok(())
         }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
-        // Shared validation rejects unsupported language-wide clauses.
+        // Rejected by `validate_query` before planning, not supported here.
         WhereClause::TypeAnnotation(_) | WhereClause::RuleExpr => Ok(()),
     }
 }
