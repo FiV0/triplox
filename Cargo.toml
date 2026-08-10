@@ -3,7 +3,7 @@ members = [".", "edn", "triplox-client"]
 exclude = [".claude"]
 
 [workspace.package]
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/FiV0/triplox"
@@ -19,8 +19,8 @@ serde = "1.0"
 serde_derive = "1.0"
 thiserror = "2.0.1"
 uuid = "1.11.0"
-edn = { package = "triplox-edn", path = "edn", version = "0.1.0-alpha.5", features = ["serde_support"] }
-triplox-client = { path = "triplox-client", version = "0.1.0-alpha.5" }
+edn = { package = "triplox-edn", path = "edn", version = "0.1.0-alpha.6", features = ["serde_support"] }
+triplox-client = { path = "triplox-client", version = "0.1.0-alpha.6" }
 
 [package]
 name = "triplox"
