@@ -97,9 +97,8 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
             Ok(())
         }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
-        _ => bail!(
-            "Incremental queries currently support only triple patterns, predicate clauses, function clauses, implicit `not` clauses, `or` clauses, and `and` clauses in :where"
-        ),
+        // Shared validation rejects unsupported language-wide clauses.
+        WhereClause::TypeAnnotation(_) | WhereClause::RuleExpr => Ok(()),
     }
 }
 
@@ -950,14 +949,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_where_forms() {
-        assert_plan_err(
-            "[:find ?e :where [?e :age ?age] [(type ?age :db.type/long)]]",
-            "only triple patterns, predicate clauses, function clauses, implicit `not` clauses, `or` clauses, and `and` clauses",
-        );
-        assert_plan_err(
-            r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#,
-            "explicit or-join",
+    fn rejects_rule_expressions() {
+        let schema = test_schema();
+        let mut query = parse_query("[:find ?e :where [?e :age ?age]]");
+        query.where_clauses.push(WhereClause::RuleExpr);
+
+        let err = plan_query(&query, &schema).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Queries do not support rule expressions"),
+            "unexpected error: {}",
+            err
         );
     }
 

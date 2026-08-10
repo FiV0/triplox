@@ -70,6 +70,18 @@ where
     }
 }
 
+fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(), Error> {
+    validate_where_clauses_recursively(where_clauses, &mut |clause| match clause {
+        WhereClause::TypeAnnotation(_) => bail!("Queries do not support type annotations"),
+        WhereClause::RuleExpr => bail!("Queries do not support rule expressions"),
+        WhereClause::Pattern(_)
+        | WhereClause::Pred(_)
+        | WhereClause::WhereFn(_)
+        | WhereClause::NotJoin(_)
+        | WhereClause::OrJoin(_) => Ok(()),
+    })
+}
+
 /// Validate that all variables in NOT clauses are bound by positive clauses.
 fn validate_not_clauses(
     where_clauses: &[WhereClause],
@@ -324,6 +336,7 @@ fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<()
 // queries are rejected at parse time rather than at execution time.
 pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
     validate_in_bindings(&query.in_bindings, args)?;
+    validate_supported_where_clauses(&query.where_clauses)?;
 
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
