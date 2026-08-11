@@ -3,4 +3,4 @@
 # compiling the `dbsp` dependency (vtable-slot resolution for
 # StarJoinFuncTrait / dyn_clone::DynClone). Unpin once a fixed rustc ships.
 channel = "1.95.0"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-analyzer"]
