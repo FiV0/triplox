@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 
@@ -88,10 +88,15 @@ impl ExecPattern for FunctionPattern {
                 .iter()
                 .any(|variable| !input.variables.contains(variable))
         {
-            return Ok(());
+            bail!(
+                "Function pattern {} can't propose for added {:?} and input variables {:?}",
+                self.index,
+                added,
+                input.variables
+            );
         }
 
-        for (row, proposal) in input.rows.iter().zip(proposals) {
+        for (proposal) in proposals {
             proposal.consider(self.index, 1);
         }
         Ok(())
@@ -132,36 +137,36 @@ impl ExecPattern for FunctionPattern {
                     matches.push(row_index);
                 }
             }
-            return input.select_rows(&matches);
+            input.select_rows(&matches)
+        } else {
+            ensure!(
+                added == std::slice::from_ref(&self.output),
+                "Function pattern {} can only propose output {}",
+                self.index,
+                self.output
+            );
+            ensure!(
+                !input.variables.contains(&self.output),
+                "Function pattern {} cannot add already-bound output {}",
+                self.index,
+                self.output
+            );
+            let positions = binding_positions(input, &self.input_variables)?;
+            let mut bindings = HashMap::with_capacity(positions.len());
+            let extensions = input
+                .rows
+                .iter()
+                .map(|row| {
+                    Ok(self
+                        .compute(row, &positions, &mut bindings)?
+                        .map(|value| vec![vec![Bytes::from(value.encode())]])
+                        .unwrap_or_default())
+                })
+                .collect::<Result<Vec<_>>>()?;
+            input
+                .extend_rows(added.to_vec(), extensions)?
+                .reorder(target_variables)
         }
-
-        ensure!(
-            added == std::slice::from_ref(&self.output),
-            "Function pattern {} can only propose output {}",
-            self.index,
-            self.output
-        );
-        ensure!(
-            !input.variables.contains(&self.output),
-            "Function pattern {} cannot add already-bound output {}",
-            self.index,
-            self.output
-        );
-        let positions = binding_positions(input, &self.input_variables)?;
-        let mut bindings = HashMap::with_capacity(positions.len());
-        let extensions = input
-            .rows
-            .iter()
-            .map(|row| {
-                Ok(self
-                    .compute(row, &positions, &mut bindings)?
-                    .map(|value| vec![vec![Bytes::from(value.encode())]])
-                    .unwrap_or_default())
-            })
-            .collect::<Result<Vec<_>>>()?;
-        input
-            .extend_rows(added.to_vec(), extensions)?
-            .reorder(target_variables)
     }
 }
 
@@ -303,7 +308,7 @@ mod tests {
             .count(&malformed, &["?y".to_var()], &mut proposals)
             .unwrap();
         assert_eq!(proposals[0].proposer(), Some(8));
-        assert!(pattern.count(&malformed, &[], &mut []).is_err());
+        assert!(pattern.count(&malformed, &[], &mut proposals).is_err());
         assert!(pattern
             .join(
                 &malformed,
@@ -313,6 +318,10 @@ mod tests {
             .is_err());
 
         let unbound = BindingBag::unit();
+        let mut unbound_proposals = vec![Proposal::default()];
+        assert!(pattern
+            .count(&unbound, &["?y".to_var()], &mut unbound_proposals)
+            .is_err());
         assert!(pattern
             .join(&unbound, &["?y".to_var()], &["?y".to_var()])
             .is_err());
@@ -338,6 +347,14 @@ mod tests {
             ]],
         )
         .unwrap();
+        let mut bound_output_proposals = vec![Proposal::default()];
+        assert!(pattern
+            .count(
+                &malformed_output,
+                &["?y".to_var()],
+                &mut bound_output_proposals,
+            )
+            .is_err());
         assert!(pattern
             .join(&malformed_output, &[], &malformed_output.variables)
             .is_err());

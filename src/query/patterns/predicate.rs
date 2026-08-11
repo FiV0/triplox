@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{ensure, Result};
+use anyhow::{bail, ensure, Result};
 use edn::query::Variable;
 
 use super::evaluation::{binding_positions, update_bindings};
@@ -53,14 +53,7 @@ impl ExecPattern for PredicatePattern {
         _added: &[Variable],
         proposals: &mut [Proposal],
     ) -> Result<()> {
-        ensure!(
-            proposals.len() == input.rows.len(),
-            "Predicate pattern {} received {} proposals for {} input rows",
-            self.index,
-            proposals.len(),
-            input.rows.len()
-        );
-        Ok(())
+        bail!("Predicate pattern {} can't propose.", self.index);
     }
 
     fn join(
@@ -178,11 +171,10 @@ mod tests {
         .unwrap();
         let mut proposals = vec![Proposal::default()];
 
-        pattern
+        assert!(pattern
             .count(&input, &["?z".to_var()], &mut proposals)
-            .unwrap();
+            .is_err());
         assert_eq!(proposals, vec![Proposal::default()]);
-        assert!(pattern.count(&input, &[], &mut []).is_err());
         assert!(pattern
             .join(&input, &["?z".to_var()], &input.variables)
             .is_err());
