@@ -4,9 +4,9 @@ use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 
-use super::evaluation::{binding_positions, eval_context, update_bindings};
+use super::evaluation::{binding_positions, update_bindings};
 use crate::codec::{Decode, Encode};
-use crate::expr::{evaluate, expr_variables, Expr};
+use crate::expr::{evaluate, expr_variables, EvalContext, Expr};
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
@@ -55,7 +55,7 @@ impl FunctionPattern {
         bindings: &mut HashMap<Variable, DataType>,
     ) -> Result<Option<DataType>> {
         update_bindings(row, positions, bindings)?;
-        Ok(evaluate(&self.expression, &eval_context(bindings)).map(|value| value.into_owned()))
+        Ok(evaluate(&self.expression, &EvalContext::new(bindings)).map(|value| value.into_owned()))
     }
 }
 

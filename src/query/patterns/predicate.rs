@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use anyhow::{ensure, Result};
 use edn::query::Variable;
 
-use super::evaluation::{binding_positions, eval_context, update_bindings};
-use crate::expr::{evaluate_as_bool, expr_variables, Expr};
+use super::evaluation::{binding_positions, update_bindings};
+use crate::expr::{evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
@@ -31,7 +31,10 @@ impl PredicatePattern {
         bindings: &mut HashMap<Variable, DataType>,
     ) -> Result<bool> {
         update_bindings(row, positions, bindings)?;
-        Ok(evaluate_as_bool(&self.expression, &eval_context(bindings)))
+        Ok(evaluate_as_bool(
+            &self.expression,
+            &EvalContext::new(bindings),
+        ))
     }
 }
 

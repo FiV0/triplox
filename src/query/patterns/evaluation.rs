@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use edn::query::Variable;
 
 use crate::codec::Decode;
-use crate::expr::EvalContext;
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 
@@ -34,8 +33,4 @@ pub(super) fn update_bindings(
         }
     }
     Ok(())
-}
-
-pub(super) fn eval_context(bindings: &HashMap<Variable, DataType>) -> EvalContext<'_> {
-    EvalContext::new(bindings)
 }
