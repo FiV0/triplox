@@ -91,12 +91,8 @@ impl ExecPattern for FunctionPattern {
             return Ok(());
         }
 
-        let positions = binding_positions(input, &self.input_variables)?;
-        let mut bindings = HashMap::with_capacity(positions.len());
         for (row, proposal) in input.rows.iter().zip(proposals) {
-            if self.compute(row, &positions, &mut bindings)?.is_some() {
-                proposal.consider(self.index, 1);
-            }
+            proposal.consider(self.index, 1);
         }
         Ok(())
     }
@@ -215,7 +211,7 @@ mod tests {
             .unwrap();
         assert_eq!(proposals[0].proposer(), Some(8));
         assert_eq!(proposals[1].proposer(), Some(8));
-        assert_eq!(proposals[2].proposer(), None);
+        assert_eq!(proposals[2].proposer(), Some(8));
 
         let joined = pattern
             .join(
