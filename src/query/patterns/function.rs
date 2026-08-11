@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn proposes_one_computed_output_per_valid_input_row_in_target_order() {
+    fn counts_one_candidate_per_input_row_and_joins_valid_outputs_in_target_order() {
         let pattern = FunctionPattern::new(8, add("?x", 1), "?y".to_var()).unwrap();
         let input = BindingBag::new(
             vec!["?outer".to_var(), "?x".to_var()],
@@ -299,10 +299,18 @@ mod tests {
         .unwrap();
         let mut proposals = vec![Proposal::default()];
 
-        assert!(pattern
+        pattern
             .count(&malformed, &["?y".to_var()], &mut proposals)
-            .is_err());
+            .unwrap();
+        assert_eq!(proposals[0].proposer(), Some(8));
         assert!(pattern.count(&malformed, &[], &mut []).is_err());
+        assert!(pattern
+            .join(
+                &malformed,
+                &["?y".to_var()],
+                &["?x".to_var(), "?y".to_var()],
+            )
+            .is_err());
 
         let unbound = BindingBag::unit();
         assert!(pattern
