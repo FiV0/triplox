@@ -141,6 +141,7 @@ impl ExecPattern for FunctionPattern {
                         self.index, self.output
                     )
                 })?;
+                // TODO: This has slightly different semantics than the expression engine.
                 if self.compute(row, &positions, &mut bindings)?.as_ref() == Some(&output) {
                     matches.push(row_index);
                 }
