@@ -109,6 +109,8 @@ impl ExecPattern for FunctionPattern {
         target_variables: &[Variable],
     ) -> Result<BindingBag> {
         self.ensure_inputs_bound(input)?;
+        let positions = binding_positions(input, &self.input_variables)?;
+        let mut bindings = HashMap::with_capacity(positions.len());
 
         if added.is_empty() {
             ensure!(
@@ -123,8 +125,6 @@ impl ExecPattern for FunctionPattern {
                 self.output
             );
             let output_column = input.column_index(&self.output)?;
-            let positions = binding_positions(input, &self.input_variables)?;
-            let mut bindings = HashMap::with_capacity(positions.len());
             let mut matches = Vec::new();
             for (row_index, row) in input.rows.iter().enumerate() {
                 let output = DataType::decode(&row[output_column]).with_context(|| {
@@ -151,8 +151,6 @@ impl ExecPattern for FunctionPattern {
                 self.index,
                 self.output
             );
-            let positions = binding_positions(input, &self.input_variables)?;
-            let mut bindings = HashMap::with_capacity(positions.len());
             let extensions = input
                 .rows
                 .iter()
