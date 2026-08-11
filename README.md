@@ -81,6 +81,10 @@ Afterwards you connect with your favorite client.
 ;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]
 ```
 
+Triplox also supports [incremental queries](https://triplox.xyz/incremental-queries/overview/). If you want
+to understand or get a feeling for how Triplox deals with incremental queries you can have a look at
+the [incremental tutorial](https://github.com/FiV0/triplox-incremental-tutorial).
+
 ### Clients
 
 - [Rust](https://triplox.xyz/apis/rust/)
