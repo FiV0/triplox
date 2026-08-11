@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 
@@ -48,6 +48,23 @@ impl FunctionPattern {
         Ok(())
     }
 
+    fn ensure_can_propose(&self, input: &BindingBag, added: &[Variable]) -> Result<()> {
+        self.ensure_inputs_bound(input)?;
+        ensure!(
+            added == std::slice::from_ref(&self.output),
+            "Function pattern {} can only propose output {}",
+            self.index,
+            self.output
+        );
+        ensure!(
+            !input.variables.contains(&self.output),
+            "Function pattern {} cannot add already-bound output {}",
+            self.index,
+            self.output
+        );
+        Ok(())
+    }
+
     fn compute(
         &self,
         row: &BindingRow,
@@ -81,20 +98,7 @@ impl ExecPattern for FunctionPattern {
             proposals.len(),
             input.rows.len()
         );
-        if added != std::slice::from_ref(&self.output)
-            || input.variables.contains(&self.output)
-            || self
-                .input_variables
-                .iter()
-                .any(|variable| !input.variables.contains(variable))
-        {
-            bail!(
-                "Function pattern {} can't propose for added {:?} and input variables {:?}",
-                self.index,
-                added,
-                input.variables
-            );
-        }
+        self.ensure_can_propose(input, added)?;
 
         for proposal in proposals {
             proposal.consider(self.index, 1);
@@ -108,7 +112,11 @@ impl ExecPattern for FunctionPattern {
         added: &[Variable],
         target_variables: &[Variable],
     ) -> Result<BindingBag> {
-        self.ensure_inputs_bound(input)?;
+        if added.is_empty() {
+            self.ensure_inputs_bound(input)?;
+        } else {
+            self.ensure_can_propose(input, added)?;
+        }
         let positions = binding_positions(input, &self.input_variables)?;
         let mut bindings = HashMap::with_capacity(positions.len());
 
@@ -139,18 +147,6 @@ impl ExecPattern for FunctionPattern {
             }
             input.select_rows(&matches)
         } else {
-            ensure!(
-                added == std::slice::from_ref(&self.output),
-                "Function pattern {} can only propose output {}",
-                self.index,
-                self.output
-            );
-            ensure!(
-                !input.variables.contains(&self.output),
-                "Function pattern {} cannot add already-bound output {}",
-                self.index,
-                self.output
-            );
             let extensions = input
                 .rows
                 .iter()
@@ -292,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_invalid_contracts_and_encoded_inputs() {
+    fn reports_invalid_contracts_and_malformed_join_inputs() {
         assert!(FunctionPattern::new(8, Expr::Variable("?x".to_var()), "?x".to_var()).is_err());
         let pattern = FunctionPattern::new(8, add("?x", 1), "?y".to_var()).unwrap();
         let malformed = BindingBag::new(
