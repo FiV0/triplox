@@ -10,10 +10,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Error;
+use edn::symbols::Keyword;
 use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
-use crate::schema::IdentMap;
+use crate::schema::{IdentMap, Schema, ValueType};
 
 use edn::query::{
     Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin,
@@ -141,13 +142,36 @@ fn non_value_place_to_datatype(place: &PatternNonValuePlace) -> Option<DataType>
     }
 }
 
+pub(crate) fn resolve_ident_or_keyword(
+    ident: &Keyword,
+    is_ref: bool,
+    schema: &Schema,
+) -> Result<DataType, Error> {
+    if !is_ref {
+        return Ok(DataType::Keyword(ident.clone()));
+    }
+
+    schema
+        .ident_map
+        .get(ident)
+        .copied()
+        .map(DataType::Long)
+        .ok_or_else(|| anyhow::anyhow!("Unknown ident in ref value position: {}", ident))
+}
+
 /// Convert a PatternValuePlace to a DataType (for constant positions).
-fn value_place_to_datatype(place: &PatternValuePlace) -> Option<DataType> {
+fn value_place_to_datatype(
+    place: &PatternValuePlace,
+    is_ref: bool,
+    schema: &Schema,
+) -> Result<Option<DataType>, Error> {
     match place {
-        PatternValuePlace::EntidOrInteger(i) => Some(DataType::Long(*i)),
-        PatternValuePlace::IdentOrKeyword(ref kw) => Some(DataType::Keyword((**kw).clone())),
-        PatternValuePlace::Constant(ref c) => non_integer_constant_to_datatype(c),
-        _ => None,
+        PatternValuePlace::EntidOrInteger(i) => Ok(Some(DataType::Long(*i))),
+        PatternValuePlace::IdentOrKeyword(ref kw) => {
+            resolve_ident_or_keyword(kw.as_ref(), is_ref, schema).map(Some)
+        }
+        PatternValuePlace::Constant(ref c) => Ok(non_integer_constant_to_datatype(c)),
+        _ => Ok(None),
     }
 }
 
@@ -621,12 +645,21 @@ fn determine_index_types(
 }
 
 /// Compute the constant prefix bytes for a pattern based on index type.
-fn compute_constant_prefix(pattern: &Pattern, index_type: IndexType) -> Result<Vec<u8>, Error> {
+fn compute_constant_prefix(
+    pattern: &Pattern,
+    index_type: IndexType,
+    attribute_id: i64,
+    schema: &Schema,
+) -> Result<Vec<u8>, Error> {
     match index_type {
         IndexType::AVE => {
             // AVE key order: [attr, value, entity]
             // If value is constant, include it in prefix
-            if let Some(dt) = value_place_to_datatype(&pattern.value) {
+            let is_ref = schema
+                .attribute_map
+                .get(&attribute_id)
+                .is_some_and(|attribute| attribute.value_type == ValueType::Ref);
+            if let Some(dt) = value_place_to_datatype(&pattern.value, is_ref, schema)? {
                 Ok(dt.encode())
             } else {
                 Ok(vec![])
@@ -656,6 +689,7 @@ pub fn compile_pattern<D, M>(
     join_order: &[Variable],
     var_index: &HashMap<&Variable, usize>,
     attribute_id: i64,
+    schema: &Schema,
     slate: Arc<D>,
     handle: Handle,
     as_of: i64,
@@ -680,7 +714,7 @@ where
 
     // Compute constant prefix (for patterns with constant entity or value)
     let constant_prefix = if !index_types.is_empty() {
-        compute_constant_prefix(pattern, index_types[0])?
+        compute_constant_prefix(pattern, index_types[0], attribute_id, schema)?
     } else {
         vec![]
     };
@@ -1024,7 +1058,7 @@ fn compile_or_branch<D, M>(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<D>,
     handle: &Handle,
-    ident_map: &IdentMap,
+    schema: &Schema,
     as_of: i64,
     range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
 ) -> Result<Box<dyn PrefixExtender>, Error>
@@ -1039,7 +1073,7 @@ where
             var_index,
             slate,
             handle,
-            ident_map,
+            schema,
             as_of,
             range_stats,
         ),
@@ -1053,7 +1087,7 @@ where
                         var_index,
                         slate,
                         handle,
-                        ident_map,
+                        schema,
                         as_of,
                         range_stats,
                     )
@@ -1072,7 +1106,7 @@ fn compile_where_clause<D, M>(
     var_index: &HashMap<&Variable, usize>,
     slate: &Arc<D>,
     handle: &Handle,
-    ident_map: &IdentMap,
+    schema: &Schema,
     as_of: i64,
     range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
 ) -> Result<Box<dyn PrefixExtender>, Error>
@@ -1082,12 +1116,13 @@ where
 {
     match clause {
         WhereClause::Pattern(pattern) => {
-            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, ident_map)?;
+            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, &schema.ident_map)?;
             let extender = compile_pattern(
                 pattern,
                 join_order,
                 var_index,
                 attr_id,
+                schema,
                 slate.clone(),
                 handle.clone(),
                 as_of,
@@ -1106,7 +1141,7 @@ where
                         var_index,
                         slate,
                         handle,
-                        ident_map,
+                        schema,
                         as_of,
                         range_stats,
                     )
@@ -1125,7 +1160,7 @@ where
                         var_index,
                         slate,
                         handle,
-                        ident_map,
+                        schema,
                         as_of,
                         range_stats,
                     )
@@ -1176,7 +1211,7 @@ pub fn execute_query<D, M>(
     args: &[QueryArg],
     slate: Arc<D>,
     handle: Handle,
-    ident_map: &IdentMap,
+    schema: &Schema,
     as_of: i64,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 ) -> Result<QueryResult, Error>
@@ -1200,7 +1235,7 @@ where
             &var_index,
             &slate,
             &handle,
-            ident_map,
+            schema,
             as_of,
             &range_stats,
         )?);

@@ -833,12 +833,8 @@ pub fn bootstrap_schema_tx() -> Vec<TxOp> {
 /// at startup so the inefficiency is minor, but a single-pass approach would be
 /// cleaner. Could likely be done with an `optional` clause.
 pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponents) -> Schema {
-    // Build attribute map from bootstrap constants — sufficient to query schema entities
-    let mut bootstrap_ident_map: IdentMap = HashMap::new();
-    bootstrap_ident_map.insert(kw!(:db/ident), DB_IDENT);
-    bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
-    bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
-    bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
+    // Bootstrap metadata is sufficient to query schema entities.
+    let query_schema = bootstrap_schema();
     let sdb = slate.db.clone();
     let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
@@ -860,7 +856,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb.clone(),
             handle.clone(),
-            &bootstrap_ident_map,
+            &query_schema,
             i64::MAX,
             range_stats.clone(),
         )?;
@@ -869,7 +865,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb.clone(),
             handle.clone(),
-            &bootstrap_ident_map,
+            &query_schema,
             i64::MAX,
             range_stats.clone(),
         )?;
@@ -878,7 +874,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb,
             handle,
-            &bootstrap_ident_map,
+            &query_schema,
             i64::MAX,
             range_stats,
         )?;

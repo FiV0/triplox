@@ -153,6 +153,7 @@ pub(crate) mod test_support {
     pub(crate) const AGE_ATTR_ID: Entid = 11;
     pub(crate) const FOLLOWS_ATTR_ID: Entid = 12;
     pub(crate) const TYPE_ATTR_ID: Entid = 13;
+    pub(crate) const STATUS_OPEN_ID: Entid = 20;
 
     pub(crate) fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("query should parse")
@@ -180,6 +181,8 @@ pub(crate) mod test_support {
                 },
             );
         }
+        ident_map.insert(kw!(:status/open), STATUS_OPEN_ID);
+        entid_map.insert(STATUS_OPEN_ID, kw!(:status/open));
         Schema {
             entid_map,
             ident_map,
@@ -191,7 +194,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use edn::query::ToVariable;
-    use edn::Keyword;
+    use edn::{kw, Keyword};
 
     use super::test_support::{parse_query, test_schema};
     use super::*;
@@ -342,6 +345,44 @@ mod tests {
             &PatternSlot::Variable("?other".to_var())
         );
         assert_eq!(&leaf_patterns[1].value, &encoded_long(30));
+    }
+
+    #[test]
+    fn plans_ref_ident_constants_as_eids() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query("[:find ?e :where [?e :follows :status/open]]"),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(
+            &plan.leaf_patterns()[0].value,
+            &encoded_long(test_support::STATUS_OPEN_ID)
+        );
+    }
+
+    #[test]
+    fn keeps_ident_constants_as_keywords_for_keyword_attributes() {
+        let schema = test_schema();
+        let plan = plan_query(
+            &parse_query("[:find ?e :where [?e :type :status/open]]"),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(
+            &plan.leaf_patterns()[0].value,
+            &PatternSlot::Constant(DataType::Keyword(kw!(:status/open)).encode())
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_ref_ident_constants() {
+        assert_plan_err(
+            "[:find ?e :where [?e :follows :status/missing]]",
+            "Unknown ident in ref value position: :status/missing",
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ use crate::ops::{Entid, QueryArg, TxOp};
 use crate::partition::tx_eid_from_tx_id;
 use crate::query::{execute_query, QueryResult};
 use crate::query_validation::validate_query;
-use crate::schema::{IdentMap, Schema};
+use crate::schema::Schema;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -42,7 +42,7 @@ where
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
     sdb: Arc<D>,
-    ident_map: IdentMap,
+    schema: Schema,
     handle: Handle,
     tx_key: TxKey,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
@@ -54,16 +54,16 @@ where
     D: slatedb::DbReadOps + Send + Sync + 'static,
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         sdb: Arc<D>,
-        ident_map: IdentMap,
+        schema: Schema,
         handle: Handle,
         tx_key: TxKey,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Self {
         Self {
             sdb,
-            ident_map,
+            schema,
             handle,
             tx_key,
             range_stats,
@@ -71,16 +71,16 @@ where
     }
 
     /// Construct a DB from a Db by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_sdb(
+    pub(crate) async fn from_latest_sdb(
         sdb: Arc<D>,
-        ident_map: IdentMap,
+        schema: Schema,
         handle: Handle,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Result<Self, Error> {
         let tx_key = latest_tx_key_from_sdb(sdb.as_ref()).await?;
         Ok(Self {
             sdb,
-            ident_map,
+            schema,
             handle,
             tx_key,
             range_stats,
@@ -117,14 +117,14 @@ where
 
         let sdb = self.sdb.clone();
         let handle = self.handle.clone();
-        let ident_map = self.ident_map.clone();
+        let schema = self.schema.clone();
         let query = query.clone();
         let args = args.to_vec();
         let as_of = tx_eid_from_tx_id(self.tx_key.tx_id);
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, sdb, handle, &ident_map, as_of, range_stats)
+            execute_query(&query, &args, sdb, handle, &schema, as_of, range_stats)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
@@ -342,19 +342,12 @@ impl<L: TxLog> Node<L> {
                 timeout,
             })??;
 
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        let schema = self.indexer.read().await.metadata().schema.clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         Ok(DB::new(
             self.slate.db.clone(),
-            ident_map,
+            schema,
             handle,
             tx_key,
             range_stats,
@@ -418,17 +411,10 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
 
     async fn db(&self) -> Result<DB, Error> {
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        let schema = self.indexer.read().await.metadata().schema.clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        DB::from_latest_sdb(self.slate.db.clone(), ident_map, handle, range_stats).await
+        DB::from_latest_sdb(self.slate.db.clone(), schema, handle, range_stats).await
     }
 
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {
@@ -1925,6 +1911,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_ref_ident_constant() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        node.execute_tx(vec![TxOp::put([
+            (kw!(:db/ident), DataType::Keyword(kw!(:person/bob))),
+            (kw!(:name), DataType::String("Bob".to_string())),
+        ])])
+        .await
+        .unwrap();
+        node.execute_tx(vec![TxOp::put([
+            (kw!(:name), DataType::String("Alice".to_string())),
+            (kw!(:follows), DataType::Keyword(kw!(:person/bob))),
+        ])])
+        .await
+        .unwrap();
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name :where [?e :name ?name] [?e :follows :person/bob]]")
+            .await
+            .unwrap();
+        assert_eq!(result, vec![vec![DataType::String("Alice".to_string())]]);
+
+        let err = db
+            .query("[:find ?e :where [?e :follows :person/missing]]")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Unknown ident in ref value position: :person/missing"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_literal_entity_id_in_triple() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
@@ -2603,6 +2626,41 @@ mod tests {
                 vec![DataType::String("Alice".to_string()), DataType::Long(40)],
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_query_ref_ident_constant() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        execute_and_flush(
+            &node,
+            vec![TxOp::put([
+                (kw!(:db/ident), DataType::Keyword(kw!(:person/bob))),
+                (kw!(:name), DataType::String("Bob".to_string())),
+            ])],
+        )
+        .await;
+
+        let query = "[:find ?name :where [?e :name ?name] [?e :follows :person/bob]]";
+        let mut subscription = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+
+        let basis = execute_and_flush(
+            &node,
+            vec![TxOp::put([
+                (kw!(:name), DataType::String("Alice".to_string())),
+                (kw!(:follows), DataType::Keyword(kw!(:person/bob))),
+            ])],
+        )
+        .await;
+        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+
+        assert_eq!(rows, vec![vec![DataType::String("Alice".to_string())]]);
+        assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
     }
 
     #[tokio::test]

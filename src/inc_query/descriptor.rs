@@ -10,8 +10,10 @@ use crate::codec::Encode;
 use crate::expr::{expr_variables, Expr};
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
-use crate::query::{convert_predicate, convert_where_fn, non_integer_constant_to_datatype};
-use crate::schema::Schema;
+use crate::query::{
+    convert_predicate, convert_where_fn, non_integer_constant_to_datatype, resolve_ident_or_keyword,
+};
+use crate::schema::{Schema, ValueType};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PatternSlot {
@@ -65,15 +67,14 @@ fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
     }
 }
 
-fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
+fn value_slot(place: &PatternValuePlace, is_ref: bool, schema: &Schema) -> Result<PatternSlot> {
     match place {
         PatternValuePlace::Variable(var) => Ok(PatternSlot::Variable(var.clone())),
         PatternValuePlace::EntidOrInteger(value) => {
             Ok(PatternSlot::Constant(DataType::Long(*value).encode()))
         }
-        // TODO This needs proper ident resolution for refs
         PatternValuePlace::IdentOrKeyword(ident) => Ok(PatternSlot::Constant(
-            DataType::Keyword(ident.as_ref().clone()).encode(),
+            resolve_ident_or_keyword(ident.as_ref(), is_ref, schema)?.encode(),
         )),
         PatternValuePlace::Constant(constant) => Ok(PatternSlot::Constant(
             non_integer_constant_to_datatype(constant)
@@ -100,10 +101,15 @@ fn pattern_descriptor(pattern: &Pattern, schema: &Schema) -> Result<PatternDescr
         }
     };
 
+    let is_ref = schema
+        .attribute_map
+        .get(&attribute)
+        .is_some_and(|attribute| attribute.value_type == ValueType::Ref);
+
     Ok(PatternDescriptor {
         attribute,
         entity: non_value_slot(&pattern.entity),
-        value: value_slot(&pattern.value)?,
+        value: value_slot(&pattern.value, is_ref, schema)?,
     })
 }
 
