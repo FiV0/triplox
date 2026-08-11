@@ -96,7 +96,7 @@ impl ExecPattern for FunctionPattern {
             );
         }
 
-        for (proposal) in proposals {
+        for proposal in proposals {
             proposal.consider(self.index, 1);
         }
         Ok(())
