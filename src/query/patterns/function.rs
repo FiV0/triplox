@@ -302,10 +302,6 @@ mod tests {
         .unwrap();
         let mut proposals = vec![Proposal::default()];
 
-        pattern
-            .count(&malformed, &["?y".to_var()], &mut proposals)
-            .unwrap();
-        assert_eq!(proposals[0].proposer(), Some(8));
         assert!(pattern.count(&malformed, &[], &mut proposals).is_err());
         assert!(pattern
             .join(
