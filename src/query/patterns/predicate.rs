@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::{ensure, Result};
 use edn::query::Variable;
 
-use super::evaluation::{decode_bindings, eval_context};
+use super::evaluation::{binding_positions, eval_context, update_bindings};
 use crate::expr::{evaluate_as_bool, expr_variables, Expr};
-use crate::query::binding_bag::BindingBag;
+use crate::ops::DataType;
+use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 
 pub(crate) struct PredicatePattern {
@@ -21,9 +24,14 @@ impl PredicatePattern {
         }
     }
 
-    fn matches(&self, input: &BindingBag, row_index: usize) -> Result<bool> {
-        let bindings = decode_bindings(input, &input.rows[row_index], self.variables.as_slice())?;
-        Ok(evaluate_as_bool(&self.expression, &eval_context(&bindings)))
+    fn matches(
+        &self,
+        row: &BindingRow,
+        positions: &[(Variable, usize)],
+        bindings: &mut HashMap<Variable, DataType>,
+    ) -> Result<bool> {
+        update_bindings(row, positions, bindings)?;
+        Ok(evaluate_as_bool(&self.expression, &eval_context(bindings)))
     }
 }
 
@@ -77,8 +85,10 @@ impl ExecPattern for PredicatePattern {
         }
 
         let mut matches = Vec::new();
-        for row_index in 0..input.rows.len() {
-            if self.matches(input, row_index)? {
+        let positions = binding_positions(input, &self.variables)?;
+        let mut bindings = HashMap::with_capacity(positions.len());
+        for (row_index, row) in input.rows.iter().enumerate() {
+            if self.matches(row, &positions, &mut bindings)? {
                 matches.push(row_index);
             }
         }

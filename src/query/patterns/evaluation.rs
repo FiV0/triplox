@@ -8,20 +8,32 @@ use crate::expr::EvalContext;
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 
-pub(super) fn decode_bindings(
+pub(super) fn binding_positions(
     input: &BindingBag,
-    row: &BindingRow,
     variables: &[Variable],
-) -> Result<HashMap<Variable, DataType>> {
+) -> Result<Vec<(Variable, usize)>> {
     variables
         .iter()
-        .map(|variable| {
-            let column = input.column_index(variable)?;
-            let value = DataType::decode(&row[column])
-                .with_context(|| format!("Failed to decode expression variable {variable}"))?;
-            Ok((variable.clone(), value))
-        })
+        .map(|variable| Ok((variable.clone(), input.column_index(variable)?)))
         .collect()
+}
+
+pub(super) fn update_bindings(
+    row: &BindingRow,
+    binding_positions: &[(Variable, usize)],
+    bindings: &mut HashMap<Variable, DataType>,
+) -> Result<()> {
+    for (variable, column) in binding_positions {
+        let value = DataType::decode(&row[*column])
+            .with_context(|| format!("Failed to decode expression variable {variable}"))?;
+        // Clone keys only for the first row; later rows overwrite decoded values.
+        if let Some(binding) = bindings.get_mut(variable) {
+            *binding = value;
+        } else {
+            bindings.insert(variable.clone(), value);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn eval_context(bindings: &HashMap<Variable, DataType>) -> EvalContext<'_> {

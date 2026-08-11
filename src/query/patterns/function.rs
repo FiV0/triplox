@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 
-use super::evaluation::{decode_bindings, eval_context};
+use super::evaluation::{binding_positions, eval_context, update_bindings};
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, expr_variables, Expr};
 use crate::ops::DataType;
@@ -46,9 +48,14 @@ impl FunctionPattern {
         Ok(())
     }
 
-    fn compute(&self, input: &BindingBag, row: &BindingRow) -> Result<Option<DataType>> {
-        let bindings = decode_bindings(input, row, &self.input_variables)?;
-        Ok(evaluate(&self.expression, &eval_context(&bindings)).map(|value| value.into_owned()))
+    fn compute(
+        &self,
+        row: &BindingRow,
+        positions: &[(Variable, usize)],
+        bindings: &mut HashMap<Variable, DataType>,
+    ) -> Result<Option<DataType>> {
+        update_bindings(row, positions, bindings)?;
+        Ok(evaluate(&self.expression, &eval_context(bindings)).map(|value| value.into_owned()))
     }
 }
 
@@ -84,8 +91,10 @@ impl ExecPattern for FunctionPattern {
             return Ok(());
         }
 
+        let positions = binding_positions(input, &self.input_variables)?;
+        let mut bindings = HashMap::with_capacity(positions.len());
         for (row, proposal) in input.rows.iter().zip(proposals) {
-            if self.compute(input, row)?.is_some() {
+            if self.compute(row, &positions, &mut bindings)?.is_some() {
                 proposal.consider(self.index, 1);
             }
         }
@@ -113,6 +122,8 @@ impl ExecPattern for FunctionPattern {
                 self.output
             );
             let output_column = input.column_index(&self.output)?;
+            let positions = binding_positions(input, &self.input_variables)?;
+            let mut bindings = HashMap::with_capacity(positions.len());
             let mut matches = Vec::new();
             for (row_index, row) in input.rows.iter().enumerate() {
                 let output = DataType::decode(&row[output_column]).with_context(|| {
@@ -121,7 +132,7 @@ impl ExecPattern for FunctionPattern {
                         self.index, self.output
                     )
                 })?;
-                if self.compute(input, row)?.as_ref() == Some(&output) {
+                if self.compute(row, &positions, &mut bindings)?.as_ref() == Some(&output) {
                     matches.push(row_index);
                 }
             }
@@ -140,12 +151,14 @@ impl ExecPattern for FunctionPattern {
             self.index,
             self.output
         );
+        let positions = binding_positions(input, &self.input_variables)?;
+        let mut bindings = HashMap::with_capacity(positions.len());
         let extensions = input
             .rows
             .iter()
             .map(|row| {
                 Ok(self
-                    .compute(input, row)?
+                    .compute(row, &positions, &mut bindings)?
                     .map(|value| vec![vec![Bytes::from(value.encode())]])
                     .unwrap_or_default())
             })
