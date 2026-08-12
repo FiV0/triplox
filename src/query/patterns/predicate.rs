@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{ensure, Result};
 use edn::query::Variable;
 
 use super::evaluation::{binding_positions, update_bindings};
 use crate::expr::{evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternIndex};
 
 pub(crate) struct PredicatePattern {
     index: PatternIndex,
@@ -45,15 +45,6 @@ impl ExecPattern for PredicatePattern {
 
     fn variables(&self) -> &[Variable] {
         &self.variables
-    }
-
-    fn count(
-        &self,
-        input: &BindingBag,
-        _added: &[Variable],
-        proposals: &mut [Proposal],
-    ) -> Result<()> {
-        bail!("Predicate pattern {} can't propose.", self.index);
     }
 
     fn join(
