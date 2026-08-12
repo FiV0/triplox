@@ -210,10 +210,11 @@ Planning fails if a variable cannot be grounded or a participant cannot be
 placed. A leaf descriptor may participate at several stages as its variables
 become bound. An OR or NOT descriptor participates once in its owning scope.
 
-`proposers` is planning metadata. Assembly verifies that proposers are also
-participants and that only proposing stages declare them. Runtime stages retain
-the ordered participant list; participants that cannot propose a requested
-layout leave the proposal sidecar unchanged.
+Assembly verifies that proposers are also participants and translates their
+symbolic references into positions in the ordered runtime participant list.
+Only proposing stages may carry proposer positions, and every proposing stage
+must carry at least one. Runtime execution therefore distinguishes patterns
+that may propose from participants that only validate the completed binding.
 
 ---
 
@@ -247,6 +248,7 @@ enum ParticipantTemplate {
 struct StageTemplate {
     added: Vec<Variable>,
     participants: Vec<ParticipantTemplate>,
+    proposer_positions: Vec<usize>,
     target_variables: Vec<Variable>,
 }
 ```
@@ -296,8 +298,9 @@ trait ExecPattern: Send + Sync {
 }
 ```
 
-`count` updates the proposal sidecar only when the pattern can produce the
-complete `added` list. Otherwise it is a no-op.
+`count` is called only on patterns designated as proposers for the stage. Each
+proposer must consider every input row, including with a count of zero. Calling
+`count` on a pattern that cannot propose is a contract error.
 
 `join` has two modes:
 
@@ -316,14 +319,16 @@ A concrete `Stage` is one checked layout transition:
 struct Stage {
     added: Vec<Variable>,
     participants: Vec<Arc<dyn ExecPattern>>,
+    proposer_positions: Vec<usize>,
     target_variables: Vec<Variable>,
 }
 ```
 
-Its participant indexes, added variables, and target variables must be unique. At
-execution time, the target variable set must equal the input variables plus
-the added variables. A stage with an empty `added` list is a first-class
-validation-only stage.
+Its participant indexes, proposer positions, added variables, and target
+variables must be unique. Proposer positions are ordered and must refer to
+participants in the stage. A stage has proposers if and only if it adds
+variables. At execution time, the target variable set must equal the input
+variables plus the added variables.
 
 ### Proposal selection
 
@@ -337,10 +342,11 @@ struct Proposal {
 }
 ```
 
-The initial value is `(None, usize::MAX)`. A participant replaces it with its
-first estimate or a strictly cheaper count, including zero. Equal counts retain
-the earlier participant in stage order. `None` after counting means that no
-participant can extend that row, so the row is dropped.
+The initial value is `(None, usize::MAX)`. A proposer replaces it with its first
+estimate or a strictly cheaper count, including zero. Equal counts retain the
+earlier proposer in participant order. Valid proposer implementations consider
+every row, so zero candidates are represented by a selected proposer with count
+zero rather than by an absent proposer.
 
 ---
 
@@ -354,21 +360,22 @@ Every participant receives `join(input, [], input_variables)` in stage order.
 The engine checks that each participant preserves the layout, then reorders the
 result to the stage target layout.
 
-### Single-participant proposing stage
+### Single-proposer stage
 
-The engine calls that participant's `join` directly and checks the returned
-layout. This is also how a grouped OR proposes all of its missing variables;
-OR does not implement a useful proposal count.
+The engine calls the sole proposer’s `join` directly, checks the returned
+layout, and then runs every other participant as a validator. This is also how a
+grouped OR proposes all of its missing variables; OR does not implement a
+proposal count.
 
 ### Multi-participant proposing stage
 
 1. Allocate one empty proposal per input row.
-2. Ask every participant to count the requested extension.
-3. Drop rows that no participant considered.
-4. Group the remaining row indexes by winning `PatternIndex`.
-5. Ask each winner to extend its input shard.
-6. Run every other participant as a validator on that extended shard.
-7. Bag-union the validated shards in the target layout.
+2. Ask every designated proposer to count the requested extension.
+3. Group row indexes by winning proposer `PatternIndex`.
+4. Ask each winner to extend its input shard.
+5. Run every other participant, including losing proposers, as a validator on
+   that extended shard.
+6. Bag-union the validated shards in the target layout.
 
 The cheapest proposer is selected independently for every input row. Different
 rows in one stage may therefore be extended by different patterns.
