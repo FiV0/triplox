@@ -18,9 +18,34 @@ fn ensure_unique(label: &str, variables: &[Variable]) -> Result<()> {
     Ok(())
 }
 
+fn ensure_proposer_positions(
+    added: &[Variable],
+    participant_count: usize,
+    proposer_positions: &[usize],
+) -> Result<()> {
+    for positions in proposer_positions.windows(2) {
+        ensure!(
+            positions[0] < positions[1],
+            "Stage proposer positions must be unique and ordered"
+        );
+    }
+    for position in proposer_positions {
+        ensure!(
+            *position < participant_count,
+            "Stage proposer position {position} is out of bounds for {participant_count} participants"
+        );
+    }
+    ensure!(
+        added.is_empty() == proposer_positions.is_empty(),
+        "A stage must have proposers if and only if it adds variables"
+    );
+    Ok(())
+}
+
 pub(crate) struct Stage {
     added: Vec<Variable>,
     participants: Vec<Arc<dyn ExecPattern>>,
+    proposer_positions: Vec<usize>,
     target_variables: Vec<Variable>,
 }
 
@@ -28,6 +53,7 @@ impl Stage {
     pub(crate) fn new(
         added: Vec<Variable>,
         participants: Vec<Arc<dyn ExecPattern>>,
+        proposer_positions: Vec<usize>,
         target_variables: Vec<Variable>,
     ) -> Result<Self> {
         ensure_unique("Added", &added)?;
@@ -36,6 +62,7 @@ impl Stage {
             !participants.is_empty(),
             "Stage participants must not be empty"
         );
+        ensure_proposer_positions(&added, participants.len(), &proposer_positions)?;
 
         for variable in &added {
             ensure!(
@@ -56,6 +83,7 @@ impl Stage {
         Ok(Self {
             added,
             participants,
+            proposer_positions,
             target_variables,
         })
     }
@@ -66,6 +94,12 @@ impl Stage {
 
     pub(crate) fn participants(&self) -> &[Arc<dyn ExecPattern>] {
         &self.participants
+    }
+
+    pub(crate) fn proposers(&self) -> impl ExactSizeIterator<Item = &Arc<dyn ExecPattern>> {
+        self.proposer_positions
+            .iter()
+            .map(|position| &self.participants[*position])
     }
 
     pub(crate) fn target_variables(&self) -> &[Variable] {
@@ -149,28 +183,74 @@ mod tests {
     fn stage_construction_enforces_static_invariants() {
         let pattern = TestPattern::shared(1, &["?x"]);
 
-        assert!(Stage::new(vec![], vec![], vec![]).is_err());
+        assert!(Stage::new(vec![], vec![], vec![], vec![]).is_err());
         assert!(Stage::new(
             vec!["?x".to_var(), "?x".to_var()],
             vec![Arc::clone(&pattern)],
+            vec![0],
             vec!["?x".to_var()],
         )
         .is_err());
         assert!(Stage::new(
             vec!["?x".to_var()],
             vec![Arc::clone(&pattern)],
+            vec![0],
             vec!["?x".to_var(), "?x".to_var()],
         )
         .is_err());
         assert!(Stage::new(
             vec!["?missing".to_var()],
             vec![Arc::clone(&pattern)],
+            vec![0],
             vec!["?x".to_var()],
         )
         .is_err());
         assert!(Stage::new(
             vec!["?x".to_var()],
             vec![Arc::clone(&pattern), pattern],
+            vec![0],
+            vec!["?x".to_var()],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn stage_construction_enforces_proposer_roles() {
+        let first = TestPattern::shared(1, &["?x"]);
+        let second = TestPattern::shared(2, &["?x"]);
+        let participants = || vec![Arc::clone(&first), Arc::clone(&second)];
+
+        // A stage that adds variables must declare at least one proposer.
+        assert!(Stage::new(
+            vec!["?x".to_var()],
+            participants(),
+            vec![],
+            vec!["?x".to_var()],
+        )
+        .is_err());
+        // A stage that adds no variables must not declare a proposer.
+        assert!(Stage::new(vec![], participants(), vec![0], vec![]).is_err());
+        // Every proposer position must refer to an existing participant.
+        assert!(Stage::new(
+            vec!["?x".to_var()],
+            participants(),
+            vec![2],
+            vec!["?x".to_var()],
+        )
+        .is_err());
+        // Each participant can be declared as a proposer only once.
+        assert!(Stage::new(
+            vec!["?x".to_var()],
+            participants(),
+            vec![0, 0],
+            vec!["?x".to_var()],
+        )
+        .is_err());
+        // Proposer positions must follow participant order.
+        assert!(Stage::new(
+            vec!["?x".to_var()],
+            participants(),
+            vec![1, 0],
             vec!["?x".to_var()],
         )
         .is_err());
@@ -181,6 +261,7 @@ mod tests {
         let stage = Stage::new(
             vec!["?y".to_var()],
             vec![TestPattern::shared(1, &["?x", "?y"])],
+            vec![0],
             vec!["?y".to_var(), "?x".to_var()],
         )
         .unwrap();

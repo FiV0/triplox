@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use edn::query::Variable;
 
 use super::binding_bag::BindingBag;
@@ -47,10 +47,12 @@ pub(crate) trait ExecPattern: Send + Sync {
     // Updates proposals without a proposer or with a strictly higher count.
     fn count(
         &self,
-        input: &BindingBag,
-        added: &[Variable],
-        proposals: &mut [Proposal],
-    ) -> Result<()>;
+        _input: &BindingBag,
+        _added: &[Variable],
+        _proposals: &mut [Proposal],
+    ) -> Result<()> {
+        bail!("Pattern {} cannot propose", self.index())
+    }
 
     // Extends the `input`` when `added` is non-empty; otherwise filters `input` without changing its layout.
     /// An empty `added` existentially validates the current `input` binding prefix; unbound pattern variables remain for later stages.

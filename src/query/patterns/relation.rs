@@ -127,12 +127,14 @@ impl ExecPattern for RelationPattern {
             proposals.len(),
             input.rows.len()
         );
-        if added.is_empty() {
-            return Ok(());
-        }
-        let Some(prefix_indexes) = self.prefix_indexes(input, added) else {
-            return Ok(());
-        };
+        ensure!(
+            !added.is_empty(),
+            "Relation pattern {} cannot count an empty proposal",
+            self.index
+        );
+        let prefix_indexes = self.prefix_indexes(input, added).ok_or_else(|| {
+            anyhow::anyhow!("Relation cannot propose the requested variables: {added:?}")
+        })?;
 
         for (input_row, proposal) in input.rows.iter().zip(proposals) {
             let count = self
@@ -246,28 +248,29 @@ mod tests {
     }
 
     #[test]
-    fn count_is_a_noop_for_non_prefix_proposals_and_checks_proposal_length() {
+    fn count_rejects_non_prefix_proposals_and_checks_proposal_length() {
         let pattern = RelationPattern::new(7, binding_bag(&["?x", "?y"], &[&["a", "1"]]));
         let input = binding_bag(&["?y"], &[&["1"]]);
         let mut proposals = vec![Proposal::default()];
 
-        pattern
+        assert!(pattern
             .count(&input, &["?x".to_var()], &mut proposals)
-            .unwrap();
+            .is_err());
         assert_eq!(proposals, vec![Proposal::default()]);
 
         assert!(pattern.count(&input, &["?x".to_var()], &mut []).is_err());
+        assert!(pattern.count(&input, &[], &mut proposals).is_err());
     }
 
     #[test]
-    fn multi_variable_non_prefix_proposals_are_ignored_and_rejected() {
+    fn multi_variable_non_prefix_proposals_are_rejected_by_count_and_join() {
         let pattern =
             RelationPattern::new(7, binding_bag(&["?x", "?y", "?z"], &[&["a", "1", "red"]]));
         let input = BindingBag::unit();
         let added = ["?y".to_var(), "?z".to_var()];
         let mut proposals = vec![Proposal::default()];
 
-        pattern.count(&input, &added, &mut proposals).unwrap();
+        assert!(pattern.count(&input, &added, &mut proposals).is_err());
 
         assert_eq!(proposals, vec![Proposal::default()]);
         assert!(pattern.join(&input, &added, &added).is_err());
