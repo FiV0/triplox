@@ -220,6 +220,7 @@ mod tests {
         let second = TestPattern::shared(2, &["?x"]);
         let participants = || vec![Arc::clone(&first), Arc::clone(&second)];
 
+        // A stage that adds variables must declare at least one proposer.
         assert!(Stage::new(
             vec!["?x".to_var()],
             participants(),
@@ -227,7 +228,9 @@ mod tests {
             vec!["?x".to_var()],
         )
         .is_err());
+        // A stage that adds no variables must not declare a proposer.
         assert!(Stage::new(vec![], participants(), vec![0], vec![]).is_err());
+        // Every proposer position must refer to an existing participant.
         assert!(Stage::new(
             vec!["?x".to_var()],
             participants(),
@@ -235,6 +238,7 @@ mod tests {
             vec!["?x".to_var()],
         )
         .is_err());
+        // Each participant can be declared as a proposer only once.
         assert!(Stage::new(
             vec!["?x".to_var()],
             participants(),
@@ -242,6 +246,7 @@ mod tests {
             vec!["?x".to_var()],
         )
         .is_err());
+        // Proposer positions must follow participant order.
         assert!(Stage::new(
             vec!["?x".to_var()],
             participants(),
