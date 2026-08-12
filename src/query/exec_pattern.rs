@@ -45,12 +45,15 @@ pub(crate) trait ExecPattern: Send + Sync {
     fn variables(&self) -> &[Variable];
 
     // Updates proposals without a proposer or with a strictly higher count.
+    // Patterns that can only validate inherit this no-op default.
     fn count(
         &self,
-        input: &BindingBag,
-        added: &[Variable],
-        proposals: &mut [Proposal],
-    ) -> Result<()>;
+        _input: &BindingBag,
+        _added: &[Variable],
+        _proposals: &mut [Proposal],
+    ) -> Result<()> {
+        Ok(())
+    }
 
     // Extends the `input`` when `added` is non-empty; otherwise filters `input` without changing its layout.
     /// An empty `added` existentially validates the current `input` binding prefix; unbound pattern variables remain for later stages.

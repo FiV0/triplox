@@ -48,6 +48,15 @@ impl FunctionPattern {
         Ok(())
     }
 
+    fn can_propose(&self, input: &BindingBag, added: &[Variable]) -> bool {
+        added == std::slice::from_ref(&self.output)
+            && !input.variables.contains(&self.output)
+            && self
+                .input_variables
+                .iter()
+                .all(|variable| input.variables.contains(variable))
+    }
+
     fn ensure_can_propose(&self, input: &BindingBag, added: &[Variable]) -> Result<()> {
         self.ensure_inputs_bound(input)?;
         ensure!(
@@ -98,8 +107,11 @@ impl ExecPattern for FunctionPattern {
             proposals.len(),
             input.rows.len()
         );
-        self.ensure_can_propose(input, added)?;
+        if !self.can_propose(input, added) {
+            return Ok(());
+        }
 
+        // Every row yields one candidate; `join` drops the rows whose expression has no value.
         for proposal in proposals {
             proposal.consider(self.index, 1);
         }
@@ -289,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_invalid_contracts_and_malformed_join_inputs() {
+    fn declines_to_propose_and_reports_malformed_join_inputs() {
         assert!(FunctionPattern::new(8, Expr::Variable("?x".to_var()), "?x".to_var()).is_err());
         let pattern = FunctionPattern::new(8, add("?x", 1), "?y".to_var()).unwrap();
         let malformed = BindingBag::new(
@@ -299,7 +311,12 @@ mod tests {
         .unwrap();
         let mut proposals = vec![Proposal::default()];
 
-        assert!(pattern.count(&malformed, &[], &mut proposals).is_err());
+        // Validation stages add nothing, so the pattern leaves the proposals alone.
+        pattern.count(&malformed, &[], &mut proposals).unwrap();
+        assert_eq!(proposals, vec![Proposal::default()]);
+        assert!(pattern
+            .count(&malformed, &["?y".to_var()], &mut [])
+            .is_err());
         assert!(pattern
             .join(
                 &malformed,
@@ -308,11 +325,13 @@ mod tests {
             )
             .is_err());
 
+        // Unbound inputs cannot be evaluated, so the pattern declines instead of proposing.
         let unbound = BindingBag::unit();
         let mut unbound_proposals = vec![Proposal::default()];
-        assert!(pattern
+        pattern
             .count(&unbound, &["?y".to_var()], &mut unbound_proposals)
-            .is_err());
+            .unwrap();
+        assert_eq!(unbound_proposals, vec![Proposal::default()]);
         assert!(pattern
             .join(&unbound, &["?y".to_var()], &["?y".to_var()])
             .is_err());
@@ -338,14 +357,16 @@ mod tests {
             ]],
         )
         .unwrap();
+        // An already-bound output leaves nothing to introduce.
         let mut bound_output_proposals = vec![Proposal::default()];
-        assert!(pattern
+        pattern
             .count(
                 &malformed_output,
                 &["?y".to_var()],
                 &mut bound_output_proposals,
             )
-            .is_err());
+            .unwrap();
+        assert_eq!(bound_output_proposals, vec![Proposal::default()]);
         assert!(pattern
             .join(&malformed_output, &[], &malformed_output.variables)
             .is_err());
