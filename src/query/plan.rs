@@ -11,6 +11,10 @@ use crate::query::{convert_predicate, convert_where_fn, pattern_variables, query
 
 use super::exec_pattern::PatternIndex;
 
+//////////////////////////////////
+// Descriptors
+//////////////////////////////////
+
 #[derive(Clone, Debug, PartialEq)]
 struct Descriptor {
     id: PatternIndex,
@@ -129,109 +133,6 @@ enum DescriptorKind {
     Not {
         children: Vec<Descriptor>,
     },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LogicalDescriptor {
-    id: PatternIndex,
-    variables: Vec<Variable>,
-    kind: LogicalDescriptorKind,
-}
-
-impl LogicalDescriptor {
-    pub(crate) fn id(&self) -> PatternIndex {
-        self.id
-    }
-
-    pub(crate) fn variables(&self) -> &[Variable] {
-        &self.variables
-    }
-
-    pub(crate) fn kind(&self) -> &LogicalDescriptorKind {
-        &self.kind
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum LogicalDescriptorKind {
-    Triple(Pattern),
-    Relation {
-        rows: Vec<Vec<DataType>>,
-    },
-    Predicate {
-        expression: Expr,
-    },
-    Function {
-        expression: Expr,
-        input_variables: Vec<Variable>,
-        output: Variable,
-    },
-    Or {
-        branches: Vec<LogicalScope>,
-    },
-    Not {
-        body: Box<LogicalScope>,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ParticipantRef {
-    Pattern(PatternIndex),
-    Incoming,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalStage {
-    added: Vec<Variable>,
-    proposers: Vec<ParticipantRef>,
-    participants: Vec<ParticipantRef>,
-    target_variables: Vec<Variable>,
-}
-
-impl LogicalStage {
-    pub(crate) fn added(&self) -> &[Variable] {
-        &self.added
-    }
-
-    pub(crate) fn proposers(&self) -> &[ParticipantRef] {
-        &self.proposers
-    }
-
-    pub(crate) fn participants(&self) -> &[ParticipantRef] {
-        &self.participants
-    }
-
-    pub(crate) fn target_variables(&self) -> &[Variable] {
-        &self.target_variables
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LogicalScope {
-    incoming_variables: Option<Vec<Variable>>,
-    descriptors: Vec<LogicalDescriptor>,
-    stages: Vec<LogicalStage>,
-}
-
-impl LogicalScope {
-    pub(crate) fn incoming_variables(&self) -> Option<&[Variable]> {
-        self.incoming_variables.as_deref()
-    }
-
-    pub(crate) fn descriptors(&self) -> &[LogicalDescriptor] {
-        &self.descriptors
-    }
-
-    pub(crate) fn stages(&self) -> &[LogicalStage] {
-        &self.stages
-    }
-
-    pub(crate) fn output_variables(&self) -> &[Variable] {
-        self.stages
-            .last()
-            .map(LogicalStage::target_variables)
-            .unwrap_or_default()
-    }
 }
 
 struct DescriptorBuilder<'a> {
@@ -437,6 +338,115 @@ impl<'a> DescriptorBuilder<'a> {
             .collect()
     }
 }
+
+//////////////////////////////////
+// Logical Plan 
+//////////////////////////////////
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LogicalDescriptor {
+    id: PatternIndex,
+    variables: Vec<Variable>,
+    kind: LogicalDescriptorKind,
+}
+
+impl LogicalDescriptor {
+    pub(crate) fn id(&self) -> PatternIndex {
+        self.id
+    }
+
+    pub(crate) fn variables(&self) -> &[Variable] {
+        &self.variables
+    }
+
+    pub(crate) fn kind(&self) -> &LogicalDescriptorKind {
+        &self.kind
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LogicalDescriptorKind {
+    Triple(Pattern),
+    Relation {
+        rows: Vec<Vec<DataType>>,
+    },
+    Predicate {
+        expression: Expr,
+    },
+    Function {
+        expression: Expr,
+        input_variables: Vec<Variable>,
+        output: Variable,
+    },
+    Or {
+        branches: Vec<LogicalScope>,
+    },
+    Not {
+        body: Box<LogicalScope>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ParticipantRef {
+    Pattern(PatternIndex),
+    Incoming,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LogicalStage {
+    added: Vec<Variable>,
+    proposers: Vec<ParticipantRef>,
+    participants: Vec<ParticipantRef>,
+    target_variables: Vec<Variable>,
+}
+
+impl LogicalStage {
+    pub(crate) fn added(&self) -> &[Variable] {
+        &self.added
+    }
+
+    pub(crate) fn proposers(&self) -> &[ParticipantRef] {
+        &self.proposers
+    }
+
+    pub(crate) fn participants(&self) -> &[ParticipantRef] {
+        &self.participants
+    }
+
+    pub(crate) fn target_variables(&self) -> &[Variable] {
+        &self.target_variables
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LogicalScope {
+    incoming_variables: Option<Vec<Variable>>,
+    descriptors: Vec<LogicalDescriptor>,
+    stages: Vec<LogicalStage>,
+}
+
+impl LogicalScope {
+    pub(crate) fn incoming_variables(&self) -> Option<&[Variable]> {
+        self.incoming_variables.as_deref()
+    }
+
+    pub(crate) fn descriptors(&self) -> &[LogicalDescriptor] {
+        &self.descriptors
+    }
+
+    pub(crate) fn stages(&self) -> &[LogicalStage] {
+        &self.stages
+    }
+
+    pub(crate) fn output_variables(&self) -> &[Variable] {
+        self.stages
+            .last()
+            .map(LogicalStage::target_variables)
+            .unwrap_or_default()
+    }
+}
+
+
 
 #[derive(Clone, Copy)]
 enum PlanningParticipant<'a> {
