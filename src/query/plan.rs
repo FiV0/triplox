@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{bail, ensure, Result};
-use edn::query::{Binding, Pattern, UnifyVars, Variable, WhereClause};
+use edn::query::{Binding, Pattern, Variable, WhereClause};
 use itertools::Itertools;
 
 use crate::expr::{expr_variables, Expr};
@@ -149,7 +149,7 @@ impl DescriptorBuilder {
         id
     }
 
-    fn relation(&mut self, binding: &Binding, argument: &QueryArg) -> Result<Descriptor> {
+    fn relation(&mut self, binding: &Binding, argument: &QueryArg) -> Descriptor {
         let (variable, rows) = match (binding, argument) {
             (Binding::BindScalar(variable), QueryArg::Scalar(value)) => {
                 (variable.clone(), vec![vec![value.clone()]])
@@ -158,19 +158,13 @@ impl DescriptorBuilder {
                 variable.clone(),
                 values.iter().cloned().map(|value| vec![value]).collect(),
             ),
-            (Binding::BindScalar(_), _) => bail!("Scalar input binding requires a scalar argument"),
-            (Binding::BindColl(_), _) => {
-                bail!("Collection input binding requires a collection argument")
-            }
-            (Binding::BindTuple(_), _) | (Binding::BindRel(_), _) => {
-                bail!("Tuple and relation input bindings are not supported")
-            }
+            _ => unreachable!("query validation rejects unsupported input bindings"),
         };
-        Ok(Descriptor {
+        Descriptor {
             id: self.allocate_id(),
             variables: vec![variable],
             kind: DescriptorKind::Relation { rows },
-        })
+        }
     }
 
     fn triple(&mut self, pattern: &Pattern) -> Descriptor {
@@ -202,13 +196,12 @@ impl DescriptorBuilder {
             WhereClause::WhereFn(function) => {
                 let function = convert_where_fn(function)?;
                 let input_variables = function.input_variables();
-                ensure!(
-                    !input_variables.contains(&function.output),
-                    "Function output {} is also an input",
-                    function.output
-                );
-                let mut variables = input_variables.clone();
-                variables.push(function.output.clone());
+                let variables = input_variables
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(function.output.clone()))
+                    .unique()
+                    .collect();
                 Ok(Descriptor {
                     id: self.allocate_id(),
                     variables,
@@ -220,33 +213,12 @@ impl DescriptorBuilder {
                 })
             }
             WhereClause::OrJoin(or) => {
-                ensure!(
-                    matches!(or.unify_vars, UnifyVars::Implicit),
-                    "Explicit or-join is not supported"
-                );
-                ensure!(
-                    !or.clauses.is_empty(),
-                    "OR must contain at least one branch"
-                );
                 let id = self.allocate_id();
                 let branches = or
                     .clauses
                     .iter()
                     .map(|branch| self.branch(branch))
                     .collect::<Result<Vec<_>>>()?;
-                let branch_sets: Vec<HashSet<Variable>> = branches
-                    .iter()
-                    .map(|branch| {
-                        branch
-                            .iter()
-                            .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                            .collect()
-                    })
-                    .collect();
-                ensure!(
-                    branch_sets.windows(2).all(|sets| sets[0] == sets[1]),
-                    "OR branches must mention the same variables"
-                );
                 let variables = branches[0]
                     .iter()
                     .flat_map(|descriptor| descriptor.variables.iter().cloned())
@@ -273,7 +245,7 @@ impl DescriptorBuilder {
                 })
             }
             WhereClause::RuleExpr | WhereClause::TypeAnnotation(_) => {
-                bail!("Unsupported where clause: {clause:?}")
+                unreachable!("query validation rejects unsupported where clauses")
             }
         }
     }
@@ -715,20 +687,14 @@ pub(crate) fn build_logical_plan(
     query: &edn::query::ParsedQuery,
     arguments: &[QueryArg],
 ) -> Result<LogicalScope> {
-    ensure!(
-        query.in_bindings.len() == arguments.len(),
-        "Query declares {} input bindings but received {} arguments",
-        query.in_bindings.len(),
-        arguments.len()
-    );
     let variable_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     let mut builder = DescriptorBuilder::new();
-    let mut descriptors = query
+    let mut descriptors: Vec<Descriptor> = query
         .in_bindings
         .iter()
         .zip(arguments)
         .map(|(binding, argument)| builder.relation(binding, argument))
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
     descriptors.extend(builder.where_clauses(&query.where_clauses)?);
 
     let root_scope = plan_scope(descriptors, &variable_order, None)?;
