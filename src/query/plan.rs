@@ -306,10 +306,12 @@ pub(crate) enum LogicalDescriptorKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ParticipantRef {
-    Pattern(PatternId),
+pub(crate) enum Participant<T> {
+    Pattern(T),
     Incoming,
 }
+
+pub(crate) type ParticipantRef = Participant<PatternId>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LogicalStage {
@@ -365,30 +367,30 @@ impl LogicalScope {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PlanningParticipant<'a> {
-    Incoming(&'a [Variable]),
-    Pattern(&'a Descriptor),
-}
+type PlanningParticipant<'a> = Participant<&'a Descriptor>;
 
-impl PlanningParticipant<'_> {
+impl Participant<&Descriptor> {
     fn reference(&self) -> ParticipantRef {
         match self {
-            Self::Incoming(_) => ParticipantRef::Incoming,
+            Self::Incoming => ParticipantRef::Incoming,
             Self::Pattern(descriptor) => ParticipantRef::Pattern(descriptor.id),
         }
     }
 
-    fn variables(&self) -> &[Variable] {
+    fn variables<'a>(&'a self, incoming_variables: &'a [Variable]) -> &'a [Variable] {
         match self {
-            Self::Incoming(variables) => variables,
+            Self::Incoming => incoming_variables,
             Self::Pattern(descriptor) => &descriptor.variables,
         }
     }
 
-    fn groundable(&self, bound: &HashSet<Variable>) -> Vec<Variable> {
+    fn groundable(
+        &self,
+        bound: &HashSet<Variable>,
+        incoming_variables: &[Variable],
+    ) -> Vec<Variable> {
         match self {
-            Self::Incoming(variables) => relation_groundable(variables, bound),
+            Self::Incoming => relation_groundable(incoming_variables, bound),
             Self::Pattern(descriptor) => descriptor.groundable(bound),
         }
     }
@@ -397,8 +399,8 @@ impl PlanningParticipant<'_> {
         matches!(self, Self::Pattern(descriptor) if descriptor.is_or())
     }
 
-    fn fully_bound(&self, bound: &HashSet<Variable>) -> bool {
-        self.variables()
+    fn fully_bound(&self, bound: &HashSet<Variable>, incoming_variables: &[Variable]) -> bool {
+        self.variables(incoming_variables)
             .iter()
             .all(|variable| bound.contains(variable))
     }
@@ -457,10 +459,12 @@ fn plan_stages(
     incoming_variables: Option<&[Variable]>,
 ) -> Result<Vec<LogicalStage>> {
     let order = scope_variable_order(descriptors, variable_order, incoming_variables);
+    let has_incoming = incoming_variables.is_some();
+    let incoming_variables = incoming_variables.unwrap_or_default();
     let mut states = Vec::new();
-    if let Some(incoming) = incoming_variables {
+    if has_incoming {
         states.push(ParticipantState {
-            participant: PlanningParticipant::Incoming(incoming),
+            participant: PlanningParticipant::Incoming,
             completed: false,
         });
     }
@@ -477,7 +481,9 @@ fn plan_stages(
         let validators: Vec<usize> = states
             .iter()
             .enumerate()
-            .filter(|(_, state)| !state.completed && state.participant.fully_bound(&bound))
+            .filter(|(_, state)| {
+                !state.completed && state.participant.fully_bound(&bound, incoming_variables)
+            })
             .map(|(index, _)| index)
             .collect();
         if !validators.is_empty() {
@@ -502,7 +508,10 @@ fn plan_stages(
                 && states.iter().any(|state| {
                     !state.completed
                         && !state.participant.is_or()
-                        && state.participant.groundable(&bound).contains(*variable)
+                        && state
+                            .participant
+                            .groundable(&bound, incoming_variables)
+                            .contains(*variable)
                 })
         });
         if let Some(selected) = selected {
@@ -512,7 +521,10 @@ fn plan_stages(
                 .filter(|(_, state)| {
                     !state.completed
                         && !state.participant.is_or()
-                        && state.participant.groundable(&bound).contains(selected)
+                        && state
+                            .participant
+                            .groundable(&bound, incoming_variables)
+                            .contains(selected)
                 })
                 .map(|(index, _)| index)
                 .collect();
@@ -524,7 +536,7 @@ fn plan_stages(
                 .filter(|(index, state)| {
                     !state.completed
                         && (proposer_indexes.contains(index)
-                            || state.participant.fully_bound(&bound))
+                            || state.participant.fully_bound(&bound, incoming_variables))
                 })
                 .map(|(index, _)| index)
                 .collect();
@@ -537,7 +549,10 @@ fn plan_stages(
                 .map(|index| states[*index].participant.reference())
                 .collect();
             for index in participant_indexes {
-                if states[index].participant.fully_bound(&bound) {
+                if states[index]
+                    .participant
+                    .fully_bound(&bound, incoming_variables)
+                {
                     states[index].completed = true;
                 }
             }
@@ -555,7 +570,7 @@ fn plan_stages(
             if state.completed || !state.participant.is_or() {
                 return None;
             }
-            let added = state.participant.groundable(&bound);
+            let added = state.participant.groundable(&bound, incoming_variables);
             (!added.is_empty()).then_some((index, added))
         });
         if let Some((index, added)) = grouped_or {
