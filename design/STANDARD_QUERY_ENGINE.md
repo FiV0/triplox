@@ -67,6 +67,12 @@ Values stay encoded as `Bytes` while they move through storage lookups and
 joins. Only expression patterns and final result processing decode values into
 `DataType`.
 
+In the future the row-oriented `BindingBag` will likely get replaced by a columnar
+trie implementation that is more suited for joining a result set already sitting
+in memory with a pattern that needs to retrieve values from SlateDB via seeks.
+The bottleneck is likely retrieving and seeking through SlateDB iterators. The additional
+cost of keeping variable results sorted in memory will pale in comparison.
+
 ### Relational operations
 
 `BindingBag` provides the operations needed by executable patterns:
