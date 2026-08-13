@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use anyhow::{bail, ensure, Result};
 use edn::query::{
@@ -12,25 +12,47 @@ use crate::query::{convert_predicate, convert_where_fn, pattern_variables, query
 use super::exec_pattern::PatternIndex;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Descriptor {
+struct Descriptor {
     id: PatternIndex,
     variables: Vec<Variable>,
     kind: DescriptorKind,
 }
 
+fn relation_groundable(variables: &[Variable], bound: &HashSet<Variable>) -> Vec<Variable> {
+    let prefix_len = variables
+        .iter()
+        .take_while(|variable| bound.contains(*variable))
+        .count();
+    if variables[prefix_len..]
+        .iter()
+        .any(|variable| bound.contains(variable))
+    {
+        return Vec::new();
+    }
+    variables.get(prefix_len).cloned().into_iter().collect()
+}
+
+fn branch_derives(
+    descriptors: &[Descriptor],
+    initial_bound: &HashSet<Variable>,
+    required: &[Variable],
+) -> bool {
+    let mut bound = initial_bound.clone();
+    loop {
+        let mut changed = false;
+        for descriptor in descriptors {
+            for variable in descriptor.groundable(&bound) {
+                changed |= bound.insert(variable);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    required.iter().all(|variable| bound.contains(variable))
+}
+
 impl Descriptor {
-    pub(crate) fn id(&self) -> PatternIndex {
-        self.id
-    }
-
-    pub(crate) fn variables(&self) -> &[Variable] {
-        &self.variables
-    }
-
-    pub(crate) fn kind(&self) -> &DescriptorKind {
-        &self.kind
-    }
-
     fn groundable(&self, bound: &HashSet<Variable>) -> Vec<Variable> {
         match &self.kind {
             DescriptorKind::Triple(_) => self
@@ -82,7 +104,7 @@ impl Descriptor {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum DescriptorKind {
+enum DescriptorKind {
     Triple(Pattern),
     Relation {
         rows: Vec<Vec<DataType>>,
@@ -100,6 +122,49 @@ pub(crate) enum DescriptorKind {
     },
     Not {
         children: Vec<Descriptor>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LogicalDescriptor {
+    id: PatternIndex,
+    variables: Vec<Variable>,
+    kind: LogicalDescriptorKind,
+}
+
+impl LogicalDescriptor {
+    pub(crate) fn id(&self) -> PatternIndex {
+        self.id
+    }
+
+    pub(crate) fn variables(&self) -> &[Variable] {
+        &self.variables
+    }
+
+    pub(crate) fn kind(&self) -> &LogicalDescriptorKind {
+        &self.kind
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LogicalDescriptorKind {
+    Triple(Pattern),
+    Relation {
+        rows: Vec<Vec<DataType>>,
+    },
+    Predicate {
+        expression: Expr,
+    },
+    Function {
+        expression: Expr,
+        input_variables: Vec<Variable>,
+        output: Variable,
+    },
+    Or {
+        branches: Vec<LogicalScope>,
+    },
+    Not {
+        body: Box<LogicalScope>,
     },
 }
 
@@ -135,9 +200,10 @@ impl LogicalStage {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LogicalScope {
     incoming_variables: Option<Vec<Variable>>,
+    descriptors: Vec<LogicalDescriptor>,
     stages: Vec<LogicalStage>,
 }
 
@@ -146,40 +212,19 @@ impl LogicalScope {
         self.incoming_variables.as_deref()
     }
 
-    pub(crate) fn stages(&self) -> &[LogicalStage] {
-        &self.stages
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum NestedScopes {
-    Or(Vec<LogicalScope>),
-    Not(LogicalScope),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LogicalPlan {
-    variable_order: Vec<Variable>,
-    descriptors: Vec<Descriptor>,
-    root_scope: LogicalScope,
-    nested_scopes: BTreeMap<PatternIndex, NestedScopes>,
-}
-
-impl LogicalPlan {
-    pub(crate) fn variable_order(&self) -> &[Variable] {
-        &self.variable_order
-    }
-
-    pub(crate) fn descriptors(&self) -> &[Descriptor] {
+    pub(crate) fn descriptors(&self) -> &[LogicalDescriptor] {
         &self.descriptors
     }
 
-    pub(crate) fn root_scope(&self) -> &LogicalScope {
-        &self.root_scope
+    pub(crate) fn stages(&self) -> &[LogicalStage] {
+        &self.stages
     }
 
-    pub(crate) fn nested_scopes(&self) -> &BTreeMap<PatternIndex, NestedScopes> {
-        &self.nested_scopes
+    pub(crate) fn output_variables(&self) -> &[Variable] {
+        self.stages
+            .last()
+            .map(LogicalStage::target_variables)
+            .unwrap_or_default()
     }
 }
 
@@ -387,40 +432,6 @@ impl<'a> DescriptorBuilder<'a> {
     }
 }
 
-fn relation_groundable(variables: &[Variable], bound: &HashSet<Variable>) -> Vec<Variable> {
-    let prefix_len = variables
-        .iter()
-        .take_while(|variable| bound.contains(*variable))
-        .count();
-    if variables[prefix_len..]
-        .iter()
-        .any(|variable| bound.contains(variable))
-    {
-        return Vec::new();
-    }
-    variables.get(prefix_len).cloned().into_iter().collect()
-}
-
-fn branch_derives(
-    descriptors: &[Descriptor],
-    initial_bound: &HashSet<Variable>,
-    required: &[Variable],
-) -> bool {
-    let mut bound = initial_bound.clone();
-    loop {
-        let mut changed = false;
-        for descriptor in descriptors {
-            for variable in descriptor.groundable(&bound) {
-                changed |= bound.insert(variable);
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    required.iter().all(|variable| bound.contains(variable))
-}
-
 #[derive(Clone, Copy)]
 enum PlanningParticipant<'a> {
     Incoming(&'a [Variable]),
@@ -507,14 +518,14 @@ fn target_layout(order: &[Variable], bound: &HashSet<Variable>) -> Vec<Variable>
         .collect()
 }
 
-fn plan_scope(
+fn plan_stages(
     descriptors: &[Descriptor],
     variable_order: &[Variable],
-    incoming_variables: Option<Vec<Variable>>,
-) -> Result<LogicalScope> {
-    let order = scope_variable_order(descriptors, variable_order, incoming_variables.as_deref());
+    incoming_variables: Option<&[Variable]>,
+) -> Result<Vec<LogicalStage>> {
+    let order = scope_variable_order(descriptors, variable_order, incoming_variables);
     let mut states = Vec::new();
-    if let Some(incoming) = incoming_variables.as_deref() {
+    if let Some(incoming) = incoming_variables {
         states.push(ParticipantState {
             participant: PlanningParticipant::Incoming(incoming),
             completed: false,
@@ -645,19 +656,17 @@ fn plan_scope(
         bail!("Unable to place query participants: {unplaced:?}");
     }
 
-    Ok(LogicalScope {
-        incoming_variables,
-        stages,
-    })
+    Ok(stages)
 }
 
 fn composite_incoming_layout(
-    descriptor: &Descriptor,
-    scope: &LogicalScope,
+    descriptor_id: PatternIndex,
+    descriptor_variables: &[Variable],
+    stages: &[LogicalStage],
 ) -> Result<Vec<Variable>> {
-    let reference = ParticipantRef::Pattern(descriptor.id);
+    let reference = ParticipantRef::Pattern(descriptor_id);
     let mut previous_layout = Vec::new();
-    for stage in &scope.stages {
+    for stage in stages {
         if stage.participants.contains(&reference) {
             let layout = if stage.proposers.contains(&reference) {
                 &previous_layout
@@ -666,7 +675,7 @@ fn composite_incoming_layout(
             };
             return Ok(layout
                 .iter()
-                .filter(|variable| descriptor.variables.contains(*variable))
+                .filter(|variable| descriptor_variables.contains(*variable))
                 .cloned()
                 .collect());
         }
@@ -674,59 +683,77 @@ fn composite_incoming_layout(
     }
     bail!(
         "Composite descriptor {} was not placed in its owning scope",
-        descriptor.id
+        descriptor_id
     )
 }
 
-fn plan_nested_scopes(
-    descriptors: &[Descriptor],
-    scope: &LogicalScope,
+fn plan_scope(
+    descriptors: Vec<Descriptor>,
     variable_order: &[Variable],
-    nested_scopes: &mut BTreeMap<PatternIndex, NestedScopes>,
-) -> Result<()> {
+    incoming_variables: Option<Vec<Variable>>,
+) -> Result<LogicalScope> {
+    let stages = plan_stages(&descriptors, variable_order, incoming_variables.as_deref())?;
+    let mut logical_descriptors = Vec::with_capacity(descriptors.len());
     for descriptor in descriptors {
-        match &descriptor.kind {
+        let Descriptor {
+            id,
+            variables,
+            kind,
+        } = descriptor;
+        let kind = match kind {
+            DescriptorKind::Triple(pattern) => LogicalDescriptorKind::Triple(pattern),
+            DescriptorKind::Relation { rows } => LogicalDescriptorKind::Relation { rows },
+            DescriptorKind::Predicate { expression } => {
+                LogicalDescriptorKind::Predicate { expression }
+            }
+            DescriptorKind::Function {
+                expression,
+                input_variables,
+                output,
+            } => LogicalDescriptorKind::Function {
+                expression,
+                input_variables,
+                output,
+            },
             DescriptorKind::Or { branches } => {
-                let incoming = composite_incoming_layout(descriptor, scope)?;
-                let mut branch_scopes = Vec::with_capacity(branches.len());
+                let incoming = composite_incoming_layout(id, &variables, &stages)?;
+                let mut logical_branches = Vec::with_capacity(branches.len());
                 for branch in branches {
-                    let branch_scope = plan_scope(branch, variable_order, Some(incoming.clone()))?;
-                    plan_nested_scopes(branch, &branch_scope, variable_order, nested_scopes)?;
-                    branch_scopes.push(branch_scope);
+                    logical_branches.push(plan_scope(
+                        branch,
+                        variable_order,
+                        Some(incoming.clone()),
+                    )?);
                 }
-                ensure!(
-                    nested_scopes
-                        .insert(descriptor.id, NestedScopes::Or(branch_scopes))
-                        .is_none(),
-                    "Duplicate nested scope ID {}",
-                    descriptor.id
-                );
+                LogicalDescriptorKind::Or {
+                    branches: logical_branches,
+                }
             }
             DescriptorKind::Not { children } => {
-                let incoming = composite_incoming_layout(descriptor, scope)?;
-                let nested_scope = plan_scope(children, variable_order, Some(incoming))?;
-                plan_nested_scopes(children, &nested_scope, variable_order, nested_scopes)?;
-                ensure!(
-                    nested_scopes
-                        .insert(descriptor.id, NestedScopes::Not(nested_scope))
-                        .is_none(),
-                    "Duplicate nested scope ID {}",
-                    descriptor.id
-                );
+                let incoming = composite_incoming_layout(id, &variables, &stages)?;
+                LogicalDescriptorKind::Not {
+                    body: Box::new(plan_scope(children, variable_order, Some(incoming))?),
+                }
             }
-            DescriptorKind::Triple(_)
-            | DescriptorKind::Relation { .. }
-            | DescriptorKind::Predicate { .. }
-            | DescriptorKind::Function { .. } => {}
-        }
+        };
+        logical_descriptors.push(LogicalDescriptor {
+            id,
+            variables,
+            kind,
+        });
     }
-    Ok(())
+
+    Ok(LogicalScope {
+        incoming_variables,
+        descriptors: logical_descriptors,
+        stages,
+    })
 }
 
 pub(crate) fn build_logical_plan(
     query: &edn::query::ParsedQuery,
     arguments: &[QueryArg],
-) -> Result<LogicalPlan> {
+) -> Result<LogicalScope> {
     ensure!(
         query.in_bindings.len() == arguments.len(),
         "Query declares {} input bindings but received {} arguments",
@@ -743,20 +770,13 @@ pub(crate) fn build_logical_plan(
         .collect::<Result<Vec<_>>>()?;
     descriptors.extend(builder.where_clauses(&query.where_clauses)?);
 
-    let root_scope = plan_scope(&descriptors, &variable_order, None)?;
-    let mut nested_scopes = BTreeMap::new();
-    plan_nested_scopes(
-        &descriptors,
-        &root_scope,
-        &variable_order,
-        &mut nested_scopes,
-    )?;
-    Ok(LogicalPlan {
-        variable_order,
-        descriptors,
-        root_scope,
-        nested_scopes,
-    })
+    let root_scope = plan_scope(descriptors, &variable_order, None)?;
+    ensure!(
+        root_scope.output_variables() == variable_order,
+        "Root logical scope produces variables {:?}, expected {variable_order:?}",
+        root_scope.output_variables()
+    );
+    Ok(root_scope)
 }
 
 #[cfg(test)]
@@ -848,41 +868,44 @@ mod tests {
         let plan = build_logical_plan(&query, &arguments).unwrap();
 
         assert_eq!(
-            plan.variable_order,
-            vec![var("?name"), var("?age"), var("?e"), var("?next")]
+            plan.output_variables(),
+            &[var("?name"), var("?age"), var("?e"), var("?next")]
         );
         assert_eq!(plan.descriptors.len(), 6);
         assert_eq!(plan.descriptors[0].id, 0);
         assert!(matches!(
             plan.descriptors[0].kind,
-            DescriptorKind::Relation { .. }
+            LogicalDescriptorKind::Relation { .. }
         ));
         assert_eq!(plan.descriptors[1].id, 1);
         assert!(matches!(
             plan.descriptors[1].kind,
-            DescriptorKind::Relation { .. }
+            LogicalDescriptorKind::Relation { .. }
         ));
         assert_eq!(plan.descriptors[2].id, 2);
         assert!(matches!(
             plan.descriptors[2].kind,
-            DescriptorKind::Triple(_)
+            LogicalDescriptorKind::Triple(_)
         ));
         assert_eq!(plan.descriptors[3].id, 3);
         assert!(matches!(
             plan.descriptors[3].kind,
-            DescriptorKind::Predicate { .. }
+            LogicalDescriptorKind::Predicate { .. }
         ));
         assert_eq!(plan.descriptors[4].id, 4);
         assert!(matches!(
             plan.descriptors[4].kind,
-            DescriptorKind::Function { .. }
+            LogicalDescriptorKind::Function { .. }
         ));
         assert_eq!(plan.descriptors[5].id, 5);
-        let DescriptorKind::Not { children } = &plan.descriptors[5].kind else {
+        let LogicalDescriptorKind::Not { body } = &plan.descriptors[5].kind else {
             panic!("expected NOT descriptor");
         };
-        assert_eq!(children[0].id, 6);
-        assert!(matches!(children[0].kind, DescriptorKind::Triple(_)));
+        assert_eq!(body.descriptors[0].id, 6);
+        assert!(matches!(
+            body.descriptors[0].kind,
+            LogicalDescriptorKind::Triple(_)
+        ));
     }
 
     #[test]
@@ -893,12 +916,12 @@ mod tests {
         .unwrap();
         validate_query(&query, &[]).unwrap();
         let plan = build_logical_plan(&query, &[]).unwrap();
-        let DescriptorKind::Or { branches } = &plan.descriptors[0].kind else {
+        let LogicalDescriptorKind::Or { branches } = &plan.descriptors[0].kind else {
             panic!("expected OR descriptor");
         };
         assert_eq!(plan.descriptors[0].id, 0);
-        assert_eq!(branches[0][0].id, 1);
-        assert_eq!(branches[1][0].id, 2);
+        assert_eq!(branches[0].descriptors[0].id, 1);
+        assert_eq!(branches[1].descriptors[0].id, 2);
 
         let explicit = edn::parse::parse_query(
             r#"[:find ?e :where (or-join [?e] [?e :person/name "A"] [?e :person/name "B"])]"#,
@@ -970,7 +993,7 @@ mod tests {
             predicate(2, &["?x"]),
         ];
 
-        let scope = plan_scope(&descriptors, &[var("?x")], None).unwrap();
+        let scope = plan_scope(descriptors, &[var("?x")], None).unwrap();
 
         assert_eq!(
             scope.stages,
@@ -997,7 +1020,7 @@ mod tests {
             predicate(3, &["?x", "?y"]),
         ];
 
-        let scope = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+        let scope = plan_scope(descriptors, &[var("?x"), var("?y")], None).unwrap();
 
         assert_eq!(scope.stages.len(), 2);
         assert_eq!(scope.stages[0].added, vec![var("?x"), var("?y")]);
@@ -1022,7 +1045,7 @@ mod tests {
             ),
         ];
 
-        let scope = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+        let scope = plan_scope(descriptors, &[var("?x"), var("?y")], None).unwrap();
 
         assert_eq!(scope.stages.len(), 2);
         assert_eq!(scope.stages[0].participants, refs(&[0]));
@@ -1031,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_scopes_project_relevant_outer_variables_and_plan_incoming_as_relation() {
+    fn nested_logical_scopes_project_relevant_outer_variables_and_plan_incoming_as_relation() {
         let descriptors = vec![
             relation(0, &["?x"]),
             relation(1, &["?z"]),
@@ -1045,11 +1068,9 @@ mod tests {
             ),
         ];
         let order = vec![var("?x"), var("?z"), var("?y")];
-        let root = plan_scope(&descriptors, &order, None).unwrap();
-        let mut nested = BTreeMap::new();
-        plan_nested_scopes(&descriptors, &root, &order, &mut nested).unwrap();
+        let root = plan_scope(descriptors, &order, None).unwrap();
 
-        let NestedScopes::Or(branches) = &nested[&2] else {
+        let LogicalDescriptorKind::Or { branches } = &root.descriptors[2].kind else {
             panic!("expected OR scopes");
         };
         assert_eq!(branches[0].incoming_variables, Some(vec![var("?x")]));
@@ -1067,19 +1088,17 @@ mod tests {
     #[test]
     fn not_requires_outer_grounding_and_receives_an_incoming_participant() {
         let ungrounded = vec![not(0, &["?x"], vec![relation(1, &["?x"])])];
-        assert!(plan_scope(&ungrounded, &[var("?x")], None).is_err());
+        assert!(plan_scope(ungrounded, &[var("?x")], None).is_err());
 
         let descriptors = vec![
             relation(0, &["?x"]),
             not(1, &["?x"], vec![relation(2, &["?x"])]),
         ];
         let order = vec![var("?x")];
-        let root = plan_scope(&descriptors, &order, None).unwrap();
+        let root = plan_scope(descriptors, &order, None).unwrap();
         assert_eq!(root.stages[0].participants, refs(&[0, 1]));
 
-        let mut nested = BTreeMap::new();
-        plan_nested_scopes(&descriptors, &root, &order, &mut nested).unwrap();
-        let NestedScopes::Not(body) = &nested[&1] else {
+        let LogicalDescriptorKind::Not { body } = &root.descriptors[1].kind else {
             panic!("expected NOT scope");
         };
         assert_eq!(body.incoming_variables, Some(vec![var("?x")]));
@@ -1090,18 +1109,50 @@ mod tests {
     }
 
     #[test]
+    fn logical_descriptors_own_child_scopes_recursively() {
+        let descriptors = vec![
+            relation(0, &["?x"]),
+            not(
+                1,
+                &["?x"],
+                vec![or(
+                    2,
+                    &["?x"],
+                    vec![vec![relation(3, &["?x"])], vec![relation(4, &["?x"])]],
+                )],
+            ),
+        ];
+
+        let root = plan_scope(descriptors, &[var("?x")], None).unwrap();
+        let LogicalDescriptorKind::Not { body } = &root.descriptors[1].kind else {
+            panic!("expected NOT descriptor");
+        };
+        let LogicalDescriptorKind::Or { branches } = &body.descriptors[0].kind else {
+            panic!("expected nested OR descriptor");
+        };
+
+        assert_eq!(body.incoming_variables, Some(vec![var("?x")]));
+        assert_eq!(branches.len(), 2);
+        assert!(branches
+            .iter()
+            .all(|branch| branch.incoming_variables == Some(vec![var("?x")])));
+        assert_eq!(branches[0].descriptors[0].id, 3);
+        assert_eq!(branches[1].descriptors[0].id, 4);
+    }
+
+    #[test]
     fn reports_insufficient_bindings_and_uses_query_order_as_tie_breaker() {
-        assert!(plan_scope(&[predicate(0, &["?x"])], &[var("?x")], None).is_err());
+        assert!(plan_scope(vec![predicate(0, &["?x"])], &[var("?x")], None).is_err());
 
         let descriptors = vec![relation(0, &["?y"]), relation(1, &["?x"])];
-        let scope = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+        let scope = plan_scope(descriptors, &[var("?x"), var("?y")], None).unwrap();
         assert_eq!(scope.stages[0].added, vec![var("?x")]);
         assert_eq!(scope.stages[1].added, vec![var("?y")]);
     }
 
     #[test]
     fn incoming_with_no_columns_remains_an_explicit_validation_participant() {
-        let scope = plan_scope(&[], &[], Some(vec![])).unwrap();
+        let scope = plan_scope(vec![], &[], Some(vec![])).unwrap();
         assert_eq!(
             scope.stages,
             vec![LogicalStage {
@@ -1133,7 +1184,7 @@ mod tests {
     #[test]
     fn planner_reorders_bound_layout_back_to_scope_order() {
         let descriptors = vec![function(0, "?x", "?y"), relation(1, &["?x"])];
-        let scope = plan_scope(&descriptors, &[var("?y"), var("?x")], None).unwrap();
+        let scope = plan_scope(descriptors, &[var("?y"), var("?x")], None).unwrap();
 
         assert_eq!(scope.stages[0].added, vec![var("?x")]);
         assert_eq!(scope.stages[0].target_variables, vec![var("?x")]);
@@ -1144,7 +1195,7 @@ mod tests {
     #[test]
     fn planner_places_constant_only_descriptors_in_validation_stage() {
         let descriptors = vec![predicate(0, &[])];
-        let scope = plan_scope(&descriptors, &[], None).unwrap();
+        let scope = plan_scope(descriptors, &[], None).unwrap();
 
         assert_eq!(
             scope.stages,
@@ -1169,11 +1220,9 @@ mod tests {
         );
         let descriptors = vec![descriptor];
         let order = vec![var("?x"), var("?y")];
-        let root = plan_scope(&descriptors, &order, None).unwrap();
-        let mut nested = BTreeMap::new();
-        plan_nested_scopes(&descriptors, &root, &order, &mut nested).unwrap();
+        let root = plan_scope(descriptors, &order, None).unwrap();
 
-        let NestedScopes::Or(branches) = &nested[&0] else {
+        let LogicalDescriptorKind::Or { branches } = &root.descriptors[0].kind else {
             panic!("expected OR scopes");
         };
         assert_eq!(branches[0].stages[1].added, vec![var("?x")]);
@@ -1185,20 +1234,24 @@ mod tests {
     }
 
     #[test]
-    fn expression_descriptor_data_remains_owned_by_the_plan() {
+    fn expression_descriptor_data_remains_owned_by_the_logical_scope() {
         let expression = Expr::BinaryExpr(BinaryExpr {
             left: Box::new(Expr::Variable(var("?x"))),
             op: BinaryOp::Lt,
             right: Box::new(Expr::Literal(DataType::Long(10))),
         });
         let descriptor = Descriptor {
-            id: 0,
+            id: 1,
             variables: vec![var("?x")],
             kind: DescriptorKind::Predicate {
                 expression: expression.clone(),
             },
         };
+        let scope = plan_scope(vec![relation(0, &["?x"]), descriptor], &[var("?x")], None).unwrap();
 
-        assert_eq!(descriptor.kind, DescriptorKind::Predicate { expression });
+        assert_eq!(
+            scope.descriptors[1].kind,
+            LogicalDescriptorKind::Predicate { expression }
+        );
     }
 }
