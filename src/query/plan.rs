@@ -8,7 +8,7 @@ use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{convert_predicate, convert_where_fn, pattern_variables, query_variable_order};
 
-use super::exec_pattern::PatternIndex;
+use super::exec_pattern::PatternId;
 
 //////////////////////////////////
 // Descriptors
@@ -16,7 +16,7 @@ use super::exec_pattern::PatternIndex;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Descriptor {
-    id: PatternIndex,
+    id: PatternId,
     variables: Vec<Variable>,
     kind: DescriptorKind,
 }
@@ -135,7 +135,7 @@ enum DescriptorKind {
 }
 
 struct DescriptorBuilder {
-    next_id: PatternIndex,
+    next_id: PatternId,
 }
 
 impl DescriptorBuilder {
@@ -143,7 +143,7 @@ impl DescriptorBuilder {
         Self { next_id: 0 }
     }
 
-    fn allocate_id(&mut self) -> PatternIndex {
+    fn allocate_id(&mut self) -> PatternId {
         let id = self.next_id;
         self.next_id += 1;
         id
@@ -292,13 +292,13 @@ impl DescriptorBuilder {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LogicalDescriptor {
-    id: PatternIndex,
+    id: PatternId,
     variables: Vec<Variable>,
     kind: LogicalDescriptorKind,
 }
 
 impl LogicalDescriptor {
-    pub(crate) fn id(&self) -> PatternIndex {
+    pub(crate) fn id(&self) -> PatternId {
         self.id
     }
 
@@ -335,7 +335,7 @@ pub(crate) enum LogicalDescriptorKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ParticipantRef {
-    Pattern(PatternIndex),
+    Pattern(PatternId),
     Incoming,
 }
 
@@ -621,7 +621,7 @@ fn plan_stages(
 }
 
 fn composite_incoming_layout(
-    descriptor_id: PatternIndex,
+    descriptor_id: PatternId,
     descriptor_variables: &[Variable],
     stages: &[LogicalStage],
 ) -> Result<Vec<Variable>> {
@@ -754,7 +754,7 @@ mod tests {
         name.to_var()
     }
 
-    fn relation(id: PatternIndex, variables: &[&str]) -> Descriptor {
+    fn relation(id: PatternId, variables: &[&str]) -> Descriptor {
         Descriptor {
             id,
             variables: variables.iter().map(|name| var(name)).collect(),
@@ -762,7 +762,7 @@ mod tests {
         }
     }
 
-    fn predicate(id: PatternIndex, variables: &[&str]) -> Descriptor {
+    fn predicate(id: PatternId, variables: &[&str]) -> Descriptor {
         let expression = variables
             .first()
             .map(|name| Expr::Variable(var(name)))
@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    fn function(id: PatternIndex, input: &str, output: &str) -> Descriptor {
+    fn function(id: PatternId, input: &str, output: &str) -> Descriptor {
         let input = var(input);
         let output = var(output);
         Descriptor {
@@ -788,7 +788,7 @@ mod tests {
         }
     }
 
-    fn or(id: PatternIndex, variables: &[&str], branches: Vec<Vec<Descriptor>>) -> Descriptor {
+    fn or(id: PatternId, variables: &[&str], branches: Vec<Vec<Descriptor>>) -> Descriptor {
         Descriptor {
             id,
             variables: variables.iter().map(|name| var(name)).collect(),
@@ -796,7 +796,7 @@ mod tests {
         }
     }
 
-    fn not(id: PatternIndex, variables: &[&str], children: Vec<Descriptor>) -> Descriptor {
+    fn not(id: PatternId, variables: &[&str], children: Vec<Descriptor>) -> Descriptor {
         Descriptor {
             id,
             variables: variables.iter().map(|name| var(name)).collect(),
@@ -804,7 +804,7 @@ mod tests {
         }
     }
 
-    fn refs(ids: &[PatternIndex]) -> Vec<ParticipantRef> {
+    fn refs(ids: &[PatternId]) -> Vec<ParticipantRef> {
         ids.iter().copied().map(ParticipantRef::Pattern).collect()
     }
 
