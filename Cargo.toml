@@ -40,6 +40,7 @@ feldera-macros = "0.299.0"
 triplox-client = { workspace = true }
 futures = "0.3"
 indexmap = "2.14.0"
+itertools = "0.14"
 log = "0.4"
 rand = "0.9"
 regex = "1.12.3"

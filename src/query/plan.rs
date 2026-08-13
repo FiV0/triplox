@@ -4,6 +4,7 @@ use anyhow::{bail, ensure, Result};
 use edn::query::{
     Binding, Pattern, PatternNonValuePlace, PatternValuePlace, UnifyVars, Variable, WhereClause,
 };
+use itertools::Itertools;
 
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
@@ -107,9 +108,9 @@ impl Descriptor {
     }
 }
 
-// TODO there is like a 1-1 relationship between Descriptor and LogicalDescriptor, as well as 
+// TODO there is like a 1-1 relationship between Descriptor and LogicalDescriptor, as well as
 // DescriptorKind and LogicalDescriptorKind. Then only difference is that one carries pure
-// transformed patterns (triple, or, not etc..) and the other holds hole query plans for the 
+// transformed patterns (triple, or, not etc..) and the other holds hole query plans for the
 // recrusive structures like or and not. For non-recursive patterns the structural is identical.
 // There is likely some refactor one can do here.
 
@@ -135,45 +136,19 @@ enum DescriptorKind {
     },
 }
 
-struct DescriptorBuilder<'a> {
-    variable_order: &'a [Variable],
+struct DescriptorBuilder {
     next_id: PatternIndex,
 }
 
-impl<'a> DescriptorBuilder<'a> {
-    fn new(variable_order: &'a [Variable]) -> Self {
-        Self {
-            variable_order,
-            next_id: 0,
-        }
+impl DescriptorBuilder {
+    fn new() -> Self {
+        Self { next_id: 0 }
     }
 
     fn allocate_id(&mut self) -> PatternIndex {
         let id = self.next_id;
         self.next_id += 1;
         id
-    }
-
-    fn ordered_variables(&self, variables: impl IntoIterator<Item = Variable>) -> Vec<Variable> {
-        let mut occurrence_order = Vec::new();
-        let mut variables_set = HashSet::new();
-        for variable in variables {
-            if variables_set.insert(variable.clone()) {
-                occurrence_order.push(variable);
-            }
-        }
-        let mut ordered: Vec<Variable> = self
-            .variable_order
-            .iter()
-            .filter(|variable| variables_set.contains(*variable))
-            .cloned()
-            .collect();
-        for variable in occurrence_order {
-            if !ordered.contains(&variable) {
-                ordered.push(variable);
-            }
-        }
-        ordered
     }
 
     fn relation(&mut self, binding: &Binding, argument: &QueryArg) -> Result<Descriptor> {
@@ -304,7 +279,11 @@ impl<'a> DescriptorBuilder<'a> {
                     branch_sets.windows(2).all(|sets| sets[0] == sets[1]),
                     "OR branches must mention the same variables"
                 );
-                let variables = self.ordered_variables(branch_sets[0].iter().cloned());
+                let variables = branches[0]
+                    .iter()
+                    .flat_map(|descriptor| descriptor.variables.iter().cloned())
+                    .unique()
+                    .collect();
                 Ok(Descriptor {
                     id,
                     variables,
@@ -314,11 +293,11 @@ impl<'a> DescriptorBuilder<'a> {
             WhereClause::NotJoin(not) => {
                 let id = self.allocate_id();
                 let children = self.where_clauses(&not.clauses)?;
-                let variables = self.ordered_variables(
-                    children
-                        .iter()
-                        .flat_map(|descriptor| descriptor.variables.iter().cloned()),
-                );
+                let variables = children
+                    .iter()
+                    .flat_map(|descriptor| descriptor.variables.iter().cloned())
+                    .unique()
+                    .collect();
                 Ok(Descriptor {
                     id,
                     variables,
@@ -340,7 +319,7 @@ impl<'a> DescriptorBuilder<'a> {
 }
 
 //////////////////////////////////
-// Logical Plan 
+// Logical Plan
 //////////////////////////////////
 
 #[derive(Clone, Debug, PartialEq)]
@@ -445,8 +424,6 @@ impl LogicalScope {
             .unwrap_or_default()
     }
 }
-
-
 
 #[derive(Clone, Copy)]
 enum PlanningParticipant<'a> {
@@ -777,7 +754,7 @@ pub(crate) fn build_logical_plan(
         arguments.len()
     );
     let variable_order = query_variable_order(&query.in_bindings, &query.where_clauses);
-    let mut builder = DescriptorBuilder::new(&variable_order);
+    let mut builder = DescriptorBuilder::new();
     let mut descriptors = query
         .in_bindings
         .iter()
@@ -948,6 +925,24 @@ mod tests {
         let wrong_argument =
             edn::parse::parse_query(r#"[:find ?e :in ?x :where [?e :a ?x]]"#).unwrap();
         assert!(build_logical_plan(&wrong_argument, &[QueryArg::Collection(vec![])]).is_err());
+    }
+
+    #[test]
+    fn composite_descriptors_distinct_child_variables_in_occurrence_order() {
+        let query = edn::parse::parse_query(
+            r#"[:find ?e
+                :where
+                (or (and [?e :a ?x] [?x :b ?e])
+                    (and [?e :c ?x] [?x :d ?e]))
+                (not [?e :blocked-by ?x] [?x :active ?e])]"#,
+        )
+        .unwrap();
+        let mut builder = DescriptorBuilder::new();
+
+        let descriptors = builder.where_clauses(&query.where_clauses).unwrap();
+
+        assert_eq!(descriptors[0].variables, vec![var("?e"), var("?x")]);
+        assert_eq!(descriptors[1].variables, vec![var("?e"), var("?x")]);
     }
 
     #[test]
@@ -1188,8 +1183,7 @@ mod tests {
             PatternValuePlace::Variable(var("?v")),
         )
         .unwrap();
-        let order = [var("?e"), var("?v")];
-        let mut builder = DescriptorBuilder::new(&order);
+        let mut builder = DescriptorBuilder::new();
 
         let descriptor = builder.triple(&pattern).unwrap();
 
