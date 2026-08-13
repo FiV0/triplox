@@ -103,6 +103,12 @@ impl Descriptor {
     }
 }
 
+// TODO there is like a 1-1 relationship between Descriptor and LogicalDescriptor, as well as 
+// DescriptorKind and LogicalDescriptorKind. Then only difference is that one carries pure
+// transformed patterns (triple, or, not etc..) and the other holds hole query plans for the 
+// recrusive structures like or and not. For non-recursive patterns the structural is identical.
+// There is likely some refactor one can do here.
+
 #[derive(Clone, Debug, PartialEq)]
 enum DescriptorKind {
     Triple(Pattern),
