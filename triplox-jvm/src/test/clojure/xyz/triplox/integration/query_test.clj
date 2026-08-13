@@ -763,7 +763,6 @@
                   :where [[(>= ?age 21)]]}
                 22))))))
 
-#_
 (deftest ident-constants-in-ref-value-position
   (tc/transact *conn* issues-schema)
   (tc/transact *conn*
