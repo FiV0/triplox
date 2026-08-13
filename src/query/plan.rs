@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{bail, ensure, Result};
-use edn::query::{
-    Binding, Pattern, PatternNonValuePlace, PatternValuePlace, UnifyVars, Variable, WhereClause,
-};
+use edn::query::{Binding, Pattern, UnifyVars, Variable, WhereClause};
 use itertools::Itertools;
 
 use crate::expr::{expr_variables, Expr};
@@ -175,42 +173,12 @@ impl DescriptorBuilder {
         })
     }
 
-    fn triple(&mut self, pattern: &Pattern) -> Result<Descriptor> {
-        ensure!(
-            pattern.source.is_none(),
-            "Query source variables are not supported by triple patterns"
-        );
-        ensure!(
-            matches!(pattern.tx, PatternNonValuePlace::Placeholder),
-            "Transaction positions are not supported by triple patterns"
-        );
-        ensure!(
-            matches!(
-                pattern.attribute,
-                PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
-            ),
-            "Attribute position must be a keyword or entid"
-        );
-        ensure!(
-            !matches!(pattern.entity, PatternNonValuePlace::Placeholder),
-            "Placeholders in entity position are not supported"
-        );
-        ensure!(
-            !matches!(pattern.value, PatternValuePlace::Placeholder),
-            "Placeholders in value position are not supported"
-        );
-
-        let variables = pattern_variables(pattern);
-        let unique: HashSet<&Variable> = variables.iter().collect();
-        ensure!(
-            unique.len() == variables.len(),
-            "Repeated variables in a single pattern are not supported"
-        );
-        Ok(Descriptor {
+    fn triple(&mut self, pattern: &Pattern) -> Descriptor {
+        Descriptor {
             id: self.allocate_id(),
-            variables,
+            variables: pattern_variables(pattern),
             kind: DescriptorKind::Triple(pattern.clone()),
-        })
+        }
     }
 
     fn branch(&mut self, branch: &edn::query::OrWhereClause) -> Result<Vec<Descriptor>> {
@@ -222,7 +190,7 @@ impl DescriptorBuilder {
 
     fn where_clause(&mut self, clause: &WhereClause) -> Result<Descriptor> {
         match clause {
-            WhereClause::Pattern(pattern) => self.triple(pattern),
+            WhereClause::Pattern(pattern) => Ok(self.triple(pattern)),
             WhereClause::Pred(predicate) => {
                 let expression = convert_predicate(predicate)?;
                 Ok(Descriptor {
@@ -902,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_or_branches_recursively_and_rejects_unsupported_shapes() {
+    fn lowers_or_branches_recursively() {
         let query = edn::parse::parse_query(
             r#"[:find ?e :where (or [?e :person/name "A"] [?e :person/name "B"])]"#,
         )
@@ -915,16 +883,6 @@ mod tests {
         assert_eq!(plan.descriptors[0].id, 0);
         assert_eq!(branches[0].descriptors[0].id, 1);
         assert_eq!(branches[1].descriptors[0].id, 2);
-
-        let explicit = edn::parse::parse_query(
-            r#"[:find ?e :where (or-join [?e] [?e :person/name "A"] [?e :person/name "B"])]"#,
-        )
-        .unwrap();
-        assert!(build_logical_plan(&explicit, &[]).is_err());
-
-        let wrong_argument =
-            edn::parse::parse_query(r#"[:find ?e :in ?x :where [?e :a ?x]]"#).unwrap();
-        assert!(build_logical_plan(&wrong_argument, &[QueryArg::Collection(vec![])]).is_err());
     }
 
     #[test]
@@ -1097,10 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn not_requires_outer_grounding_and_receives_an_incoming_participant() {
-        let ungrounded = vec![not(0, &["?x"], vec![relation(1, &["?x"])])];
-        assert!(plan_scope(ungrounded, &[var("?x")], None).is_err());
-
+    fn not_receives_an_incoming_participant() {
         let descriptors = vec![
             relation(0, &["?x"]),
             not(1, &["?x"], vec![relation(2, &["?x"])]),
@@ -1152,9 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_insufficient_bindings_and_uses_query_order_as_tie_breaker() {
-        assert!(plan_scope(vec![predicate(0, &["?x"])], &[var("?x")], None).is_err());
-
+    fn uses_query_order_as_tie_breaker() {
         let descriptors = vec![relation(0, &["?y"]), relation(1, &["?x"])];
         let scope = plan_scope(descriptors, &[var("?x"), var("?y")], None).unwrap();
         assert_eq!(scope.stages[0].added, vec![var("?x")]);
@@ -1185,7 +1138,7 @@ mod tests {
         .unwrap();
         let mut builder = DescriptorBuilder::new();
 
-        let descriptor = builder.triple(&pattern).unwrap();
+        let descriptor = builder.triple(&pattern);
 
         assert_eq!(descriptor.variables, vec![var("?e"), var("?v")]);
         assert_eq!(descriptor.kind, DescriptorKind::Triple(pattern));

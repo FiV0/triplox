@@ -116,14 +116,26 @@ fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
     vars
 }
 
-fn validate_pattern_variables(where_clauses: &[WhereClause]) -> Result<(), Error> {
+fn validate_patterns(where_clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| match clause {
-        WhereClause::Pattern(pattern) => validate_single_pattern_variables(pattern),
+        WhereClause::Pattern(pattern) => validate_pattern(pattern),
         _ => Ok(()),
     })
 }
 
-fn validate_single_pattern_variables(pattern: &Pattern) -> Result<(), Error> {
+fn validate_pattern(pattern: &Pattern) -> Result<(), Error> {
+    if pattern.source.is_some() {
+        bail!("Query source variables are not supported by triple patterns");
+    }
+    if !matches!(pattern.tx, PatternNonValuePlace::Placeholder) {
+        bail!("Transaction positions are not supported by triple patterns");
+    }
+    if !matches!(
+        pattern.attribute,
+        PatternNonValuePlace::Ident(_) | PatternNonValuePlace::Entid(_)
+    ) {
+        bail!("Attribute position must be a keyword or entid");
+    }
     if matches!(&pattern.entity, PatternNonValuePlace::Placeholder) {
         return Err(anyhow::anyhow!(
             "Placeholders in entity position are not supported"
@@ -337,6 +349,7 @@ fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<()
 pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
     validate_in_bindings(&query.in_bindings, args)?;
     validate_supported_where_clauses(&query.where_clauses)?;
+    validate_patterns(&query.where_clauses)?;
 
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
@@ -344,7 +357,6 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
     }
     let var_index = build_var_index(&join_order);
     validate_or_clauses(&query.where_clauses)?;
-    validate_pattern_variables(&query.where_clauses)?;
     validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
@@ -424,6 +436,47 @@ mod tests {
             "unexpected error: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_validate_rejects_source_variables_in_patterns() {
+        let parsed = parse_query("[:find ?e :where [$other ?e :name ?name]]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Query source variables are not supported by triple patterns"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_transaction_positions() {
+        let parsed = parse_query("[:find ?tx :where [1 :name \"Alice\" ?tx]]");
+        let err = validate_query(&parsed, &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Transaction positions are not supported by triple patterns"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_non_constant_attributes() {
+        for query in [
+            "[:find ?e :where [?e ?attribute ?name]]",
+            "[:find ?e :where [?e _ ?name]]",
+        ] {
+            let parsed = parse_query(query);
+            let err = validate_query(&parsed, &[]).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Attribute position must be a keyword or entid"),
+                "unexpected error: {}",
+                err
+            );
+        }
     }
 
     #[test]
