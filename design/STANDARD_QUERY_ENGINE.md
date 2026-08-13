@@ -120,7 +120,7 @@ objects, or runtime stages.
 ### Descriptors
 
 Every input and where clause is lowered to a descriptor with a stable
-`PatternIndex`, an ordered variable list, and descriptor-specific data:
+`PatternId`, an ordered variable list, and descriptor-specific data:
 
 ```text
 Triple(Pattern)
@@ -172,15 +172,15 @@ derive one variable from another inside the branch. The OR is groundable only
 when every branch can reach the same complete variable set; it never advertises
 a partial union of what different branches can derive.
 
-### Logical scopes and stages
+### Scope planning and stages
 
-The result of planning is a root `LogicalScope`, recursively planned scopes for
-OR branches and NOT bodies, and their descriptors:
+`LogicalPlan` owns the top-level variable order and one recursive descriptor
+tree. Planning one scope returns only its flat stage sequence:
 
 ```rust
-struct LogicalScope {
-    incoming_variables: Option<Vec<Variable>>,
-    stages: Vec<LogicalStage>,
+struct LogicalPlan {
+    variable_order: Vec<Variable>,
+    descriptors: Vec<Descriptor>,
 }
 
 struct LogicalStage {
@@ -191,26 +191,28 @@ struct LogicalStage {
 }
 
 enum ParticipantRef {
-    Pattern(PatternIndex),
+    Pattern(PatternId),
     Incoming,
 }
 ```
 
-The root scope has no incoming relation. Every nested scope has
-`Some(incoming_variables)`, including an explicitly empty vector for an
-uncorrelated nested scope.
+The planner does not build a second recursively planned descriptor tree.
+Assembly invokes the same flat `plan_scope` function for the root, each OR
+branch, and each NOT body. The root has no incoming relation. A nested scope
+always has an incoming participant, including an explicitly empty relation for
+an uncorrelated scope.
 
 A planning scope is built as follows:
 
 1. Emit a validation-only stage for any participant already fully bound.
-2. Select the first remaining variable for which an ordinary participant can
-   propose.
-3. Put every eligible proposer in that stage.
+2. Visit remaining variables in scope order. For each variable, first look for
+   ordinary proposers and then for an OR that can derive the complete missing
+   variable group.
+3. Put every eligible ordinary proposer in that stage, or put the selected OR
+   in the stage as its sole proposer and participant.
 4. Also include unfinished participants that become fully validatable after
-   the variable is added.
-5. If no ordinary participant can make progress, select a groundable OR. It
-   adds all of its missing variables as the stage's sole participant.
-6. Continue until every participant has been placed.
+   an ordinary variable is added.
+5. Continue until every participant has been placed.
 
 Planning fails if a variable cannot be grounded or a participant cannot be
 placed. A leaf descriptor may participate at several stages as its variables
@@ -234,11 +236,15 @@ that may propose from participants that only validate the completed binding.
 - encodes relation descriptor rows;
 - constructs predicate and function patterns from the existing expression
   representation;
-- recursively assembles OR and NOT patterns;
-- replaces descriptor indexes with shared `Arc<dyn ExecPattern>` values.
+- plans and recursively assembles OR branches and NOT bodies;
+- lazily constructs each runtime pattern when it first participates in a
+  stage, then reuses the same `Arc<dyn ExecPattern>` in later stages;
+- replaces descriptor ids with positions in ordered stage participant lists.
 
 Assembly also checks that every runtime pattern exposes exactly the variables
-recorded by its descriptor.
+recorded by its descriptor. When a composite pattern first participates,
+assembly projects its incoming layout from the previous stage layout if it is
+proposing, or from the current target layout if it is validating.
 
 ### Deferred incoming relations
 
@@ -285,7 +291,7 @@ All runtime patterns implement:
 
 ```rust
 trait ExecPattern: Send + Sync {
-    fn index(&self) -> PatternIndex;
+    fn id(&self) -> PatternId;
     fn variables(&self) -> &[Variable];
 
     fn count(
@@ -330,7 +336,7 @@ struct Stage {
 }
 ```
 
-Its participant indexes, proposer positions, added variables, and target
+Its participant ids, proposer positions, added variables, and target
 variables must be unique. Proposer positions are ordered and must refer to
 participants in the stage. A stage has proposers if and only if it adds
 variables. At execution time, the target variable set must equal the input
@@ -343,7 +349,7 @@ input row:
 
 ```rust
 struct Proposal {
-    proposer: Option<PatternIndex>,
+    proposer: Option<PatternId>,
     count: usize,
 }
 ```
@@ -377,7 +383,7 @@ proposal count.
 
 1. Allocate one empty proposal per input row.
 2. Ask every designated proposer to count the requested extension.
-3. Group row indexes by winning proposer `PatternIndex`.
+3. Group row indexes by winning proposer `PatternId`.
 4. Ask each winner to extend its input shard.
 5. Run every other participant, including losing proposers, as a validator on
    that extended shard.
@@ -473,10 +479,10 @@ The later layers retain defensive checks:
 
 - `BindingBag` checks schemas and row arity;
 - planning rejects insufficient bindings and unplaced descriptors;
-- assembly checks descriptor indexes, pattern variables, and participant roles;
-- stages check layout transitions and distinct participant indexes;
+- assembly checks descriptor ids, pattern variables, and participant roles;
+- stages check layout transitions and distinct participant ids;
 - patterns check proposal sidecar lengths and their `join` mode;
-- the engine checks proposer indexes and every returned layout.
+- the engine checks proposer ids and every returned layout.
 
 Storage, decoding, expression-conversion, and contract failures are returned
 through `anyhow::Result` with pattern or stage context. A well-formed runtime
@@ -531,9 +537,10 @@ These internals can be optimized without changing the logical-plan,
 | `src/query.rs` | Query orchestration, expression lowering, variable order, final projection, aggregation, ordering, and limits. |
 | `src/query_validation.rs` | Validation shared by the standard query entry point. |
 | `src/query/binding_bag.rs` | Checked row relation and relational operations. |
-| `src/query/plan.rs` | Descriptors, groundability, logical scopes, and recursive planning. |
-| `src/query/assembly.rs` | Database-basis-dependent pattern construction and stage-template assembly. |
-| `src/query/exec_pattern.rs` | `PatternIndex`, proposal sidecar, and `ExecPattern` contract. |
+| `src/query/plan.rs` | Descriptors, groundability, and flat scope planning. |
+| `src/query/plan/tests.rs` | Descriptor and scope-planning tests. |
+| `src/query/assembly.rs` | Recursive scope assembly, database-basis-dependent pattern construction, and stage templates. |
+| `src/query/exec_pattern.rs` | `PatternId`, proposal sidecar, and `ExecPattern` contract. |
 | `src/query/stage.rs` | Concrete stages and deferred nested stage templates. |
 | `src/query/engine.rs` | Stage fold and per-row proposer arbitration. |
 | `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
