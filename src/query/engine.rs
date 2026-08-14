@@ -177,8 +177,7 @@ mod tests {
     }
 
     // Configurable proposer used to control per-row counts, extensions, and observed inputs.
-    // TODO: This stateful test objects looks like a smell to me. Could we write the tests 
-    // without the mutexes.
+    // TODO: Can these tests avoid stateful helpers and mutexes?
     struct MapPattern {
         index: PatternIndex,
         variables: Vec<Variable>,
