@@ -294,6 +294,28 @@ mod tests {
         }
     }
 
+    // Single-proposer test pattern that fails if the engine calls `count`.
+    struct JoinOnlyPattern(MapPattern);
+
+    impl ExecPattern for JoinOnlyPattern {
+        fn index(&self) -> PatternIndex {
+            self.0.index()
+        }
+
+        fn variables(&self) -> &[Variable] {
+            self.0.variables()
+        }
+
+        fn join(
+            &self,
+            input: &BindingBag,
+            added: &[Variable],
+            target_variables: &[Variable],
+        ) -> Result<BindingBag> {
+            self.0.join(input, added, target_variables)
+        }
+    }
+
     // Validator-only pattern that filters rows and fails if used as a proposer.
     struct FilterPattern {
         index: PatternIndex,
@@ -445,12 +467,12 @@ mod tests {
 
     #[test]
     fn single_proposer_bypasses_counting_and_runs_validators() {
-        let proposer = Arc::new(MapPattern::new(
+        let proposer = Arc::new(JoinOnlyPattern(MapPattern::new(
             0,
             &["?e", "?x"],
             &[],
             &[(&["a"], &[&["1"]])],
-        ));
+        )));
         let validator = Arc::new(FilterPattern {
             index: 1,
             variables: vec!["?e".to_var(), "?x".to_var()],
