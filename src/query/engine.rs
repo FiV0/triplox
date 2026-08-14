@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{ensure, Context, Result};
 
 use super::binding_bag::BindingBag;
@@ -19,14 +21,13 @@ impl GenericJoinEngine {
         validators: impl IntoIterator<Item = &'a dyn ExecPattern>,
     ) -> Result<BindingBag> {
         for validator in validators {
-            let input_variables = input.variables.to_vec();
             let validated = validator
-                .join(&input, &[], &input_variables)
+                .join(&input, &[], &input.variables)
                 .with_context(|| {
                     format!("Pattern {} failed during validation", validator.index())
                 })?;
             ensure!(
-                validated.variables == input_variables,
+                validated.variables == input.variables,
                 "Pattern {} changed the layout during validation",
                 validator.index()
             );
@@ -80,29 +81,22 @@ impl GenericJoinEngine {
                     )
                 })?;
         }
-        for proposal in &proposals {
-            if let Some(proposer) = proposal.proposer() {
-                ensure!(
-                    proposer_indexes.contains(&proposer),
-                    "Unknown proposer index {proposer}"
-                );
-            }
-        }
-
-        let mut shards: Vec<(PatternIndex, Vec<usize>)> = Vec::new();
+        let mut shards: HashMap<PatternIndex, Vec<usize>> = HashMap::new();
         for (row_index, proposal) in proposals.iter().enumerate() {
             let Some(proposer) = proposal.proposer() else {
                 continue;
             };
-            if let Some((_, rows)) = shards.iter_mut().find(|(index, _)| *index == proposer) {
-                rows.push(row_index);
-            } else {
-                shards.push((proposer, vec![row_index]));
-            }
+            ensure!(
+                proposer_indexes.contains(&proposer),
+                "Unknown proposer index {proposer}"
+            );
+            shards.entry(proposer).or_default().push(row_index);
         }
+        let mut ordered_shards: Vec<_> = shards.into_iter().collect();
+        ordered_shards.sort_unstable_by_key(|(_, row_indexes)| row_indexes[0]);
 
         let mut result = BindingBag::empty(stage.target_variables().to_vec())?;
-        for (proposer_index, row_indexes) in shards {
+        for (proposer_index, row_indexes) in ordered_shards {
             let proposer = stage
                 .proposers()
                 .find(|proposer| proposer.index() == proposer_index)
