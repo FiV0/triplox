@@ -87,6 +87,7 @@ impl GenericJoinEngine {
             shards.entry(proposer).or_default().push(row_index);
         }
         let mut ordered_shards: Vec<_> = shards.into_iter().collect();
+        // Multi-proposer output is grouped by proposer in first-occurrence order.
         ordered_shards.sort_unstable_by_key(|(_, row_indexes)| row_indexes[0]);
 
         let mut result = BindingBag::empty(stage.target_variables().to_vec())?;
@@ -389,18 +390,18 @@ mod tests {
     }
 
     #[test]
-    fn chooses_the_cheapest_proposer_per_row_and_keeps_first_on_ties() {
+    fn chooses_cheapest_proposers_and_groups_results_by_first_occurrence() {
         let first = Arc::new(MapPattern::new(
             1,
             &["?e", "?x"],
-            &[(&["a"], 2), (&["b"], 1), (&["c"], 1)],
-            &[(&["b"], &[&["20"]]), (&["c"], &[&["30"]])],
+            &[(&["a"], 1), (&["b"], 2), (&["c"], 1)],
+            &[(&["a"], &[&["10"]]), (&["c"], &[&["30"]])],
         ));
         let second = Arc::new(MapPattern::new(
             2,
             &["?e", "?x"],
-            &[(&["a"], 1), (&["b"], 2), (&["c"], 1)],
-            &[(&["a"], &[&["10"]])],
+            &[(&["a"], 2), (&["b"], 1), (&["c"], 1)],
+            &[(&["b"], &[&["20"]])],
         ));
         let stage = Stage::new(
             vec!["?x".to_var()],
@@ -414,14 +415,14 @@ mod tests {
             GenericJoinEngine::execute(&[stage], binding_bag(&["?e"], &[&["a"], &["b"], &["c"]]))
                 .unwrap();
 
-        assert_eq!(*second.proposed_inputs.lock().unwrap(), vec![row(&["a"])]);
         assert_eq!(
             *first.proposed_inputs.lock().unwrap(),
-            vec![row(&["b"]), row(&["c"])]
+            vec![row(&["a"]), row(&["c"])]
         );
+        assert_eq!(*second.proposed_inputs.lock().unwrap(), vec![row(&["b"])]);
         assert_eq!(
             result,
-            binding_bag(&["?e", "?x"], &[&["a", "10"], &["b", "20"], &["c", "30"]])
+            binding_bag(&["?e", "?x"], &[&["a", "10"], &["c", "30"], &["b", "20"]])
         );
     }
 
