@@ -146,7 +146,7 @@ impl GenericJoinEngine {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
     use anyhow::{ensure, Result};
@@ -182,6 +182,7 @@ mod tests {
         variables: Vec<Variable>,
         counts: HashMap<BindingRow, usize>,
         values: HashMap<BindingRow, Vec<BindingRow>>,
+        skipped_inputs: HashSet<BindingRow>,
         proposer_override: Option<PatternIndex>,
         proposed_inputs: Mutex<Vec<BindingRow>>,
         join_added: Mutex<Vec<Vec<Variable>>>,
@@ -210,6 +211,7 @@ mod tests {
                         )
                     })
                     .collect(),
+                skipped_inputs: HashSet::new(),
                 proposer_override: None,
                 proposed_inputs: Mutex::new(Vec::new()),
                 join_added: Mutex::new(Vec::new()),
@@ -218,6 +220,11 @@ mod tests {
 
         fn with_proposer_override(mut self, proposer: PatternIndex) -> Self {
             self.proposer_override = Some(proposer);
+            self
+        }
+
+        fn without_proposals_for(mut self, inputs: &[&[&str]]) -> Self {
+            self.skipped_inputs = inputs.iter().map(|input| row(input)).collect();
             self
         }
     }
@@ -242,6 +249,9 @@ mod tests {
                 "wrong proposal sidecar length"
             );
             for (input_row, proposal) in input.rows.iter().zip(proposals) {
+                if self.skipped_inputs.contains(input_row) {
+                    continue;
+                }
                 let count = self
                     .counts
                     .get(input_row)
@@ -501,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_rows_without_a_positive_proposer() {
+    fn zero_count_proposals_with_no_extensions_produce_no_rows() {
         let first = Arc::new(MapPattern::new(
             0,
             &["?e", "?x"],
@@ -529,6 +539,31 @@ mod tests {
             result,
             BindingBag::empty(vec!["?e".to_var(), "?x".to_var()]).unwrap()
         );
+    }
+
+    #[test]
+    fn drops_rows_without_a_proposer_before_join() {
+        let first = Arc::new(
+            MapPattern::new(0, &["?e", "?x"], &[(&["a"], 1)], &[(&["a"], &[&["1"]])])
+                .without_proposals_for(&[&["b"]]),
+        );
+        let second = Arc::new(
+            MapPattern::new(1, &["?e", "?x"], &[(&["a"], 2)], &[]).without_proposals_for(&[&["b"]]),
+        );
+        let stage = Stage::new(
+            vec!["?x".to_var()],
+            vec![first.clone(), second.clone()],
+            vec![0, 1],
+            vec!["?e".to_var(), "?x".to_var()],
+        )
+        .unwrap();
+
+        let result =
+            GenericJoinEngine::execute(&[stage], binding_bag(&["?e"], &[&["a"], &["b"]])).unwrap();
+
+        assert_eq!(*first.proposed_inputs.lock().unwrap(), vec![row(&["a"])]);
+        assert!(second.proposed_inputs.lock().unwrap().is_empty());
+        assert_eq!(result, binding_bag(&["?e", "?x"], &[&["a", "1"]]));
     }
 
     #[test]
