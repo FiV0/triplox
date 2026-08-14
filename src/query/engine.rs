@@ -180,11 +180,17 @@ mod tests {
     struct MapPattern {
         index: PatternIndex,
         variables: Vec<Variable>,
+        // Proposal count reported for each input row.
         counts: HashMap<BindingRow, usize>,
+        // Extensions returned for each input row during proposal.
         values: HashMap<BindingRow, Vec<BindingRow>>,
+        // Rows that deliberately violate the count contract by receiving no proposal.
         skipped_inputs: HashSet<BindingRow>,
+        // Alternate proposer identifier used to test unknown proposer handling.
         proposer_override: Option<PatternIndex>,
+        // Input rows observed when this pattern is selected to propose.
         proposed_inputs: Mutex<Vec<BindingRow>>,
+        // Added-variable layouts observed across join calls.
         join_added: Mutex<Vec<Vec<Variable>>>,
     }
 
