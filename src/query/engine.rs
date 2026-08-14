@@ -181,6 +181,7 @@ mod tests {
         values.iter().map(|value| bytes(value)).collect()
     }
 
+    // Configurable proposer used to control per-row counts, extensions, and observed inputs.
     struct MapPattern {
         index: PatternIndex,
         variables: Vec<Variable>,
@@ -281,6 +282,7 @@ mod tests {
         }
     }
 
+    // Validator-only pattern that filters rows and fails if used as a proposer.
     struct FilterPattern {
         index: PatternIndex,
         variables: Vec<Variable>,
