@@ -68,8 +68,6 @@ impl GenericJoinEngine {
             return Self::validate_all(proposed, validators);
         }
 
-        let proposer_indexes: Vec<PatternIndex> =
-            stage.proposers().map(|proposer| proposer.index()).collect();
         let mut proposals = vec![Proposal::default(); input.rows.len()];
         for proposer in stage.proposers() {
             proposer
@@ -86,10 +84,6 @@ impl GenericJoinEngine {
             let Some(proposer) = proposal.proposer() else {
                 continue;
             };
-            ensure!(
-                proposer_indexes.contains(&proposer),
-                "Unknown proposer index {proposer}"
-            );
             shards.entry(proposer).or_default().push(row_index);
         }
         let mut ordered_shards: Vec<_> = shards.into_iter().collect();
