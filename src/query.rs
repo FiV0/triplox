@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-pub(crate) mod assembly;
 pub(crate) mod binding_bag;
 pub(crate) mod engine;
 pub(crate) mod exec_pattern;
@@ -30,9 +29,9 @@ use crate::expr::{
     expr_variables, BinaryExpr, BinaryOp, Expr, IfExpr, RegexpLikeExpr, UnaryExpr, UnaryOp,
 };
 use crate::ops::{DataType, QueryArg};
-use crate::query::assembly::assemble_plan;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
+use crate::query::patterns::triple::DbValue;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
 use regex::Regex;
@@ -747,17 +746,24 @@ where
 {
     validate_query(query, args)?;
     let logical_plan = build_logical_plan(query, args)?;
-    let executable_plan =
-        assemble_plan(&logical_plan, slate, handle, ident_map, as_of, range_stats)?;
-    let bindings = GenericJoinEngine::execute(executable_plan.stages(), BindingBag::unit())?;
+    let output_variables = logical_plan.output_variables().to_vec();
+    let db = Arc::new(DbValue::new(
+        slate,
+        handle,
+        Arc::new(ident_map.clone()),
+        as_of,
+        range_stats,
+    ));
+    let stages = logical_plan.materialize(db, None)?;
+    let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
     ensure!(
-        bindings.variables == executable_plan.variable_order(),
+        bindings.variables == output_variables,
         "Query execution produced variables {:?}, expected {:?}",
         bindings.variables,
-        executable_plan.variable_order()
+        output_variables
     );
 
-    let var_index = build_var_index(executable_plan.variable_order());
+    let var_index = build_var_index(&output_variables);
     let results = bindings.rows;
     let plan = compile_find_plan(&query.find_spec, &var_index)?;
     let projected = if plan.has_aggregates {

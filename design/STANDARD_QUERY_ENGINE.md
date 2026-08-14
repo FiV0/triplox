@@ -9,8 +9,8 @@ database basis and returns a complete result. It is separate from the
 incremental query engine described in
 [INCREMENTAL_QUERIES.md](INCREMENTAL_QUERIES.md).
 
-The engine is row-oriented. It plans a query without opening storage, assembles
-that plan into runtime patterns for the selected database basis, and executes a
+The engine is row-oriented. It plans a query without opening storage,
+materializes that recursive plan for one database basis, and executes a
 sequence of layout transitions over `BindingBag` values.
 
 ```text
@@ -21,11 +21,11 @@ ParsedQuery + QueryArg values + database basis
                     |
                     v
            build_logical_plan
-       descriptors + logical scopes
+     recursive descriptors + stages
                     |
                     v
-              assemble_plan
-      runtime patterns + concrete stages
+      LogicalPlan::materialize
+         concrete runtime stages
                     |
                     v
             GenericJoinEngine
@@ -132,7 +132,7 @@ Not { children }
 ```
 
 Scalar and collection `:in` arguments become relation descriptors. Their
-values remain `DataType` values until runtime assembly encodes them.
+values remain `DataType` values until materialization encodes them.
 
 OR and NOT preserve their recursive structure. Conjunction is represented by
 the stages of a planning scope; there is no separate `AndPattern`.
@@ -174,13 +174,21 @@ a partial union of what different branches can derive.
 
 ### Scope planning and stages
 
-`LogicalPlan` owns the top-level variable order and one recursive descriptor
-tree. Planning one scope returns only its flat stage sequence:
+Each `LogicalPlan` owns one scope's descriptors and stages. Composite
+descriptors contain complete child plans, so planning recurses once and the
+result needs no second planning representation:
 
 ```rust
 struct LogicalPlan {
-    variable_order: Vec<Variable>,
-    descriptors: Vec<Descriptor>,
+    incoming_variables: Option<Vec<Variable>>,
+    descriptors: Vec<LogicalDescriptor>,
+    stages: Vec<LogicalStage>,
+}
+
+struct LogicalDescriptor {
+    id: PatternId,
+    variables: Vec<Variable>,
+    kind: LogicalDescriptorKind,
 }
 
 struct LogicalStage {
@@ -196,11 +204,9 @@ enum ParticipantRef {
 }
 ```
 
-The planner does not build a second recursively planned descriptor tree.
-Assembly invokes the same flat `plan_scope` function for the root, each OR
-branch, and each NOT body. The root has no incoming relation. A nested scope
-always has an incoming participant, including an explicitly empty relation for
-an uncorrelated scope.
+The root records `incoming_variables: None`. A nested scope records
+`Some(variables)`, including `Some(vec![])` for an uncorrelated scope. This
+distinction preserves the explicit zero-column incoming relation.
 
 A planning scope is built as follows:
 
@@ -218,67 +224,51 @@ Planning fails if a variable cannot be grounded or a participant cannot be
 placed. A leaf descriptor may participate at several stages as its variables
 become bound. An OR or NOT descriptor participates once in its owning scope.
 
-Assembly verifies that proposers are also participants and translates their
-symbolic references into positions in the ordered runtime participant list.
+Planning records the incoming layout for a composite from the previous stage
+layout when the composite proposes, or the current target layout when it
+validates. It then recursively plans each OR branch or NOT child with that
+layout.
+
+Materialization verifies that proposers are also participants and translates
+their symbolic references into positions in the ordered runtime participant list.
 Only proposing stages may carry proposer positions, and every proposing stage
 must carry at least one. Runtime execution therefore distinguishes patterns
 that may propose from participants that only validate the completed binding.
 
 ---
 
-## Runtime Assembly
+## Runtime Materialization
 
-`assemble_plan` binds the logical plan to one database basis. It:
+`LogicalPlan::materialize` binds one already-planned scope to a shared
+`DbValue` and an optional incoming pattern. It:
 
-- resolves fixed attribute idents through `IdentMap`;
+- resolves fixed attribute idents through the `IdentMap` stored in `DbValue`;
 - constructs Slate-backed `TriplePattern` values with `as_of`, the Tokio
   handle, and range statistics;
 - encodes relation descriptor rows;
 - constructs predicate and function patterns from the existing expression
   representation;
-- plans and recursively assembles OR branches and NOT bodies;
-- lazily constructs each runtime pattern when it first participates in a
-  stage, then reuses the same `Arc<dyn ExecPattern>` in later stages;
+- constructs OR and NOT patterns that own their already-planned child scopes;
+- constructs each current-scope runtime pattern once and reuses the same
+  `Arc<dyn ExecPattern>` in every stage;
 - replaces descriptor ids with positions in ordered stage participant lists.
 
-Assembly also checks that every runtime pattern exposes exactly the variables
-recorded by its descriptor. When a composite pattern first participates,
-assembly projects its incoming layout from the previous stage layout if it is
-proposing, or from the current target layout if it is validating.
+The root materializes with no incoming pattern. Nested plans require one and
+check that its ordered variables equal their planned incoming layout.
 
-### Deferred incoming relations
+### Incoming relations
 
-`ParticipantRef::Incoming` is planning data, not a runtime pattern. Assembly
-preserves it as a deferred slot:
-
-```rust
-enum ParticipantTemplate {
-    Pattern(Arc<dyn ExecPattern>),
-    Incoming,
-}
-
-struct StageTemplate {
-    added: Vec<Variable>,
-    participants: Vec<ParticipantTemplate>,
-    proposer_positions: Vec<usize>,
-    target_variables: Vec<Variable>,
-}
-```
-
-Top-level templates cannot contain `Incoming` and are converted immediately
-into concrete `Stage` values.
-
-Nested templates remain on their owning `OrPattern` or `NotPattern`. On each
-invocation, the composite pattern:
+`ParticipantRef::Incoming` is logical planning data, not a runtime pattern. On
+each invocation, an `OrPattern` or `NotPattern`:
 
 1. projects the current outer `BindingBag` to the planned incoming variables;
 2. wraps that projection in one `RelationPattern`;
-3. substitutes the same relation pattern into every `Incoming` slot;
-4. validates and creates concrete stages;
+3. passes that same pattern to each child plan's `materialize` method;
+4. resolves every `Incoming` reference while creating concrete stages;
 5. executes those stages from `BindingBag::unit()`.
 
-The templates are reusable, while the incoming relation and concrete stages
-exist only for that invocation. `GenericJoinEngine` never receives an
+OR constructs the projected relation once and shares its `Arc` across every
+branch. `GenericJoinEngine` receives only concrete `Stage` values and never an
 `Incoming` enum variant.
 
 ---
@@ -479,7 +469,7 @@ The later layers retain defensive checks:
 
 - `BindingBag` checks schemas and row arity;
 - planning rejects insufficient bindings and unplaced descriptors;
-- assembly checks descriptor ids, pattern variables, and participant roles;
+- materialization checks descriptor ids, incoming layouts, and participant roles;
 - stages check layout transitions and distinct participant ids;
 - patterns check proposal sidecar lengths and their `join` mode;
 - the engine checks proposer ids and every returned layout.
@@ -537,11 +527,10 @@ These internals can be optimized without changing the logical-plan,
 | `src/query.rs` | Query orchestration, expression lowering, variable order, final projection, aggregation, ordering, and limits. |
 | `src/query_validation.rs` | Validation shared by the standard query entry point. |
 | `src/query/binding_bag.rs` | Checked row relation and relational operations. |
-| `src/query/plan.rs` | Descriptors, groundability, and flat scope planning. |
-| `src/query/plan/tests.rs` | Descriptor and scope-planning tests. |
-| `src/query/assembly.rs` | Recursive scope assembly, database-basis-dependent pattern construction, and stage templates. |
+| `src/query/plan.rs` | Descriptors, recursive planning, and database-basis-dependent materialization. |
+| `src/query/plan/tests.rs` | Recursive planning, materialization, and nested-execution tests. |
 | `src/query/exec_pattern.rs` | `PatternId`, proposal sidecar, and `ExecPattern` contract. |
-| `src/query/stage.rs` | Concrete stages and deferred nested stage templates. |
+| `src/query/stage.rs` | Concrete executable stages. |
 | `src/query/engine.rs` | Stage fold and per-row proposer arbitration. |
 | `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
 
