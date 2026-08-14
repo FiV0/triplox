@@ -487,10 +487,15 @@ mod tests {
         let first = Arc::new(MapPattern::new(
             0,
             &["?e", "?x"],
-            &[(&["a"], 1)],
+            &[(&["a"], 1), (&["b"], 2)],
             &[(&["a"], &[&["1"]])],
         ));
-        let second = Arc::new(MapPattern::new(1, &["?e", "?x"], &[(&["a"], 2)], &[]));
+        let second = Arc::new(MapPattern::new(
+            1,
+            &["?e", "?x"],
+            &[(&["a"], 2), (&["b"], 1)],
+            &[(&["b"], &[&["2"]])],
+        ));
         let validator: Arc<dyn ExecPattern> = Arc::new(FilterPattern {
             index: 2,
             variables: vec!["?e".to_var(), "?x".to_var()],
@@ -505,9 +510,34 @@ mod tests {
         )
         .unwrap();
 
-        let result = GenericJoinEngine::execute(&[stage], binding_bag(&["?e"], &[&["a"]])).unwrap();
+        let result =
+            GenericJoinEngine::execute(&[stage], binding_bag(&["?e"], &[&["a"], &["b"]])).unwrap();
 
         assert_eq!(result, binding_bag(&["?e", "?x"], &[&["a", "1"]]));
+    }
+
+    #[test]
+    fn proposes_multiple_variables_in_target_order() {
+        let proposer = Arc::new(MapPattern::new(
+            0,
+            &["?e", "?x", "?y"],
+            &[],
+            &[(&["a"], &[&["1", "2"]])],
+        ));
+        let stage = Stage::new(
+            vec!["?x".to_var(), "?y".to_var()],
+            vec![proposer],
+            vec![0],
+            vec!["?y".to_var(), "?e".to_var(), "?x".to_var()],
+        )
+        .unwrap();
+
+        let result = GenericJoinEngine::execute(&[stage], binding_bag(&["?e"], &[&["a"]])).unwrap();
+
+        assert_eq!(
+            result,
+            binding_bag(&["?y", "?e", "?x"], &[&["2", "a", "1"]])
+        );
     }
 
     #[test]
