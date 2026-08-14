@@ -31,6 +31,7 @@ dependencies {
     // Clojure
     // TODO Keyword currently leaks into the public API
     api("org.clojure", "clojure", "1.12.3")
+    implementation("org.clojure", "core.async", "1.9.865")
 
     // MessagePack wire codec
     implementation("org.msgpack:msgpack-core:0.9.8")
