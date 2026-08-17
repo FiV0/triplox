@@ -398,6 +398,10 @@ fn add_validation_stage(
     }
 }
 
+fn can_validate_grouped_or(groundable: &[Variable], added: &[Variable]) -> bool {
+    !groundable.is_empty() && groundable.iter().any(|variable| added.contains(variable))
+}
+
 fn proposing_stage_for(
     variable: &Variable,
     descriptors: &[Descriptor],
@@ -479,14 +483,43 @@ fn proposing_stage_for(
         if !added.contains(variable) {
             return None;
         }
+        let target_variables = target_layout(order, bound, &added);
+        let target_set: HashSet<Variable> = target_variables.iter().cloned().collect();
+        let mut participants = vec![participant];
+        let mut newly_completed = vec![participant];
+
+        if let Some(incoming_variables) = incoming_variables {
+            let incoming = ParticipantRef::Incoming;
+            let groundable = relation_groundable(incoming_variables, &bound_set);
+            if !completed.contains(&incoming) && can_validate_grouped_or(&groundable, &added) {
+                participants.push(incoming);
+                if fully_bound(incoming_variables, &target_set) {
+                    newly_completed.push(incoming);
+                }
+            }
+        }
+        for validator in descriptors {
+            let validator_participant = ParticipantRef::Pattern(validator.id);
+            if completed.contains(&validator_participant) || validator.is_or() {
+                continue;
+            }
+            let groundable = validator.groundable(&bound_set);
+            if can_validate_grouped_or(&groundable, &added) {
+                participants.push(validator_participant);
+                if fully_bound(&validator.variables, &target_set) {
+                    newly_completed.push(validator_participant);
+                }
+            }
+        }
+
         Some((
             LogicalStage {
-                target_variables: target_layout(order, bound, &added),
+                target_variables,
                 added,
                 proposers: vec![participant],
-                participants: vec![participant],
+                participants,
             },
-            vec![participant],
+            newly_completed,
         ))
     })
 }
@@ -754,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_or_proposes_all_missing_variables_then_constraints_validate() {
+    fn grouped_or_partially_validates_relation_then_relation_proposes() {
         let descriptors = vec![
             or(
                 0,
@@ -764,20 +797,32 @@ mod tests {
                     vec![relation(2, &["?x", "?y"])],
                 ],
             ),
-            predicate(3, &["?x", "?y"]),
+            relation(3, &["?y", "?z"]),
         ];
 
-        let stages = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+        let stages = plan_scope(&descriptors, &[var("?x"), var("?y"), var("?z")], None).unwrap();
 
-        assert_eq!(stages[0].added, vec![var("?x"), var("?y")]);
-        assert_eq!(stages[0].proposers, refs(&[0]));
-        assert_eq!(stages[0].participants, refs(&[0]));
-        assert!(stages[1].added.is_empty());
-        assert_eq!(stages[1].participants, refs(&[3]));
+        assert_eq!(
+            stages,
+            vec![
+                LogicalStage {
+                    added: vec![var("?x"), var("?y")],
+                    proposers: refs(&[0]),
+                    participants: refs(&[0, 3]),
+                    target_variables: vec![var("?x"), var("?y")],
+                },
+                LogicalStage {
+                    added: vec![var("?z")],
+                    proposers: refs(&[3]),
+                    participants: refs(&[3]),
+                    target_variables: vec![var("?x"), var("?y"), var("?z")],
+                },
+            ]
+        );
     }
 
     #[test]
-    fn first_variable_uses_grouped_or_before_a_later_variable_proposer() {
+    fn grouped_or_completes_fully_bound_relation_validator() {
         let descriptors = vec![
             or(
                 0,
@@ -792,8 +837,114 @@ mod tests {
 
         let stages = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
 
-        assert_eq!(stages[0].added, vec![var("?x"), var("?y")]);
-        assert_eq!(stages[0].proposers, refs(&[0]));
+        assert_eq!(
+            stages,
+            vec![LogicalStage {
+                added: vec![var("?x"), var("?y")],
+                proposers: refs(&[0]),
+                participants: refs(&[0, 3]),
+                target_variables: vec![var("?x"), var("?y")],
+            }]
+        );
+    }
+
+    #[test]
+    fn grouped_or_validates_and_completes_overlapping_incoming_relation() {
+        let descriptors = vec![or(
+            0,
+            &["?x", "?y"],
+            vec![
+                vec![relation(1, &["?x", "?y"])],
+                vec![relation(2, &["?x", "?y"])],
+            ],
+        )];
+        let incoming = vec![var("?y")];
+
+        let (stage, completed) = proposing_stage_for(
+            &var("?x"),
+            &descriptors,
+            Some(&incoming),
+            &[var("?x"), var("?y")],
+            &[],
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            stage,
+            LogicalStage {
+                added: vec![var("?x"), var("?y")],
+                proposers: refs(&[0]),
+                participants: vec![ParticipantRef::Pattern(0), ParticipantRef::Incoming],
+                target_variables: vec![var("?x"), var("?y")],
+            }
+        );
+        assert_eq!(
+            completed,
+            vec![ParticipantRef::Pattern(0), ParticipantRef::Incoming]
+        );
+    }
+
+    #[test]
+    fn predicate_after_grouped_or_uses_validation_only_stage() {
+        let descriptors = vec![
+            or(
+                0,
+                &["?x", "?y"],
+                vec![
+                    vec![relation(1, &["?x", "?y"])],
+                    vec![relation(2, &["?x", "?y"])],
+                ],
+            ),
+            predicate(3, &["?x", "?y"]),
+        ];
+
+        let stages = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+
+        assert_eq!(
+            stages,
+            vec![
+                LogicalStage {
+                    added: vec![var("?x"), var("?y")],
+                    proposers: refs(&[0]),
+                    participants: refs(&[0]),
+                    target_variables: vec![var("?x"), var("?y")],
+                },
+                LogicalStage {
+                    added: Vec::new(),
+                    proposers: Vec::new(),
+                    participants: refs(&[3]),
+                    target_variables: vec![var("?x"), var("?y")],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn first_variable_uses_grouped_or_before_a_later_variable_proposer() {
+        let descriptors = vec![
+            relation(3, &["?y"]),
+            or(
+                0,
+                &["?x", "?y"],
+                vec![
+                    vec![relation(1, &["?x", "?y"])],
+                    vec![relation(2, &["?x", "?y"])],
+                ],
+            ),
+        ];
+
+        let stages = plan_scope(&descriptors, &[var("?x"), var("?y")], None).unwrap();
+
+        assert_eq!(
+            stages,
+            vec![LogicalStage {
+                added: vec![var("?x"), var("?y")],
+                proposers: refs(&[0]),
+                participants: refs(&[0, 3]),
+                target_variables: vec![var("?x"), var("?y")],
+            }]
+        );
     }
 
     #[test]
