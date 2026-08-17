@@ -526,13 +526,9 @@ These internals can be optimized without changing the logical-plan,
 |------|----------------|
 | `src/query.rs` | Query orchestration, expression lowering, variable order, final projection, aggregation, ordering, and limits. |
 | `src/query_validation.rs` | Validation shared by the standard query entry point. |
-| `src/query/binding_bag.rs` | Checked row relation and relational operations. |
+| `src/query/binding_bag.rs` | Row relation and relational operations. |
 | `src/query/plan.rs` | Descriptors, recursive planning, database-basis-dependent materialization, and their tests. |
-| `src/query/exec_pattern.rs` | `PatternId`, proposal sidecar, and `ExecPattern` contract. |
+| `src/query/exec_pattern.rs` | The main runtime `ExecPattern` contract and helpers for proposals |
 | `src/query/stage.rs` | Concrete executable stages. |
-| `src/query/engine.rs` | Stage fold and per-row proposer arbitration. |
+| `src/query/engine.rs` | `GenericJoinEngine` the main execution loop over `dyn ExecPattern` |
 | `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
-
-Unit tests live beside each contract and runtime pattern. Public parity and
-regression coverage for the standard engine also lives in
-`triplox-jvm/src/test/clojure/xyz/triplox/integration/subscription_test.clj`.
