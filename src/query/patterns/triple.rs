@@ -12,7 +12,7 @@ use crate::index::IndexType;
 use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 use crate::util::make_extractor;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,7 +74,7 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    index: PatternIndex,
+    id: PatternId,
     variables: Vec<Variable>,
     entity: TripleTerm,
     attribute: i64,
@@ -88,7 +88,7 @@ where
     M: DbMetadataOps + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        index: PatternIndex,
+        id: PatternId,
         entity: TripleTerm,
         attribute: i64,
         value: TripleTerm,
@@ -101,13 +101,13 @@ where
         if let Some(variable) = value.variable() {
             ensure!(
                 !variables.contains(variable),
-                "Triple pattern {index} repeats variable {variable}"
+                "Triple pattern {id} repeats variable {variable}"
             );
             variables.push(variable.clone());
         }
 
         Ok(Self {
-            index,
+            id,
             variables,
             entity,
             attribute,
@@ -296,7 +296,7 @@ where
         ensure!(
             self.variables.is_empty() || self.variables.iter().any(&is_bound),
             "Triple pattern {} has no bound variables to validate",
-            self.index
+            self.id
         );
         if input.rows.is_empty() {
             return input.select_rows(&Vec::new());
@@ -491,7 +491,7 @@ where
             }
             _ => bail!(
                 "Triple pattern {} has no bound variables to validate",
-                self.index
+                self.id
             ),
         };
         let matched: Vec<usize> = matches
@@ -507,18 +507,18 @@ where
         ensure!(
             added.len() == 1,
             "Triple pattern {} can propose exactly one variable, got {added:?}",
-            self.index
+            self.id
         );
         ensure!(
             !input.variables.contains(&added[0]),
             "Triple pattern {} cannot add already-bound variable {}",
-            self.index,
+            self.id,
             added[0]
         );
         let position = self.position_for_variable(&added[0]).ok_or_else(|| {
             anyhow::anyhow!(
                 "Triple pattern {} cannot propose variable {}",
-                self.index,
+                self.id,
                 added[0]
             )
         })?;
@@ -531,8 +531,8 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    fn index(&self) -> PatternIndex {
-        self.index
+    fn id(&self) -> PatternId {
+        self.id
     }
 
     fn variables(&self) -> &[Variable] {
@@ -549,14 +549,14 @@ where
         ensure!(
             proposals.len() == input.rows.len(),
             "Triple pattern {} received {} proposals for {} input rows",
-            self.index,
+            self.id,
             proposals.len(),
             input.rows.len()
         );
         ensure!(
             added.len() == 1,
             "Triple pattern {} can count exactly one variable, got {added:?}",
-            self.index
+            self.id
         );
         let Some(position) = self.position_for_variable(&added[0]) else {
             let added = &added[0];
@@ -586,13 +586,13 @@ where
                     let mut prefix = base_prefix.clone();
                     prefix.extend_from_slice(&row[index]);
                     let count = self.estimate_count(&prefix)?;
-                    proposals[row_index].consider(self.index, count);
+                    proposals[row_index].consider(self.id, count);
                 }
             // nothing bound
             } else {
                 let count = self.estimate_count(&base_prefix)?;
                 for proposal in proposals {
-                    proposal.consider(self.index, count);
+                    proposal.consider(self.id, count);
                 }
             }
         // other is a constant
@@ -605,7 +605,7 @@ where
             prefix.extend_from_slice(constant);
             let count = self.estimate_count(&prefix)?;
             for proposal in proposals {
-                proposal.consider(self.index, count);
+                proposal.consider(self.id, count);
             }
         }
         Ok(())

@@ -7,18 +7,18 @@ use super::evaluation::{binding_positions, update_bindings};
 use crate::expr::{evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::ops::DataType;
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, PatternIndex};
+use crate::query::exec_pattern::{ExecPattern, PatternId};
 
 pub(crate) struct PredicatePattern {
-    index: PatternIndex,
+    id: PatternId,
     variables: Vec<Variable>,
     expression: Expr,
 }
 
 impl PredicatePattern {
-    pub(crate) fn new(index: PatternIndex, expression: Expr) -> Self {
+    pub(crate) fn new(id: PatternId, expression: Expr) -> Self {
         Self {
-            index,
+            id,
             variables: expr_variables(&expression),
             expression,
         }
@@ -39,8 +39,8 @@ impl PredicatePattern {
 }
 
 impl ExecPattern for PredicatePattern {
-    fn index(&self) -> PatternIndex {
-        self.index
+    fn id(&self) -> PatternId {
+        self.id
     }
 
     fn variables(&self) -> &[Variable] {
@@ -56,18 +56,18 @@ impl ExecPattern for PredicatePattern {
         ensure!(
             added.is_empty(),
             "Predicate pattern {} cannot propose variables: {added:?}",
-            self.index
+            self.id
         );
         ensure!(
             target_variables == input.variables,
             "Predicate pattern {} validation must preserve the input layout",
-            self.index
+            self.id
         );
         for variable in &self.variables {
             ensure!(
                 input.variables.contains(variable),
                 "Predicate pattern {} requires bound variable {variable}",
-                self.index
+                self.id
             );
         }
 

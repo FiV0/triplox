@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{ensure, Context, Result};
 
 use super::binding_bag::BindingBag;
-use super::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+use super::exec_pattern::{ExecPattern, PatternId, Proposal};
 use super::stage::Stage;
 
 // generic-join based on
@@ -23,13 +23,11 @@ impl GenericJoinEngine {
         for validator in validators {
             let validated = validator
                 .join(&input, &[], &input.variables)
-                .with_context(|| {
-                    format!("Pattern {} failed during validation", validator.index())
-                })?;
+                .with_context(|| format!("Pattern {} failed during validation", validator.id()))?;
             ensure!(
                 validated.variables == input.variables,
                 "Pattern {} changed the layout during validation",
-                validator.index()
+                validator.id()
             );
             input = validated;
         }
@@ -37,7 +35,7 @@ impl GenericJoinEngine {
     }
 
     fn verify_proposed_layout(
-        proposer: PatternIndex,
+        proposer: PatternId,
         proposed: &BindingBag,
         stage: &Stage,
     ) -> Result<()> {
@@ -58,12 +56,12 @@ impl GenericJoinEngine {
                 .expect("proposing stages have at least one proposer");
             let proposed = proposer
                 .join(input, stage.added(), stage.target_variables())
-                .with_context(|| format!("Pattern {} failed during proposal", proposer.index()))?;
-            Self::verify_proposed_layout(proposer.index(), &proposed, stage)?;
+                .with_context(|| format!("Pattern {} failed during proposal", proposer.id()))?;
+            Self::verify_proposed_layout(proposer.id(), &proposed, stage)?;
             let validators = stage
                 .participants()
                 .iter()
-                .filter(|participant| participant.index() != proposer.index())
+                .filter(|participant| participant.id() != proposer.id())
                 .map(|participant| participant.as_ref());
             return Self::validate_all(proposed, validators);
         }
@@ -73,13 +71,10 @@ impl GenericJoinEngine {
             proposer
                 .count(input, stage.added(), &mut proposals)
                 .with_context(|| {
-                    format!(
-                        "Pattern {} failed while counting proposals",
-                        proposer.index()
-                    )
+                    format!("Pattern {} failed while counting proposals", proposer.id())
                 })?;
         }
-        let mut shards: HashMap<PatternIndex, Vec<usize>> = HashMap::new();
+        let mut shards: HashMap<PatternId, Vec<usize>> = HashMap::new();
         for (row_index, proposal) in proposals.iter().enumerate() {
             let Some(proposer) = proposal.proposer() else {
                 continue;
@@ -91,21 +86,21 @@ impl GenericJoinEngine {
         ordered_shards.sort_unstable_by_key(|(_, row_indexes)| row_indexes[0]);
 
         let mut result = BindingBag::empty(stage.target_variables().to_vec())?;
-        for (proposer_index, row_indexes) in ordered_shards {
+        for (proposer_id, row_indexes) in ordered_shards {
             let proposer = stage
                 .proposers()
-                .find(|proposer| proposer.index() == proposer_index)
-                .ok_or_else(|| anyhow::anyhow!("Unknown proposer index {proposer_index}"))?;
+                .find(|proposer| proposer.id() == proposer_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown proposer id {proposer_id}"))?;
             let shard = input.select_rows(&row_indexes)?;
             let proposed = proposer
                 .join(&shard, stage.added(), stage.target_variables())
-                .with_context(|| format!("Pattern {proposer_index} failed during proposal"))?;
-            Self::verify_proposed_layout(proposer_index, &proposed, stage)?;
+                .with_context(|| format!("Pattern {proposer_id} failed during proposal"))?;
+            Self::verify_proposed_layout(proposer_id, &proposed, stage)?;
 
             let validators = stage
                 .participants()
                 .iter()
-                .filter(|participant| participant.index() != proposer_index)
+                .filter(|participant| participant.id() != proposer_id)
                 .map(|participant| participant.as_ref());
             let validated = Self::validate_all(proposed, validators)?;
             result = result.union(&validated)?;
@@ -155,7 +150,7 @@ mod tests {
 
     use super::GenericJoinEngine;
     use crate::query::binding_bag::{BindingBag, BindingRow};
-    use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+    use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
     use crate::query::stage::Stage;
 
     fn bytes(value: &str) -> Bytes {
@@ -179,7 +174,7 @@ mod tests {
     // Configurable proposer used to control per-row counts, extensions, and observed inputs.
     // TODO: Can these tests avoid stateful helpers and mutexes?
     struct MapPattern {
-        index: PatternIndex,
+        id: PatternId,
         variables: Vec<Variable>,
         // Proposal count reported for each input row.
         counts: HashMap<BindingRow, usize>,
@@ -188,7 +183,7 @@ mod tests {
         // Rows that deliberately violate the count contract by receiving no proposal.
         skipped_inputs: HashSet<BindingRow>,
         // Alternate proposer identifier used to test unknown proposer handling.
-        proposer_override: Option<PatternIndex>,
+        proposer_override: Option<PatternId>,
         // Input rows observed when this pattern is selected to propose.
         proposed_inputs: Mutex<Vec<BindingRow>>,
         // Added-variable layouts observed across join calls.
@@ -197,13 +192,13 @@ mod tests {
 
     impl MapPattern {
         fn new(
-            index: PatternIndex,
+            id: PatternId,
             variables: &[&str],
             counts: &[(&[&str], usize)],
             values: &[(&[&str], &[&[&str]])],
         ) -> Self {
             Self {
-                index,
+                id,
                 variables: variables.iter().map(|variable| variable.to_var()).collect(),
                 counts: counts
                     .iter()
@@ -225,7 +220,7 @@ mod tests {
             }
         }
 
-        fn with_proposer_override(mut self, proposer: PatternIndex) -> Self {
+        fn with_proposer_override(mut self, proposer: PatternId) -> Self {
             self.proposer_override = Some(proposer);
             self
         }
@@ -237,8 +232,8 @@ mod tests {
     }
 
     impl ExecPattern for MapPattern {
-        fn index(&self) -> PatternIndex {
-            self.index
+        fn id(&self) -> PatternId {
+            self.id
         }
 
         fn variables(&self) -> &[Variable] {
@@ -264,7 +259,7 @@ mod tests {
                     .get(input_row)
                     .copied()
                     .unwrap_or_else(|| self.values.get(input_row).map_or(0, Vec::len));
-                proposal.consider(self.proposer_override.unwrap_or(self.index), count);
+                proposal.consider(self.proposer_override.unwrap_or(self.id), count);
             }
             Ok(())
         }
@@ -298,8 +293,8 @@ mod tests {
     struct JoinOnlyPattern(MapPattern);
 
     impl ExecPattern for JoinOnlyPattern {
-        fn index(&self) -> PatternIndex {
-            self.0.index()
+        fn id(&self) -> PatternId {
+            self.0.id()
         }
 
         fn variables(&self) -> &[Variable] {
@@ -318,15 +313,15 @@ mod tests {
 
     // Validator-only pattern that filters rows and fails if used as a proposer.
     struct FilterPattern {
-        index: PatternIndex,
+        id: PatternId,
         variables: Vec<Variable>,
         allowed_first_column: Bytes,
         join_added: Mutex<Vec<Vec<Variable>>>,
     }
 
     impl ExecPattern for FilterPattern {
-        fn index(&self) -> PatternIndex {
-            self.index
+        fn id(&self) -> PatternId {
+            self.id
         }
 
         fn variables(&self) -> &[Variable] {
@@ -353,14 +348,14 @@ mod tests {
     }
 
     struct WrongLayoutPattern {
-        index: PatternIndex,
+        id: PatternId,
         variables: Vec<Variable>,
         output: BindingBag,
     }
 
     impl ExecPattern for WrongLayoutPattern {
-        fn index(&self) -> PatternIndex {
-            self.index
+        fn id(&self) -> PatternId {
+            self.id
         }
 
         fn variables(&self) -> &[Variable] {
@@ -374,7 +369,7 @@ mod tests {
             proposals: &mut [Proposal],
         ) -> Result<()> {
             for proposal in proposals.iter_mut().take(input.rows.len()) {
-                proposal.consider(self.index, 1);
+                proposal.consider(self.id, 1);
             }
             Ok(())
         }
@@ -474,7 +469,7 @@ mod tests {
             &[(&["a"], &[&["1"]])],
         )));
         let validator = Arc::new(FilterPattern {
-            index: 1,
+            id: 1,
             variables: vec!["?e".to_var(), "?x".to_var()],
             allowed_first_column: bytes("a"),
             join_added: Mutex::new(Vec::new()),
@@ -487,7 +482,7 @@ mod tests {
         )
         .unwrap();
         let filtering: Arc<dyn ExecPattern> = Arc::new(FilterPattern {
-            index: 2,
+            id: 2,
             variables: vec!["?e".to_var()],
             allowed_first_column: bytes("a"),
             join_added: Mutex::new(Vec::new()),
@@ -526,7 +521,7 @@ mod tests {
             &[(&["b"], &[&["2"]])],
         ));
         let validator: Arc<dyn ExecPattern> = Arc::new(FilterPattern {
-            index: 2,
+            id: 2,
             variables: vec!["?e".to_var(), "?x".to_var()],
             allowed_first_column: bytes("a"),
             join_added: Mutex::new(Vec::new()),
@@ -631,7 +626,7 @@ mod tests {
             Arc::new(MapPattern::new(0, &["?x"], &[(&[], 1)], &[]).with_proposer_override(2));
         let other = Arc::new(MapPattern::new(1, &["?x"], &[(&[], 2)], &[]));
         let validator: Arc<dyn ExecPattern> = Arc::new(FilterPattern {
-            index: 2,
+            id: 2,
             variables: vec!["?x".to_var()],
             allowed_first_column: bytes("unused"),
             join_added: Mutex::new(Vec::new()),
@@ -646,7 +641,7 @@ mod tests {
         assert!(GenericJoinEngine::execute(&[stage], BindingBag::unit())
             .unwrap_err()
             .to_string()
-            .contains("Unknown proposer index 2"));
+            .contains("Unknown proposer id 2"));
 
         let pattern: Arc<dyn ExecPattern> = Arc::new(MapPattern::new(2, &["?x"], &[], &[]));
         let invalid_stage = Stage::new(
@@ -666,7 +661,7 @@ mod tests {
     #[test]
     fn rejects_proposer_and_validator_layout_changes() {
         let wrong_proposer: Arc<dyn ExecPattern> = Arc::new(WrongLayoutPattern {
-            index: 0,
+            id: 0,
             variables: vec!["?e".to_var(), "?x".to_var()],
             output: binding_bag(&["?x", "?e"], &[&["1", "a"]]),
         });
@@ -685,7 +680,7 @@ mod tests {
         );
 
         let wrong_validator: Arc<dyn ExecPattern> = Arc::new(WrongLayoutPattern {
-            index: 1,
+            id: 1,
             variables: vec!["?e".to_var()],
             output: BindingBag::unit(),
         });

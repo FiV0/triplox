@@ -3,16 +3,16 @@ use edn::query::Variable;
 
 use super::binding_bag::BindingBag;
 
-pub(crate) type PatternIndex = usize;
+pub(crate) type PatternId = usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Proposal {
-    proposer: Option<PatternIndex>,
+    proposer: Option<PatternId>,
     count: usize,
 }
 
 impl Proposal {
-    pub(crate) fn proposer(&self) -> Option<PatternIndex> {
+    pub(crate) fn proposer(&self) -> Option<PatternId> {
         self.proposer
     }
 
@@ -20,7 +20,7 @@ impl Proposal {
         self.count
     }
 
-    pub(crate) fn consider(&mut self, proposer: PatternIndex, count: usize) {
+    pub(crate) fn consider(&mut self, proposer: PatternId, count: usize) {
         if self.proposer.is_none() || count < self.count {
             self.proposer = Some(proposer);
             self.count = count;
@@ -38,8 +38,8 @@ impl Default for Proposal {
 }
 
 pub(crate) trait ExecPattern: Send + Sync {
-    // The stable index assigned to this pattern in the executable plan.
-    fn index(&self) -> PatternIndex;
+    // The stable identity assigned to this pattern in the executable plan.
+    fn id(&self) -> PatternId;
 
     // The variables this pattern participates in.
     fn variables(&self) -> &[Variable];
@@ -51,7 +51,7 @@ pub(crate) trait ExecPattern: Send + Sync {
         _added: &[Variable],
         _proposals: &mut [Proposal],
     ) -> Result<()> {
-        bail!("Pattern {} cannot propose", self.index())
+        bail!("Pattern {} cannot propose", self.id())
     }
 
     // Extends the `input`` when `added` is non-empty; otherwise filters `input` without changing its layout.

@@ -4,7 +4,7 @@ use edn::query::Variable;
 
 use crate::algo::trie::{Trie, TrieNode};
 use crate::query::binding_bag::{BindingBag, BindingRow};
-use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 
 /// A pattern that matches a relation (set of rows) with a fixed set of variables.
 ///
@@ -13,7 +13,7 @@ use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
 /// followed by the introduced variables must form a relation prefix. Validation requires the bound
 /// variables themselves to form a relation prefix.
 pub(crate) struct RelationPattern {
-    index: PatternIndex,
+    id: PatternId,
     variables: Vec<Variable>,
     // The reason we have this field is to distinguish between an the unit relation`{()}` and an empty relation `{}`.
     // More generally, an empty bound prefix reaches the trie root whether the relation has
@@ -23,7 +23,7 @@ pub(crate) struct RelationPattern {
 }
 
 impl RelationPattern {
-    pub(crate) fn new(index: PatternIndex, relation: BindingBag) -> Self {
+    pub(crate) fn new(id: PatternId, relation: BindingBag) -> Self {
         let has_rows = !relation.rows.is_empty();
         let variables = relation.variables;
         let mut trie = Trie::new();
@@ -31,7 +31,7 @@ impl RelationPattern {
             trie.insert(row);
         }
         Self {
-            index,
+            id,
             variables,
             has_rows,
             trie,
@@ -107,8 +107,8 @@ impl RelationPattern {
 }
 
 impl ExecPattern for RelationPattern {
-    fn index(&self) -> PatternIndex {
-        self.index
+    fn id(&self) -> PatternId {
+        self.id
     }
 
     fn variables(&self) -> &[Variable] {
@@ -130,7 +130,7 @@ impl ExecPattern for RelationPattern {
         ensure!(
             !added.is_empty(),
             "Relation pattern {} cannot count an empty proposal",
-            self.index
+            self.id
         );
         let prefix_indexes = self.prefix_indexes(input, added).ok_or_else(|| {
             anyhow::anyhow!("Relation cannot propose the requested variables: {added:?}")
@@ -141,7 +141,7 @@ impl ExecPattern for RelationPattern {
                 .trie_node_for(input_row, &prefix_indexes)
                 .map(|node| Self::count_extensions(node, added.len()))
                 .unwrap_or(0);
-            proposal.consider(self.index, count);
+            proposal.consider(self.id, count);
         }
         Ok(())
     }

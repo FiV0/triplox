@@ -71,12 +71,12 @@ impl Stage {
             );
         }
 
-        let mut participant_indexes = HashSet::with_capacity(participants.len());
+        let mut participant_ids = HashSet::with_capacity(participants.len());
         for participant in &participants {
             ensure!(
-                participant_indexes.insert(participant.index()),
-                "Stage participant indexes must be distinct: {}",
-                participant.index()
+                participant_ids.insert(participant.id()),
+                "Stage participant ids must be distinct: {}",
+                participant.id()
             );
         }
 
@@ -135,25 +135,25 @@ mod tests {
 
     use super::Stage;
     use crate::query::binding_bag::BindingBag;
-    use crate::query::exec_pattern::{ExecPattern, PatternIndex, Proposal};
+    use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
 
     struct TestPattern {
-        index: PatternIndex,
+        id: PatternId,
         variables: Vec<Variable>,
     }
 
     impl TestPattern {
-        fn shared(index: PatternIndex, variables: &[&str]) -> Arc<dyn ExecPattern> {
+        fn shared(id: PatternId, variables: &[&str]) -> Arc<dyn ExecPattern> {
             Arc::new(Self {
-                index,
+                id,
                 variables: variables.iter().map(|variable| variable.to_var()).collect(),
             })
         }
     }
 
     impl ExecPattern for TestPattern {
-        fn index(&self) -> PatternIndex {
-            self.index
+        fn id(&self) -> PatternId {
+            self.id
         }
 
         fn variables(&self) -> &[Variable] {
