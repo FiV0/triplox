@@ -11,7 +11,8 @@ incremental query engine described in
 
 The engine is row-oriented. It plans a query without opening storage,
 materializes that recursive plan for one database basis, and executes a
-sequence of layout transitions over `BindingBag` values.
+sequence of scopes with stages over a growing `BindingBag`. Nested scopes
+exist for `or` and `not` evaluation.
 
 ```text
 ParsedQuery + QueryArg values + database basis
