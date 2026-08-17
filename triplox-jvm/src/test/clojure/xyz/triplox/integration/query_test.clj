@@ -779,3 +779,22 @@
               :where [[?i :issue/title ?title]
                       (or [?i :issue/status :status/open]
                           [?i :issue/status :status/in-progress])]}))))
+
+;; TODO: Enable when relation query bindings are supported.
+#_(deftest grouped-or-does-not-validate-non-prefix-input-relation
+    (tc/transact *conn* [{:name "Alice" :last-name "Smith" :age 30}
+                         {:name "Witness" :age 20}])
+
+    (is (= #{["Alice" "Smith" 20 30]}
+           (q '{:find [?x ?a ?b ?c]
+                :in [?y [[?x ?y]] [[?a ?b ?c]]]
+                :where [(or (and [?e :name ?x]
+                                 [?e :last-name ?a]
+                                 [?e :age ?c])
+                            (and [?e :name ?x]
+                                 [?e :last-name ?a]
+                                 [?e :salary ?c]))
+                        [?w :age ?b]]}
+              "seed"
+              [["Alice" "seed"]]
+              [["Smith" 20 30]]))))
