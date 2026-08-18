@@ -26,7 +26,7 @@
   (let [stop (async/chan)
         done (async/chan)]
     (async/go-loop []
-      (let [[_ channel] (async/alts! [stop (async/timeout 500)])]
+      (let [[_ channel] (async/alts! [stop (async/timeout 300)])]
         (if (= channel stop)
           (async/close! done)
           (let [delta (api/take! sub 10)]
