@@ -1528,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_or_projects_only_relevant_outer_variables_and_preserves_multiplicity() -> Result<()>
+    fn grouped_or_projects_incoming_preserves_multiplicity_and_accepts_bound_outputs() -> Result<()>
     {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
@@ -1591,6 +1591,18 @@ mod tests {
                 (DataType::Long(1), DataType::Long(10), DataType::Long(3)),
             ]
         );
+
+        let bound = BindingBag::new(
+            vec![var("?x"), var("?z"), var("?y")],
+            vec![
+                vec![encoded(1), encoded(10), encoded(2)],
+                vec![encoded(1), encoded(10), encoded(4)],
+            ],
+        )?;
+        let validated = or_pattern.join(&bound, &[], &[var("?x"), var("?z"), var("?y")])?;
+
+        assert_eq!(validated.variables, [var("?x"), var("?z"), var("?y")]);
+        assert_eq!(validated.rows, vec![bound.rows[0].clone()]);
         Ok(())
     }
 

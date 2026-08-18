@@ -83,13 +83,6 @@ where
                 self.id
             );
         }
-        for variable in &self.variables {
-            ensure!(
-                !input.variables.contains(variable) || self.incoming_variables.contains(variable),
-                "OR pattern {} received unplanned bound variable {variable}",
-                self.id
-            );
-        }
         Ok(())
     }
 
@@ -152,21 +145,21 @@ where
                 "OR pattern {} validation requires every OR variable to be bound",
                 self.id
             );
-            return input.semijoin(&self.execute_branches(input)?);
+            input.semijoin(&self.execute_branches(input)?)
+        } else {
+            let expected_added: HashSet<&Variable> = self
+                .variables
+                .iter()
+                .filter(|variable| !input.variables.contains(*variable))
+                .collect();
+            ensure!(
+                added.iter().collect::<HashSet<_>>() == expected_added,
+                "OR pattern {} must propose every missing OR variable",
+                self.id
+            );
+            input
+                .natural_join(&self.execute_branches(input)?)?
+                .reorder(target_variables)
         }
-
-        let expected_added: HashSet<&Variable> = self
-            .variables
-            .iter()
-            .filter(|variable| !input.variables.contains(*variable))
-            .collect();
-        ensure!(
-            added.iter().collect::<HashSet<_>>() == expected_added,
-            "OR pattern {} must propose every missing OR variable",
-            self.id
-        );
-        input
-            .natural_join(&self.execute_branches(input)?)?
-            .reorder(target_variables)
     }
 }
