@@ -8,8 +8,7 @@
    [java.io Closeable]
    [java.lang AutoCloseable]))
 
-(defn update-view
-  "Apply a result delta to a weighted view map."
+(defn- update-view
   [view-map delta]
   (reduce (fn [view-map [tuple weight]]
             (let [new-weight (+ (get view-map tuple 0) weight)]
@@ -19,8 +18,7 @@
           view-map
           delta))
 
-(defn update-view!
-  "Apply a result delta to a view atom."
+(defn- update-view!
   [view delta]
   (swap! view update-view delta))
 
