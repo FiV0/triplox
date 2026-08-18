@@ -91,8 +91,11 @@ pub async fn in_memory_slate() -> SlateComponents {
 }
 
 pub async fn local_slate(root_path: &Path) -> SlateComponents {
-    let object_store: Arc<dyn ObjectStore> =
-        Arc::new(LocalFileSystem::new_with_prefix(root_path).unwrap());
+    let object_store: Arc<dyn ObjectStore> = Arc::new(
+        LocalFileSystem::new_with_prefix(root_path)
+            .unwrap()
+            .with_fsync(true),
+    );
     let slate_path = "triplox".to_string();
     let db = Arc::new(
         Db::builder(slate_path.clone(), object_store.clone())
