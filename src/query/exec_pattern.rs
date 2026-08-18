@@ -37,6 +37,9 @@ impl Default for Proposal {
     }
 }
 
+// Very much inspired by
+// https://github.com/frankmcsherry/datatoad
+
 pub(crate) trait ExecPattern: Send + Sync {
     // The stable identity assigned to this pattern in the executable plan.
     fn id(&self) -> PatternId;

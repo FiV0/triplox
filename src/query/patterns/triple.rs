@@ -13,6 +13,7 @@ use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
+use crate::schema::IdentMap;
 use crate::util::make_extractor;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +46,7 @@ where
 {
     slate: Arc<D>,
     handle: Handle,
+    ident_map: Arc<IdentMap>,
     as_of: i64,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 }
@@ -57,15 +59,21 @@ where
     pub(crate) fn new(
         slate: Arc<D>,
         handle: Handle,
+        ident_map: Arc<IdentMap>,
         as_of: i64,
         range_stats: Arc<slatedb_estimates::RangeStats<M>>,
     ) -> Self {
         Self {
             slate,
             handle,
+            ident_map,
             as_of,
             range_stats,
         }
+    }
+
+    pub(crate) fn ident_map(&self) -> &IdentMap {
+        &self.ident_map
     }
 }
 
@@ -634,6 +642,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use anyhow::Result;
@@ -749,6 +758,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
@@ -912,6 +922,7 @@ mod tests {
             Arc::new(DbValue::new(
                 components.db,
                 runtime.handle().clone(),
+                Arc::new(HashMap::new()),
                 20,
                 components.range_stats,
             )),
@@ -965,6 +976,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             20,
             components.range_stats,
         ));
@@ -1059,6 +1071,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
@@ -1112,6 +1125,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
@@ -1174,6 +1188,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
@@ -1227,6 +1242,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
@@ -1296,6 +1312,7 @@ mod tests {
                 Arc::new(DbValue::new(
                     components.db.clone(),
                     runtime.handle().clone(),
+                    Arc::new(HashMap::new()),
                     as_of,
                     components.range_stats.clone(),
                 )),
@@ -1324,6 +1341,7 @@ mod tests {
         let db = Arc::new(DbValue::new(
             components.db,
             runtime.handle().clone(),
+            Arc::new(HashMap::new()),
             10,
             components.range_stats,
         ));
