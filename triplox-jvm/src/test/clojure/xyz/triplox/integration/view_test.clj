@@ -1,32 +1,19 @@
 (ns xyz.triplox.integration.view-test
   (:require
-   [clojure.test :refer [deftest is]]
+   [clojure.test :as t :refer [deftest is]]
    [xyz.triplox.api :as api]
-   [xyz.triplox.view :as view]))
+   [xyz.triplox.view :as view]
+   [xyz.triplox.integration.query-test :as query-test :refer [*conn*]]))
 
-(defn- connect []
-  (let [host (System/getProperty "triplox.host" "localhost")
-        port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
-    (api/connect host port)))
-
-(defn- await-row [materialized row]
-  (let [deadline (+ (System/nanoTime) 5000000000)]
-    (loop []
-      (cond
-        (some #{row} (view/get-view materialized)) true
-        (< (System/nanoTime) deadline) (do (Thread/sleep 25) (recur))
-        :else false))))
+(t/use-fixtures :each query-test/with-conn query-test/with-people-schema)
 
 (deftest view-reflects-two-transactions
-  (let [first-ident (keyword "view-test" (str (random-uuid)))
-        second-ident (keyword "view-test" (str (random-uuid)))
-        query '{:find [?ident]
-                :where [[?entity :db/ident ?ident]]}]
-    (with-open [conn (connect)
-                materialized (view/->view conn query)]
-      (is (:committed? (api/transact conn [{:db/ident first-ident}])))
-      (is (await-row materialized [first-ident]))
+  (with-open [mv (view/->view *conn* '{:find [?e ?name]
+                                       :where [[?e :name ?name]]})]
+    (is (:committed? (api/transact *conn* [{:name "Alice"}])))
+    (Thread/sleep 500)
+    (is (= [[8796093022208 "Alice"]] (view/get-view mv)))
 
-      (is (:committed? (api/transact conn [{:db/ident second-ident}])))
-      (is (await-row materialized [second-ident]))
-      (is (some #{[first-ident]} (view/get-view materialized))))))
+    (is (:committed? (api/transact *conn* [{:name "Bob"}])))
+    (Thread/sleep 500)
+    (is (= [[8796093022208 "Alice"] [8796093022209 "Bob"]] (view/get-view mv)))))
