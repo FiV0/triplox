@@ -5,6 +5,7 @@ use anyhow::{ensure, Context, Result};
 use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
 
+use super::ensure_unique;
 use super::relation::RelationPattern;
 use super::triple::DbValue;
 use crate::query::binding_bag::BindingBag;
@@ -35,11 +36,8 @@ where
         logical_plan: LogicalPlan,
         db: Arc<DbValue<D, M>>,
     ) -> Result<Self> {
+        ensure_unique("NOT", &variables)?;
         let variables_set: HashSet<&Variable> = variables.iter().collect();
-        ensure!(
-            variables_set.len() == variables.len(),
-            "NOT variables must be unique"
-        );
         let incoming_variables = logical_plan
             .incoming_variables()
             .ok_or_else(|| anyhow::anyhow!("NOT logical plan must be nested"))?

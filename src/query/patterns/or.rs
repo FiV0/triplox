@@ -5,20 +5,13 @@ use anyhow::{ensure, Context, Result};
 use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
 
+use super::ensure_unique;
 use super::relation::RelationPattern;
 use super::triple::DbValue;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
 use crate::query::exec_pattern::{ExecPattern, PatternId};
 use crate::query::plan::LogicalPlan;
-
-fn ensure_unique(label: &str, variables: &[Variable]) -> Result<()> {
-    let mut seen = HashSet::new();
-    for variable in variables {
-        ensure!(seen.insert(variable), "{label} variables repeat {variable}");
-    }
-    Ok(())
-}
 
 pub(crate) struct OrPattern<D, M>
 where
