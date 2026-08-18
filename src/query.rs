@@ -736,7 +736,7 @@ pub fn execute_query<D, M>(
     args: &[QueryArg],
     slate: Arc<D>,
     handle: Handle,
-    ident_map: &IdentMap,
+    ident_map: Arc<IdentMap>,
     as_of: i64,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 ) -> Result<QueryResult, Error>
@@ -747,13 +747,7 @@ where
     validate_query(query, args)?;
     let logical_plan = build_logical_plan(query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();
-    let db = Arc::new(DbValue::new(
-        slate,
-        handle,
-        Arc::new(ident_map.clone()),
-        as_of,
-        range_stats,
-    ));
+    let db = Arc::new(DbValue::new(slate, handle, ident_map, as_of, range_stats));
     let stages = logical_plan.materialize(db, None)?;
     let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
     ensure!(

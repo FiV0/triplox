@@ -42,7 +42,7 @@ where
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
     sdb: Arc<D>,
-    ident_map: IdentMap,
+    ident_map: Arc<IdentMap>,
     handle: Handle,
     tx_key: TxKey,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
@@ -63,7 +63,7 @@ where
     ) -> Self {
         Self {
             sdb,
-            ident_map,
+            ident_map: Arc::new(ident_map),
             handle,
             tx_key,
             range_stats,
@@ -80,7 +80,7 @@ where
         let tx_key = latest_tx_key_from_sdb(sdb.as_ref()).await?;
         Ok(Self {
             sdb,
-            ident_map,
+            ident_map: Arc::new(ident_map),
             handle,
             tx_key,
             range_stats,
@@ -117,14 +117,14 @@ where
 
         let sdb = self.sdb.clone();
         let handle = self.handle.clone();
-        let ident_map = self.ident_map.clone();
+        let ident_map = Arc::clone(&self.ident_map);
         let query = query.clone();
         let args = args.to_vec();
         let as_of = tx_eid_from_tx_id(self.tx_key.tx_id);
         let range_stats = self.range_stats.clone();
 
         tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, sdb, handle, &ident_map, as_of, range_stats)
+            execute_query(&query, &args, sdb, handle, ident_map, as_of, range_stats)
         })
         .await
         .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
