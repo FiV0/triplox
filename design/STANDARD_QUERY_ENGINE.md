@@ -505,20 +505,6 @@ Current restrictions include:
 The incremental query path has its own planner and runtime. Standard-engine
 changes do not automatically apply to subscriptions.
 
-### Performance characteristics
-
-The current implementation favors explicit contracts and correctness:
-
-- intermediate `BindingBag` rows are materialized;
-- projection and joins clone row vectors and cheap `Bytes` handles;
-- triple proposals may repeat equivalent SlateDB scans for different input
-  rows;
-- nested OR materializes each branch result before union and correlation;
-- variable order is deterministic but not globally cost-based.
-
-These internals can be optimized without changing the logical-plan,
-`ExecPattern`, or stage boundaries.
-
 ---
 
 ## Source Guide
