@@ -5876,6 +5876,7 @@ dependencies = [
  "hyper 1.10.1",
  "hyper-util",
  "indexmap 2.14.0",
+ "itertools 0.14.0",
  "log",
  "rand 0.9.4",
  "rdkafka",
