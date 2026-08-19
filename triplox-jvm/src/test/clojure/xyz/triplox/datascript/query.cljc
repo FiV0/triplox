@@ -1,68 +1,88 @@
-;; Complete verbatim copy of DataScript's query.cljc.
-;; Source: https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query.cljc
+;; Vendored and slightly modified from:
+;; https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query.cljc
 ;; Copyright © 2014–2025 Nikita Prokopov.
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
-;; The upstream source is preserved between the markers below without edits.
 
-(ns xyz.triplox.datascript.query)
-
-;; Unsupported as an executable Triplox test file:
-;; Uses DataScript DB constructors, vector query forms, relation sources, and query features outside Triplox's public API.
-;; BEGIN VERBATIM DATASCRIPT SOURCE
-(comment
-(ns datascript.test.query
+(ns xyz.triplox.datascript.query
   (:require
-    [clojure.test :as t :refer [is are deftest testing]]
-    [datascript.core :as d]
-    [datascript.db :as db]
-    [datascript.test.core :as tdc])
-  #?(:clj
-     (:import
-       [clojure.lang ExceptionInfo])))
+    [clojure.test :as t :refer [is are deftest testing use-fixtures]]
+    [xyz.triplox.api :as d]
+    [xyz.triplox.datascript.test-util])
+  (:import
+    [xyz.triplox.client TriploxException]))
+
+(def ^:dynamic *conn* nil)
+
+(def schema
+  [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :aka :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
+   {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :a :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :b :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :c :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
+
+(defn connect []
+  (let [host (System/getProperty "triplox.host" "localhost")
+        port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
+    (d/connect host port)))
+
+(defn with-conn [f]
+  (with-open [conn (connect)]
+    (binding [*conn* conn]
+      (f))))
+
+(defn with-schema [f]
+  (d/transact *conn* schema)
+  (f))
+
+(use-fixtures :each with-conn with-schema)
+
+(defn q [query-edn & args]
+  (set (apply d/q (d/db *conn*) query-edn args)))
 
 (deftest test-joins
-  (let [db (-> (d/empty-db)
-             (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
-                         {:db/id 2, :name  "Petr", :age   37}
-                         {:db/id 3, :name  "Ivan", :age   37}
-                         {:db/id 4, :age 15}]))]
-    (is (= (d/q '[:find ?e
-                  :where [?e :name]] db)
+  (d/transact *conn* [{:db/id 1, :name  "Ivan", :age   15}
+                      {:db/id 2, :name  "Petr", :age   37}
+                      {:db/id 3, :name  "Ivan", :age   37}
+                      {:db/id 4, :age 15}])
+  (is (= (q '[:find ?e
+              :where [?e :name _]])
           #{[1] [2] [3]}))
-    (is (= (d/q '[:find  ?e ?v
-                  :where [?e :name "Ivan"]
-                  [?e :age ?v]] db)
+  (is (= (q '[:find  ?e ?v
+              :where [?e :name "Ivan"]
+              [?e :age ?v]])
           #{[1 15] [3 37]}))
-    (is (= (d/q '[:find  ?e1 ?e2
-                  :where [?e1 :name ?n]
-                  [?e2 :name ?n]] db)
+  (is (= (q '[:find  ?e1 ?e2
+              :where [?e1 :name ?n]
+              [?e2 :name ?n]])
           #{[1 1] [2 2] [3 3] [1 3] [3 1]}))
-    (is (= (d/q '[:find  ?e ?e2 ?n
-                  :where [?e :name "Ivan"]
-                  [?e :age ?a]
-                  [?e2 :age ?a]
-                  [?e2 :name ?n]] db)
+  (is (= (q '[:find  ?e ?e2 ?n
+              :where [?e :name "Ivan"]
+              [?e :age ?a]
+              [?e2 :age ?a]
+              [?e2 :name ?n]])
           #{[1 1 "Ivan"]
             [3 3 "Ivan"]
-            [3 2 "Petr"]}))))
+            [3 2 "Petr"]})))
 
 (deftest test-q-many
-  (let [db (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}})
-             (d/db-with [[:db/add 1 :name "Ivan"]
-                         [:db/add 1 :aka  "ivolga"]
-                         [:db/add 1 :aka  "pi"]
-                         [:db/add 2 :name "Petr"]
-                         [:db/add 2 :aka  "porosenok"]
-                         [:db/add 2 :aka  "pi"]]))]
-    (is (= (d/q '[:find  ?n1 ?n2
-                  :where [?e1 :aka ?x]
-                  [?e2 :aka ?x]
-                  [?e1 :name ?n1]
-                  [?e2 :name ?n2]] db)
+  (d/transact *conn* [[:db/add 1 :name "Ivan"]
+                      [:db/add 1 :aka  "ivolga"]
+                      [:db/add 1 :aka  "pi"]
+                      [:db/add 2 :name "Petr"]
+                      [:db/add 2 :aka  "porosenok"]
+                      [:db/add 2 :aka  "pi"]])
+  (is (= (q '[:find  ?n1 ?n2
+              :where [?e1 :aka ?x]
+              [?e2 :aka ?x]
+              [?e1 :name ?n1]
+              [?e2 :name ?n2]])
           #{["Ivan" "Ivan"]
             ["Petr" "Petr"]
             ["Ivan" "Petr"]
-            ["Petr" "Ivan"]}))))
+            ["Petr" "Ivan"]})))
 
 (deftest test-q-coll
   (let [db [[1 :name "Ivan"]
@@ -86,31 +106,28 @@
             #{[1 :age 39 999]})))))
 
 (deftest test-q-in
-  (let [db (-> (d/empty-db)
-             (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
-                         {:db/id 2, :name  "Petr", :age   37}
-                         {:db/id 3, :name  "Ivan", :age   37}]))
-        query '{:find  [?e]
-                :in    [$ ?attr ?value]
+  (d/transact *conn* [{:db/id 1, :name  "Ivan", :age   15}
+                      {:db/id 2, :name  "Petr", :age   37}
+                      {:db/id 3, :name  "Ivan", :age   37}])
+  (let [query '{:find  [?e]
+                :in    [?attr ?value]
                 :where [[?e ?attr ?value]]}]
-    (is (= (d/q query db :name "Ivan")
+    (is (= (q query :name "Ivan")
           #{[1] [3]}))
-    (is (= (d/q query db :age 37)
+    (is (= (q query :age 37)
           #{[2] [3]}))
 
     (testing "Named DB"
-      (is (= (d/q '[:find  ?a ?v
-                    :in    $db ?e
-                    :where [$db ?e ?a ?v]] db 1)
+      (is (= (q '[:find  ?a ?v
+                  :in    ?e
+                  :where [?e ?a ?v]] 1)
             #{[:name "Ivan"]
               [:age 15]})))
 
     (testing "DB join with collection"
-      (is (= (d/q '[:find  ?e ?email
-                    :in    $ $b
-                    :where [?e :name ?n]
-                    [$b ?n ?email]]
-               db
+      (is (= (q '[:find  ?e ?email
+                  :in    [[?n ?email]]
+                  :where [?e :name ?n]]
                [["Ivan" "ivan@mail.ru"]
                 ["Petr" "petr@gmail.com"]])
             #{[1 "ivan@mail.ru"]
@@ -118,87 +135,85 @@
               [3 "ivan@mail.ru"]})))
     
     (testing "Query without DB"
-      (is (= (d/q '[:find ?a ?b
-                    :in   ?a ?b]
-               10 20)
+      (is (= (q '[:find ?a ?b
+                  :in   ?a ?b]
+             10 20)
             #{[10 20]})))
 
     (is (thrown-msg? "Extra inputs passed, expected: [], got: 1"
-          (d/q '[:find ?e :where [(inc 1) ?e]] db)))
+          (q '[:find ?e :where [(inc 1) ?e]])))
 
     (is (thrown-msg? "Too few inputs passed, expected: [$ $2], got: 1"
-          (d/q '[:find ?e :in $ $2 :where [?e]] db)))
+          (q '[:find ?e :in $2 :where [$2 ?e]])))
 
     (is (thrown-msg? "Extra inputs passed, expected: [$], got: 2"
-          (d/q '[:find ?e :where [?e]] db db)))
+          (q '[:find ?e :where [?e]] (d/db *conn*))))
 
     (is (thrown-msg? "Extra inputs passed, expected: [$ $2], got: 3"
-          (d/q '[:find ?e :in $ $2 :where [?e]] db db db)))))
+          (q '[:find ?e :in $2 :where [?e]] (d/db *conn*) (d/db *conn*))))))
 
 (deftest test-bindings
-  (let [db (-> (d/empty-db)
-             (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
-                         {:db/id 2, :name  "Petr", :age   37}
-                         {:db/id 3, :name  "Ivan", :age   37}]))]
-    (testing "Relation binding"
-      (is (= (d/q '[:find  ?e ?email
-                    :in    $ [[?n ?email]]
-                    :where [?e :name ?n]]
-               db
+  (d/transact *conn* [{:db/id 1, :name  "Ivan", :age   15}
+                      {:db/id 2, :name  "Petr", :age   37}
+                      {:db/id 3, :name  "Ivan", :age   37}])
+  (testing "Relation binding"
+    (is (= (q '[:find  ?e ?email
+                :in    [[?n ?email]]
+                :where [?e :name ?n]]
                [["Ivan" "ivan@mail.ru"]
                 ["Petr" "petr@gmail.com"]])
-            #{[1 "ivan@mail.ru"]
-              [2 "petr@gmail.com"]
-              [3 "ivan@mail.ru"]})))
+          #{[1 "ivan@mail.ru"]
+            [2 "petr@gmail.com"]
+            [3 "ivan@mail.ru"]})))
 
-    (testing "Tuple binding"
-      (is (= (d/q '[:find  ?e
-                    :in    $ [?name ?age]
-                    :where [?e :name ?name]
-                    [?e :age ?age]]
-               db ["Ivan" 37])
-            #{[3]})))
+  (testing "Tuple binding"
+    (is (= (q '[:find  ?e
+                :in    [?name ?age]
+                :where [?e :name ?name]
+                [?e :age ?age]]
+             ["Ivan" 37])
+          #{[3]})))
 
-    (testing "Collection binding"
-      (is (= (d/q '[:find  ?attr ?value
-                    :in    $ ?e [?attr ...]
-                    :where [?e ?attr ?value]]
-               db 1 [:name :age])
-            #{[:name "Ivan"] [:age 15]})))
+  (testing "Collection binding"
+    (is (= (q '[:find  ?attr ?value
+                :in    ?e [?attr ...]
+                :where [?e ?attr ?value]]
+             1 [:name :age])
+          #{[:name "Ivan"] [:age 15]})))
 
-    (testing "Empty coll handling"
-      (is (= (d/q '[:find ?id
-                    :in $ [?id ...]
-                    :where [?id :age _]]
-               [[1 :name "Ivan"]
-                [2 :name "Petr"]]
-               [])
-            #{}))
-      (is (= (d/q '[:find ?id
-                    :in $ [[?id]]
-                    :where [?id :age _]]
-               [[1 :name "Ivan"]
-                [2 :name "Petr"]]
-               [])
-            #{})))
+  (testing "Empty coll handling"
+    (is (= (d/q '[:find ?id
+                  :in $ [?id ...]
+                  :where [?id :age _]]
+             [[1 :name "Ivan"]
+              [2 :name "Petr"]]
+             [])
+          #{}))
+    (is (= (d/q '[:find ?id
+                  :in $ [[?id]]
+                  :where [?id :age _]]
+             [[1 :name "Ivan"]
+              [2 :name "Petr"]]
+             [])
+          #{})))
     
-    (testing "Placeholders"
-      (is (= (d/q '[:find ?x ?z
-                    :in [?x _ ?z]]
-               [:x :y :z])
-            #{[:x :z]}))
-      (is (= (d/q '[:find ?x ?z
-                    :in [[?x _ ?z]]]
-               [[:x :y :z] [:a :b :c]])
-            #{[:x :z] [:a :c]})))
+  (testing "Placeholders"
+    (is (= (d/q '[:find ?x ?z
+                  :in [?x _ ?z]]
+             [:x :y :z])
+          #{[:x :z]}))
+    (is (= (d/q '[:find ?x ?z
+                  :in [[?x _ ?z]]]
+             [[:x :y :z] [:a :b :c]])
+          #{[:x :z] [:a :c]})))
     
-    (testing "Error reporting"
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
-            (d/q '[:find ?a ?b :in [?a ?b]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
-            (d/q '[:find ?a :in [?a ...]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
-            (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
+  (testing "Error reporting"
+    (is (thrown-with-msg? TriploxException #"Cannot bind value :a to tuple \[\?a \?b\]"
+          (d/q '[:find ?a ?b :in [?a ?b]] :a)))
+    (is (thrown-with-msg? TriploxException #"Cannot bind value :a to collection \[\?a \.\.\.\]"
+          (d/q '[:find ?a :in [?a ...]] :a)))
+    (is (thrown-with-msg? TriploxException #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
+          (d/q '[:find ?a ?b :in [?a ?b]] [:a])))))
         
 (deftest test-nested-bindings
   (is (= (d/q '[:find  ?k ?v
@@ -246,14 +261,14 @@
         #{[{:d 2} 2]})))
 
 (deftest ^{:doc "issue-385"} test-join-unrelated
+  (d/transact *conn* [{:person/name "Joe"}])
   (is (= #{}
-        (d/q '[:find ?name
-               :in $ ?my-fn
-               :where [?e :person/name ?name]
-               [(?my-fn) ?result]
-               [(< ?result 3)]]
-          (d/db-with (d/empty-db) [{:person/name "Joe"}])
-          (fn [] 5)))))
+        (q '[:find ?name
+             :in ?my-fn
+             :where [?e :person/name ?name]
+             [(?my-fn) ?result]
+             [(< ?result 3)]]
+           (fn [] 5)))))
 
 (deftest ^{:doc "issue-425"} test-symbol-comparison
   (is (= [2]
@@ -262,41 +277,29 @@
             :where [?e :s b]]
           '[[1 :s a]
             [2 :s b]])))
-  (let [db (-> (d/empty-db)
-             (d/db-with '[{:db/id 1, :s a}
-                          {:db/id 2, :s b}]))]
-    (is (= [2]
-          (d/q
-            '[:find [?e ...]
-              :where [?e :s b]]
-            db)))))
+  (d/transact *conn* '[{:db/id 1, :s a}
+                       {:db/id 2, :s b}])
+  (is (= [2]
+        (q '[:find [?e ...]
+             :where [?e :s b]]))))
 
 (deftest ^{:doc "issue-462"} test-constant-substitution
+  (d/transact *conn*
+    (for [eid  (range 1 11)
+          attr [:a :b :c]]
+      [:db/add eid attr (str eid (name attr))]))
   (let [cnt+q (fn [query db & sources]
                 (let [*cnt (volatile! 0)
-                      db'  (d/filter db
-                             (fn [db datom]
-                               (vswap! *cnt inc)
-                               true))
-                      res  (apply d/q query db' sources)]
+                      res  (set (apply d/q db query sources))]
                   [@*cnt res]))
-        schema {:a {:db/index true}
-                :b {:db/index true}
-                :c {:db/index true}}
-        db     (-> (d/empty-db schema)
-                 (d/db-with
-                   (for [eid  (range 1 11)
-                         attr [:a :b :c]]
-                     [:db/add eid attr (str eid (name attr))])))]
+        db (d/db *conn*)]
     (is (= [1 #{["5b"]}] (cnt+q '[:find ?v :where [5 :b ?v]] db)))
     (is (= [1 #{[:b]}]   (cnt+q '[:find ?a :where [5 ?a "5b"]] db)))
     (is (= [1 #{[5]}]    (cnt+q '[:find ?e :where [?e :b "5b"]] db)))
-    (is (= [1 #{[5 :b "5b"]}] (cnt+q '[:find ?e ?a ?v :in $ ?e ?a :where [?e ?a ?v]] db 5 :b)))
-    (is (= [2 #{[5 :b "5b"]}] (cnt+q '[:find ?e2 ?a ?v :in $ ?a ?v :where [?e ?a ?v] [?e2 ?a ?v]] db :b "5b")))
-    (is (= [3 #{[:a "5a"] [:b "5b"] [:c "5c"]}] (cnt+q '[:find ?a ?v :in $ ?e :where [?e ?a ?v]] db 5)))
+    (is (= [1 #{[5 :b "5b"]}] (cnt+q '[:find ?e ?a ?v :in ?e ?a :where [?e ?a ?v]] db 5 :b)))
+    (is (= [2 #{[5 :b "5b"]}] (cnt+q '[:find ?e2 ?a ?v :in ?a ?v :where [?e ?a ?v] [?e2 ?a ?v]] db :b "5b")))
+    (is (= [3 #{[:a "5a"] [:b "5b"] [:c "5c"]}] (cnt+q '[:find ?a ?v :in ?e :where [?e ?a ?v]] db 5)))
     (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :where [?e ?a "5b"]] db)))
-    (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :in $ ?v :where [?e ?a ?v]] db "5b")))
-    (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :in $ [?v ...] :where [?e ?a ?v]] db ["5b"])))
+    (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :in ?v :where [?e ?a ?v]] db "5b")))
+    (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :in [?v ...] :where [?e ?a ?v]] db ["5b"])))
     (is (= [1 #{[5 :b]}] (cnt+q '[:find ?e ?a :where [(ground "5b") ?v] [?e ?a ?v]] db)))))
-)
-;; END VERBATIM DATASCRIPT SOURCE

@@ -1,21 +1,13 @@
-;; Complete verbatim copy of DataScript's query_aggregates.cljc.
-;; Source: https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query_aggregates.cljc
+;; Vendored and slightly modified from:
+;; https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query_aggregates.cljc
 ;; Copyright © 2014–2025 Nikita Prokopov.
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
-;; The upstream source is preserved between the markers below without edits.
 
-(ns xyz.triplox.datascript.query-aggregates)
-
-;; Unsupported as an executable Triplox test file:
-;; Uses DataScript :with/input semantics plus parameterized and custom aggregates not exposed by Triplox.
-;; BEGIN VERBATIM DATASCRIPT SOURCE
-(comment
-(ns datascript.test.query-aggregates
+(ns xyz.triplox.datascript.query-aggregates
   (:require
     [clojure.test :as t :refer [is are deftest testing]]
-    [datascript.core :as d]
-    [datascript.db :as db]
-    [datascript.test.core :as tdc]))
+    [xyz.triplox.api :as d]
+    [xyz.triplox.datascript.test-util]))
 
 (defn sort-reverse [xs]
   (reverse (sort xs)))
@@ -108,9 +100,7 @@
               result))
         
         #?(:clj
-           (is (= (set (d/q '[:find ?color (datascript.test.query-aggregates/sort-reverse ?x)
+           (is (= (set (d/q '[:find ?color (xyz.triplox.datascript.query-aggregates/sort-reverse ?x)
                               :in   [[?color ?x]]]
                          data))
                  result)))))))
-)
-;; END VERBATIM DATASCRIPT SOURCE

@@ -1,56 +1,69 @@
-;; Complete verbatim copy of DataScript's query_not.cljc.
-;; Source: https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query_not.cljc
+;; Vendored and slightly modified from:
+;; https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query_not.cljc
 ;; Copyright © 2014–2025 Nikita Prokopov.
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
-;; The upstream source is preserved between the markers below without edits.
 
-(ns xyz.triplox.datascript.query-not)
-
-;; Unsupported as an executable Triplox test file:
-;; Uses DataScript vector queries, not-join, named sources, and DataScript-specific validation messages.
-;; BEGIN VERBATIM DATASCRIPT SOURCE
-(comment
-(ns datascript.test.query-not
+(ns xyz.triplox.datascript.query-not
   (:require
-    [clojure.test :as t :refer [is are deftest testing]]
-    [datascript.core :as d]
-    [datascript.db :as db]
-    [datascript.test.core :as tdc])
-  #?(:clj
-     (:import
-       [clojure.lang ExceptionInfo])))
+    [clojure.test :as t :refer [is are deftest testing use-fixtures]]
+    [xyz.triplox.api :as d]
+    [xyz.triplox.datascript.test-util]))
 
-(def *test-db
-  (delay
-    (d/db-with (d/empty-db)
-      [{:db/id 1 :name "Ivan" :age 10}
-       {:db/id 2 :name "Ivan" :age 20}
-       {:db/id 3 :name "Oleg" :age 10}
-       {:db/id 4 :name "Oleg" :age 20}
-       {:db/id 5 :name "Ivan" :age 10}
-       {:db/id 6 :name "Ivan" :age 20}])))
+(def ^:dynamic *conn* nil)
+
+(def schema
+  [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+
+(def test-data
+  [{:db/id 1 :name "Ivan" :age 10}
+   {:db/id 2 :name "Ivan" :age 20}
+   {:db/id 3 :name "Oleg" :age 10}
+   {:db/id 4 :name "Oleg" :age 20}
+   {:db/id 5 :name "Ivan" :age 10}
+   {:db/id 6 :name "Ivan" :age 20}])
+
+(defn connect []
+  (let [host (System/getProperty "triplox.host" "localhost")
+        port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
+    (d/connect host port)))
+
+(defn with-conn [f]
+  (with-open [conn (connect)]
+    (binding [*conn* conn]
+      (f))))
+
+(defn with-schema [f]
+  (d/transact *conn* schema)
+  (f))
+
+(use-fixtures :each with-conn with-schema)
+
+(defn q [query-edn & args]
+  (set (apply d/q (d/db *conn*) query-edn args)))
 
 (deftest test-not
-  (are [q res] (= (set (d/q (concat '[:find [?e ...] :where] (quote q)) @*test-db))
+  (d/transact *conn* test-data)
+  (are [clauses res] (= (set (q (concat '[:find [?e ...] :where] (quote clauses))))
                  res)
-    [[?e :name]
+    [[?e :name _]
      (not [?e :name "Ivan"])]
     #{3 4}
     
-    [[?e :name]
+    [[?e :name _]
      (not
        [?e :name "Ivan"]
        [?e :age  10])]
     #{2 3 4 6}
        
-    [[?e :name]
+    [[?e :name _]
      (not [?e :name "Ivan"])
      (not [?e :age 10])]
     #{4}
   
     ;; full exclude
-    [[?e :name]
-     (not [?e :age])]
+    [[?e :name _]
+     (not [?e :age _])]
     #{}
        
     ;; not-intersecting rels
@@ -59,14 +72,14 @@
     #{1 2 5 6}
     
     ;; exclude empty set
-    [[?e :name]
+    [[?e :name _]
      (not
        [?e :name "Ivan"]
        [?e :name "Oleg"])]
     #{1 2 3 4 5 6}
     
     ;; nested excludes
-    [[?e :name]
+    [[?e :name _]
      (not [?e :name "Ivan"]
        (not [?e :age 10]))]
     #{1 3 4 5}
@@ -78,8 +91,9 @@
     #{2 4 6}))
 
 (deftest test-not-join
-  (are [q res] (= res (d/q (concat '[:find ?e ?a :where] (quote q)) @*test-db))
-    [[?e :name]
+  (d/transact *conn* test-data)
+  (are [clauses res] (= res (q (concat '[:find ?e ?a :where] (quote clauses))))
+    [[?e :name _]
      [?e :age  ?a]
      (not-join [?e]
        [?e :name "Oleg"]
@@ -102,50 +116,52 @@
     #{[1 10] [2 20] [3 10] [4 20] [5 10] [6 20]}))
   
 (deftest test-default-source
-  (let [db1 (d/db-with (d/empty-db)
-              [[:db/add 1 :name "Ivan"]
-               [:db/add 2 :name "Oleg"]])
-        db2 (d/db-with (d/empty-db)
-              [[:db/add 1 :age 10]
-               [:db/add 2 :age 20]])]
-    (are [q res] (= (set (d/q (concat '[:find [?e ...]
-                                        :in   $ $2
-                                        :where]
-                                (quote q))
-                           db1 db2))
+  (d/transact *conn* [[:db/add 1 :name "Ivan"]
+                      [:db/add 2 :name "Oleg"]])
+  (let [db1 (d/db *conn*)]
+    (d/transact *conn* [[:db/add 1 :age 10]
+                        [:db/add 2 :age 20]])
+    (let [db2 (d/db *conn*)]
+      (are [clauses res] (= (set (d/q db1
+                                      (concat '[:find [?e ...]
+                                                :in   $2
+                                                :where]
+                                        (quote clauses))
+                                      db2))
                    res)
       ;; NOT inherits default source
-      [[?e :name]
+      [[?e :name _]
        (not [?e :name "Ivan"])]
       #{2}
       
       ;; NOT can reference any source
-      [[?e :name]
+      [[?e :name _]
        (not [$2 ?e :age 10])]
       #{2}
       
       ;; NOT can change default source
-      [[?e :name]
+      [[?e :name _]
        ($2 not [?e :age 10])]
       #{2}
       
       ;; even with another default source, it can reference any other source explicitly
-      [[?e :name]
+      [[?e :name _]
        ($2 not [$ ?e :name "Ivan"])]
       #{2}
       
       ;; nested NOT keeps the default source
-      [[?e :name]
+      [[?e :name _]
        ($2 not (not [?e :age 10]))]
       #{1}
 
       ;; can override nested NOT source
-      [[?e :name]
+      [[?e :name _]
        ($2 not ($ not [?e :name "Ivan"]))]
-      #{1})))
+      #{1}))))
 
 (deftest test-impl-edge-cases
-  (are [q res] (= (d/q (quote q) @*test-db)
+  (d/transact *conn* test-data)
+  (are [query res] (= (q (quote query))
                  res)
     ;; const \ empty
     [:find ?e
@@ -192,20 +208,19 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (are [q msg] (thrown-msg? msg
-                 (d/q (concat '[:find ?e :where] (quote q)) @*test-db))
+  (d/transact *conn* test-data)
+  (are [clauses msg] (thrown-msg? msg
+                       (q (concat '[:find ?e :where] (quote clauses))))
     [(not [?e :name "Ivan"])
-     [?e :name]]
+     [?e :name _]]
     "Insufficient bindings: none of #{?e} is bound in (not [?e :name \"Ivan\"])"
     
-    [[?e :name]
+    [[?e :name _]
      (not-join [?e]
        (not [1 :age ?a])
        [?e :age ?a])]
     "Insufficient bindings: none of #{?a} is bound in (not [1 :age ?a])"
     
-    [[?e :name]
+    [[?e :name _]
      (not [?a :name "Ivan"])]
     "Insufficient bindings: none of #{?a} is bound in (not [?a :name \"Ivan\"])"))
-)
-;; END VERBATIM DATASCRIPT SOURCE
