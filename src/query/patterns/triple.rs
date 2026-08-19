@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Result};
 use bytes::Bytes;
@@ -37,7 +37,27 @@ enum TriplePosition {
     Value,
 }
 
-/// Immutable database value used by triple-pattern scans.
+#[derive(Default)]
+struct EstimateCache {
+    counts: Mutex<HashMap<Vec<u8>, usize>>,
+}
+
+impl EstimateCache {
+    fn get_or_insert_with(
+        &self,
+        prefix: Vec<u8>,
+        estimate: impl FnOnce(&[u8]) -> Result<usize>,
+    ) -> Result<usize> {
+        if let Some(count) = self.counts.lock().unwrap().get(prefix.as_slice()).copied() {
+            return Ok(count);
+        }
+        let count = estimate(&prefix)?;
+        self.counts.lock().unwrap().insert(prefix, count);
+        Ok(count)
+    }
+}
+
+/// Query-local database state used by triple-pattern scans.
 /// Maybe unify with DB struct in node.rs
 pub(crate) struct DbValue<D, M>
 where
@@ -49,6 +69,7 @@ where
     ident_map: Arc<IdentMap>,
     as_of: i64,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    estimate_cache: EstimateCache,
 }
 
 impl<D, M> DbValue<D, M>
@@ -69,6 +90,7 @@ where
             ident_map,
             as_of,
             range_stats,
+            estimate_cache: EstimateCache::default(),
         }
     }
 
@@ -149,12 +171,14 @@ where
         }
     }
 
-    fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
-        let count = self
-            .db
-            .handle
-            .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
-        Ok(usize::try_from(count)?)
+    fn estimate_count(&self, prefix: Vec<u8>) -> Result<usize> {
+        self.db.estimate_cache.get_or_insert_with(prefix, |prefix| {
+            let count = self
+                .db
+                .handle
+                .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
+            Ok(usize::try_from(count)?)
+        })
     }
 
     fn create_iterator(
@@ -590,15 +614,24 @@ where
             // 1 variable already bound
             if input.variables.contains(other_var) {
                 let index = input.column_index(other_var)?;
+                let mut groups = BTreeMap::new();
                 for (row_index, row) in input.rows.iter().enumerate() {
+                    groups
+                        .entry(&row[index])
+                        .or_insert_with(Vec::new)
+                        .push(row_index);
+                }
+                for (bound, row_indexes) in groups {
                     let mut prefix = base_prefix.clone();
-                    prefix.extend_from_slice(&row[index]);
-                    let count = self.estimate_count(&prefix)?;
-                    proposals[row_index].consider(self.id, count);
+                    prefix.extend_from_slice(bound);
+                    let count = self.estimate_count(prefix)?;
+                    for row_index in row_indexes {
+                        proposals[row_index].consider(self.id, count);
+                    }
                 }
             // nothing bound
             } else {
-                let count = self.estimate_count(&base_prefix)?;
+                let count = self.estimate_count(base_prefix)?;
                 for proposal in proposals {
                     proposal.consider(self.id, count);
                 }
@@ -611,7 +644,7 @@ where
                 TripleTerm::Variable(_) => unreachable!(),
             };
             prefix.extend_from_slice(constant);
-            let count = self.estimate_count(&prefix)?;
+            let count = self.estimate_count(prefix)?;
             for proposal in proposals {
                 proposal.consider(self.id, count);
             }
@@ -642,6 +675,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -650,7 +684,7 @@ mod tests {
     use edn::query::{ToVariable, Variable};
     use slatedb::Db;
 
-    use super::{DbValue, TriplePattern, TripleTerm};
+    use super::{DbValue, EstimateCache, TriplePattern, TripleTerm};
     use crate::codec::{self, Encode};
     use crate::inc_query::test_support::NAME_ATTR_ID as NAME;
     use crate::ops::DataType;
@@ -718,6 +752,24 @@ mod tests {
             TripleTerm::Variable(entity.to_var()),
             TripleTerm::Variable(value.to_var()),
         )
+    }
+
+    #[test]
+    fn estimate_cache_computes_each_prefix_once() -> Result<()> {
+        let cache = EstimateCache::default();
+        let calls = Cell::new(0);
+        let estimate = |prefix| {
+            cache.get_or_insert_with(prefix, |_| {
+                calls.set(calls.get() + 1);
+                Ok(7)
+            })
+        };
+
+        assert_eq!(estimate(vec![1, 2])?, 7);
+        assert_eq!(estimate(vec![1, 2])?, 7);
+        assert_eq!(estimate(vec![1, 3])?, 7);
+        assert_eq!(calls.get(), 2);
+        Ok(())
     }
 
     #[test]
