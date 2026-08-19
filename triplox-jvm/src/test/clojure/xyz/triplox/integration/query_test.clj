@@ -222,6 +222,108 @@
                             (or [?e1 :last-name "Ivanov"]
                                 [?e2 :last-name "Ivanov"])]}))))
 
+(deftest test-or-branch-predicates-preserve-branch-identity
+  (tc/transact *conn* [{:name "A" :age 35}
+                       {:name "B" :age 35}])
+  (is (= #{["B" 35]}
+         (q '{:find [?name ?age]
+              :where [[?e :age ?age]
+                      (or
+                       (and [?e :name "A"]
+                            [(< ?age 30)])
+                       (and [?e :name "B"]
+                            [(< ?age 40)]))
+                      [?e :name ?name]]}))))
+
+(deftest test-nested-or-branch-predicates-preserve-branch-identity
+  (tc/transact *conn* [{:name "A" :age 35}
+                       {:name "B" :age 35}
+                       {:name "C" :age 35}])
+  (is (= #{["B" 35]
+           ["C" 35]}
+         (q '{:find [?name ?age]
+              :where [[?e :age ?age]
+                      (or
+                       (and
+                        (or
+                         (and [?e :name "A"]
+                              [(< ?age 30)])
+                         (and [?e :name "B"]
+                              [(< ?age 40)])))
+                       (and [?e :name "C"]
+                            [(< ?age 50)]))
+                      [?e :name ?name]]}))))
+
+(deftest test-or-proposes-all-variables-and-deduplicates-branches
+  (tc/transact *conn* [{:name "Same" :last-name "Same"}
+                       {:name "Only name" :last-name "Only last"}])
+  (let [rows (q-ordered '{:find [?value]
+                          :where [(or [?e :name ?value]
+                                      [?e :last-name ?value])]})]
+    (is (= #{["Same"]
+             ["Only name"]
+             ["Only last"]}
+           (set rows)))
+    (is (= 3 (count rows)))))
+
+(deftest test-correlated-or-and-not-preserve-wider-outer-bindings
+  (tc/transact *conn* [{:name "A" :city "Berlin" :age 30}
+                       {:name "B" :city "Rome" :age 40}
+                       {:name "C" :city "Paris" :age 20}])
+  (is (= #{["A" "Berlin"]
+           ["B" "Rome"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (or [?e :name "A"]
+                          [?e :age 40])]})))
+  (is (= #{["A" "Berlin"]
+           ["C" "Paris"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (not [?e :age 40])]}))))
+
+(deftest test-standard-query-empty-relations
+  (let [names-query '{:find [?name] :where [[?e :name ?name]]}]
+    (is (empty? (q names-query)))
+    (tc/transact *conn* [{:name "Alice"}])
+    (is (empty?
+         (q '{:find [?name]
+              :in [[?name ...]]
+              :where [[?e :name ?name]]}
+            [])))
+    (is (= #{["Alice"]}
+           (q '{:find [?name]
+                :where [(or (and [?e :name "Missing"]
+                                 [?e :name ?name])
+                            [?e :name ?name])]})))))
+
+(deftest test-standard-query-preserves-duplicate-witnesses
+  (tc/transact *conn* [{:db/ident :g/to
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/many}])
+  (tc/transact *conn* [{:db/id "graph/a" :name "A"}
+                       {:db/id "graph/b" :name "B"}
+                       {:db/id "graph/c" :name "C"}
+                       [:db/add "graph/a" :g/to "graph/b"]
+                       [:db/add "graph/a" :g/to "graph/c"]])
+  (is (= {["A"] 2}
+         (frequencies
+          (q-ordered '{:find [?name]
+                       :where [[?e :name ?name]
+                               [?e :g/to ?target]]})))))
+
+(deftest test-standard-query-historical-basis
+  (let [names-query '{:find [?name] :where [[?e :name ?name]]}
+        alice-basis (tc/transact *conn* [{:name "Alice"}])]
+    (tc/transact *conn* [{:name "Bob"}])
+    (is (= #{["Alice"]}
+           (set (tc/q (tc/db *conn* alice-basis) names-query))))
+    (is (= #{["Alice"]
+             ["Bob"]}
+           (q names-query)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests — not
 ;; ---------------------------------------------------------------------------
