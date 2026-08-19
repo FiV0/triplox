@@ -47,8 +47,8 @@ regex = "1.12.3"
 rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
 size-of = { version = "0.1.7", package = "feldera-size-of" }
-slatedb = { git = "https://github.com/FiV0/slatedb", rev = "b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6", features = ["aws", "wal_disable"] }
-slatedb-estimates = { git = "https://github.com/FiV0/slatedb-estimates", branch = "index-view" }
+slatedb = { git = "https://github.com/slatedb/slatedb", rev = "8aa2c10eb9ff3db3519f75f75d10e5487df29805", features = ["aws", "wal_disable"] }
+slatedb-estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "e1a7273d47eeeaca7a96341330d939c71a91843f" }
 thiserror = { workspace = true }
 toml = "0.8"
 tokio = { version = "1.40.0", features = ["full"] }

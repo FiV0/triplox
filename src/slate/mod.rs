@@ -177,10 +177,7 @@ pub async fn remote_slate(
     })
 }
 
-pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions {
-    await_durable: false,
-    seqnum: 0,
-};
+pub const DEFAULT_WRITE_OPTIONS: WriteOptions = WriteOptions { seqnum: 0 };
 
 pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     durability_filter: DurabilityLevel::Memory,
