@@ -378,6 +378,17 @@
                                  [?e :name ?name]
                                  [?e :name "Ivan"]]}))))))
 
+(deftest exclude-empty-set
+  (tc/transact *conn* [{:name "Ivan"}
+                       {:name "Alice"}
+                       {:name "Ivan"}])
+
+  (is (= #{["Ivan"] ["Alice"]}
+         (q '{:find [?name]
+              :where [[?e :name ?name]
+                      (not [?e :name "Ivan"]
+                           [?e :name "Alice"])]}))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests — predicates & functions
 ;; ---------------------------------------------------------------------------
