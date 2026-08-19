@@ -40,7 +40,7 @@
 
 (defn with-schema [schema]
   (fn [f]
-    (tc/transact *conn* people-schema)
+    (tc/transact *conn* schema)
     (f)))
 
 (use-fixtures :each with-conn (with-schema people-schema))
