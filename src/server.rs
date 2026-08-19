@@ -198,7 +198,7 @@ async fn query<L: TxLog + 'static>(
     let result = db
         .query_with_args(&parsed, &query_request.args)
         .await
-        .map_err(|e| ApiError::internal(ErrorCode::QueryError, e.to_string()))?;
+        .map_err(|e| ApiError::internal(ErrorCode::QueryError, format!("{e:#}")))?;
 
     let columns: Vec<ColumnDescription> = find_vars
         .into_iter()
