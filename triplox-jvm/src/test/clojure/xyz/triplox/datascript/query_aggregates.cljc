@@ -4,7 +4,7 @@
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
 ;; The upstream source is preserved between the markers below without edits.
 
-(ns xyz.triplox.datascript-upstream.query-aggregates)
+(ns xyz.triplox.datascript.query-aggregates)
 
 ;; Unsupported as an executable Triplox test file:
 ;; Uses DataScript :with/input semantics plus parameterized and custom aggregates not exposed by Triplox.

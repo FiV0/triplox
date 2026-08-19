@@ -4,7 +4,7 @@
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
 ;; The upstream source is preserved between the markers below without edits.
 
-(ns xyz.triplox.datascript-upstream.query-or)
+(ns xyz.triplox.datascript.query-or)
 
 ;; Unsupported as an executable Triplox test file:
 ;; Uses DataScript vector queries, or-join, named sources, ground, and DataScript-specific validation messages.
