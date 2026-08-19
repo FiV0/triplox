@@ -112,3 +112,9 @@ TRIPLOX_HOST=localhost TRIPLOX_PORT=5490 VERTICES=100 EDGE_PROBABILITY=0.1 BATCH
 each possible complete-graph edge is included in the generated random graph.
 The benchmark logs the sampled edge count during ingestion and reports the
 triangle count plus triangle-query runtime.
+
+### REPL
+To get an nREPL you can connect to
+```bash
+clojure -M:nrepl --port 7888
+```
