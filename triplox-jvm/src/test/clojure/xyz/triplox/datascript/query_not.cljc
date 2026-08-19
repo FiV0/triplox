@@ -4,12 +4,10 @@
 ;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
 
 (ns xyz.triplox.datascript.query-not
-  (:require
-    [clojure.test :as t :refer [is are deftest testing use-fixtures]]
-    [xyz.triplox.api :as d]
-    [xyz.triplox.datascript.test-util]))
-
-(def ^:dynamic *conn* nil)
+  (:require [clojure.test :as t :refer [is are deftest testing use-fixtures]]
+            [xyz.triplox.api :as d]
+            [xyz.triplox.integration.query-test :as qt :refer [*conn*]]
+            [xyz.triplox.datascript.test-util]))
 
 (def schema
   [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -23,21 +21,7 @@
    {:db/id 5 :name "Ivan" :age 10}
    {:db/id 6 :name "Ivan" :age 20}])
 
-(defn connect []
-  (let [host (System/getProperty "triplox.host" "localhost")
-        port (Integer/parseInt (System/getProperty "triplox.port" "5490"))]
-    (d/connect host port)))
-
-(defn with-conn [f]
-  (with-open [conn (connect)]
-    (binding [*conn* conn]
-      (f))))
-
-(defn with-schema [f]
-  (d/transact *conn* schema)
-  (f))
-
-(use-fixtures :each with-conn with-schema)
+(use-fixtures :each qt/with-conn (qt/with-schema schema))
 
 (defn q [query-edn & args]
   (set (apply d/q (d/db *conn*) query-edn args)))
