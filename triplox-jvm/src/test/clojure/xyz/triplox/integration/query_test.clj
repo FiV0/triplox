@@ -246,6 +246,24 @@
                               [(< ?age 50)]))
                         [?e :name ?name]]})))))
 
+(deftest test-correlated-or-and-not-preserve-wider-outer-bindings
+  (tc/transact *conn* [{:name "A" :city "Berlin" :age 30}
+                       {:name "B" :city "Rome" :age 40}
+                       {:name "C" :city "Paris" :age 20}])
+  (is (= #{["A" "Berlin"]
+           ["B" "Rome"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (or [?e :name "A"]
+                          [?e :age 40])]})))
+  (is (= #{["A" "Berlin"]
+           ["C" "Paris"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (not [?e :age 40])]}))))
+
 (deftest test-bag-semantics
   (tc/transact *conn* [{:db/ident :g/to
                         :db/valueType :db.type/ref
