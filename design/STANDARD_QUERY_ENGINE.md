@@ -396,50 +396,6 @@ rows in one stage may therefore be extended by different patterns.
 | `OrPattern` | Executes each branch independently, aligns layouts, distinct-unions branch results, and then joins or semijoins them with the complete outer input. |
 | `NotPattern` | Executes its body with projected outer bindings and antijoins matching bindings from the complete outer input. |
 
-### Triple index access
-
-The attribute position is fixed to an ident or entid during planning. Depending
-on which entity/value position is being proposed and what is already bound,
-`TriplePattern` chooses:
-
-| Requested value | Already resolved | Index |
-|-----------------|------------------|-------|
-| Entity | Value | AVE |
-| Entity | Neither | AE |
-| Value | Entity | AEV |
-| Value | Neither | AV |
-
-Validation uses AEV when the entity is resolved and AVE otherwise. Full indices
-are wrapped in `TemporalFilterIterator`, which resolves assertions and
-retractions at `as_of`.
-
-AE and AV are atemporal, additive projection indices and may over-propose
-historical or retracted values. This does not change results: a two-variable
-triple pattern participates again with a full temporal index after the other
-variable is bound. A one-variable pattern with a constant in the other
-position uses a full index directly. See
-[COVERING_INDICES.md](COVERING_INDICES.md) for the storage layouts.
-
-### OR correlation
-
-OR branches are complete nested plans. A predicate in one branch can only
-filter rows produced within that branch. Branch results are unioned only after
-each branch has finished.
-
-For a proposing OR, the branch union is naturally joined with the complete
-outer input. For a validating OR, it is semijoined with the outer input.
-Projecting the incoming relation keeps nested work limited to relevant
-variables; joining or semijoining afterward restores unrelated outer columns
-and their multiplicity.
-
-### NOT correlation
-
-Every variable referenced by a NOT body must already be bound by the outer
-query. The body executes against the distinct projection of those variables.
-Its result is used only as an existence relation: `NotPattern` antijoins it
-from the original outer input, preserving unrelated columns and duplicate
-outer rows.
-
 ---
 
 ## Result Processing
@@ -466,44 +422,15 @@ when no group exists.
 OR variable agreement, positive binding of predicate and NOT variables,
 function dependencies, aggregate arguments, ordering, and variable limits.
 
-The later layers retain defensive checks:
-
-- `BindingBag` checks schemas and row arity;
-- planning rejects insufficient bindings and unplaced descriptors;
-- materialization checks descriptor ids, incoming layouts, and participant roles;
-- stages check layout transitions and distinct participant ids;
-- patterns check proposal sidecar lengths and their `join` mode;
-- the engine checks proposer ids and every returned layout.
+Later layers retain defensive checks that should never happen
+if the planner is correct. In most cases these are states which
+are possible to represent in the runtime data structures, but which
+should not happen if everything works correctly.
 
 Storage, decoding, expression-conversion, and contract failures are returned
 through `anyhow::Result` with pattern or stage context. A well-formed runtime
 expression that is not applicable to a row evaluates to no value or false and
 filters that row.
-
----
-
-## Current Scope
-
-The standard engine currently supports scalar and collection `:in` bindings,
-triple patterns, predicates, scalar functions, implicit OR, NOT, relational
-`:find`, aggregates, ordering, limits, and historical `as_of` bases.
-
-Current restrictions include:
-
-- tuple and relation `:in` bindings are rejected;
-- query source and transaction positions are unsupported;
-- attributes must be fixed idents or entids;
-- entity and value placeholders are rejected;
-- a triple pattern cannot repeat the same variable;
-- explicit `or-join` is unsupported;
-- every OR branch must bind and mention the same variable set;
-- every NOT variable must be bound by positive outer clauses;
-- a query must contain at least one variable;
-- only relational `:find` is supported;
-- pull and corresponding find elements are unsupported.
-
-The incremental query path has its own planner and runtime. Standard-engine
-changes do not automatically apply to subscriptions.
 
 ---
 
