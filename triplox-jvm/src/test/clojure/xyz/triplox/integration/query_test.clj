@@ -38,11 +38,12 @@
     (binding [*conn* conn]
       (f))))
 
-(defn with-people-schema [f]
-  (tc/transact *conn* people-schema)
-  (f))
+(defn with-schema [schema]
+  (fn [f]
+    (tc/transact *conn* people-schema)
+    (f)))
 
-(use-fixtures :each with-conn with-people-schema)
+(use-fixtures :each with-conn (with-schema people-schema))
 
 (defn q
   "Open a DB, run query, return results as a set.
