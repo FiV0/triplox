@@ -11,32 +11,29 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::Error;
+use anyhow::{ensure, Error};
 use slatedb::{DbMetadataOps, DbReadOps};
 use tokio::runtime::Handle;
 
 use crate::schema::IdentMap;
 
 use edn::query::{
-    Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant, NotJoin,
-    OrJoin, OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace,
-    Predicate, ToVariable, UnifyVars, Variable, WhereClause, WhereFn,
+    Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant,
+    OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
+    ToVariable, Variable, WhereClause, WhereFn,
 };
 
 use crate::aggregate::{make_accumulator, Accumulator};
-use crate::algo::generic_join::{GenericJoin, PrefixExtender, ResultTuple, SingleLevelExtender};
-use crate::codec::{Decode, Encode};
+use crate::codec::Decode;
 use crate::expr::{
     expr_variables, BinaryExpr, BinaryOp, Expr, IfExpr, RegexpLikeExpr, UnaryExpr, UnaryOp,
 };
-use crate::index::IndexType;
-use crate::iterator::generic_and_prefix_extender::GenericAndPrefixExtender;
-use crate::iterator::generic_fn_prefix_extender::GenericFnPrefixExtender;
-use crate::iterator::generic_not_prefix_extender::GenericNotPrefixExtender;
-use crate::iterator::generic_or_prefix_extender::GenericOrPrefixExtender;
-use crate::iterator::generic_predicate_prefix_extender::GenericPredicatePrefixExtender;
-use crate::iterator::generic_prefix_extender::GenericPrefixExtender;
 use crate::ops::{DataType, QueryArg};
+use crate::query::binding_bag::{BindingBag, BindingRow};
+use crate::query::engine::GenericJoinEngine;
+use crate::query::patterns::triple::DbValue;
+use crate::query::plan::build_logical_plan;
+use crate::query_validation::validate_query;
 use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -166,44 +163,6 @@ pub(crate) fn non_integer_constant_to_datatype(c: &NonIntegerConstant) -> Option
         NonIntegerConstant::Instant(dt) => Some(DataType::Instant(*dt)),
         NonIntegerConstant::Uuid(u) => Some(DataType::Uuid(*u)),
     }
-}
-
-/// Check if a PatternNonValuePlace is a variable.
-fn is_non_value_variable(place: &PatternNonValuePlace) -> bool {
-    matches!(place, PatternNonValuePlace::Variable(_))
-}
-
-/// Check if a PatternValuePlace is a variable.
-fn is_value_variable(place: &PatternValuePlace) -> bool {
-    matches!(place, PatternValuePlace::Variable(_))
-}
-
-/// Check if a PatternNonValuePlace is a constant (Entid or Ident).
-fn is_non_value_constant(place: &PatternNonValuePlace) -> bool {
-    matches!(
-        place,
-        PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_)
-    )
-}
-
-/// Check if a PatternValuePlace is a constant.
-fn is_value_constant(place: &PatternValuePlace) -> bool {
-    matches!(
-        place,
-        PatternValuePlace::EntidOrInteger(_)
-            | PatternValuePlace::IdentOrKeyword(_)
-            | PatternValuePlace::Constant(_)
-    )
-}
-
-/// Check if a PatternNonValuePlace is a placeholder.
-fn is_non_value_placeholder(place: &PatternNonValuePlace) -> bool {
-    matches!(place, PatternNonValuePlace::Placeholder)
-}
-
-/// Check if a PatternValuePlace is a placeholder.
-fn is_value_placeholder(place: &PatternValuePlace) -> bool {
-    matches!(place, PatternValuePlace::Placeholder)
 }
 
 // ---------------------------------------------------------------------------
@@ -466,239 +425,6 @@ pub(crate) fn build_var_index(join_order: &[Variable]) -> HashMap<&Variable, usi
     join_order.iter().enumerate().map(|(i, v)| (v, i)).collect()
 }
 
-/// Compile a predicate expression into a GenericPredicatePrefixExtender.
-///
-/// Determines which variable has the highest join level (the extension variable)
-/// and which are already bound in the prefix.
-fn compile_predicate(
-    expr: &Expr,
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<Box<dyn PrefixExtender>, Error> {
-    let vars = expr_variables(expr);
-    if vars.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Predicate expression must reference at least one variable"
-        ));
-    }
-
-    // Find each variable's join level
-    let mut var_levels: Vec<(Variable, usize)> = vars
-        .iter()
-        .map(|v| {
-            let level = var_index.get(v).copied().ok_or_else(|| {
-                anyhow::anyhow!("Predicate variable {} not found in join order", v)
-            })?;
-            Ok((v.clone(), level))
-        })
-        .collect::<Result<_, Error>>()?;
-
-    // The variable with the highest join level is the extension variable
-    let (ext_idx, _) = var_levels
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, (_, level))| *level)
-        .unwrap();
-
-    let (extension_var, level) = var_levels.remove(ext_idx);
-    let prefix_vars = var_levels;
-
-    Ok(Box::new(GenericPredicatePrefixExtender::new(
-        expr.clone(),
-        prefix_vars,
-        extension_var,
-        level,
-    )))
-}
-
-/// Compile a FnExpr into a GenericFnPrefixExtender.
-fn compile_fn_expr(
-    fn_expr: &FnExpr,
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<Box<dyn PrefixExtender>, Error> {
-    let input_vars = fn_expr.input_variables();
-
-    let prefix_vars: Vec<(Variable, usize)> = input_vars
-        .iter()
-        .map(|v| {
-            let level = var_index
-                .get(v)
-                .copied()
-                .ok_or_else(|| anyhow::anyhow!("FnExpr input variable {} not in join order", v))?;
-            Ok((v.clone(), level))
-        })
-        .collect::<Result<_, Error>>()?;
-
-    let output_level = var_index.get(&fn_expr.output).copied().ok_or_else(|| {
-        anyhow::anyhow!(
-            "FnExpr output variable {} not in join order",
-            fn_expr.output
-        )
-    })?;
-
-    Ok(Box::new(GenericFnPrefixExtender::new(
-        fn_expr.expr.clone(),
-        prefix_vars,
-        output_level,
-    )))
-}
-
-/// Determine the index type for a single-variable pattern using Pattern directly.
-fn pattern_index_type(pattern: &Pattern, join_order: &[Variable]) -> Result<IndexType, Error> {
-    let entity = &pattern.entity;
-    let attribute = &pattern.attribute;
-    let value = &pattern.value;
-
-    // Attribute must be constant (Ident or Entid)
-    if matches!(
-        attribute,
-        PatternNonValuePlace::Placeholder | PatternNonValuePlace::Variable(_)
-    ) {
-        return Err(anyhow::anyhow!(
-            "Attribute position must be a keyword or entid"
-        ));
-    }
-
-    match (entity, value) {
-        (PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_), _) => Ok(IndexType::AEV),
-        (PatternNonValuePlace::Placeholder, _) => Ok(IndexType::AV),
-        (PatternNonValuePlace::Variable(_), PatternValuePlace::Placeholder) => Ok(IndexType::AE),
-        (PatternNonValuePlace::Variable(ref v1), PatternValuePlace::Variable(ref v2)) => {
-            let entity_pos = join_order.iter().position(|v| v == v1);
-            let value_pos = join_order.iter().position(|v| v == v2);
-            match (entity_pos, value_pos) {
-                (Some(e_pos), Some(v_pos)) => {
-                    if e_pos < v_pos {
-                        Ok(IndexType::AEV)
-                    } else {
-                        Ok(IndexType::AVE)
-                    }
-                }
-                _ => Err(anyhow::anyhow!("Variables not found in join order")),
-            }
-        }
-        // Variable entity + constant value (EntidOrInteger, IdentOrKeyword, Constant)
-        (PatternNonValuePlace::Variable(_), _) => Ok(IndexType::AVE),
-    }
-}
-
-/// Determine index types for each participating level.
-///
-/// For single-variable patterns: use the appropriate index based on what's constant.
-/// For two-variable patterns:
-///   - Level 0: use AE or AV (just attribute + one component) to propose first variable
-///   - Level 1: use AEV or AVE (attribute + both components) to verify/propose second variable
-fn determine_index_types(
-    pattern: &Pattern,
-    join_order: &[Variable],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<Vec<IndexType>, Error> {
-    let pat_vars = pattern_variables(pattern);
-
-    if pat_vars.len() == 1 {
-        let index_type = pattern_index_type(pattern, join_order)?;
-        Ok(vec![index_type])
-    } else if pat_vars.len() == 2 {
-        let first_var_pos = var_index.get(&pat_vars[0]).copied();
-        let second_var_pos = var_index.get(&pat_vars[1]).copied();
-
-        match (first_var_pos, second_var_pos) {
-            (Some(e_pos), Some(v_pos)) => {
-                if e_pos < v_pos {
-                    // Entity comes first: AE for level 0, AEV for level 1
-                    Ok(vec![IndexType::AE, IndexType::AEV])
-                } else {
-                    // Value comes first: AV for level 0, AVE for level 1
-                    Ok(vec![IndexType::AV, IndexType::AVE])
-                }
-            }
-            _ => Err(anyhow::anyhow!("Variables not found in join order")),
-        }
-    } else if pat_vars.is_empty() {
-        Ok(vec![])
-    } else {
-        Err(anyhow::anyhow!(
-            "Patterns with more than 2 variables not supported"
-        ))
-    }
-}
-
-/// Compute the constant prefix bytes for a pattern based on index type.
-fn compute_constant_prefix(pattern: &Pattern, index_type: IndexType) -> Result<Vec<u8>, Error> {
-    match index_type {
-        IndexType::AVE => {
-            // AVE key order: [attr, value, entity]
-            // If value is constant, include it in prefix
-            if let Some(dt) = value_place_to_datatype(&pattern.value) {
-                Ok(dt.encode())
-            } else {
-                Ok(vec![])
-            }
-        }
-        IndexType::AEV => {
-            // AEV key order: [attr, entity, value]
-            // If entity is constant, include it in prefix
-            if let Some(dt) = non_value_place_to_datatype(&pattern.entity) {
-                Ok(dt.encode())
-            } else {
-                Ok(vec![])
-            }
-        }
-        IndexType::AE | IndexType::AV => {
-            // These are used for two-variable patterns at level 0
-            Ok(vec![])
-        }
-        _ => Ok(vec![]),
-    }
-}
-
-/// Compile a Pattern into a PrefixExtender.
-#[allow(clippy::too_many_arguments)]
-pub fn compile_pattern<D, M>(
-    pattern: &Pattern,
-    join_order: &[Variable],
-    var_index: &HashMap<&Variable, usize>,
-    attribute_id: i64,
-    slate: Arc<D>,
-    handle: Handle,
-    as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-) -> Result<GenericPrefixExtender<D, M>, Error>
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
-    let pat_vars = pattern_variables(pattern);
-
-    // Determine participating levels (sorted ascending — build_slate_prefix relies on
-    // ordered iteration to append already-bound components in index-key layout order).
-    let mut participating_levels: Vec<usize> = pat_vars
-        .iter()
-        .filter_map(|v| var_index.get(v).copied())
-        .collect();
-    participating_levels.sort_unstable();
-
-    // Determine index types for each level
-    let index_types = determine_index_types(pattern, join_order, var_index)?;
-
-    // Compute constant prefix (for patterns with constant entity or value)
-    let constant_prefix = if !index_types.is_empty() {
-        compute_constant_prefix(pattern, index_types[0])?
-    } else {
-        vec![]
-    };
-
-    Ok(GenericPrefixExtender::new(
-        slate,
-        handle,
-        range_stats,
-        index_types,
-        attribute_id,
-        constant_prefix,
-        participating_levels,
-        as_of,
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // Find plan (projection + aggregation)
 // ---------------------------------------------------------------------------
@@ -794,7 +520,7 @@ fn compile_find_plan(
 }
 
 /// Project join results without aggregation.
-fn project_results(results: Vec<ResultTuple>, plan: &FindPlan) -> Result<QueryResult, Error> {
+fn project_results(results: Vec<BindingRow>, plan: &FindPlan) -> Result<QueryResult, Error> {
     results
         .into_iter()
         .map(|tuple| {
@@ -813,7 +539,7 @@ fn project_results(results: Vec<ResultTuple>, plan: &FindPlan) -> Result<QueryRe
 }
 
 /// Execute aggregation over join results according to the find plan.
-fn execute_aggregation(results: Vec<ResultTuple>, plan: &FindPlan) -> Result<QueryResult, Error> {
+fn execute_aggregation(results: Vec<BindingRow>, plan: &FindPlan) -> Result<QueryResult, Error> {
     #[allow(clippy::type_complexity)]
     let mut groups: HashMap<Vec<u8>, (Vec<DataType>, Vec<Box<dyn Accumulator>>)> = HashMap::new();
 
@@ -983,174 +709,6 @@ fn apply_order_and_limit(
     Ok(results)
 }
 
-/// Compile :in bindings and their arguments into `SingleLevelExtender`s.
-///
-/// `validate_in_bindings` must be called first to ensure binding/arg types match.
-fn compile_in_bindings(
-    in_bindings: &[Binding],
-    args: &[QueryArg],
-    var_index: &HashMap<&Variable, usize>,
-) -> Vec<Box<dyn PrefixExtender>> {
-    in_bindings
-        .iter()
-        .zip(args.iter())
-        .map(|(binding, arg)| -> Box<dyn PrefixExtender> {
-            match (binding, arg) {
-                (Binding::BindScalar(var), QueryArg::Scalar(dt)) => {
-                    let level = *var_index.get(var).expect("in_var must be in join order");
-                    let encoded = dt.encode();
-                    Box::new(SingleLevelExtender::new(
-                        vec![bytes::Bytes::from(encoded)],
-                        level,
-                    ))
-                }
-                (Binding::BindColl(var), QueryArg::Collection(items)) => {
-                    let level = *var_index.get(var).expect("in_var must be in join order");
-                    let encoded_values: Vec<bytes::Bytes> = items
-                        .iter()
-                        .map(|dt| bytes::Bytes::from(dt.encode()))
-                        .collect();
-                    Box::new(SingleLevelExtender::new(encoded_values, level))
-                }
-                _ => unreachable!("validate_in_bindings ensures binding/arg types match"),
-            }
-        })
-        .collect()
-}
-
-/// Compile an OrWhereClause into a PrefixExtender.
-#[allow(clippy::too_many_arguments)]
-fn compile_or_branch<D, M>(
-    branch: &OrWhereClause,
-    join_order: &[Variable],
-    var_index: &HashMap<&Variable, usize>,
-    slate: &Arc<D>,
-    handle: &Handle,
-    ident_map: &IdentMap,
-    as_of: i64,
-    range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
-) -> Result<Box<dyn PrefixExtender>, Error>
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
-    match branch {
-        OrWhereClause::Clause(clause) => compile_where_clause(
-            clause,
-            join_order,
-            var_index,
-            slate,
-            handle,
-            ident_map,
-            as_of,
-            range_stats,
-        ),
-        OrWhereClause::And(children) => {
-            let extenders: Vec<Box<dyn PrefixExtender>> = children
-                .iter()
-                .map(|c| {
-                    compile_where_clause(
-                        c,
-                        join_order,
-                        var_index,
-                        slate,
-                        handle,
-                        ident_map,
-                        as_of,
-                        range_stats,
-                    )
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Box::new(GenericAndPrefixExtender::new(extenders)))
-        }
-    }
-}
-
-/// Compile a single WhereClause into a PrefixExtender, recursively handling nested clauses.
-#[allow(clippy::too_many_arguments)]
-fn compile_where_clause<D, M>(
-    clause: &WhereClause,
-    join_order: &[Variable],
-    var_index: &HashMap<&Variable, usize>,
-    slate: &Arc<D>,
-    handle: &Handle,
-    ident_map: &IdentMap,
-    as_of: i64,
-    range_stats: &Arc<slatedb_estimates::RangeStats<M>>,
-) -> Result<Box<dyn PrefixExtender>, Error>
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
-    match clause {
-        WhereClause::Pattern(pattern) => {
-            let attr_id = resolve_attribute_from_pattern(&pattern.attribute, ident_map)?;
-            let extender = compile_pattern(
-                pattern,
-                join_order,
-                var_index,
-                attr_id,
-                slate.clone(),
-                handle.clone(),
-                as_of,
-                range_stats.clone(),
-            )?;
-            Ok(Box::new(extender))
-        }
-        WhereClause::OrJoin(oj) => {
-            let children: Vec<Box<dyn PrefixExtender>> = oj
-                .clauses
-                .iter()
-                .map(|b| {
-                    compile_or_branch(
-                        b,
-                        join_order,
-                        var_index,
-                        slate,
-                        handle,
-                        ident_map,
-                        as_of,
-                        range_stats,
-                    )
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Box::new(GenericOrPrefixExtender::new(children)))
-        }
-        WhereClause::NotJoin(nj) => {
-            let children: Vec<Box<dyn PrefixExtender>> = nj
-                .clauses
-                .iter()
-                .map(|c| {
-                    compile_where_clause(
-                        c,
-                        join_order,
-                        var_index,
-                        slate,
-                        handle,
-                        ident_map,
-                        as_of,
-                        range_stats,
-                    )
-                })
-                .collect::<Result<_, _>>()?;
-            let not_level = var_index.len() - 1;
-            Ok(Box::new(GenericNotPrefixExtender::new(children, not_level)))
-        }
-        WhereClause::Pred(pred) => {
-            let expr = convert_predicate(pred)?;
-            compile_predicate(&expr, var_index)
-        }
-        WhereClause::WhereFn(wf) => {
-            let fn_expr = convert_where_fn(wf)?;
-            compile_fn_expr(&fn_expr, var_index)
-        }
-        _ => Err(anyhow::anyhow!(
-            "Unsupported where clause type: {:?}",
-            clause
-        )),
-    }
-}
-
 /// Resolve a variable limit from :in bindings.
 ///
 /// `validate_query` guarantees the variable is present as a scalar binding in
@@ -1178,7 +736,7 @@ pub fn execute_query<D, M>(
     args: &[QueryArg],
     slate: Arc<D>,
     handle: Handle,
-    ident_map: &IdentMap,
+    ident_map: Arc<IdentMap>,
     as_of: i64,
     range_stats: Arc<slatedb_estimates::RangeStats<M>>,
 ) -> Result<QueryResult, Error>
@@ -1186,34 +744,21 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    // 1. Extract variable order (in_bindings prepended)
-    let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
-    let num_levels = join_order.len();
-    let var_index = build_var_index(&join_order);
+    validate_query(query, args)?;
+    let logical_plan = build_logical_plan(query, args)?;
+    let output_variables = logical_plan.output_variables().to_vec();
+    let db = Arc::new(DbValue::new(slate, handle, ident_map, as_of, range_stats));
+    let stages = logical_plan.materialize(db, None)?;
+    let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
+    ensure!(
+        bindings.variables == output_variables,
+        "Query execution produced variables {:?}, expected {:?}",
+        bindings.variables,
+        output_variables
+    );
 
-    // 2. Compile in-binding arguments into extenders
-    let mut extenders = compile_in_bindings(&query.in_bindings, args, &var_index);
-
-    // 3. Compile WHERE patterns into extenders
-    for clause in &query.where_clauses {
-        extenders.push(compile_where_clause(
-            clause,
-            &join_order,
-            &var_index,
-            &slate,
-            &handle,
-            ident_map,
-            as_of,
-            &range_stats,
-        )?);
-    }
-
-    // 4. Run GenericJoin
-    let extender_refs: Vec<&dyn PrefixExtender> = extenders.iter().map(|e| e.as_ref()).collect();
-    let join = GenericJoin::new(extender_refs, num_levels);
-    let results = join.join();
-
-    // 5. Project and aggregate results based on find clause
+    let var_index = build_var_index(&output_variables);
+    let results = bindings.rows;
     let plan = compile_find_plan(&query.find_spec, &var_index)?;
     let projected = if plan.has_aggregates {
         execute_aggregation(results, &plan)?
@@ -1221,7 +766,6 @@ where
         project_results(results, &plan)?
     };
 
-    // 6. Resolve variable limit from :in bindings and apply ORDER BY + LIMIT
     let resolved_limit = resolve_limit(&query.limit, &query.in_bindings, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }
@@ -1325,7 +869,7 @@ mod tests {
             projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
             has_aggregates: true,
         };
-        let results: Vec<ResultTuple> = vec![];
+        let results: Vec<BindingRow> = vec![];
         let output = execute_aggregation(results, &plan).unwrap();
         assert_eq!(output.len(), 1);
         assert_eq!(output[0], vec![DataType::Long(0)]);
@@ -1342,7 +886,7 @@ mod tests {
             ],
             has_aggregates: true,
         };
-        let results: Vec<ResultTuple> = vec![];
+        let results: Vec<BindingRow> = vec![];
         let output = execute_aggregation(results, &plan).unwrap();
         assert!(output.is_empty());
     }

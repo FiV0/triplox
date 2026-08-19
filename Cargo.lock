@@ -5137,8 +5137,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slatedb"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35ca56b01922b15aa69fe3abb62cadc985d86032c9647e4606e211c4da751a76"
+source = "git+https://github.com/FiV0/slatedb?rev=b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6#b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -5182,8 +5181,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aa8de522ff46a0f9b5a66f45e650d125421d4d91990933591092f9d010c40d1"
+source = "git+https://github.com/FiV0/slatedb?rev=b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6#b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6"
 dependencies = [
  "chrono",
  "log",
@@ -5198,8 +5196,7 @@ dependencies = [
 [[package]]
 name = "slatedb-estimates"
 version = "0.1.0-alpha.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab31467b2892305f340910ff56f49b993fb4418aee4cfa31016d4a052e406882"
+source = "git+https://github.com/FiV0/slatedb-estimates?branch=index-view#08a63c3ddb608971425c3f617596d7a6fddb1084"
 dependencies = [
  "slatedb",
 ]
@@ -5207,8 +5204,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85fd9c0c86dd4954524fa8238d0548bd80f4a9a66983cbde3728402d339993e"
+source = "git+https://github.com/FiV0/slatedb?rev=b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6#b0290e7d9c28c3c47cf3bd67a0018eaef5ca76c6"
 dependencies = [
  "async-trait",
  "bytes",

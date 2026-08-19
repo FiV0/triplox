@@ -1790,10 +1790,10 @@ mod tests {
         let query: ParsedQuery = r#"[:find ?e ?name :where [?e :name ?name]]"#.parse()?;
         let sdb = slate.clone();
         let handle = tokio::runtime::Handle::current();
-        let ident_map = indexer.metadata().schema.ident_map.clone();
+        let ident_map = Arc::new(indexer.metadata().schema.ident_map.clone());
         let range_stats = components.range_stats.clone();
         let rows = tokio::task::spawn_blocking(move || {
-            execute_query(&query, &[], sdb, handle, &ident_map, i64::MAX, range_stats)
+            execute_query(&query, &[], sdb, handle, ident_map, i64::MAX, range_stats)
         })
         .await??;
 

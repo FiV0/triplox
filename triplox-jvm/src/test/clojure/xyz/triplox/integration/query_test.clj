@@ -51,13 +51,6 @@
   (let [db (tc/db *conn*)]
     (set (apply tc/q db query-edn args))))
 
-(defn q-ordered
-  "Open a DB, run query, return results as a vector (preserves order)."
-  ([query-edn] (q-ordered *conn* query-edn))
-  ([conn query-edn]
-   (let [db (tc/db conn)]
-     (vec (tc/q db query-edn)))))
-
 ;; ---------------------------------------------------------------------------
 ;; Tests — triple patterns
 ;; ---------------------------------------------------------------------------
@@ -221,6 +214,70 @@
                     :where [[?e :name ?name]
                             (or [?e1 :last-name "Ivanov"]
                                 [?e2 :last-name "Ivanov"])]}))))
+
+(deftest test-or-branch-predicates-preserve-branch-identity
+  (tc/transact *conn* [{:name "A" :age 35}
+                       {:name "B" :age 35}
+                       {:name "C" :age 35}])
+
+  (testing "top-level or"
+    (is (= #{["B" 35]}
+           (q '{:find [?name ?age]
+                :where [[?e :age ?age]
+                        (or
+                         (and [?e :name "A"]
+                              [(< ?age 30)])
+                         (and [?e :name "B"]
+                              [(< ?age 40)]))
+                        [?e :name ?name]]}))))
+  (testing "nested or"
+    (is (= #{["B" 35]
+             ["C" 35]}
+           (q '{:find [?name ?age]
+                :where [[?e :age ?age]
+                        (or
+                         (and
+                          (or
+                           (and [?e :name "A"]
+                                [(< ?age 30)])
+                           (and [?e :name "B"]
+                                [(< ?age 40)])))
+                         (and [?e :name "C"]
+                              [(< ?age 50)]))
+                        [?e :name ?name]]})))))
+
+(deftest test-correlated-or-and-not-preserve-wider-outer-bindings
+  (tc/transact *conn* [{:name "A" :city "Berlin" :age 30}
+                       {:name "B" :city "Rome" :age 40}
+                       {:name "C" :city "Paris" :age 20}])
+  (is (= #{["A" "Berlin"]
+           ["B" "Rome"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (or [?e :name "A"]
+                          [?e :age 40])]})))
+  (is (= #{["A" "Berlin"]
+           ["C" "Paris"]}
+         (q '{:find [?name ?city]
+              :where [[?e :name ?name]
+                      [?e :city ?city]
+                      (not [?e :age 40])]}))))
+
+(deftest test-bag-semantics
+  (tc/transact *conn* [{:db/ident :g/to
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/many}])
+  (tc/transact *conn* [{:db/id "graph/a" :name "A"}
+                       {:db/id "graph/b" :name "B"}
+                       {:db/id "graph/c" :name "C"}
+                       [:db/add "graph/a" :g/to "graph/b"]
+                       [:db/add "graph/a" :g/to "graph/c"]])
+  (is (= {["A"] 2}
+         (frequencies (tc/q (tc/db *conn*)
+                            '{:find [?name]
+                              :where [[?e :name ?name]
+                                      [?e :g/to ?target]]})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests — not
@@ -604,27 +661,31 @@
 
   (testing "order ascending with limit"
     (is (= [["Dave" 10] ["Bob" 20] ["Alice" 30]]
-           (q-ordered '{:find [?name ?age]
-                        :where [[?e :name ?name] [?e :age ?age]]
-                        :order [[?age :asc]]
-                        :limit 3}))))
+           (tc/q (tc/db *conn*)
+                 '{:find [?name ?age]
+                   :where [[?e :name ?name] [?e :age ?age]]
+                   :order [[?age :asc]]
+                   :limit 3}))))
 
   (testing "order descending with limit"
     (is (= [["Eve" 50] ["Carol" 40]]
-           (q-ordered '{:find [?name ?age]
-                        :where [[?e :name ?name] [?e :age ?age]]
-                        :order [[?age :desc]]
-                        :limit 2}))))
+           (tc/q (tc/db *conn*)
+                 '{:find [?name ?age]
+                   :where [[?e :name ?name] [?e :age ?age]]
+                   :order [[?age :desc]]
+                   :limit 2}))))
 
   (testing "limit only (no order)"
-    (is (= 2 (count (q-ordered '{:find [?name ?age]
-                                 :where [[?e :name ?name] [?e :age ?age]]
-                                 :limit 2})))))
+    (is (= 2 (count (tc/q (tc/db *conn*)
+                          '{:find [?name ?age]
+                            :where [[?e :name ?name] [?e :age ?age]]
+                            :limit 2})))))
 
   (testing "order only (no limit)"
-    (let [result (q-ordered '{:find [?name ?age]
-                              :where [[?e :name ?name] [?e :age ?age]]
-                              :order [[?age :asc]]})]
+    (let [result (tc/q (tc/db *conn*)
+                       '{:find [?name ?age]
+                         :where [[?e :name ?name] [?e :age ?age]]
+                         :order [[?age :asc]]})]
       (is (= 5 (count result)))
       (is (= ["Dave" 10] (first result)))
       (is (= ["Eve" 50] (last result))))))
@@ -763,6 +824,13 @@
                   :where [[(>= ?age 21)]]}
                 22))))))
 
+(deftest test-query-with-empty-args
+  (tc/transact *conn* [{:name "Alice"}])
+  (is (empty? (q '{:find [?name]
+                   :in [[?name ...]]
+                   :where [[?e :name ?name]]}
+                 []))))
+
 #_
 (deftest ident-constants-in-ref-value-position
   (tc/transact *conn* issues-schema)
@@ -779,3 +847,22 @@
               :where [[?i :issue/title ?title]
                       (or [?i :issue/status :status/open]
                           [?i :issue/status :status/in-progress])]}))))
+
+;; TODO: Enable when relation query bindings are supported.
+#_(deftest grouped-or-does-not-validate-non-prefix-input-relation
+    (tc/transact *conn* [{:name "Alice" :last-name "Smith" :age 30}
+                         {:name "Witness" :age 20}])
+
+    (is (= #{["Alice" "Smith" 20 30]}
+           (q '{:find [?x ?a ?b ?c]
+                :in [?y [[?x ?y]] [[?a ?b ?c]]]
+                :where [(or (and [?e :name ?x]
+                                 [?e :last-name ?a]
+                                 [?e :age ?c])
+                            (and [?e :name ?x]
+                                 [?e :last-name ?a]
+                                 [?e :salary ?c]))
+                        [?w :age ?b]]}
+              "seed"
+              [["Alice" "seed"]]
+              [["Smith" 20 30]]))))

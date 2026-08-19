@@ -839,6 +839,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
+    let bootstrap_ident_map = Arc::new(bootstrap_ident_map);
     let sdb = slate.db.clone();
     let range_stats = slate.range_stats.clone();
     let handle = Handle::current();
@@ -860,7 +861,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb.clone(),
             handle.clone(),
-            &bootstrap_ident_map,
+            Arc::clone(&bootstrap_ident_map),
             i64::MAX,
             range_stats.clone(),
         )?;
@@ -869,7 +870,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb.clone(),
             handle.clone(),
-            &bootstrap_ident_map,
+            Arc::clone(&bootstrap_ident_map),
             i64::MAX,
             range_stats.clone(),
         )?;
@@ -878,7 +879,7 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
             &[],
             sdb,
             handle,
-            &bootstrap_ident_map,
+            bootstrap_ident_map,
             i64::MAX,
             range_stats,
         )?;
