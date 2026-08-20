@@ -5,7 +5,7 @@
    [xyz.triplox.view :as view]
    [xyz.triplox.integration.query-test :as query-test :refer [*conn*]]))
 
-(t/use-fixtures :each query-test/with-conn query-test/with-people-schema)
+(t/use-fixtures :each query-test/with-conn (query-test/with-schema query-test/people-schema))
 
 (deftest view-reflects-two-transactions
   (with-open [mv (view/->view *conn* '{:find [?e ?name]

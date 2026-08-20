@@ -54,12 +54,12 @@ tasks.test {
     useJUnitPlatform {
         excludeTags("integration")
     }
-    exclude("**/integration/**")
+    exclude("**/integration/**", "**/datascript/**")
 }
 
 tasks.register<Test>("integrationTest") {
     useJUnitPlatform()
-    include("**/integration/**", "**/Integration*")
+    include("**/integration/**", "**/datascript/**", "**/Integration*")
     systemProperty("triplox.host", System.getenv("TRIPLOX_HOST") ?: "localhost")
     systemProperty("triplox.port", System.getenv("TRIPLOX_PORT") ?: "5490")
 }

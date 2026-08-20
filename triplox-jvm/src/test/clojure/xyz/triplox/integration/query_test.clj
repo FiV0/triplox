@@ -38,11 +38,12 @@
     (binding [*conn* conn]
       (f))))
 
-(defn with-people-schema [f]
-  (tc/transact *conn* people-schema)
-  (f))
+(defn with-schema [schema]
+  (fn [f]
+    (tc/transact *conn* schema)
+    (f)))
 
-(use-fixtures :each with-conn with-people-schema)
+(use-fixtures :each with-conn (with-schema people-schema))
 
 (defn q
   "Open a DB, run query, return results as a set.
@@ -376,6 +377,17 @@
                          :where [(not [?e :last-name "Ivannotov"])
                                  [?e :name ?name]
                                  [?e :name "Ivan"]]}))))))
+
+(deftest exclude-empty-set
+  (tc/transact *conn* [{:name "Ivan"}
+                       {:name "Alice"}
+                       {:name "Ivan"}])
+
+  (is (= #{["Ivan"] ["Alice"]}
+         (q '{:find [?name]
+              :where [[?e :name ?name]
+                      (not [?e :name "Ivan"]
+                           [?e :name "Alice"])]}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests — predicates & functions

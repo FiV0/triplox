@@ -3,7 +3,7 @@
             [xyz.triplox.api :as tc]
             [xyz.triplox.integration.query-test :as query-test :refer [*conn*]]))
 
-(use-fixtures :each query-test/with-conn query-test/with-people-schema)
+(use-fixtures :each query-test/with-conn (query-test/with-schema query-test/people-schema))
 
 (deftest test-standard-query-historical-basis
   (let [names-query '{:find [?name]

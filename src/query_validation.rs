@@ -509,7 +509,8 @@ mod tests {
         let parsed = parse_query("[:find ?e :where (not [?e :age 30])]");
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
-            err.to_string().contains("Query has no groundable variables"),
+            err.to_string()
+                .contains("Query has no groundable variables"),
             "unexpected error: {}",
             err
         );

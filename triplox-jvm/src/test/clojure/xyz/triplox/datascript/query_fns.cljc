@@ -1,0 +1,357 @@
+;; Vendored and slightly modified from:
+;; https://github.com/tonsky/datascript/blob/100ab864f55e056df5837e77d44dfd0f8a447983/test/datascript/test/query_fns.cljc
+;; Copyright © 2014–2025 Nikita Prokopov.
+;; Licensed under the Eclipse Public License 1.0; see LICENSES/EPL-1.0.txt.
+
+(ns xyz.triplox.datascript.query-fns
+  (:require [clojure.test :as t :refer [is are deftest testing use-fixtures]]
+            [xyz.triplox.api :as d]
+            [xyz.triplox.integration.query-test :as qt :refer [*conn*]]
+            [xyz.triplox.datascript.test-util])
+  (:import [xyz.triplox.client TriploxException]))
+
+(def schema
+  [{:db/ident :id :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :height :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :salary :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :parent :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+   {:db/ident :pair :db/valueType :db.type/vector :db/cardinality :db.cardinality/one}
+   {:db/ident :pred :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :weight :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
+
+(use-fixtures :each qt/with-conn (qt/with-schema schema))
+
+(defn q [query-edn & args]
+  (set (apply d/q (d/db *conn*) query-edn args)))
+
+(deftest test-query-fns
+  (let [db (d/db *conn*)]
+    #_
+    ;; TODO predicate free variables
+    (testing "predicate without free variables"
+      (is (= (d/q db
+                  '[:find ?x
+                    :in [?x ...]
+                    :where [(> 2 1)]]
+                  [:a :b :c])
+             #{[:a] [:b] [:c]}))))
+
+
+  (d/transact *conn* [{:id 1 :name  "Ivan",  :age   15}
+                      {:id 2 :name  "Petr",  :age   22, :height 240, :parent 1}
+                      {:id 3 :name  "Slava", :age   37, :parent 2}])
+  (let [db (d/db *conn*)]
+
+    #_#_#_#_#_
+    (testing "ground"
+      (is (= (q '[:find ?vowel
+                  :where [(ground [:a :e :i :o :u]) [?vowel ...]]])
+             #{[:a] [:e] [:i] [:o] [:u]})))
+
+    (testing "get-else"
+      (is (= (q '[:find ?e ?age ?height
+                  :where [?e :age ?age]
+                  [(get-else $ ?e :height 300) ?height]])
+             #{[1 15 300] [2 22 240] [3 37 300]}))
+
+      (is (thrown-with-msg? TriploxException #"get-else: nil default value is not supported"
+                            (q '[:find ?e ?height
+                                 :where [?e :age _]
+                                 [(get-else $ ?e :height nil) ?height]]))))
+
+    (testing "get-some"
+      (is (= (q '[:find ?e ?a ?v
+                  :where [?e :name _]
+                  [(get-some $ ?e :height :age) [?a ?v]]])
+             #{[1 :age 15]
+               [2 :height 240]
+               [3 :age 37]})))
+
+    (testing "missing?"
+      (is (= (q '[:find ?e ?age
+                  :where [?e :age ?age]
+                  [(missing? $ ?e :height)]])
+             #{[1 15] [3 37]})))
+
+    (testing "missing? back-ref"
+      (is (= (q '[:find ?e
+                  :where [?e :age ?age]
+                  [(missing? $ ?e :_parent)]])
+             #{[3]})))
+
+    (testing "Built-ins"
+      (is (= (q '[:find  ?id1 ?id2
+                  :where
+                  [?e1 :age ?a1]
+                  [?e1 :id ?id1]
+                  [?e2 :age ?a2]
+                  [?e2 :id ?id2]
+                  [(< ?a1 18)]
+                  [(< 18 ?a2)]])
+             #{[1 2] [1 3]}))
+      (is (= (q '[:find  ?a1
+                  :where [?placeholder :age ?a1]
+                  [(< ?a1 22)]])
+             #{[15]}))
+      (is (= (q '[:find  ?a1
+                  :where [?placeholder :age ?a1]
+                  [(<= ?a1 22)]])
+             #{[15] [22]}))
+      (is (= (q '[:find  ?a1
+                  :where [?placeholder :age ?a1]
+                  [(> ?a1 22)]])
+             #{[37]}))
+      (is (= (q '[:find  ?a1
+                  :where [?placeholder :age ?a1]
+                  [(>= ?a1 22)]])
+             #{[22] [37]}))
+
+      (testing "compare values of different types"
+        (is (= (d/q db '[:find  ?e
+                         :in [?e ...]
+                         :where [(< ?e 1)]]
+                    [0 1 ""])
+               [[0]]))
+        (is (= (q '[:find  ?e
+                    :in [?e ...]
+                    :where [(<= ?e 1)]]
+                  [0 1 ""])
+               #{[1] [0]}))
+
+        #_
+        ;; We don't have a total order. Hooray2 does.
+        (is (= (d/q db '[:find  ?e
+                         :in [?e ...]
+                         :where
+                         [(> ?e 1)]]
+                    [0 1 ""])
+               #{[""]}))
+        #_
+        (is (= (d/q '[:find  ?e
+                      :where [?e]
+                      [(>= ?e 1)]] [[0] [1] [""]])
+               #{[1] [""]})))
+
+      #_
+      ;; TODO support count
+      (is (= (d/q db '[:find  ?x ?c
+                       :in    [?x ...]
+                       :where [(count ?x) ?c]]
+                  ["a" "abc"])
+             #{["a" 1] ["abc" 3]})))
+
+    #_
+    (testing "Built-in vector, hashmap"
+      (is (= (q '[:find [?tx-data ...]
+                  :where
+                  [(ground :db/add) ?op]
+                  [(vector ?op -1 :attr 12) ?tx-data]])
+             [[:db/add -1 :attr 12]]))
+
+      (is (= (q '[:find [?tx-data ...]
+                  :where
+                  [(hash-map :db/id -1 :age 92 :name "Aaron") ?tx-data]])
+             [{:db/id -1 :age 92 :name "Aaron"}])))
+
+
+    (testing "Calling a function"
+      (is (= (q '[:find  ?id1 ?id2 ?id3
+                  :where [?e1 :age ?a1]
+                  [?e2 :age ?a2]
+                  [?e3 :age ?a3]
+                  [(+ ?a1 ?a2) ?a12]
+                  [(= ?a12 ?a3)]
+                  [?e1 :id ?id1]
+                  [?e2 :id ?id2]
+                  [?e3 :id ?id3]])
+             #{[1 2 3] [2 1 3]})))
+
+    #_
+    (testing "Two conflicting function values for one binding."
+      (is (= (q '[:find  ?n
+                  :where
+                  [(identity 1) ?n]
+                  [(identity 2) ?n]])
+             #{})))
+    #_
+    (testing "Destructured conflicting function values for two bindings."
+      (is (= (q '[:find  ?n ?x
+                  :where
+                  [(identity [3 4]) [?n ?x]]
+                  [(identity [1 2]) [?n ?x]]])
+             #{})))
+
+    #_
+    (testing "Rule bindings interacting with function binding. (fn, rule)"
+      (is (= (q '[:find  ?n
+                  :in %
+                  :where
+                  [(identity 2) ?n]
+                  (my-vals ?n)]
+                '[[(my-vals ?x)
+                   [(identity 1) ?x]]
+                  [(my-vals ?x)
+                   [(identity 2) ?x]]
+                  [(my-vals ?x)
+                   [(identity 3) ?x]]])
+             #{[2]})))
+
+    #_
+    (testing "Rule bindings interacting with function binding. (rule, fn)"
+      (is (= (q '[:find  ?n
+                  :in %
+                  :where (my-vals ?n)
+                  [(identity 2) ?n]]
+                '[[(my-vals ?x)
+                   [(identity 1) ?x]]
+                  [(my-vals ?x)
+                   [(identity 2) ?x]]
+                  [(my-vals ?x)
+                   [(identity 3) ?x]]])
+             #{[2]})))
+
+    #_
+    (testing "Conflicting relational bindings with function binding. (rel, fn)"
+      (is (= (q '[:find  ?age
+                  :where [_ :age ?age]
+                  [(identity 100) ?age]])
+             #{})))
+
+    #_
+    (testing "Conflicting relational bindings with function binding. (fn, rel)"
+      (is (= (q '[:find  ?age
+                  :where [(identity 100) ?age]
+                  [_ :age ?age]])
+             #{})))
+
+    (testing "Function on empty rel"
+      (is (= (d/q db '[:find  ?e ?y
+                       :where
+                       [?e :weight ?x]
+                       [(+ ?x 100) ?y]])
+             [])))
+
+    (testing "A failing function filters out the row"
+      (is (= (set(d/q db '[:find ?x
+                           :in [?in ...]
+                           :where [(* ?in 2) ?x]]
+                      [1 "foo" 2 "bar"]))
+             #{[2] [4]})))
+
+    #_
+    (testing "Result bindings"
+      (is (= (d/q '[:find ?a ?c
+                    :in ?in
+                    :where [(ground ?in) [?a _ ?c]]]
+                  [:a :b :c])
+             #{[:a :c]}))
+
+      (is (= (d/q '[:find ?in
+                    :in ?in
+                    :where [(ground ?in) _]]
+                  :a)
+             #{[:a]}))
+
+      (is (= (d/q '[:find ?x ?z
+                    :in ?in
+                    :where [(ground ?in) [[?x _ ?z]...]]]
+                  [[:a :b :c] [:d :e :f]])
+             #{[:a :c] [:d :f]}))
+
+      (is (= (d/q '[:find ?in
+                    :in [?in ...]
+                    :where [(ground ?in) _]]
+                  [])
+             #{})))))
+
+(deftest test-predicates
+  (d/transact *conn* [{:id 1 :name "Ivan" :age 10}
+                      {:id 2 :name "Ivan" :age 20}
+                      {:id 3 :name "Oleg" :age 10}
+                      {:id 4 :name "Oleg" :age 20}])
+  (are [query res] (= (q (quote query)) res)
+    ;; plain predicate
+    [:find  ?id ?a
+     :where
+     [?e :age ?a]
+     [(> ?a 10)]
+     [?e :id ?id]]
+    #{[2 20] [4 20]}
+
+    ;; join in predicate
+    ;; TODO add placeholders
+    [:find  ?id ?id2
+     :where [?e  :name ?placeholder1]
+     [?e2 :name ?placeholder2]
+     [(< ?id ?id2)]
+     [?e :id ?id]
+     [?e2 :id ?id2]]
+    #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+
+    ;; join with extra symbols
+    [:find  ?id ?id2
+     :where [?e  :age ?a]
+     [?e2 :age ?a2]
+     [(< ?id ?id2)]
+     [?e :id ?id]
+     [?e2 :id ?id2]]
+    #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+
+    ;; empty result
+    [:find  ?e ?e2
+     :where [?e  :name "Ivan"]
+     [?e2 :name "Oleg"]
+     [(= ?e ?e2)]]
+    #{}
+
+    ;; pred over const, true
+    [:find  ?id
+     :where [?e :name "Ivan"]
+     [?e :age 20]
+     [?e :id ?id]
+     [(= ?id 2)]]
+    #{[2]}
+
+    ;; pred over const, false
+    [:find  ?e
+     :where [?e :name "Ivan"]
+     [?e :age 20]
+     [(= ?e 1)]]
+    #{}))
+
+(deftest test-exceptions
+  (let [db (d/db *conn*)]
+    (is (thrown-msg? "Unsupported function 'fun' with 1 args"
+                     (d/q db '[:find ?e
+                               :in   [?e ...]
+                               :where [(fun ?e)]]
+                          [1])))
+
+
+    (is (thrown-msg? "Unsupported function 'fun' with 1 args"
+                     (d/q db '[:find ?e ?x
+                               :in   [?e ...]
+                               :where [(fun ?e) ?x]]
+                          [1])))
+
+    (is (thrown-msg? "Query has no groundable variables!"
+                     (q '[:find ?x
+                          :where [(zero? ?x)]])))
+
+    (is (thrown-msg? "Function input variable ?x not in join order"
+                     (q '[:find ?x
+                          :where [(+ ?x 1) ?y]])))
+
+    #_
+    (is (thrown-msg? "Where uses unknown source vars: [$2]"
+                     (q '[:find ?x
+                          :where [?x]
+                          [(zero? $2 ?x)]])))
+
+    #_
+    (is (thrown-msg? "Where uses unknown source vars: [$]"
+                     (q '[:find  ?x
+                          :in    $2
+                          :where [$2 ?x] [(zero? $ ?x)]])))))
