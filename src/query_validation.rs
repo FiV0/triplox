@@ -5,6 +5,7 @@ use edn::query::{
     Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
     PatternValuePlace, UnifyVars, Variable, WhereClause,
 };
+use itertools::Itertools;
 
 use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
@@ -280,10 +281,10 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
             or_branch_bound_variables(branch).into_iter().collect();
         if branch_bound_vars != first_bound_vars {
             return Err(anyhow::anyhow!(
-                "OR branch {} has different free variables {:?} than branch 1 {:?}",
+                "OR branch {} has different free variables {{{}}} than branch 1 {{{}}}",
                 i + 1,
-                branch_bound_vars,
-                first_bound_vars
+                branch_bound_vars.iter().sorted().format(", "),
+                first_bound_vars.iter().sorted().format(", ")
             ));
         }
 
@@ -291,10 +292,10 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
             or_branch_mentioned_variables(branch).into_iter().collect();
         if branch_mentioned_vars != first_mentioned_vars {
             return Err(anyhow::anyhow!(
-                "OR branch {} mentions different variables {:?} than branch 1 {:?}",
+                "OR branch {} mentions different variables {{{}}} than branch 1 {{{}}}",
                 i + 1,
-                branch_mentioned_vars,
-                first_mentioned_vars
+                branch_mentioned_vars.iter().sorted().format(", "),
+                first_mentioned_vars.iter().sorted().format(", ")
             ));
         }
     }
@@ -533,11 +534,9 @@ mod tests {
             r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
         );
         let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("OR branch 2 mentions different variables"),
-            "unexpected error: {}",
-            err
+        assert_eq!(
+            err.to_string(),
+            "OR branch 2 mentions different variables {?e, ?v} than branch 1 {?e}"
         );
     }
 
@@ -547,11 +546,9 @@ mod tests {
             r#"[:find ?e :where [?e :name "A"] (not (or [?e :name "B"] [?v :name "C"]))]"#,
         );
         let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("OR branch 2 has different free variables"),
-            "unexpected error: {}",
-            err
+        assert_eq!(
+            err.to_string(),
+            "OR branch 2 has different free variables {?v} than branch 1 {?e}"
         );
     }
 
