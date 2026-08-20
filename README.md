@@ -29,11 +29,11 @@
 Triplox is a [Datomic](https://www.datomic.com/)-inspired general-purpose database on top of object storage. The backbone of the engine is [SlateDB](https://github.com/slatedb/slatedb/), a key-value store on top of object-storage. Datomic is the main inspiration and the data model, transaction semantics and query API closely follow Datomic.
 
 The goals of Triplox are roughly the following (in no particular order):
-- Object storage first. In it's final version Triplox should simply need a single S3 bucket for deployment. This is currently not the case. See [Architecture](###Architecture) below.
-- The Datomic Data model and API as main inspiration. Datomic is awesome. Lets bring it directly to object storage.
+- Object storage centric. In it's final version Triplox should simply need a single (or likely two) S3 buckets for deployment. This is currently not the case. See [Architecture](###Architecture) below.
+- The Datomic data model and API as main inspiration. Datomic is awesome. Lets bring it directly to object storage.
 - A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM (where Datomic has had it's main success).
 - Incremental Datalog queries. You should be able to dynamically subscribe and detach from incremental Datalog queries. This is the most experimental part of Triplox and will need quite a bit of engineering effort to get right, make fast, and fully support of all features of Datalog. See [this page](https://triplox.xyz/incremental-queries/overview/) for an introduction. Views can be built on top of
-them.
+them. We use [Feldera](https://github.com/feldera/feldera)'s [DBSP](https://crates.io/crates/dbsp) crate under the hood.
 
 ### Getting started
 
@@ -100,7 +100,7 @@ in the future.
 
 ### Architecture
 
-By making object storage the single source of truth, you get separation of storage and compute. SlateDB has a single writer and many readers architecture and that directly translates to Triplox. In that sense it's similar to Datomic. Triplox sits more in the traditional client/server camp compared to Datomic where the [peer library](https://docs.datomic.com/operation/peer-server.html) gets embedded into the application code. Queries run on the server in Triplox and this makes certain query patterns different to Datomic. For example limiting your query results would be done with `:limit` in a EDN Datalog query instead of doing it application code side.
+By making object storage the single source of truth, you get separation of storage and compute. SlateDB has a single writer and many readers architecture and that directly translates to Triplox. Triplox sits in the traditional client/server camp. Queries run on the server. For example limiting your query results would be done with `:limit` in a EDN Datalog query instead of doing it application code side.
 
 The layout of the indices and also SlateDB's focus are [OLTP](https://en.wikipedia.org/wiki/Online_transaction_processing) queries. If you expect columnar layout performance for [OLAP](https://en.wikipedia.org/wiki/Online_analytical_processing) style queries, Triplox is not the right fit. This doesn't mean Triplox doesn't support aggregates, it will just not beat something like [DuckDB](https://github.com/duckdb/duckdb) on these types of queries. Also keep in mind that the architecture favors read heavy workloads. Triplox is currently single writer.
 
@@ -155,6 +155,8 @@ There is lots of things to work on. Feel free to open tickets for features, bugs
 If you are building something more involved it's likely better to discuss it first
 (either on Discord or in a ticket) and see if it fits the projects scope.
 
+There are some more open questions that I tried to write down on the [website](https://triplox.xyz/roadmap/open-questions/)
+
 ### Acknowledgements
 
 The primary inspiration is Datomic and you will see it's impact throughout the project. [Mentat](https://github.com/mozilla/mentat) (from which the edn crate is copied) has been a great inspiration and help in designing the transaction pipeline of Triplox.
@@ -163,12 +165,11 @@ The folks at [Feldera](https://github.com/feldera/feldera) have created the very
 ### Compatibility
 
 The goal is not to have a 1-to-1 correspondence of features with Datomic. Datomic is the main inspiration and we'll strive to stay
-close to the Datomic APIs, but don't guarantee feature parity nor identical behavior in all cases. The main differences will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There might also be edge cases where the
+close to the Datomic APIs, but don't strive for feature parity nor identical behavior in all cases. The main differences will currently show up in the transaction pipeline. I am currently not dealing with schema updates. There might also be edge cases where the
 transaction pipeline semantics slightly differ. There are currently two separate query
 engines at play, one for standard queries and one for incremental queries (at some point in the future these [might converge](https://triplox.xyz/roadmap/roadmap/#collapsing-the-dbsp-gap-and-removing-the-standard-query-engine)).
 It should generally be the case that the standard query engine supports a superset of queries the incremental engine supports.
 
-There are some more open questions that I tried to write down on the [website](https://triplox.xyz/roadmap/open-questions/)
 
 ### Licence
 
