@@ -354,7 +354,7 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
 
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
-        return Err(anyhow::anyhow!("Query has no variables"));
+        return Err(anyhow::anyhow!("Query has no groundable variables!"));
     }
     let var_index = build_var_index(&join_order);
     validate_or_clauses(&query.where_clauses)?;
@@ -509,7 +509,7 @@ mod tests {
         let parsed = parse_query("[:find ?e :where (not [?e :age 30])]");
         let err = validate_query(&parsed, &[]).unwrap_err();
         assert!(
-            err.to_string().contains("Query has no variables"),
+            err.to_string().contains("Query has no groundable variables"),
             "unexpected error: {}",
             err
         );
