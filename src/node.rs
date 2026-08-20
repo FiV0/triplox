@@ -1709,6 +1709,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_fn_identity() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        insert_three_people(&node).await;
+
+        let db = node.db().await.unwrap();
+        let result = db
+            .query("[:find ?name ?same :where [?e :name ?name] [(identity ?name) ?same]]")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|row| row[0] == row[1]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_fn_div() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
