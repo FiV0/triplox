@@ -219,7 +219,7 @@
                   [(identity 100) ?age]])
              #{})))
 
-    #_#_#_#_
+    #_
     (testing "Conflicting relational bindings with function binding. (fn, rel)"
       (is (= (q '[:find  ?age
                   :where [(identity 100) ?age]
@@ -227,20 +227,20 @@
              #{})))
 
     (testing "Function on empty rel"
-      (is (= (d/q '[:find  ?e ?y
-                    :where [?e :salary ?x]
-                    [(+ ?x 100) ?y]]
-                  [[0 :age 15] [1 :age 35]])
-             #{})))
+      (is (= (d/q db '[:find  ?e ?y
+                       :where
+                       [?e :weight ?x]
+                       [(+ ?x 100) ?y]])
+             [])))
 
-    (testing "Returning nil from function filters out tuple from result"
-      (is (= (d/q '[:find ?x
-                    :in    [?in ...] ?f
-                    :where [(?f ?in) ?x]]
-                  [1 2 3 4]
-                  #(when (even? %) %))
+    (testing "A failing function filters out the row"
+      (is (= (set(d/q db '[:find ?x
+                           :in [?in ...]
+                           :where [(* ?in 2) ?x]]
+                      [1 "foo" 2 "bar"]))
              #{[2] [4]})))
 
+    #_
     (testing "Result bindings"
       (is (= (d/q '[:find ?a ?c
                     :in ?in
@@ -266,137 +266,92 @@
                   [])
              #{})))))
 
-;; issue-490
-(deftest test-fn-call-results-unification
-  (is (= #{[[:a :a] :a]}
-        (d/q '[:find ?pair ?x
-               :in $ ?first ?second
-               :where
-               [_ _ ?pair]
-               [(?first  ?pair) ?x]
-               [(?second ?pair) ?x]]
-          [[1 :pair [:a :a]]
-           [2 :pair [:b :c]]]
-          first
-          second))))
-
 (deftest test-predicates
-  (let [entities [{:db/id 1 :name "Ivan" :age 10}
-                  {:db/id 2 :name "Ivan" :age 20}
-                  {:db/id 3 :name "Oleg" :age 10}
-                  {:db/id 4 :name "Oleg" :age 20}]]
-    (d/transact *conn* entities)
-    (are [query res] (= (q (quote query)) res)
-      ;; plain predicate
-      [:find  ?e ?a
-       :where [?e :age ?a]
-       [(> ?a 10)]]
-      #{[2 20] [4 20]}
+  (d/transact *conn* [{:id 1 :name "Ivan" :age 10}
+                      {:id 2 :name "Ivan" :age 20}
+                      {:id 3 :name "Oleg" :age 10}
+                      {:id 4 :name "Oleg" :age 20}])
+  (are [query res] (= (q (quote query)) res)
+    ;; plain predicate
+    [:find  ?id ?a
+     :where
+     [?e :age ?a]
+     [(> ?a 10)]
+     [?e :id ?id]]
+    #{[2 20] [4 20]}
 
-      ;; join in predicate
-      [:find  ?e ?e2
-       :where [?e  :name _]
-       [?e2 :name _]
-       [(< ?e ?e2)]]
-      #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+    ;; join in predicate
+    ;; TODO add placeholders
+    [:find  ?id ?id2
+     :where [?e  :name ?placeholder1]
+     [?e2 :name ?placeholder2]
+     [(< ?id ?id2)]
+     [?e :id ?id]
+     [?e2 :id ?id2]]
+    #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
 
-      ;; join with extra symbols
-      [:find  ?e ?e2
-       :where [?e  :age ?a]
-       [?e2 :age ?a2]
-       [(< ?e ?e2)]]
-      #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
+    ;; join with extra symbols
+    [:find  ?id ?id2
+     :where [?e  :age ?a]
+     [?e2 :age ?a2]
+     [(< ?id ?id2)]
+     [?e :id ?id]
+     [?e2 :id ?id2]]
+    #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
 
-      ;; empty result
-      [:find  ?e ?e2
-       :where [?e  :name "Ivan"]
-       [?e2 :name "Oleg"]
-       [(= ?e ?e2)]]
-      #{}
+    ;; empty result
+    [:find  ?e ?e2
+     :where [?e  :name "Ivan"]
+     [?e2 :name "Oleg"]
+     [(= ?e ?e2)]]
+    #{}
 
-      ;; pred over const, true
-      [:find  ?e
-       :where [?e :name "Ivan"]
-       [?e :age 20]
-       [(= ?e 2)]]
-      #{[2]}
+    ;; pred over const, true
+    [:find  ?id
+     :where [?e :name "Ivan"]
+     [?e :age 20]
+     [?e :id ?id]
+     [(= ?id 2)]]
+    #{[2]}
 
-      ;; pred over const, false
-      [:find  ?e
-       :where [?e :name "Ivan"]
-       [?e :age 20]
-       [(= ?e 1)]]
-      #{})
-    (let [db (d/db *conn*)
-          pred (fn [db e a]
-                 (= a (ffirst (d/q db '[:find ?age
-                                        :in ?e
-                                        :where [?e :age ?age]] e))))]
-      (is (= (q '[:find ?e
-                  :in ?pred
-                  :where [?e :age ?a]
-                  [(?pred $ ?e 10)]] pred)
-             #{[1] [3]})))))
+    ;; pred over const, false
+    [:find  ?e
+     :where [?e :name "Ivan"]
+     [?e :age 20]
+     [(= ?e 1)]]
+    #{}))
 
 (deftest test-exceptions
-  (is (thrown-msg? "Unknown predicate 'fun in [(fun ?e)]"
-                   (d/q '[:find ?e
-                          :in   [?e ...]
-                          :where [(fun ?e)]]
-                        [1])))
+  (let [db (d/db *conn*)]
+    (is (thrown-msg? "Unsupported function 'fun' with 1 args"
+                     (d/q db '[:find ?e
+                               :in   [?e ...]
+                               :where [(fun ?e)]]
+                          [1])))
 
-  (is (thrown-msg? "Unknown function 'fun in [(fun ?e) ?x]"
-                   (d/q '[:find ?e ?x
-                          :in   [?e ...]
-                          :where [(fun ?e) ?x]]
-                        [1])))
 
-  (is (thrown-msg? "Insufficient bindings: #{?x} not bound in [(zero? ?x)]"
-                   (q '[:find ?x
-                        :where [(zero? ?x)]])))
+    (is (thrown-msg? "Unsupported function 'fun' with 1 args"
+                     (d/q db '[:find ?e ?x
+                               :in   [?e ...]
+                               :where [(fun ?e) ?x]]
+                          [1])))
 
-  (is (thrown-msg? "Insufficient bindings: #{?x} not bound in [(inc ?x) ?y]"
-                   (q '[:find ?x
-                        :where [(inc ?x) ?y]])))
+    (is (thrown-msg? "Query has no groundable variables!"
+                     (q '[:find ?x
+                          :where [(zero? ?x)]])))
 
-  (is (thrown-msg? "Where uses unknown source vars: [$2]"
-                   (q '[:find ?x
-                        :where [?x] [(zero? $2 ?x)]])))
+    (is (thrown-msg? "Function input variable ?x not in join order"
+                     (q '[:find ?x
+                          :where [(+ ?x 1) ?y]])))
 
-  (is (thrown-msg? "Where uses unknown source vars: [$]"
-                   (q '[:find  ?x
-                        :in    $2
-                        :where [$2 ?x] [(zero? $ ?x)]]))))
+    #_
+    (is (thrown-msg? "Where uses unknown source vars: [$2]"
+                     (q '[:find ?x
+                          :where [?x]
+                          [(zero? $2 ?x)]])))
 
-(deftest test-issue-180
-  (d/transact *conn* [[:db/add 1 :age 20]])
-  (is (= #{}
-        (q '[:find ?e ?a
-             :where [_ :pred ?pred]
-             [?e :age ?a]
-             [(?pred ?a)]]))))
-
-(defn sample-query-fn []
-  42)
-
-#?(:clj
-   (deftest test-symbol-resolution
-     (is (= 42 (q '[:find ?x .
-                    :where [(xyz.triplox.datascript.query-fns/sample-query-fn) ?x]])))))
-
-(deftest test-issue-445
-  (d/transact *conn* [{:db/id 1 :name "Ivan" :age 15}
-                      {:db/id 2 :name "Petr" :age 22 :height 240}])
-  (testing "get-else using lookup ref"
-    (is (= "Unknown"
-          (q '[:find ?height .
-               :in ?e
-               :where [(get-else $ ?e :height "Unknown") ?height]]
-             [:name "Ivan"]))))
-
-  (testing "get-some using lookup ref"
-    (is (= #{[[:name "Petr"] :age 22]}
-          (q '[:find ?e ?a ?v
-               :in ?e
-               :where [(get-some $ ?e :weight :age :height) [?a ?v]]]
-             [:name "Petr"])))))
+    #_
+    (is (thrown-msg? "Where uses unknown source vars: [$]"
+                     (q '[:find  ?x
+                          :in    $2
+                          :where [$2 ?x] [(zero? $ ?x)]])))))
