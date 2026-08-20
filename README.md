@@ -170,6 +170,11 @@ transaction pipeline semantics slightly differ. There are currently two separate
 engines at play, one for standard queries and one for incremental queries (at some point in the future these [might converge](https://triplox.xyz/roadmap/roadmap/#collapsing-the-dbsp-gap-and-removing-the-standard-query-engine)).
 It should generally be the case that the standard query engine supports a superset of queries the incremental engine supports.
 
+### About
+
+Some of the ideas of this repository have been explored in [hooray2](https://github.com/fiV0/hooray2), a simpler in-memory Datalog
+engine. Especially WCOJ (Worst-case optimal joins) and Datalog to DBSP compilation have been explored there. It often
+serves as a testbed of ideas for Triplox.
 
 ### Licence
 
