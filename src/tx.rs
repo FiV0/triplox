@@ -232,7 +232,7 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
                 });
             }
             TxOp::Delete(_) | TxOp::Erase(_) => {
-                panic!("Delete/Erase not yet implemented");
+                bail!("Delete/Erase not yet implemented");
             }
         }
     }
