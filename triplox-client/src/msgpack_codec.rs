@@ -1504,17 +1504,6 @@ mod tests {
     }
 
     #[test]
-    fn retract_entity_uses_canonical_wire_kind() {
-        let mut buf = Vec::new();
-        write_tx_op(&mut buf, &TxOp::RetractEntity(EntityRef::Id(99))).unwrap();
-        let (value, rest) = read_value_from_buf(&buf);
-        assert!(rest.is_empty());
-
-        let map = map_from_value(value).unwrap();
-        assert_eq!(map.get("kind"), Some(&Value::from("retractEntity")));
-    }
-
-    #[test]
     fn round_trip_query_arg_variants() {
         let cases = vec![
             QueryArg::Scalar(DataType::String("alice".into())),

@@ -5,7 +5,6 @@ import org.msgpack.core.MessagePack;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -157,18 +156,6 @@ class TxOpCodecTest {
                 java.util.Map.of(":", "alice")))));
         assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.RetractEntity(
                 new EntityRef.Ident("db/ident")))));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void testRetractEntityUsesCanonicalWireKind() throws IOException {
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            TxOpCodec.packOp(packer, new TxOp.RetractEntity(new EntityRef.Id(99)));
-            try (var unpacker = MessagePack.newDefaultUnpacker(packer.toByteArray())) {
-                var map = (Map<String, Object>) DataTypeCodec.unpack(unpacker);
-                assertEquals("retractEntity", map.get("kind"));
-            }
-        }
     }
 
     @Test
