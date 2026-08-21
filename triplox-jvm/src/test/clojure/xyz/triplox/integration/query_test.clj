@@ -61,6 +61,18 @@
   (is (= 1 (count (q '{:find [?e]
                        :where [[?e :name "Ivan"]]})))))
 
+(deftest retract-entity-hides-current-entity-and-preserves-history
+  (let [inserted-basis (tc/transact *conn* [{:name "Alice" :age 30}])
+        entity-id (ffirst (q '{:find [?e]
+                              :where [[?e :name "Alice"]]}))]
+    (is (:committed? (tc/transact *conn* [[:db/retractEntity entity-id]])))
+    (is (= #{} (q '{:find [?name]
+                    :where [[?e :name ?name]]})))
+    (is (= [["Alice"]]
+           (tc/q (tc/db *conn* inserted-basis)
+                 '{:find [?name]
+                   :where [[?e :name ?name]]})))))
+
 (deftest test-basic-query
   (tc/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                        {:name "Petr" :last-name "Petrov"}])
