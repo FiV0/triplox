@@ -37,7 +37,7 @@ them. We use [Feldera](https://github.com/feldera/feldera)'s [DBSP](https://crat
 
 ### Getting started
 
-The easiest way to test Triplox is to just pull the docker image and start an in-memory or local node.
+The easiest way to test Triplox is to just pull the [docker image](https://github.com/FiV0/triplox/pkgs/container/triplox) and start an in-memory or local node.
 ```bash
 docker pull ghcr.io/fiv0/triplox:0.1.0-alpha.7
 docker run -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.7
