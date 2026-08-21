@@ -1177,6 +1177,54 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_retract_entity_hides_current_entity_and_preserves_history() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+
+        let inserted_basis = match node
+            .execute_tx(vec![TxOp::put([
+                (kw!(:name), "alice".into()),
+                (kw!(:age), DataType::Long(30)),
+            ])])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let historical = node.db_as_of(inserted_basis).await.unwrap();
+        let historical_rows = historical
+            .query("[:find ?e ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
+        let DataType::Long(entity_id) = historical_rows[0][0] else {
+            panic!("expected entity id")
+        };
+
+        let retracted = node
+            .execute_tx(vec![TxOp::RetractEntity(EntityRef::Id(entity_id))])
+            .await
+            .unwrap();
+        assert!(matches!(retracted, TransactionResult::TxCommitted(_)));
+
+        let current_rows = node
+            .db()
+            .await
+            .unwrap()
+            .query("[:find ?name :where [?e :name ?name]]")
+            .await
+            .unwrap();
+        assert!(current_rows.is_empty());
+        assert_eq!(
+            historical
+                .query("[:find ?name :where [?e :name ?name]]")
+                .await
+                .unwrap(),
+            vec![vec![DataType::String("alice".into())]]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_db_as_of_aborted_tx_opens_basis() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
@@ -2253,6 +2301,63 @@ mod tests {
         assert_eq!(
             delta.rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_cdc_retract_entity_emits_retractions() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let inserted_basis = match node
+            .execute_tx(vec![TxOp::put([
+                (kw!(:name), "Alice".into()),
+                (kw!(:age), DataType::Long(30)),
+            ])])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let rows = node
+            .db_as_of(inserted_basis)
+            .await
+            .unwrap()
+            .query("[:find ?e :where [?e :name \"Alice\"]]")
+            .await
+            .unwrap();
+        let DataType::Long(entity_id) = rows[0][0] else {
+            panic!("expected entity id")
+        };
+        flush_wal(&node).await;
+
+        let mut subscription = node
+            .register_incremental_query(
+                parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
+                &[],
+            )
+            .await
+            .unwrap();
+        take_priming_delta(&mut subscription).await;
+
+        let retracted_basis = match node
+            .execute_tx(vec![TxOp::RetractEntity(EntityRef::Id(entity_id))])
+            .await
+            .unwrap()
+        {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        flush_wal(&node).await;
+
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.tx_key, retracted_basis);
+        assert_eq!(
+            delta.rows,
+            vec![(
+                vec![DataType::String("Alice".into()), DataType::Long(30)],
+                -1
+            )]
         );
     }
 

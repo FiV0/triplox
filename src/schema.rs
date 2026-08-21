@@ -1050,7 +1050,7 @@ mod tests {
         let slate = in_memory_slate().await;
         let mut pm = PartitionMap::new();
         let expanded = tx::expand_tx_ops(ops, schema).unwrap();
-        let with_tempids = expanded_to_tempids(expanded);
+        let with_tempids = expanded_to_tempids(expanded.datoms);
         tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm).await
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
         let bootstrap = bootstrap_schema();
         let tx_ops = bootstrap_schema_tx();
         let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
-        let with_tempids = expanded_to_tempids(expanded);
+        let with_tempids = expanded_to_tempids(expanded.datoms);
         let mut pm = PartitionMap::new();
         let slate = in_memory_slate().await;
         let datoms = tempids::resolve_tempids(with_tempids, &bootstrap, &slate.db, &mut pm)
