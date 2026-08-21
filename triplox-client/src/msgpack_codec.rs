@@ -375,9 +375,9 @@ pub fn write_tx_op<W: Write>(w: &mut W, op: &TxOp) -> Result<()> {
             rmp::encode::write_str(w, "value")?;
             write_data_type(w, value)?;
         }
-        TxOp::Delete(entity) => {
+        TxOp::RetractEntity(entity) => {
             rmp::encode::write_map_len(w, 2)?;
-            write_str_field(w, "kind", "delete")?;
+            write_str_field(w, "kind", "retractEntity")?;
             rmp::encode::write_str(w, "entity")?;
             write_entity_ref(w, entity)?;
         }
@@ -433,7 +433,7 @@ pub fn tx_op_from_value(v: Value) -> Result<TxOp> {
                 value,
             })
         }
-        "delete" => Ok(TxOp::Delete(entity_ref_from_value(take_field(
+        "retractEntity" => Ok(TxOp::RetractEntity(entity_ref_from_value(take_field(
             &mut map, "entity",
         )?)?)),
         "erase" => Ok(TxOp::Erase(entity_ref_from_value(take_field(
@@ -1495,7 +1495,7 @@ mod tests {
                 attribute: kw!(:db/doc),
                 value: DataType::String("doc".into()),
             },
-            TxOp::Delete(EntityRef::Id(99)),
+            TxOp::RetractEntity(EntityRef::Id(99)),
             TxOp::Erase(EntityRef::Id(100)),
         ];
         for op in cases {

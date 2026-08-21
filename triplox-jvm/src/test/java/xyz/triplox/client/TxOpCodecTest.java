@@ -60,10 +60,10 @@ class TxOpCodecTest {
     }
 
     @Test
-    void testDelete() throws IOException {
-        var result = roundtrip(List.of(new TxOp.Delete(new EntityRef.Id(99))));
+    void testRetractEntity() throws IOException {
+        var result = roundtrip(List.of(new TxOp.RetractEntity(new EntityRef.Id(99))));
         assertEquals(1, result.size());
-        assertEquals(new TxOp.Delete(new EntityRef.Id(99)), result.get(0));
+        assertEquals(new TxOp.RetractEntity(new EntityRef.Id(99)), result.get(0));
     }
 
     @Test
@@ -83,7 +83,7 @@ class TxOpCodecTest {
                 new TxOp.Put(doc),
                 new TxOp.Add(new EntityRef.Id(1), ":age", 30L),
                 new TxOp.Retract(new EntityRef.Id(1), ":name", "old-bob"),
-                new TxOp.Delete(new EntityRef.Id(99)),
+                new TxOp.RetractEntity(new EntityRef.Id(99)),
                 new TxOp.Erase(new EntityRef.Id(100))
         );
         var result = roundtrip(ops);
@@ -91,24 +91,24 @@ class TxOpCodecTest {
         assertInstanceOf(TxOp.Put.class, result.get(0));
         assertInstanceOf(TxOp.Add.class, result.get(1));
         assertInstanceOf(TxOp.Retract.class, result.get(2));
-        assertInstanceOf(TxOp.Delete.class, result.get(3));
+        assertInstanceOf(TxOp.RetractEntity.class, result.get(3));
         assertInstanceOf(TxOp.Erase.class, result.get(4));
     }
 
     @Test
     void testEntityRefVariants() throws IOException {
         var ops = List.<TxOp>of(
-                new TxOp.Delete(new EntityRef.Id(42)),
-                new TxOp.Delete(new EntityRef.TempId("temp-1")),
-                new TxOp.Delete(new EntityRef.Ident(":db/ident")),
-                new TxOp.Delete(new EntityRef.LookupRef(":email", "test@example.com"))
+                new TxOp.RetractEntity(new EntityRef.Id(42)),
+                new TxOp.RetractEntity(new EntityRef.TempId("temp-1")),
+                new TxOp.RetractEntity(new EntityRef.Ident(":db/ident")),
+                new TxOp.RetractEntity(new EntityRef.LookupRef(":email", "test@example.com"))
         );
         var result = roundtrip(ops);
         assertEquals(4, result.size());
-        assertEquals(new EntityRef.Id(42), ((TxOp.Delete) result.get(0)).entity());
-        assertEquals(new EntityRef.TempId("temp-1"), ((TxOp.Delete) result.get(1)).entity());
-        assertEquals(new EntityRef.Ident(":db/ident"), ((TxOp.Delete) result.get(2)).entity());
-        assertEquals(new EntityRef.LookupRef(":email", "test@example.com"), ((TxOp.Delete) result.get(3)).entity());
+        assertEquals(new EntityRef.Id(42), ((TxOp.RetractEntity) result.get(0)).entity());
+        assertEquals(new EntityRef.TempId("temp-1"), ((TxOp.RetractEntity) result.get(1)).entity());
+        assertEquals(new EntityRef.Ident(":db/ident"), ((TxOp.RetractEntity) result.get(2)).entity());
+        assertEquals(new EntityRef.LookupRef(":email", "test@example.com"), ((TxOp.RetractEntity) result.get(3)).entity());
     }
 
     @Test
@@ -154,7 +154,7 @@ class TxOpCodecTest {
                 "alice"))));
         assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Put(
                 java.util.Map.of(":", "alice")))));
-        assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Delete(
+        assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.RetractEntity(
                 new EntityRef.Ident("db/ident")))));
     }
 

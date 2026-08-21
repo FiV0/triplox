@@ -181,7 +181,7 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
 ///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
 ///   an internal tempid.
 /// - `Add/Retract` -> 1 DatomExpanded
-/// - `Delete/Erase` -> panics (not yet implemented)
+/// - `RetractEntity/Erase` -> panics (not yet implemented)
 pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>> {
     let db_id_kw = Keyword::namespaced("db", "id");
     let mut datoms = Vec::new();
@@ -231,8 +231,8 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
                     op: DatomOp::Retract,
                 });
             }
-            TxOp::Delete(_) | TxOp::Erase(_) => {
-                bail!("Delete/Erase not yet implemented");
+            TxOp::RetractEntity(_) | TxOp::Erase(_) => {
+                bail!("RetractEntity/Erase not yet implemented");
             }
         }
     }
@@ -823,13 +823,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
-    fn test_expand_delete_panics() {
-        expand_tx_ops(&[TxOp::Delete(EntityRef::Id(100))], &empty_schema()).unwrap();
+    #[should_panic(expected = "RetractEntity/Erase not yet implemented")]
+    fn test_expand_retract_entity_panics() {
+        expand_tx_ops(&[TxOp::RetractEntity(EntityRef::Id(100))], &empty_schema()).unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "Delete/Erase not yet implemented")]
+    #[should_panic(expected = "RetractEntity/Erase not yet implemented")]
     fn test_expand_erase_panics() {
         expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap();
     }

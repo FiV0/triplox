@@ -120,7 +120,7 @@ discriminator field.
 {"kind": "put",     "doc":    <map<str (keyword wire form), DataType>>}
 {"kind": "add",     "entity": <EntityRef>, "attr": <str>, "value": <DataType>}
 {"kind": "retract", "entity": <EntityRef>, "attr": <str>, "value": <DataType>}
-{"kind": "delete",  "entity": <EntityRef>}
+{"kind": "retractEntity", "entity": <EntityRef>}
 {"kind": "erase",   "entity": <EntityRef>}
 ```
 

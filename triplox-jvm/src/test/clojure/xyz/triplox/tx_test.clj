@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [xyz.triplox.tx :as tx])
   (:import [xyz.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
-            TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
+            TxOp$Put TxOp$Add TxOp$Retract TxOp$RetractEntity TxOp$Erase]))
 
 (deftest map-to-put
   (testing "Map -> TxOp.Put"
@@ -31,12 +31,12 @@
       (is (= ":email" (.attribute ^TxOp$Retract op)))
       (is (= "old@example.com" (.value ^TxOp$Retract op))))))
 
-(deftest vec-to-delete
-  (testing "[:db/delete eid] -> TxOp.Delete"
-    (let [ops (tx/tx-data->ops [[:db/delete 99]])
+(deftest vec-to-retract-entity
+  (testing "[:db/retractEntity eid] -> TxOp.RetractEntity"
+    (let [ops (tx/tx-data->ops [[:db/retractEntity 99]])
           op (first ops)]
-      (is (instance? TxOp$Delete op))
-      (is (= 99 (.id ^EntityRef$Id (.entity ^TxOp$Delete op)))))))
+      (is (instance? TxOp$RetractEntity op))
+      (is (= 99 (.id ^EntityRef$Id (.entity ^TxOp$RetractEntity op)))))))
 
 (deftest vec-to-erase
   (testing "[:db/erase eid] -> TxOp.Erase"
@@ -50,13 +50,13 @@
     (let [ops (tx/tx-data->ops [{:db/id 1 :name "bob"}
                                 [:db/add 1 :age 30]
                                 [:db/retract 1 :name "old-bob"]
-                                [:db/delete 99]
+                                [:db/retractEntity 99]
                                 [:db/erase 100]])]
       (is (= 5 (count ops)))
       (is (instance? TxOp$Put (nth ops 0)))
       (is (instance? TxOp$Add (nth ops 1)))
       (is (instance? TxOp$Retract (nth ops 2)))
-      (is (instance? TxOp$Delete (nth ops 3)))
+      (is (instance? TxOp$RetractEntity (nth ops 3)))
       (is (instance? TxOp$Erase (nth ops 4))))))
 
 (deftest tempid-entity-ref

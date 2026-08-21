@@ -2,7 +2,7 @@
   "Convert Datomic-style transaction data to TxOp objects."
   (:import [clojure.lang MapEntry]
            [xyz.triplox.client EntityRef$Id EntityRef$TempId EntityRef$Ident EntityRef$LookupRef
-            TxOp$Put TxOp$Add TxOp$Retract TxOp$Delete TxOp$Erase]))
+            TxOp$Put TxOp$Add TxOp$Retract TxOp$RetractEntity TxOp$Erase]))
 
 (defn- ->entity-ref
   "Convert a Clojure value to an EntityRef."
@@ -26,15 +26,15 @@
   "Convert a Datomic-style tx-data vector to a TxOp."
   [[op :as v]]
   (case op
-    :db/add     (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) (str a) val))
-    :db/retract (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) (str a) val))
-    :db/delete  (let [[_ eid] v] (TxOp$Delete. (->entity-ref eid)))
-    :db/erase   (let [[_ eid] v] (TxOp$Erase. (->entity-ref eid)))
+    :db/add           (let [[_ e a val] v] (TxOp$Add. (->entity-ref e) (str a) val))
+    :db/retract       (let [[_ e a val] v] (TxOp$Retract. (->entity-ref e) (str a) val))
+    :db/retractEntity (let [[_ eid] v] (TxOp$RetractEntity. (->entity-ref eid)))
+    :db/erase         (let [[_ eid] v] (TxOp$Erase. (->entity-ref eid)))
     (throw (ex-info (str "Unknown tx-data op: " op) {:op op :form v}))))
 
 (defn tx-data->ops
   "Convert a sequence of Datomic-style tx-data forms to a List<TxOp>.
-   Maps → TxOp.Put, vectors → TxOp.Add/Retract/Delete/Erase."
+   Maps → TxOp.Put, vectors → TxOp.Add/Retract/RetractEntity/Erase."
   [tx-data]
   (mapv (fn [form]
           (cond

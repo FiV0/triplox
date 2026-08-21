@@ -183,7 +183,7 @@ pub enum TxOp {
         attribute: Keyword,
         value: DataType,
     },
-    Delete(EntityRef),
+    RetractEntity(EntityRef),
     Erase(EntityRef),
 }
 
@@ -276,7 +276,7 @@ pub fn value_to_entity_ref(value: Value) -> Result<EntityRef> {
 /// Accepted forms:
 /// - `[:db/add e a v]`     → `TxOp::Add`
 /// - `[:db/retract e a v]` → `TxOp::Retract`
-/// - `[:db/delete e]`      → `TxOp::Delete`
+/// - `[:db/retractEntity e]` → `TxOp::RetractEntity`
 /// - `[:db/erase e]`       → `TxOp::Erase`
 /// - `{:attr v ...}`       → `TxOp::Put` (`:db/id` is passed through as a normal entry)
 pub fn tx_op_from_value(value: Value) -> Result<TxOp> {
@@ -326,7 +326,7 @@ pub fn tx_op_from_value(value: Value) -> Result<TxOp> {
                         }
                     })
                 }
-                (Some("db"), name @ ("delete" | "erase")) => {
+                (Some("db"), name @ ("retractEntity" | "erase")) => {
                     let entity = match iter.next() {
                         Some(v) => value_to_entity_ref(v)?,
                         None => anyhow::bail!("{} missing entity", op_kw),
@@ -334,8 +334,8 @@ pub fn tx_op_from_value(value: Value) -> Result<TxOp> {
                     if iter.next().is_some() {
                         anyhow::bail!("{} takes exactly 1 argument", op_kw);
                     }
-                    Ok(if name == "delete" {
-                        TxOp::Delete(entity)
+                    Ok(if name == "retractEntity" {
+                        TxOp::RetractEntity(entity)
                     } else {
                         TxOp::Erase(entity)
                     })
@@ -581,8 +581,8 @@ mod tests {
     }
 
     #[test]
-    fn test_op_delete_bincode() {
-        let op = TxOp::Delete(EntityRef::Id(1));
+    fn test_op_retract_entity_bincode() {
+        let op = TxOp::RetractEntity(EntityRef::Id(1));
         let serialized = bincode::serialize(&op).unwrap();
         let deserialized: TxOp = bincode::deserialize(&serialized).unwrap();
         assert_eq!(op, deserialized);
@@ -680,9 +680,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_delete() {
-        let op: TxOp = "[:db/delete 42]".parse().unwrap();
-        assert_eq!(op, TxOp::Delete(EntityRef::Id(42)));
+    fn test_parse_retract_entity() {
+        let op: TxOp = "[:db/retractEntity 42]".parse().unwrap();
+        assert_eq!(op, TxOp::RetractEntity(EntityRef::Id(42)));
     }
 
     #[test]
@@ -770,7 +770,7 @@ mod tests {
         // Wrong arity
         assert!("[:db/add 1 :a]".parse::<TxOp>().is_err());
         assert!("[:db/add 1 :a 2 3]".parse::<TxOp>().is_err());
-        assert!("[:db/delete 1 2]".parse::<TxOp>().is_err());
+        assert!("[:db/retractEntity 1 2]".parse::<TxOp>().is_err());
         // Unknown op
         assert!("[:db/frobnicate 1]".parse::<TxOp>().is_err());
         // Bad shape
