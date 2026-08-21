@@ -18,7 +18,10 @@ use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
-use crate::partition::{extract_counter, partition_entity_prefix, tx_eid_from_tx_id, TX_PARTITION};
+use crate::partition::{
+    extract_counter, extract_partition, partition_entity_prefix, tx_eid_from_tx_id, DB_PARTITION,
+    TX_PARTITION,
+};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
@@ -310,28 +313,63 @@ impl Indexer {
         let tx_eid = tx_eid_from_tx_id(tx_key.tx_id);
         pending_pm.set_tx_counter(tx_key.tx_id)?;
 
-        // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
+        // 2. Expand TxOps (resolves idents, keeps lookup refs + tempids)
         let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
 
-        // 3. Resolve lookup refs via AVE index → DatomWithTempids
-        let with_tempids =
+        // 3. Resolve lookup refs via VAE → staged datoms + concrete RetractEntity targets
+        let resolved =
             tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
+
+        for entity in &resolved.retract_entities {
+            match extract_partition(*entity) {
+                DB_PARTITION => bail!("Cannot retract entity {} from the schema partition", entity),
+                TX_PARTITION => {
+                    bail!(
+                        "Cannot retract entity {} from the transaction partition",
+                        entity
+                    )
+                }
+                _ => {}
+            }
+        }
 
         // 4. Validate explicit entity IDs before tempids become concrete IDs
         tx::validate_allocated_entity_ids(
-            &with_tempids,
+            &resolved,
             &self.metadata.schema,
             &self.metadata.partition_map,
         )?;
 
-        // 5. Resolve tempids, including identity upserts, then build tx entity datoms
+        // 5. Resolve tempids, including identity upserts.
         let mut datoms = tempids::resolve_tempids(
-            with_tempids,
+            resolved.datoms,
             &self.metadata.schema,
             &self.slatedb,
             &mut pending_pm,
         )
         .await?;
+
+        let retract_entities: HashSet<Entid> = resolved.retract_entities.into_iter().collect();
+        if let Some(datom) = datoms
+            .iter()
+            .find(|datom| retract_entities.contains(&datom.entity))
+        {
+            bail!(
+                "Transaction cannot combine RetractEntity with other operations for entity {}",
+                datom.entity
+            );
+        }
+
+        let mut retract_entities: Vec<Entid> = retract_entities.into_iter().collect();
+        retract_entities.sort_unstable();
+        datoms.extend(
+            tx::batch_lookup_active_entity_datoms(
+                &self.slatedb,
+                &self.metadata.schema,
+                &retract_entities,
+            )
+            .await?,
+        );
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
         // 6. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
@@ -2139,6 +2177,249 @@ mod tests {
 
         assert!(saw_email, "unique :email should have a VAE entry");
         assert!(!saw_name, "non-unique :name should not have a VAE entry");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_retracts_all_active_entity_datoms_idempotently(
+    ) -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+        let age_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:age))
+            .unwrap()
+            .0;
+        let tags_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:tags))
+            .unwrap()
+            .0;
+
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::put([
+                    (kw!(:name), "alice".into()),
+                    (kw!(:age), DataType::Long(30)),
+                    (kw!(:tags), DataType::String("engineer".to_string())),
+                ])],
+            )
+            .await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![TxOp::RetractEntity(EntityRef::Id(entity_id))],
+            )
+            .await?;
+        assert!(matches!(
+            waiter.await_tx(test_tx_key(3)).await?.outcome,
+            TxOutcome::Committed
+        ));
+
+        assert!(tx::batch_lookup_active_entity_datoms(
+            &slate,
+            &indexer.metadata().schema,
+            &[entity_id]
+        )
+        .await?
+        .is_empty());
+        for attribute_id in [name_id, age_id, tags_id] {
+            assert_eq!(
+                count_eav_ops(&slate, entity_id, attribute_id).await?,
+                (1, 1)
+            );
+        }
+
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                ],
+            )
+            .await?;
+        for attribute_id in [name_id, age_id, tags_id] {
+            assert_eq!(
+                count_eav_ops(&slate, entity_id, attribute_id).await?,
+                (1, 1)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_by_lookup_ref_releases_unique_value_in_same_tx(
+    ) -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let email_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:email))
+            .unwrap()
+            .0;
+        let email = DataType::String("alice@example.com".into());
+
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::put([
+                    (kw!(:name), "alice".into()),
+                    (kw!(:email), email.clone()),
+                ])],
+            )
+            .await?;
+        let alice_id = find_first_user_entity(&slate).await?;
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![TxOp::put([(kw!(:name), "bob".into())])],
+            )
+            .await?;
+
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+        let mut bob_id = None;
+        let mut iter = slate
+            .scan_prefix_with_options(&[codec::EAV], .., &ScanOptions::default())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let (entity, attribute, value, _tx, op) = eav_key_to_parts(kv.key)?;
+            if attribute == name_id && value == DataType::String("bob".into()) && op == codec::ADD {
+                let DataType::Long(entity) = entity else {
+                    unreachable!()
+                };
+                bob_id = Some(entity);
+                break;
+            }
+        }
+        let bob_id = bob_id.expect("bob entity should exist");
+
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![
+                    TxOp::RetractEntity(EntityRef::LookupRef(kw!(:email), email.clone())),
+                    TxOp::Add {
+                        entity: EntityRef::Id(bob_id),
+                        attribute: kw!(:email),
+                        value: email.clone(),
+                    },
+                ],
+            )
+            .await?;
+        assert!(matches!(
+            waiter.await_tx(test_tx_key(4)).await?.outcome,
+            TxOutcome::Committed
+        ));
+
+        let owners = tx::batch_lookup_unique_eids(&slate, &[(email_id, email)]).await?;
+        assert_eq!(owners.values().next(), Some(&bob_id));
+        assert_eq!(count_eav_ops(&slate, alice_id, email_id).await?, (1, 1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_rejects_other_operations_on_same_entity() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::put([(kw!(:name), "alice".into())])],
+            )
+            .await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alicia".into(),
+                    },
+                ],
+            )
+            .await?;
+
+        let completion = waiter.await_tx(test_tx_key(3)).await?;
+        assert_outcome_err(&completion.outcome, "cannot combine RetractEntity");
+        assert_eq!(count_eav_ops(&slate, entity_id, name_id).await?, (1, 0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_rejects_schema_and_transaction_partitions() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+
+        let schema_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::RetractEntity(EntityRef::Id(crate::schema::DB_IDENT))],
+            )
+            .await?;
+        assert_outcome_err(
+            &schema_waiter.await_tx(test_tx_key(2)).await?.outcome,
+            "schema partition",
+        );
+
+        let tx_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![TxOp::RetractEntity(EntityRef::Id(tx_eid_from_tx_id(1)))],
+            )
+            .await?;
+        assert_outcome_err(
+            &tx_waiter.await_tx(test_tx_key(3)).await?.outcome,
+            "transaction partition",
+        );
+
+        let unallocated = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 999);
+        let unallocated_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![TxOp::RetractEntity(EntityRef::Id(unallocated))],
+            )
+            .await?;
+        assert_outcome_err(
+            &unallocated_waiter.await_tx(test_tx_key(4)).await?.outcome,
+            "unallocated entity id",
+        );
         Ok(())
     }
 

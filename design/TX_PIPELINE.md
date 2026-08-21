@@ -16,9 +16,12 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
                                 pending_pm.set_tx_counter(tx_key.tx_id)?
                                 (pipeline reads work directly against slatedb)
                                 ↓
-2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> Vec<DatomExpanded>
+2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> ExpandedTxOps
    - TxOp::Put -> N DatomExpanded (one per attr)
    - TxOp::Add/Retract -> 1 DatomExpanded
+   - TxOp::RetractEntity -> one staged entity target (ID or lookup ref)
+   - TxOp::Erase -> rejected as unsupported
+   - RetractEntity rejects ident and tempid entity references
    - Resolves EntityRef::Ident -> entid via schema.ident_map
    - EntityRef::Id -> EntityExpanded::Id (passthrough)
    - EntityRef::TempId -> EntityExpanded::TempId (deferred)
@@ -28,15 +31,17 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Ref-typed value DataType::String -> ValueExpanded::TempRef
    - Ref-typed value DataType::Keyword -> resolved ident -> ValueExpanded::Data(Long)
                                 ↓
-3. Resolve lookup refs          tx::resolve_lookup_refs(datoms, &schema, &slatedb)
+3. Resolve lookup refs          tx::resolve_lookup_refs(expanded, &schema, &slatedb)
    - Collects all unique (attr_entid, value) pairs from LookupRef variants
-   - Batch-resolves via AVE prefix scans (no I/O if no lookup refs)
-   - Converts DatomExpanded -> DatomWithTempids (eliminates LookupRef variants)
+   - Includes lookup refs used as RetractEntity targets
+   - Batch-resolves via unique-only VAE prefix scans (no I/O if no lookup refs)
+   - Converts DatomExpanded -> DatomWithTempids and RetractEntity targets -> concrete IDs
    - Errors if any lookup ref has no matching entity
                                 ↓
 4. Validate explicit IDs        tx::validate_allocated_entity_ids(...)
    - Concrete entity IDs must already be allocated in their partition
    - Ref-typed Long values must point to already allocated entity IDs
+   - RetractEntity rejects DB_PARTITION and TX_PARTITION targets
    - Tempids remain deferred and can still allocate within this transaction
                                 ↓
 5. Resolve tempids/upserts      tempids::resolve_tempids(...)
@@ -44,6 +49,8 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Resolves :db.unique/identity tempids against unique-only VAE
    - Evolves complex upserts until no simple upserts remain
    - Allocates remaining tempids, coalescing unresolved identity matches
+   Reject mixed RetractEntity ops      no other datom may resolve to a retracted entity
+   Expand RetractEntity targets        one batched EAV scan emits retractions for active datoms
    Build tx entity datoms       build_tx_entity_datoms(tx_eid, tx_key, ...)
                                 ↓
 6. Validate                     schema.validate_datoms(datoms)
@@ -79,13 +86,15 @@ Each stage narrows the types, eliminating one class of unresolved references:
 ```
 TxOp (EntityRef + DataType)
     ↓ expand_tx_ops (sync, schema-only)
-DatomExpanded (EntityExpanded + ValueExpanded)   may contain LookupRef + TempId
+ExpandedTxOps                                    datoms plus staged RetractEntity targets
     ↓ resolve_lookup_refs (async, unique-only VAE index)
-DatomWithTempids (IdOrTempId + ValueWithTempIds) only TempId remains
+ResolvedTxOps                                    datoms plus concrete RetractEntity IDs
     ↓ validate_allocated_entity_ids (sync, partition map)
-DatomWithTempids                                explicit IDs checked
+ResolvedTxOps                                    explicit IDs checked
     ↓ tempids::resolve_tempids (async, VAE + partition map)
 Datom (i64 + DataType)                           fully concrete
+    ↓ batch_lookup_active_entity_datoms (async, EAV)
+Datom                                            active RetractEntity targets become retractions
 ```
 
 ## Unique Attributes
