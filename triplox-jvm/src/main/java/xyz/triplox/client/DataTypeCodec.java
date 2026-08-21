@@ -54,6 +54,7 @@ public final class DataTypeCodec {
     // ---------------------------------------------------------------
 
     public static void pack(MessagePacker packer, Object value) throws IOException {
+        if (value == null) throw new IllegalArgumentException("Cannot encode null value");
         switch (value) {
             case Boolean b -> packer.packBoolean(b);
             case Long l -> packer.packLong(l);

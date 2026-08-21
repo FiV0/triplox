@@ -157,4 +157,14 @@ class TxOpCodecTest {
         assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(new TxOp.Delete(
                 new EntityRef.Ident("db/ident")))));
     }
+
+    @Test
+    void testPackRejectsNullValue() {
+        var error = assertThrows(IllegalArgumentException.class, () -> roundtrip(List.of(
+                new TxOp.Retract(
+                        new EntityRef.LookupRef(":person/email", "p7@example.com"),
+                        ":person/tag",
+                        null))));
+        assertEquals("Cannot encode null value", error.getMessage());
+    }
 }
