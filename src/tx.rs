@@ -48,6 +48,13 @@ pub struct DatomExpanded {
     pub op: DatomOp,
 }
 
+/// Expanded transaction operations before lookup-ref resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpandedTxOps {
+    pub datoms: Vec<DatomExpanded>,
+    pub retract_entities: Vec<EntityExpanded>,
+}
+
 // ---------------------------------------------------------------------------
 // Stage 2 types: after lookup ref resolution, before tempid allocation.
 // Only TempId variants remain.
@@ -76,6 +83,13 @@ pub struct DatomWithTempids {
     pub op: DatomOp,
 }
 
+/// Transaction operations after lookup-ref resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedTxOps {
+    pub datoms: Vec<DatomWithTempids>,
+    pub retract_entities: Vec<Entid>,
+}
+
 /// Resolve an EntityRef to EntityExpanded, resolving idents via schema.
 /// Lookup refs have their attribute keyword resolved to an entid but remain as LookupRef.
 fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<EntityExpanded> {
@@ -96,6 +110,21 @@ fn resolve_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<EntityExpande
                 .ok_or_else(|| anyhow::anyhow!("Unknown attribute in lookup ref: {}", kw))?;
             Ok(EntityExpanded::LookupRef(*attr_eid, dt.clone()))
         }
+    }
+}
+
+fn expand_retract_entity_ref(eref: &EntityRef, schema: &Schema) -> Result<EntityExpanded> {
+    match eref {
+        EntityRef::Id(id) => Ok(EntityExpanded::Id(*id)),
+        EntityRef::LookupRef(kw, value) => {
+            let attr_eid = schema
+                .ident_map
+                .get(kw)
+                .ok_or_else(|| anyhow::anyhow!("Unknown attribute in lookup ref: {}", kw))?;
+            Ok(EntityExpanded::LookupRef(*attr_eid, value.clone()))
+        }
+        EntityRef::Ident(_) => bail!("RetractEntity does not support ident entity references"),
+        EntityRef::TempId(_) => bail!("RetractEntity does not support tempid entity references"),
     }
 }
 
@@ -174,17 +203,19 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
     }
 }
 
-/// Expand TxOps into DatomExpanded, resolving idents and ref-typed values via schema.
+/// Expand TxOps, resolving idents and ref-typed values via schema.
 /// Lookup refs and tempids pass through as-is for later resolution stages.
 ///
 /// - `Put(map)` -> N DatomExpanded (one per non-`:db/id` attr). The `:db/id` key
 ///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
 ///   an internal tempid.
 /// - `Add/Retract` -> 1 DatomExpanded
-/// - `RetractEntity/Erase` -> panics (not yet implemented)
-pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>> {
+/// - `RetractEntity` -> 1 entity reference for later EAV expansion
+/// - `Erase` -> error (not yet implemented)
+pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<ExpandedTxOps> {
     let db_id_kw = Keyword::namespaced("db", "id");
     let mut datoms = Vec::new();
+    let mut retract_entities = Vec::new();
     let mut auto_counter: u64 = 0;
 
     for op in ops {
@@ -231,12 +262,16 @@ pub fn expand_tx_ops(ops: &[TxOp], schema: &Schema) -> Result<Vec<DatomExpanded>
                     op: DatomOp::Retract,
                 });
             }
-            TxOp::RetractEntity(_) | TxOp::Erase(_) => {
-                bail!("RetractEntity/Erase not yet implemented");
+            TxOp::RetractEntity(entity) => {
+                retract_entities.push(expand_retract_entity_ref(entity, schema)?)
             }
+            TxOp::Erase(_) => bail!("Erase not yet implemented"),
         }
     }
-    Ok(datoms)
+    Ok(ExpandedTxOps {
+        datoms,
+        retract_entities,
+    })
 }
 
 fn unique_vae_prefix(attr_eid: i64, value: &DataType) -> Vec<u8> {
@@ -378,13 +413,17 @@ pub async fn batch_lookup_unique_eids(
 }
 
 /// Batch-resolve all lookup refs via the unique-only VAE index.
-/// Converts DatomExpanded → DatomWithTempids, eliminating all LookupRef variants.
+/// Converts expanded datoms and RetractEntity targets, eliminating all LookupRef variants.
 /// If no lookup refs are present, this is a cheap conversion with no I/O.
 pub async fn resolve_lookup_refs(
-    datoms: Vec<DatomExpanded>,
+    expanded: ExpandedTxOps,
     schema: &Schema,
     db: &slatedb::Db,
-) -> Result<Vec<DatomWithTempids>> {
+) -> Result<ResolvedTxOps> {
+    let ExpandedTxOps {
+        datoms,
+        retract_entities,
+    } = expanded;
     // Collect every (attr, value) pair referenced by a lookup ref.
     let mut lookups: Vec<(Entid, DataType)> = Vec::new();
     for d in &datoms {
@@ -393,6 +432,12 @@ pub async fn resolve_lookup_refs(
             lookups.push((*a, v.clone()));
         }
         if let ValueExpanded::LookupRef(a, v) = &d.value {
+            validate_unique_identity_lookup(schema, *a, v)?;
+            lookups.push((*a, v.clone()));
+        }
+    }
+    for retract_entity in &retract_entities {
+        if let EntityExpanded::LookupRef(a, v) = retract_entity {
             validate_unique_identity_lookup(schema, *a, v)?;
             lookups.push((*a, v.clone()));
         }
@@ -426,7 +471,24 @@ pub async fn resolve_lookup_refs(
             op: d.op,
         });
     }
-    Ok(result)
+    let mut resolved_retract_entities = Vec::with_capacity(retract_entities.len());
+    for retract_entity in retract_entities {
+        match retract_entity {
+            EntityExpanded::Id(id) => resolved_retract_entities.push(id),
+            EntityExpanded::LookupRef(a, v) => match resolved_map.get(&(a, v.clone())) {
+                Some(&eid) => resolved_retract_entities.push(eid),
+                None => return Err(lookup_ref_not_found(schema, a, &v)),
+            },
+            EntityExpanded::TempId(_) => {
+                bail!("RetractEntity does not support tempid entity references")
+            }
+        }
+    }
+
+    Ok(ResolvedTxOps {
+        datoms: result,
+        retract_entities: resolved_retract_entities,
+    })
 }
 
 fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
@@ -434,11 +496,11 @@ fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
 }
 
 pub(crate) fn validate_allocated_entity_ids(
-    datoms: &[DatomWithTempids],
+    tx_ops: &ResolvedTxOps,
     schema: &Schema,
     partition_map: &PartitionMap,
 ) -> Result<()> {
-    for datom in datoms {
+    for datom in &tx_ops.datoms {
         let (_, attr) = schema
             .get_attribute(&datom.attribute)
             .ok_or_else(|| anyhow::anyhow!("Unknown attribute: {}", datom.attribute))?;
@@ -458,7 +520,79 @@ pub(crate) fn validate_allocated_entity_ids(
         }
     }
 
+    for id in &tx_ops.retract_entities {
+        if !partition_map.contains_entid(*id) {
+            return Err(unallocated_entity_id_error(*id));
+        }
+    }
+
     Ok(())
+}
+
+/// Batch-read all currently active datoms for the requested entities from EAV.
+/// One forward-only iterator covers the sorted, deduplicated entity prefixes.
+pub(crate) async fn batch_lookup_active_entity_datoms(
+    db: &slatedb::Db,
+    schema: &Schema,
+    entity_ids: &[Entid],
+) -> Result<Vec<Datom>> {
+    let mut prefixes = BTreeMap::new();
+    for entity_id in entity_ids {
+        let entity = DataType::Long(*entity_id).encode();
+        prefixes.insert(concat_bytes(&[&[codec::EAV], &entity]), *entity_id);
+    }
+
+    if prefixes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut iter = SlateKeyIterator::scan_prefix(db, &[codec::EAV]).await?;
+    let mut datoms = Vec::new();
+
+    for (entity_prefix, expected_entity) in prefixes {
+        iter.seek(&entity_prefix).await?;
+        while let Some(key) = iter.peek().cloned() {
+            if !key.starts_with(&entity_prefix) {
+                break;
+            }
+            if key.len() < codec::TX_EID_OP_SUFFIX {
+                bail!("EAV key too short to contain tx_eid and op");
+            }
+
+            let logical_key_end = key.len() - codec::TX_EID_OP_SUFFIX;
+            let next_group = next_prefix(&key[..logical_key_end]);
+            match key[key.len() - 1] {
+                codec::ADD => {
+                    let (entity, attribute_id, value, _tx_eid, _op) = eav_key_to_parts(key)?;
+                    if entity != DataType::Long(expected_entity) {
+                        bail!(
+                            "Expected entity {} in EAV entity-retraction scan, got {:?}",
+                            expected_entity,
+                            entity
+                        );
+                    }
+                    let attribute = schema.get_ident(attribute_id).ok_or_else(|| {
+                        anyhow::anyhow!("Unknown attribute entity id {}", attribute_id)
+                    })?;
+                    datoms.push(Datom {
+                        entity: expected_entity,
+                        attribute: attribute.clone(),
+                        value,
+                        op: DatomOp::Retract,
+                    });
+                }
+                codec::RETRACT => {}
+                op => bail!("Unknown EAV operation byte: {}", op),
+            }
+
+            let Some(next_group) = next_group else {
+                return Ok(datoms);
+            };
+            iter.seek(&next_group).await?;
+        }
+    }
+
+    Ok(datoms)
 }
 
 /// Look up a transaction's persisted outcome via the AVE index on `:db/txId`,
@@ -545,6 +679,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use edn::kw;
 
@@ -590,6 +726,23 @@ mod tests {
         key
     }
 
+    fn eav_key(
+        entity: Entid,
+        attribute: Entid,
+        value: &DataType,
+        tx_eid: Entid,
+        op: u8,
+    ) -> Vec<u8> {
+        concat_bytes(&[
+            &[codec::EAV],
+            &DataType::Long(entity).encode(),
+            &encode_i64_bytes(attribute),
+            &value.encode(),
+            &encode_i64_bytes(tx_eid),
+            &[op],
+        ])
+    }
+
     // --- expand_tx_ops tests ---
 
     #[test]
@@ -599,7 +752,7 @@ mod tests {
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap().datoms;
         assert_eq!(datoms.len(), 2);
         assert!(datoms.iter().all(|d| d.entity == EntityExpanded::Id(100)));
         assert!(datoms.iter().all(|d| d.op == DatomOp::Assert));
@@ -611,7 +764,7 @@ mod tests {
             TxOp::put([(kw!(:name), "alice".into())]),
             TxOp::put([(kw!(:name), "bob".into())]),
         ];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap().datoms;
         assert_eq!(datoms.len(), 2);
         assert_ne!(datoms[0].entity, datoms[1].entity);
         assert!(matches!(datoms[0].entity, EntityExpanded::TempId(_)));
@@ -624,7 +777,7 @@ mod tests {
             (kw!(:name), "alice".into()),
             (kw!(:age), 30_i64.into()),
         ])];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap().datoms;
         assert_eq!(datoms.len(), 2);
         assert_eq!(datoms[0].entity, datoms[1].entity);
     }
@@ -636,7 +789,7 @@ mod tests {
             attribute: kw!(:name),
             value: DataType::String("bob".to_string()),
         }];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap().datoms;
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].entity, EntityExpanded::Id(200));
         assert_eq!(datoms[0].attribute, kw!(:name));
@@ -654,7 +807,7 @@ mod tests {
             attribute: kw!(:name),
             value: DataType::String("bob".to_string()),
         }];
-        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap();
+        let datoms = expand_tx_ops(&ops, &empty_schema()).unwrap().datoms;
         assert_eq!(datoms.len(), 1);
         assert_eq!(datoms[0].op, DatomOp::Retract);
     }
@@ -667,7 +820,7 @@ mod tests {
             attribute: kw!(:some/attr),
             value: DataType::Long(1),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(datoms[0].entity, EntityExpanded::Id(42));
     }
 
@@ -691,7 +844,7 @@ mod tests {
             attribute: kw!(:name),
             value: DataType::Long(1),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(
             datoms[0].entity,
             EntityExpanded::LookupRef(42, DataType::String("a@b.com".into()))
@@ -721,7 +874,7 @@ mod tests {
             attribute: kw!(:follows),
             value: DataType::String("friend".to_string()),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(
             datoms[0].value,
             ValueExpanded::TempRef("friend".to_string())
@@ -736,7 +889,7 @@ mod tests {
             attribute: kw!(:follows),
             value: DataType::Long(200),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(datoms[0].value, ValueExpanded::Data(DataType::Long(200)));
     }
 
@@ -750,7 +903,7 @@ mod tests {
             attribute: kw!(:follows),
             value: DataType::Keyword(kw!(:person/bob)),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(datoms[0].value, ValueExpanded::Data(DataType::Long(99)));
     }
 
@@ -767,7 +920,7 @@ mod tests {
                 DataType::String("a@b.com".into()),
             ]),
         }];
-        let datoms = expand_tx_ops(&ops, &schema).unwrap();
+        let datoms = expand_tx_ops(&ops, &schema).unwrap().datoms;
         assert_eq!(
             datoms[0].value,
             ValueExpanded::LookupRef(42, DataType::String("a@b.com".into()))
@@ -823,15 +976,55 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "RetractEntity/Erase not yet implemented")]
-    fn test_expand_retract_entity_panics() {
-        expand_tx_ops(&[TxOp::RetractEntity(EntityRef::Id(100))], &empty_schema()).unwrap();
+    fn test_expand_retract_entity() {
+        let expanded =
+            expand_tx_ops(&[TxOp::RetractEntity(EntityRef::Id(100))], &empty_schema()).unwrap();
+        assert!(expanded.datoms.is_empty());
+        assert_eq!(expanded.retract_entities, vec![EntityExpanded::Id(100)]);
     }
 
     #[test]
-    #[should_panic(expected = "RetractEntity/Erase not yet implemented")]
-    fn test_expand_erase_panics() {
-        expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap();
+    fn test_expand_retract_entity_lookup_ref() {
+        let schema = schema_with_ident(kw!(:email), 42);
+        let expanded = expand_tx_ops(
+            &[TxOp::RetractEntity(EntityRef::LookupRef(
+                kw!(:email),
+                DataType::String("alice@example.com".into()),
+            ))],
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(
+            expanded.retract_entities,
+            vec![EntityExpanded::LookupRef(
+                42,
+                DataType::String("alice@example.com".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn test_expand_retract_entity_rejects_ident_and_tempid() {
+        let ident_err = expand_tx_ops(
+            &[TxOp::RetractEntity(EntityRef::Ident(kw!(:person/alice)))],
+            &empty_schema(),
+        )
+        .unwrap_err();
+        assert!(ident_err.to_string().contains("does not support ident"));
+
+        let tempid_err = expand_tx_ops(
+            &[TxOp::RetractEntity(EntityRef::TempId("alice".into()))],
+            &empty_schema(),
+        )
+        .unwrap_err();
+        assert!(tempid_err.to_string().contains("does not support tempid"));
+    }
+
+    #[test]
+    fn test_expand_erase_errors() {
+        let err = expand_tx_ops(&[TxOp::Erase(EntityRef::Id(200))], &empty_schema()).unwrap_err();
+        assert_eq!(err.to_string(), "Erase not yet implemented");
     }
 
     #[tokio::test]
@@ -921,6 +1114,92 @@ mod tests {
             batch_lookup_unique_eids(slate.as_ref(), &[(attr_eid, value.clone())]).await?;
 
         assert!(!resolved.contains_key(&(attr_eid, value)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_lookup_refs_resolves_retract_entity_target() -> Result<()> {
+        use crate::schema::Attribute;
+
+        let slate = in_memory_slate().await.db;
+        let mut schema = empty_schema();
+        schema.ident_map.insert(kw!(:email), 42);
+        schema.entid_map.insert(42, kw!(:email));
+        schema.attribute_map.insert(
+            42,
+            Attribute {
+                value_type: ValueType::String,
+                multival: false,
+                unique: Some(Unique::Identity),
+            },
+        );
+        let value = DataType::String("alice@example.com".into());
+        slate
+            .put(&unique_vae_key(42, &value, 100, 1, codec::ADD), b"")
+            .await?;
+
+        let expanded = expand_tx_ops(
+            &[TxOp::RetractEntity(EntityRef::LookupRef(
+                kw!(:email),
+                value,
+            ))],
+            &schema,
+        )?;
+        let resolved = resolve_lookup_refs(expanded, &schema, &slate).await?;
+
+        assert!(resolved.datoms.is_empty());
+        assert_eq!(resolved.retract_entities, vec![100]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_lookup_active_entity_datoms() -> Result<()> {
+        let slate = in_memory_slate().await.db;
+        let mut schema = empty_schema();
+        schema.entid_map.insert(10, kw!(:name));
+        schema.entid_map.insert(11, kw!(:age));
+
+        let alice = DataType::String("alice".into());
+        let bob = DataType::String("bob".into());
+        let carol = DataType::String("carol".into());
+        let age = DataType::Long(30);
+        for key in [
+            eav_key(100, 10, &alice, 1, codec::ADD),
+            eav_key(100, 10, &alice, 2, codec::RETRACT),
+            eav_key(100, 10, &bob, 1, codec::ADD),
+            eav_key(100, 11, &age, 1, codec::ADD),
+            eav_key(200, 10, &carol, 1, codec::ADD),
+        ] {
+            slate.put(&key, b"").await?;
+        }
+
+        let actual: HashSet<_> =
+            batch_lookup_active_entity_datoms(&slate, &schema, &[200, 100, 100])
+                .await?
+                .into_iter()
+                .collect();
+        let expected = HashSet::from([
+            Datom {
+                entity: 100,
+                attribute: kw!(:name),
+                value: bob,
+                op: DatomOp::Retract,
+            },
+            Datom {
+                entity: 100,
+                attribute: kw!(:age),
+                value: age,
+                op: DatomOp::Retract,
+            },
+            Datom {
+                entity: 200,
+                attribute: kw!(:name),
+                value: carol,
+                op: DatomOp::Retract,
+            },
+        ]);
+
+        assert_eq!(actual, expected);
         Ok(())
     }
 }

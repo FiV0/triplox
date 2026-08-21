@@ -155,7 +155,7 @@ Schema attributes are **immutable** once installed. The following operations are
 |------------|---------------------------------------------------------------|--------------------------------------|
 | `Put`      | `db/id` matches an existing schema entity                     | "Cannot redefine schema attribute"   |
 | `Retract`  | attribute is `db/ident`, `db/valueType`, `db/cardinality`, or `db/unique` | "Cannot retract schema attributes"   |
-| `Delete`   | entity ID belongs to a schema entity                          | "Cannot delete schema entity"        |
+| `RetractEntity` | entity ID belongs to a schema entity                    | "Cannot retract schema entity"       |
 | `Erase`    | entity ID belongs to a schema entity                          | "Cannot erase schema entity"         |
 
 In its final form we likely reject any modifications to bootstrap schema attributes, but allow changes to user defined attributes.
