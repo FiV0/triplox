@@ -118,10 +118,10 @@ public final class TxOpCodec {
                 packer.packString("attr"); packer.packString(DataTypeCodec.keywordStringToWire(ret.attribute()));
                 packer.packString("value"); DataTypeCodec.pack(packer, ret.value());
             }
-            case TxOp.Delete del -> {
+            case TxOp.RetractEntity retractEntity -> {
                 packer.packMapHeader(2);
-                packer.packString("kind"); packer.packString("delete");
-                packer.packString("entity"); packEntityRef(packer, del.entity());
+                packer.packString("kind"); packer.packString("retractEntity");
+                packer.packString("entity"); packEntityRef(packer, retractEntity.entity());
             }
             case TxOp.Erase erase -> {
                 packer.packMapHeader(2);
@@ -138,7 +138,7 @@ public final class TxOpCodec {
             case "put" -> readPut(map);
             case "add" -> readAddOrRetract(map, /*retract=*/false);
             case "retract" -> readAddOrRetract(map, /*retract=*/true);
-            case "delete" -> new TxOp.Delete(takeEntityRef(map, "entity"));
+            case "retractEntity" -> new TxOp.RetractEntity(takeEntityRef(map, "entity"));
             case "erase" -> new TxOp.Erase(takeEntityRef(map, "entity"));
             default -> throw new IOException("Unknown TxOp kind: " + kind);
         };
