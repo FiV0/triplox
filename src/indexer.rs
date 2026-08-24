@@ -311,8 +311,7 @@ impl Indexer {
         pending_pm.set_tx_counter(tx_key.tx_id)?;
 
         // 2. Expand TxOps, resolve lookup refs, and lower RetractEntity to retractions
-        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema, &self.slatedb).await?;
-        let with_tempids = tx::into_datoms_with_tempids(expanded)?;
+        let with_tempids = tx::expand_tx_ops(&tx_ops, &self.metadata.schema, &self.slatedb).await?;
 
         // 3. Validate explicit entity IDs before tempids become concrete IDs
         tx::validate_allocated_entity_ids(

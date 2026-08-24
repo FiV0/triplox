@@ -17,6 +17,7 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
                                 (pipeline reads work directly against slatedb)
                                 ↓
 2. Expand TxOps                 tx::expand_tx_ops(ops, &schema, &slatedb)
+                                -> Vec<DatomWithTempids>
    - TxOp::Put -> N DatomExpanded (one per attr)
    - TxOp::Add/Retract -> 1 DatomExpanded
    - TxOp::RetractEntity -> retractions for every active EAV datom
@@ -34,10 +35,9 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
    - Ref-typed value DataType::String -> ValueExpanded::TempRef
    - Ref-typed value DataType::Keyword -> resolved ident -> ValueExpanded::Data(Long)
    - Sorts and deduplicates RetractEntity targets for one forward EAV scan
+   - Narrows DatomExpanded to DatomWithTempids before returning
                                 ↓
-3. Narrow + validate IDs        tx::into_datoms_with_tempids(expanded)
-                                tx::validate_allocated_entity_ids(...)
-   - Converts DatomExpanded -> DatomWithTempids without I/O
+3. Validate explicit IDs        tx::validate_allocated_entity_ids(...)
    - Concrete entity IDs in ordinary datoms must already be allocated
    - Ref-typed Long values must point to already allocated entity IDs
    - Tempids remain deferred and can still allocate within this transaction
@@ -83,8 +83,6 @@ Each stage narrows the types, eliminating one class of unresolved references:
 ```
 TxOp (EntityRef + DataType)
     ↓ expand_tx_ops (async, unique-only VAE + EAV)
-Vec<DatomExpanded>                               lookup refs resolved; entity retractions expanded
-    ↓ into_datoms_with_tempids (sync)
 Vec<DatomWithTempids>                            only concrete IDs and tempids remain
     ↓ validate_allocated_entity_ids (sync, partition map)
 Vec<DatomWithTempids>                            explicit IDs checked

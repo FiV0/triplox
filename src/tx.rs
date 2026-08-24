@@ -20,8 +20,7 @@ use crate::transaction::TxKey;
 use crate::util::{concat_bytes, next_prefix};
 
 // ---------------------------------------------------------------------------
-// Stage 1 types used while expanding transaction operations.
-// Successful expand_tx_ops results contain TempIds but no LookupRefs.
+// Stage 1 types used internally while expanding transaction operations.
 // ---------------------------------------------------------------------------
 
 /// Entity reference during transaction expansion.
@@ -535,7 +534,7 @@ pub async fn expand_tx_ops(
     ops: &[TxOp],
     schema: &Schema,
     db: &slatedb::Db,
-) -> Result<Vec<DatomExpanded>> {
+) -> Result<Vec<DatomWithTempids>> {
     let (mut datoms, retract_entities) = expand_tx_ops_unresolved(ops, schema)?;
     let mut retract_entities =
         resolve_lookup_refs_in_place(&mut datoms, &retract_entities, schema, db).await?;
@@ -547,11 +546,6 @@ pub async fn expand_tx_ops(
     retract_entities.sort_unstable();
     retract_entities.dedup();
     datoms.extend(batch_lookup_active_entity_datoms(db, schema, &retract_entities).await?);
-    Ok(datoms)
-}
-
-/// Narrow fully expanded datoms to the tempid-resolution input type.
-pub fn into_datoms_with_tempids(datoms: Vec<DatomExpanded>) -> Result<Vec<DatomWithTempids>> {
     datoms
         .into_iter()
         .map(|datom| {
@@ -559,14 +553,14 @@ pub fn into_datoms_with_tempids(datoms: Vec<DatomExpanded>) -> Result<Vec<DatomW
                 EntityExpanded::Id(id) => IdOrTempId::Id(id),
                 EntityExpanded::TempId(tempid) => IdOrTempId::TempId(tempid),
                 EntityExpanded::LookupRef(_, _) => {
-                    bail!("Unresolved entity lookup ref after expand_tx_ops")
+                    bail!("Unresolved entity lookup ref during expand_tx_ops")
                 }
             };
             let value = match datom.value {
                 ValueExpanded::Data(value) => ValueWithTempIds::Data(value),
                 ValueExpanded::TempRef(tempid) => ValueWithTempIds::TempRef(tempid),
                 ValueExpanded::LookupRef(_, _) => {
-                    bail!("Unresolved value lookup ref after expand_tx_ops")
+                    bail!("Unresolved value lookup ref during expand_tx_ops")
                 }
             };
             Ok(DatomWithTempids {
@@ -1189,19 +1183,19 @@ mod tests {
                 value: DataType::String("Bobby".into()),
             },
         ];
-        let expanded = expand_tx_ops(&ops, &schema, &slate).await?;
+        let with_tempids = expand_tx_ops(&ops, &schema, &slate).await?;
 
-        assert_eq!(expanded.len(), 2);
-        assert!(expanded.contains(&DatomExpanded {
-            entity: EntityExpanded::Id(alice),
+        assert_eq!(with_tempids.len(), 2);
+        assert!(with_tempids.contains(&DatomWithTempids {
+            entity: IdOrTempId::Id(alice),
             attribute: kw!(:name),
-            value: ValueExpanded::Data(DataType::String("Alice".into())),
+            value: ValueWithTempIds::Data(DataType::String("Alice".into())),
             op: DatomOp::Retract,
         }));
-        assert!(expanded.contains(&DatomExpanded {
-            entity: EntityExpanded::Id(bob),
+        assert!(with_tempids.contains(&DatomWithTempids {
+            entity: IdOrTempId::Id(bob),
             attribute: kw!(:name),
-            value: ValueExpanded::Data(DataType::String("Bobby".into())),
+            value: ValueWithTempIds::Data(DataType::String("Bobby".into())),
             op: DatomOp::Assert,
         }));
         Ok(())

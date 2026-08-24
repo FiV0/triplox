@@ -1024,8 +1024,7 @@ mod tests {
     async fn to_datoms_result_async(ops: &[TxOp], schema: &Schema) -> Result<Vec<Datom>> {
         let slate = in_memory_slate().await;
         let mut pm = PartitionMap::new();
-        let expanded = tx::expand_tx_ops(ops, schema, &slate.db).await?;
-        let with_tempids = tx::into_datoms_with_tempids(expanded)?;
+        let with_tempids = tx::expand_tx_ops(ops, schema, &slate.db).await?;
         tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm).await
     }
 
@@ -1242,10 +1241,9 @@ mod tests {
         let tx_ops = bootstrap_schema_tx();
         let mut pm = PartitionMap::new();
         let slate = in_memory_slate().await;
-        let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap, &slate.db)
+        let with_tempids = tx::expand_tx_ops(&tx_ops, &bootstrap, &slate.db)
             .await
             .unwrap();
-        let with_tempids = tx::into_datoms_with_tempids(expanded).unwrap();
         let datoms = tempids::resolve_tempids(with_tempids, &bootstrap, &slate.db, &mut pm)
             .await
             .unwrap();

@@ -3,8 +3,8 @@
 //! This module implements the upsert resolution algorithm described at
 //! <https://github.com/mozilla/mentat/wiki/Transacting:-upsert-resolution-algorithm>.
 //!
-//! Inputs are `DatomWithTempids` produced by the earlier `expand_tx_ops` /
-//! `into_datoms_with_tempids` stages in `tx.rs`. The output is a `Vec<Datom>` with
+//! Inputs are `DatomWithTempids` produced by `expand_tx_ops` in `tx.rs`.
+//! The output is a `Vec<Datom>` with
 //! every tempid resolved to a concrete entid.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
