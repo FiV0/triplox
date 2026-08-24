@@ -133,7 +133,7 @@ fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
         .map(|element| match element {
             Element::Variable(var) => Ok(var.clone()),
             _ => Err(anyhow!(
-                "Incremental queries support only variables in :find"
+                "Incremental queries (currently) only support variables in :find"
             )),
         })
         .collect()
