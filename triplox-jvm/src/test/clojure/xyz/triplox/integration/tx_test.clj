@@ -102,11 +102,11 @@
                          :tx/email "alice@example.com"}
                         {:tx/name "Bob"}])
   (let [bob-id (ffirst (query-test/q '{:find [?e]
-                                      :where [[?e :tx/name "Bob"]]}))
+                                       :where [[?e :tx/name "Bob"]]}))
         result (api/transact *conn*
                              [[:db/retractEntity [:tx/handle "alice"]]
                               [:db/add bob-id :tx/email "alice@example.com"]])]
-    (is (true? (:committed? result)))
+    (is (:committed? result))
     (is (= #{[bob-id]}
            (query-test/q '{:find [?e]
                            :where [[?e :tx/email "alice@example.com"]]})))
@@ -117,11 +117,11 @@
 (deftest retract-entity-uses-normal-datom-semantics-with-other-operations
   (api/transact *conn* [{:tx/name "Alice"}])
   (let [entity-id (ffirst (query-test/q '{:find [?e]
-                                         :where [[?e :tx/name "Alice"]]}))
+                                          :where [[?e :tx/name "Alice"]]}))
         replace-result (api/transact *conn*
                                      [[:db/retractEntity entity-id]
                                       [:db/add entity-id :tx/name "Alicia"]])]
-    (is (true? (:committed? replace-result)))
+    (is (:committed? replace-result))
     (is (= #{["Alicia"]}
            (query-test/q '{:find [?name]
                            :where [[?e :tx/name ?name]]})))
