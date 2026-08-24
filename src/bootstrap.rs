@@ -104,18 +104,14 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             let mut boot_pm = PartitionMap::new();
 
             // Same normalization and tempid-resolution stages as the indexer.
-            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
-            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
+            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema, &slate.db)
                 .await
                 .unwrap();
-            let mut datoms = tempids::resolve_tempids(
-                with_tempids.datoms,
-                &bootstrap_schema,
-                &slate.db,
-                &mut boot_pm,
-            )
-            .await
-            .unwrap();
+            let with_tempids = tx::into_datoms_with_tempids(expanded).unwrap();
+            let mut datoms =
+                tempids::resolve_tempids(with_tempids, &bootstrap_schema, &slate.db, &mut boot_pm)
+                    .await
+                    .unwrap();
             datoms.extend(build_tx_entity_datoms(BOOTSTRAP_TX_EID, tx_key, true, None));
 
             // Validate against pre-built schema, then derive the bootstrap schema delta.

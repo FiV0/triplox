@@ -16,62 +16,59 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
                                 pending_pm.set_tx_counter(tx_key.tx_id)?
                                 (pipeline reads work directly against slatedb)
                                 ↓
-2. Expand TxOps                 tx::expand_tx_ops(ops, &schema) -> ExpandedTxOps
+2. Expand TxOps                 tx::expand_tx_ops(ops, &schema, &slatedb)
    - TxOp::Put -> N DatomExpanded (one per attr)
    - TxOp::Add/Retract -> 1 DatomExpanded
-   - TxOp::RetractEntity -> one staged entity target (ID or lookup ref)
+   - TxOp::RetractEntity -> retractions for every active EAV datom
    - TxOp::Erase -> rejected as unsupported
    - RetractEntity rejects ident and tempid entity references
+   - RetractEntity rejects DB_PARTITION and TX_PARTITION targets
+   - An unknown user-partition target is a no-op
    - Resolves EntityRef::Ident -> entid via schema.ident_map
    - EntityRef::Id -> EntityExpanded::Id (passthrough)
    - EntityRef::TempId -> EntityExpanded::TempId (deferred)
-   - EntityRef::LookupRef -> EntityExpanded::LookupRef (attr ident resolved to entid)
+   - Collects ordinary and RetractEntity lookup refs into one VAE batch
+   - Resolves EntityRef::LookupRef -> EntityExpanded::Id
    - Put without :db/id key -> generates internal tempid (__auto_N)
-   - Ref-typed value DataType::Vector([Keyword, Value]) -> ValueExpanded::LookupRef
+   - Ref-typed lookup values resolve to ValueExpanded::Data(Long)
    - Ref-typed value DataType::String -> ValueExpanded::TempRef
    - Ref-typed value DataType::Keyword -> resolved ident -> ValueExpanded::Data(Long)
+   - Sorts and deduplicates RetractEntity targets for one forward EAV scan
                                 ↓
-3. Resolve lookup refs          tx::resolve_lookup_refs(expanded, &schema, &slatedb)
-   - Collects all unique (attr_entid, value) pairs from LookupRef variants
-   - Includes lookup refs used as RetractEntity targets
-   - Batch-resolves via unique-only VAE prefix scans (no I/O if no lookup refs)
-   - Converts DatomExpanded -> DatomWithTempids and RetractEntity targets -> concrete IDs
-   - Errors if any lookup ref has no matching entity
-                                ↓
-4. Validate explicit IDs        tx::validate_allocated_entity_ids(...)
-   - Concrete entity IDs must already be allocated in their partition
+3. Narrow + validate IDs        tx::into_datoms_with_tempids(expanded)
+                                tx::validate_allocated_entity_ids(...)
+   - Converts DatomExpanded -> DatomWithTempids without I/O
+   - Concrete entity IDs in ordinary datoms must already be allocated
    - Ref-typed Long values must point to already allocated entity IDs
-   - RetractEntity rejects DB_PARTITION and TX_PARTITION targets
    - Tempids remain deferred and can still allocate within this transaction
                                 ↓
-5. Resolve tempids/upserts      tempids::resolve_tempids(...)
+4. Resolve tempids/upserts      tempids::resolve_tempids(...)
    - Splits DatomWithTempids into Mentat-style Generation populations
    - Resolves :db.unique/identity tempids against unique-only VAE
    - Evolves complex upserts until no simple upserts remain
    - Allocates remaining tempids, coalescing unresolved identity matches
-   Reject mixed RetractEntity ops      no other datom may resolve to a retracted entity
-   Expand RetractEntity targets        one batched EAV scan emits retractions for active datoms
    Build tx entity datoms       build_tx_entity_datoms(tx_eid, tx_key, ...)
                                 ↓
-6. Validate                     schema.validate_datoms(datoms)
+5. Validate                     schema.validate_datoms(datoms)
    - Runs on the user's datoms before finalize, so intra-tx conflicts
      (add/retract overlap, card-one multi-assert) judge user intent
+   - RetractEntity combined with other operations uses these normal datom rules
    - Type checking: value type matches attribute's value_type
    - Unknown attribute errors
    - Detects schema changes
                                 ↓
-7. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
+6. Cardinality resolution       finalize_datoms_for_commit (EAV scan for card-one auto-retract)
    - Purely mechanical rewrite: cannot change tx semantics
                                 ↓
-8. Unique validation            validate_unique_constraints
+7. Unique validation            validate_unique_constraints
    - Unique checks for :db.unique/value and :db.unique/identity
    - Runs post-finalize: must see auto-generated card-one retracts
                                 ↓
-9. Write indices + commit       let mut batch = WriteBatch::new();
+8. Write indices + commit       let mut batch = WriteBatch::new();
                                 write_index_entries(&mut batch, ...);
                                 slatedb.write_with_options(batch, ...)
                                 ↓
-10. Apply on success only:
+9. Apply on success only:
    - self.metadata.partition_map = pending_pm    (counter reservation committed)
    - self.metadata.schema.apply_schema_update(schema_update)  (infallible)
    - self.metadata.advance_generation()
@@ -85,16 +82,14 @@ Each stage narrows the types, eliminating one class of unresolved references:
 
 ```
 TxOp (EntityRef + DataType)
-    ↓ expand_tx_ops (sync, schema-only)
-ExpandedTxOps                                    datoms plus staged RetractEntity targets
-    ↓ resolve_lookup_refs (async, unique-only VAE index)
-ResolvedTxOps                                    datoms plus concrete RetractEntity IDs
+    ↓ expand_tx_ops (async, unique-only VAE + EAV)
+Vec<DatomExpanded>                               lookup refs resolved; entity retractions expanded
+    ↓ into_datoms_with_tempids (sync)
+Vec<DatomWithTempids>                            only concrete IDs and tempids remain
     ↓ validate_allocated_entity_ids (sync, partition map)
-ResolvedTxOps                                    explicit IDs checked
+Vec<DatomWithTempids>                            explicit IDs checked
     ↓ tempids::resolve_tempids (async, VAE + partition map)
 Datom (i64 + DataType)                           fully concrete
-    ↓ batch_lookup_active_entity_datoms (async, EAV)
-Datom                                            active RetractEntity targets become retractions
 ```
 
 ## Unique Attributes

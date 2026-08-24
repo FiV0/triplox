@@ -18,10 +18,7 @@ use crate::log::{Record, Subscriber};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
-use crate::partition::{
-    extract_counter, extract_partition, partition_entity_prefix, tx_eid_from_tx_id, DB_PARTITION,
-    TX_PARTITION,
-};
+use crate::partition::{extract_counter, partition_entity_prefix, tx_eid_from_tx_id, TX_PARTITION};
 use crate::schema::{Schema, DB_TX_ABORTED, DB_TX_COMMITTED};
 use crate::slate::{DEFAULT_SCAN_OPTIONS, DEFAULT_WRITE_OPTIONS};
 use crate::tempids;
@@ -313,93 +310,55 @@ impl Indexer {
         let tx_eid = tx_eid_from_tx_id(tx_key.tx_id);
         pending_pm.set_tx_counter(tx_key.tx_id)?;
 
-        // 2. Expand TxOps (resolves idents, keeps lookup refs + tempids)
-        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
+        // 2. Expand TxOps, resolve lookup refs, and lower RetractEntity to retractions
+        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema, &self.slatedb).await?;
+        let with_tempids = tx::into_datoms_with_tempids(expanded)?;
 
-        // 3. Resolve lookup refs via VAE → staged datoms + concrete RetractEntity targets
-        let resolved =
-            tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
-
-        for entity in &resolved.retract_entities {
-            match extract_partition(*entity) {
-                DB_PARTITION => bail!("Cannot retract entity {} from the schema partition", entity),
-                TX_PARTITION => {
-                    bail!(
-                        "Cannot retract entity {} from the transaction partition",
-                        entity
-                    )
-                }
-                _ => {}
-            }
-        }
-
-        // 4. Validate explicit entity IDs before tempids become concrete IDs
+        // 3. Validate explicit entity IDs before tempids become concrete IDs
         tx::validate_allocated_entity_ids(
-            &resolved,
+            &with_tempids,
             &self.metadata.schema,
             &self.metadata.partition_map,
         )?;
 
-        // 5. Resolve tempids, including identity upserts.
+        // 4. Resolve tempids, including identity upserts.
         let mut datoms = tempids::resolve_tempids(
-            resolved.datoms,
+            with_tempids,
             &self.metadata.schema,
             &self.slatedb,
             &mut pending_pm,
         )
         .await?;
-
-        let retract_entities: HashSet<Entid> = resolved.retract_entities.into_iter().collect();
-        if let Some(datom) = datoms
-            .iter()
-            .find(|datom| retract_entities.contains(&datom.entity))
-        {
-            bail!(
-                "Transaction cannot combine RetractEntity with other operations for entity {}",
-                datom.entity
-            );
-        }
-
-        let mut retract_entities: Vec<Entid> = retract_entities.into_iter().collect();
-        retract_entities.sort_unstable();
-        datoms.extend(
-            tx::batch_lookup_active_entity_datoms(
-                &self.slatedb,
-                &self.metadata.schema,
-                &retract_entities,
-            )
-            .await?,
-        );
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 6. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
+        // 5. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 7. Finalize datoms (card-one rewrite) against current storage state
+        // 6. Finalize datoms (card-one rewrite) against current storage state
         // This step can't invalidate the datom set because it can only ever do two things:
         // - Drop an assert whose value is already stored. No conflict possible.
         // - Add a retract for a stored value. By construction it's valid, and validation ensured
         //   that there is at most one assert per (entity, card-one attribute) pair.
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
-        // 8. Unique validation (needs the auto-generated card-one retracts)
+        // 7. Unique validation (needs the auto-generated card-one retracts)
         self.validate_unique_constraints(&datoms).await?;
 
-        // 9. Prepare schema update before writing to avoid leaking rejected datoms
+        // 8. Prepare schema update before writing to avoid leaking rejected datoms
         let schema_update = if validation.schema_changes_detected {
             Some(self.metadata.schema.prepare_schema_update(&datoms)?)
         } else {
             None
         };
 
-        // 10. Write indices + commit
+        // 9. Write indices + commit
         let mut batch = WriteBatch::new();
         write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
-        // 11. Apply on success only
+        // 10. Apply on success only
         self.metadata.partition_map = pending_pm;
         if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
             self.metadata.schema.apply_schema_update(schema_update);
@@ -2340,7 +2299,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retract_entity_rejects_other_operations_on_same_entity() -> Result<(), Error> {
+    async fn test_retract_entity_uses_normal_datom_semantics_with_other_operations(
+    ) -> Result<(), Error> {
         let components = in_memory_slate().await;
         let slate = components.db.clone();
         let mut indexer = bootstrapped_indexer(&components).await;
@@ -2374,13 +2334,34 @@ mod tests {
             .await?;
 
         let completion = waiter.await_tx(test_tx_key(3)).await?;
-        assert_outcome_err(&completion.outcome, "cannot combine RetractEntity");
-        assert_eq!(count_eav_ops(&slate, entity_id, name_id).await?, (1, 0));
+        assert!(matches!(completion.outcome, TxOutcome::Committed));
+        assert_eq!(count_eav_ops(&slate, entity_id, name_id).await?, (2, 1));
+
+        let conflict_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity_id),
+                        attribute: kw!(:name),
+                        value: "alicia".into(),
+                    },
+                ],
+            )
+            .await?;
+        assert_outcome_err(
+            &conflict_waiter.await_tx(test_tx_key(4)).await?.outcome,
+            "cannot both assert and retract",
+        );
+        assert_eq!(count_eav_ops(&slate, entity_id, name_id).await?, (2, 1));
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_retract_entity_rejects_schema_and_transaction_partitions() -> Result<(), Error> {
+    async fn test_retract_entity_rejects_reserved_partitions_and_unknown_user_is_noop(
+    ) -> Result<(), Error> {
         let components = in_memory_slate().await;
         let mut indexer = bootstrapped_indexer(&components).await;
 
@@ -2416,10 +2397,10 @@ mod tests {
                 vec![TxOp::RetractEntity(EntityRef::Id(unallocated))],
             )
             .await?;
-        assert_outcome_err(
-            &unallocated_waiter.await_tx(test_tx_key(4)).await?.outcome,
-            "unallocated entity id",
-        );
+        assert!(matches!(
+            unallocated_waiter.await_tx(test_tx_key(4)).await?.outcome,
+            TxOutcome::Committed
+        ));
         Ok(())
     }
 
