@@ -863,13 +863,7 @@ mod tests {
     fn plans_bound_function_result_without_extending_layout() {
         let schema = test_schema();
         let plan = plan_query(
-            &parse_query(
-                "[:find ?name
-                  :where
-                  [?e :age ?age]
-                  [?e :name ?name]
-                  [(str ?age) ?name]]",
-            ),
+            &parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]"),
             &schema,
         )
         .unwrap();
@@ -877,19 +871,16 @@ mod tests {
         let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain plan");
         };
-        let function = &children[2];
+        let function = &children[1];
         assert_eq!(
             function.incoming_vars,
-            Some(vec!["?e".to_var(), "?age".to_var(), "?name".to_var()])
+            Some(vec!["?e".to_var(), "?age".to_var()])
         );
-        assert_eq!(
-            function.output_vars,
-            vec!["?e".to_var(), "?age".to_var(), "?name".to_var()]
-        );
+        assert_eq!(function.output_vars, vec!["?e".to_var(), "?age".to_var()]);
         let RelPlanKind::Function { output_var, .. } = &function.kind else {
             panic!("expected function plan");
         };
-        assert_eq!(output_var, &"?name".to_var());
+        assert_eq!(output_var, &"?e".to_var());
     }
 
     #[test]
