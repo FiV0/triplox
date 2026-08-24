@@ -108,13 +108,23 @@ fn order_descriptors<'a>(
 
         let Some(candidate) = candidate else {
             let descriptor = remaining
-                .first()
+                .iter()
+                .find(|descriptor| {
+                    matches!(descriptor.descriptor.kind, DescriptorKind::Predicate { .. })
+                })
+                .or_else(|| remaining.first())
                 .expect("non-empty remaining descriptors must have a first descriptor");
             let missing = descriptor
                 .required_variables
                 .iter()
                 .find(|variable| !grounded.contains(variable))
                 .expect("a non-introducible descriptor must have a missing variable");
+            if matches!(descriptor.descriptor.kind, DescriptorKind::Predicate { .. }) {
+                bail!(
+                    "Predicate variable {} is not bound by positive clauses",
+                    missing
+                );
+            }
             return Err(anyhow!(
                 "Insufficient bindings for incremental query variable {}",
                 missing

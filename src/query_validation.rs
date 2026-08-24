@@ -160,12 +160,8 @@ fn validate_pattern(pattern: &Pattern) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validate that all variables in Predicate clauses are bound by positive clauses,
-/// and that each predicate has at least one variable.
-fn validate_predicate_clauses(
-    where_clauses: &[WhereClause],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<(), Error> {
+/// Validate that each predicate references at least one variable.
+fn validate_predicate_clauses(where_clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::Pred(pred) = clause {
             let expr = convert_predicate(pred)?;
@@ -174,14 +170,6 @@ fn validate_predicate_clauses(
                 return Err(anyhow::anyhow!(
                     "Predicate expression must reference at least one variable"
                 ));
-            }
-            for var in &vars {
-                if !var_index.contains_key(var) {
-                    return Err(anyhow::anyhow!(
-                        "Predicate variable {} is not bound by positive clauses",
-                        var
-                    ));
-                }
             }
         }
         Ok(())
@@ -352,7 +340,7 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
     let var_index = build_var_index(&join_order);
     validate_or_clauses(&query.where_clauses)?;
     validate_not_clauses(&query.where_clauses, &var_index)?;
-    validate_predicate_clauses(&query.where_clauses, &var_index)?;
+    validate_predicate_clauses(&query.where_clauses)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
 
@@ -399,14 +387,6 @@ mod tests {
     /// Parse an EDN query string into a ParsedQuery.
     fn parse_query(input: &str) -> ParsedQuery {
         edn::parse::parse_query(input).expect("failed to parse query")
-    }
-
-    #[test]
-    fn test_validate_predicate_unbound_variable() {
-        let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#);
-        let result = validate_query(&parsed, &[]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
 
     #[test]

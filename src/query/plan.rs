@@ -739,10 +739,32 @@ fn plan_stages(
         .filter(|variable| relevant.contains(*variable))
         .cloned()
         .collect();
-    ensure!(
-        order.len() == relevant.len(),
-        "Scope contains variables missing from the global variable order"
-    );
+    if order.len() != relevant.len() {
+        let global = variable_order.iter().collect::<HashSet<_>>();
+        if let Some(variable) = descriptors
+            .iter()
+            .filter(|descriptor| matches!(descriptor.kind, DescriptorKind::Predicate { .. }))
+            .flat_map(|descriptor| &descriptor.variables)
+            .find(|variable| !global.contains(variable))
+        {
+            bail!(
+                "Predicate variable {} is not bound by positive clauses",
+                variable
+            );
+        }
+        for descriptor in descriptors {
+            if let Some(variable) = descriptor
+                .variables
+                .iter()
+                .find(|variable| !global.contains(variable))
+            {
+                bail!(
+                    "Scope contains variable {} missing from the global variable order",
+                    variable
+                );
+            }
+        }
+    }
     let incoming_variables = incoming_variables.map(|variables| {
         variables
             .iter()
@@ -1075,6 +1097,21 @@ mod tests {
         validate_query(&query, &[]).unwrap();
 
         build_logical_plan(&query, &[]).unwrap();
+    }
+
+    #[test]
+    fn reports_predicate_variable_not_bound_by_positive_clauses() {
+        let query =
+            edn::parse::parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#)
+                .unwrap();
+        validate_query(&query, &[]).unwrap();
+
+        let error = build_logical_plan(&query, &[]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Predicate variable ?unbound is not bound by positive clauses"
+        );
     }
 
     #[test]

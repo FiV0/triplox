@@ -884,6 +884,14 @@ mod tests {
     }
 
     #[test]
+    fn reports_predicate_variable_not_bound_by_positive_clauses() {
+        assert_plan_err(
+            r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#,
+            "Predicate variable ?unbound is not bound by positive clauses",
+        );
+    }
+
+    #[test]
     fn rejects_function_without_a_positive_relation() {
         assert_plan_err(
             "[:find ?result :where [(+ 1 2) ?result]]",
