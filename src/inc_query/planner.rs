@@ -112,6 +112,11 @@ fn order_descriptors<'a>(
                 .find(|descriptor| {
                     matches!(descriptor.descriptor.kind, DescriptorKind::Predicate { .. })
                 })
+                .or_else(|| {
+                    remaining.iter().find(|descriptor| {
+                        matches!(descriptor.descriptor.kind, DescriptorKind::Not { .. })
+                    })
+                })
                 .or_else(|| remaining.first())
                 .expect("non-empty remaining descriptors must have a first descriptor");
             let missing = descriptor
@@ -122,6 +127,12 @@ fn order_descriptors<'a>(
             if matches!(descriptor.descriptor.kind, DescriptorKind::Predicate { .. }) {
                 bail!(
                     "Predicate variable {} is not bound by positive clauses",
+                    missing
+                );
+            }
+            if matches!(descriptor.descriptor.kind, DescriptorKind::Not { .. }) {
+                bail!(
+                    "Variable {} in NOT clause is not bound by positive clauses",
                     missing
                 );
             }

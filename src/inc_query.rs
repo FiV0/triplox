@@ -892,6 +892,14 @@ mod tests {
     }
 
     #[test]
+    fn reports_not_variable_not_bound_by_positive_clauses() {
+        assert_plan_err(
+            r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#,
+            "Variable ?e in NOT clause is not bound by positive clauses",
+        );
+    }
+
+    #[test]
     fn rejects_function_without_a_positive_relation() {
         assert_plan_err(
             "[:find ?result :where [(+ 1 2) ?result]]",

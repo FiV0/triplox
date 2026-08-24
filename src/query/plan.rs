@@ -752,6 +752,17 @@ fn plan_stages(
                 variable
             );
         }
+        if let Some(variable) = descriptors
+            .iter()
+            .filter(|descriptor| matches!(descriptor.kind, DescriptorKind::Not { .. }))
+            .flat_map(|descriptor| &descriptor.variables)
+            .find(|variable| !global.contains(variable))
+        {
+            bail!(
+                "Variable {} in NOT clause is not bound by positive clauses",
+                variable
+            );
+        }
         for descriptor in descriptors {
             if let Some(variable) = descriptor
                 .variables
@@ -1111,6 +1122,22 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Predicate variable ?unbound is not bound by positive clauses"
+        );
+    }
+
+    #[test]
+    fn reports_not_variable_not_bound_by_positive_clauses() {
+        let query = edn::parse::parse_query(
+            r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#,
+        )
+        .unwrap();
+        validate_query(&query, &[]).unwrap();
+
+        let error = build_logical_plan(&query, &[]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Variable ?e in NOT clause is not bound by positive clauses"
         );
     }
 

@@ -10,9 +10,8 @@ use itertools::Itertools;
 use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    build_var_index, clause_mentioned_variables, convert_predicate, convert_where_fn,
-    or_branch_bound_variables, or_branch_mentioned_variables, pattern_variables,
-    query_variable_order, resolve_order_columns,
+    build_var_index, convert_predicate, convert_where_fn, or_branch_bound_variables,
+    or_branch_mentioned_variables, pattern_variables, query_variable_order, resolve_order_columns,
 };
 
 fn validate_where_clauses_recursively<F>(
@@ -81,40 +80,6 @@ fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(),
         | WhereClause::NotJoin(_)
         | WhereClause::OrJoin(_) => Ok(()),
     })
-}
-
-/// Validate that all variables in NOT clauses are bound by positive clauses.
-fn validate_not_clauses(
-    where_clauses: &[WhereClause],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<(), Error> {
-    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
-        if let WhereClause::NotJoin(nj) = clause {
-            for var in not_clause_variables(&nj.clauses) {
-                if !var_index.contains_key(&var) {
-                    return Err(anyhow::anyhow!(
-                        "Variable {} in NOT clause is not bound by positive clauses",
-                        var
-                    ));
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
-/// Collect all variables referenced by inner clauses of a NOT.
-fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
-    let mut vars = Vec::new();
-    let mut seen = HashSet::new();
-    for clause in inner_clauses {
-        for var in clause_mentioned_variables(clause) {
-            if seen.insert(var.clone()) {
-                vars.push(var);
-            }
-        }
-    }
-    vars
 }
 
 fn validate_patterns(where_clauses: &[WhereClause]) -> Result<(), Error> {
@@ -339,7 +304,6 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
     }
     let var_index = build_var_index(&join_order);
     validate_or_clauses(&query.where_clauses)?;
-    validate_not_clauses(&query.where_clauses, &var_index)?;
     validate_predicate_clauses(&query.where_clauses)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
@@ -484,19 +448,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Query has no groundable variables"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_validate_rejects_unbound_not_variable() {
-        let parsed =
-            parse_query(r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#);
-        let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("Variable ?e in NOT clause is not bound by positive clauses"),
             "unexpected error: {}",
             err
         );
