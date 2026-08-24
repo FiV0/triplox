@@ -23,7 +23,6 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{Entid, QueryArg, TxOp};
 use crate::partition::tx_eid_from_tx_id;
 use crate::query::{execute_query, QueryResult};
-use crate::query_validation::validate_query;
 use crate::schema::{IdentMap, Schema};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
@@ -113,8 +112,6 @@ where
         query: &ParsedQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
-        validate_query(query, args)?;
-
         let sdb = self.sdb.clone();
         let handle = self.handle.clone();
         let ident_map = Arc::clone(&self.ident_map);
