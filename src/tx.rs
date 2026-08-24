@@ -189,6 +189,7 @@ fn resolve_value(val: &DataType, attr: &Keyword, schema: &Schema) -> Result<Valu
     }
 }
 
+// Expand schema-only transaction syntax, staging RetractEntity targets for DB-backed resolution.
 fn expand_tx_ops_unresolved(
     ops: &[TxOp],
     schema: &Schema,
@@ -395,7 +396,7 @@ pub(crate) async fn batch_lookup_active_entity_datoms(
     db: &slatedb::Db,
     schema: &Schema,
     entity_ids: &[Entid],
-) -> Result<Vec<DatomExpanded>> {
+) -> Result<Vec<DatomWithTempids>> {
     let mut prefixes = BTreeMap::new();
     for entity_id in entity_ids {
         let entity = DataType::Long(*entity_id).encode();
@@ -434,10 +435,10 @@ pub(crate) async fn batch_lookup_active_entity_datoms(
                     let attribute = schema.get_ident(attribute_id).ok_or_else(|| {
                         anyhow::anyhow!("Unknown attribute entity id {}", attribute_id)
                     })?;
-                    datoms.push(DatomExpanded {
-                        entity: EntityExpanded::Id(expected_entity),
+                    datoms.push(DatomWithTempids {
+                        entity: IdOrTempId::Id(expected_entity),
                         attribute: attribute.clone(),
-                        value: ValueExpanded::Data(value),
+                        value: ValueWithTempIds::Data(value),
                         op: DatomOp::Retract,
                     });
                 }
@@ -455,14 +456,15 @@ pub(crate) async fn batch_lookup_active_entity_datoms(
     Ok(datoms)
 }
 
-async fn resolve_lookup_refs_in_place(
-    datoms: &mut [DatomExpanded],
-    retract_entities: &[EntityExpanded],
+// Resolve expanded datoms and RetractEntity targets together in one VAE batch.
+async fn resolve_lookup_refs(
+    datoms: Vec<DatomExpanded>,
+    retract_entities: Vec<EntityExpanded>,
     schema: &Schema,
     db: &slatedb::Db,
-) -> Result<Vec<Entid>> {
+) -> Result<(Vec<DatomWithTempids>, Vec<Entid>)> {
     let mut lookups: Vec<(Entid, DataType)> = Vec::new();
-    for d in datoms.iter() {
+    for d in &datoms {
         if let EntityExpanded::LookupRef(a, v) = &d.entity {
             validate_unique_identity_lookup(schema, *a, v)?;
             lookups.push((*a, v.clone()));
@@ -472,7 +474,7 @@ async fn resolve_lookup_refs_in_place(
             lookups.push((*a, v.clone()));
         }
     }
-    for retract_entity in retract_entities {
+    for retract_entity in &retract_entities {
         if let EntityExpanded::LookupRef(a, v) = retract_entity {
             validate_unique_identity_lookup(schema, *a, v)?;
             lookups.push((*a, v.clone()));
@@ -481,40 +483,55 @@ async fn resolve_lookup_refs_in_place(
 
     let resolved_map = batch_lookup_unique_eids(db, &lookups).await?;
 
-    for datom in datoms {
-        if let EntityExpanded::LookupRef(a, v) = &datom.entity {
-            let entity = resolved_map
-                .get(&(*a, v.clone()))
-                .copied()
-                .ok_or_else(|| lookup_ref_not_found(schema, *a, v))?;
-            datom.entity = EntityExpanded::Id(entity);
-        }
-        if let ValueExpanded::LookupRef(a, v) = &datom.value {
-            let entity = resolved_map
-                .get(&(*a, v.clone()))
-                .copied()
-                .ok_or_else(|| lookup_ref_not_found(schema, *a, v))?;
-            datom.value = ValueExpanded::Data(DataType::Long(entity));
-        }
-    }
+    let datoms = datoms
+        .into_iter()
+        .map(|datom| {
+            let entity = match datom.entity {
+                EntityExpanded::Id(id) => IdOrTempId::Id(id),
+                EntityExpanded::TempId(tempid) => IdOrTempId::TempId(tempid),
+                EntityExpanded::LookupRef(attribute, value) => IdOrTempId::Id(
+                    resolved_map
+                        .get(&(attribute, value.clone()))
+                        .copied()
+                        .ok_or_else(|| lookup_ref_not_found(schema, attribute, &value))?,
+                ),
+            };
+            let value = match datom.value {
+                ValueExpanded::Data(value) => ValueWithTempIds::Data(value),
+                ValueExpanded::TempRef(tempid) => ValueWithTempIds::TempRef(tempid),
+                ValueExpanded::LookupRef(attribute, value) => {
+                    ValueWithTempIds::Data(DataType::Long(
+                        resolved_map
+                            .get(&(attribute, value.clone()))
+                            .copied()
+                            .ok_or_else(|| lookup_ref_not_found(schema, attribute, &value))?,
+                    ))
+                }
+            };
+            Ok(DatomWithTempids {
+                entity,
+                attribute: datom.attribute,
+                value,
+                op: datom.op,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    let mut resolved_retract_entities = Vec::with_capacity(retract_entities.len());
-    for retract_entity in retract_entities {
-        match retract_entity {
-            EntityExpanded::Id(id) => resolved_retract_entities.push(*id),
-            EntityExpanded::LookupRef(a, v) => resolved_retract_entities.push(
-                resolved_map
-                    .get(&(*a, v.clone()))
-                    .copied()
-                    .ok_or_else(|| lookup_ref_not_found(schema, *a, v))?,
-            ),
+    let retract_entities = retract_entities
+        .into_iter()
+        .map(|entity| match entity {
+            EntityExpanded::Id(id) => Ok(id),
+            EntityExpanded::LookupRef(attribute, value) => resolved_map
+                .get(&(attribute, value.clone()))
+                .copied()
+                .ok_or_else(|| lookup_ref_not_found(schema, attribute, &value)),
             EntityExpanded::TempId(_) => {
                 bail!("RetractEntity does not support tempid entity references")
             }
-        }
-    }
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    Ok(resolved_retract_entities)
+    Ok((datoms, retract_entities))
 }
 
 fn validate_retract_entity_partition(entity: Entid) -> Result<()> {
@@ -528,16 +545,23 @@ fn validate_retract_entity_partition(entity: Entid) -> Result<()> {
     }
 }
 
-/// Expand transaction operations into datoms, resolving all lookup refs in one VAE batch.
-/// RetractEntity targets are expanded from the committed EAV state into ordinary retractions.
+/// Expand TxOps into DatomWithTempids, resolving idents, ref-typed values via schema and
+/// all lookup refs in one VAE batch. Tempids pass through as-is for later resolution stages.
+///
+/// - `Put(map)` -> N DatomWithTempids (one per non-`:db/id` attr). The `:db/id` key
+///   identifies the entity (Long=ID, String=tempid, Keyword=ident). If absent, generates
+///   an internal tempid.
+/// - `Add/Retract` -> 1 DatomWithTempids.
+/// - `RetractEntity` -> N DatomWithTempids without tempids.
+/// - `Erase` -> remains unsupported.
 pub async fn expand_tx_ops(
     ops: &[TxOp],
     schema: &Schema,
     db: &slatedb::Db,
 ) -> Result<Vec<DatomWithTempids>> {
-    let (mut datoms, retract_entities) = expand_tx_ops_unresolved(ops, schema)?;
-    let mut retract_entities =
-        resolve_lookup_refs_in_place(&mut datoms, &retract_entities, schema, db).await?;
+    let (datoms, retract_entities) = expand_tx_ops_unresolved(ops, schema)?;
+    let (mut datoms, mut retract_entities) =
+        resolve_lookup_refs(datoms, retract_entities, schema, db).await?;
 
     for entity in &retract_entities {
         validate_retract_entity_partition(*entity)?;
@@ -546,31 +570,7 @@ pub async fn expand_tx_ops(
     retract_entities.sort_unstable();
     retract_entities.dedup();
     datoms.extend(batch_lookup_active_entity_datoms(db, schema, &retract_entities).await?);
-    datoms
-        .into_iter()
-        .map(|datom| {
-            let entity = match datom.entity {
-                EntityExpanded::Id(id) => IdOrTempId::Id(id),
-                EntityExpanded::TempId(tempid) => IdOrTempId::TempId(tempid),
-                EntityExpanded::LookupRef(_, _) => {
-                    bail!("Unresolved entity lookup ref during expand_tx_ops")
-                }
-            };
-            let value = match datom.value {
-                ValueExpanded::Data(value) => ValueWithTempIds::Data(value),
-                ValueExpanded::TempRef(tempid) => ValueWithTempIds::TempRef(tempid),
-                ValueExpanded::LookupRef(_, _) => {
-                    bail!("Unresolved value lookup ref during expand_tx_ops")
-                }
-            };
-            Ok(DatomWithTempids {
-                entity,
-                attribute: datom.attribute,
-                value,
-                op: datom.op,
-            })
-        })
-        .collect()
+    Ok(datoms)
 }
 
 fn unallocated_entity_id_error(id: Entid) -> anyhow::Error {
@@ -1224,22 +1224,22 @@ mod tests {
 
         let actual = batch_lookup_active_entity_datoms(&slate, &schema, &[200, 100, 100]).await?;
         let expected = [
-            DatomExpanded {
-                entity: EntityExpanded::Id(100),
+            DatomWithTempids {
+                entity: IdOrTempId::Id(100),
                 attribute: kw!(:name),
-                value: ValueExpanded::Data(bob),
+                value: ValueWithTempIds::Data(bob),
                 op: DatomOp::Retract,
             },
-            DatomExpanded {
-                entity: EntityExpanded::Id(100),
+            DatomWithTempids {
+                entity: IdOrTempId::Id(100),
                 attribute: kw!(:age),
-                value: ValueExpanded::Data(age),
+                value: ValueWithTempIds::Data(age),
                 op: DatomOp::Retract,
             },
-            DatomExpanded {
-                entity: EntityExpanded::Id(200),
+            DatomWithTempids {
+                entity: IdOrTempId::Id(200),
                 attribute: kw!(:name),
-                value: ValueExpanded::Data(carol),
+                value: ValueWithTempIds::Data(carol),
                 op: DatomOp::Retract,
             },
         ];
