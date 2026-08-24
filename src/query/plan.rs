@@ -1069,6 +1069,15 @@ mod tests {
     }
 
     #[test]
+    fn plans_function_with_already_bound_output() {
+        let query =
+            edn::parse::parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]").unwrap();
+        validate_query(&query, &[]).unwrap();
+
+        build_logical_plan(&query, &[]).unwrap();
+    }
+
+    #[test]
     fn composite_descriptors_distinct_child_variables_in_occurrence_order() {
         let query = edn::parse::parse_query(
             r#"[:find ?e

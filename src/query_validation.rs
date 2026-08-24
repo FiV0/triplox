@@ -188,7 +188,7 @@ fn validate_predicate_clauses(
     })
 }
 
-/// Validate that all WhereFn input variables precede the output variable in the join order.
+/// Validate that all WhereFn variables occur in the join order.
 fn validate_fn_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
@@ -196,23 +196,16 @@ fn validate_fn_clauses(
     validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::WhereFn(wf) = clause {
             let fn_expr = convert_where_fn(wf)?;
-            let output_pos = var_index.get(&fn_expr.output).ok_or_else(|| {
+            var_index.get(&fn_expr.output).ok_or_else(|| {
                 anyhow::anyhow!(
                     "Function output variable {} not in join order",
                     fn_expr.output
                 )
             })?;
             for var in fn_expr.input_variables() {
-                let input_pos = var_index.get(&var).ok_or_else(|| {
+                var_index.get(&var).ok_or_else(|| {
                     anyhow::anyhow!("Function input variable {} not in join order", var)
                 })?;
-                if input_pos >= output_pos {
-                    return Err(anyhow::anyhow!(
-                        "Function input variable {} must precede output variable {} in join order",
-                        var,
-                        fn_expr.output
-                    ));
-                }
             }
         }
         Ok(())
@@ -613,12 +606,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_fn_input_must_precede_output() {
-        // Output ?e is at level 0 (from Triple), input ?age is at level 1 — input doesn't precede output
+    fn test_validate_fn_accepts_already_bound_output() {
         let parsed = parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]");
         let result = validate_query(&parsed, &[]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must precede"));
+        assert!(result.is_ok());
     }
 
     #[test]
