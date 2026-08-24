@@ -52,7 +52,6 @@ The `transact_tx_inner` pipeline processes a set of transaction operations into 
 5. Validate                     schema.validate_datoms(datoms)
    - Runs on the user's datoms before finalize, so intra-tx conflicts
      (add/retract overlap, card-one multi-assert) judge user intent
-   - RetractEntity combined with other operations uses these normal datom rules
    - Type checking: value type matches attribute's value_type
    - Unknown attribute errors
    - Detects schema changes
