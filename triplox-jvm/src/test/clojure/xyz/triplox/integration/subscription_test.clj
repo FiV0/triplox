@@ -62,6 +62,17 @@
     (api/transact *conn* [{:name "Ivan"}])
     (is (= [[["Ivan"] 1]] (take-delta! sub)))))
 
+(deftest retract-entity-emits-retraction
+  (api/transact *conn* [{:name "Alice" :age 30}])
+  (let [alice-id (single-value '{:find [?e]
+                                 :where [[?e :name "Alice"]]})]
+    (with-open [sub (api/subscribe *conn* '{:find [?name ?age]
+                                            :where [[?e :name ?name]
+                                                    [?e :age ?age]]})]
+      (take-priming! sub)
+      (is (:committed? (api/transact *conn* [[:db/retractEntity alice-id]])))
+      (is (= [[["Alice" 30] -1]] (take-delta! sub))))))
+
 (deftest with-previous-value
   (api/transact *conn* [{:name "Ivan"}])
   (let [ivan-id (single-value '{:find [?e]

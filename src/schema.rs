@@ -1021,36 +1021,10 @@ mod tests {
     use crate::tempids;
     use crate::tx;
 
-    /// Skip lookup ref resolution for tests that have no DB and no lookup refs.
-    fn expanded_to_tempids(datoms: Vec<tx::DatomExpanded>) -> Vec<tx::DatomWithTempids> {
-        datoms
-            .into_iter()
-            .map(|d| tx::DatomWithTempids {
-                entity: match d.entity {
-                    tx::EntityExpanded::Id(id) => tx::IdOrTempId::Id(id),
-                    tx::EntityExpanded::TempId(s) => tx::IdOrTempId::TempId(s),
-                    tx::EntityExpanded::LookupRef(_, _) => {
-                        panic!("test helper: unresolved lookup ref in entity position")
-                    }
-                },
-                attribute: d.attribute,
-                value: match d.value {
-                    tx::ValueExpanded::Data(dt) => tx::ValueWithTempIds::Data(dt),
-                    tx::ValueExpanded::TempRef(s) => tx::ValueWithTempIds::TempRef(s),
-                    tx::ValueExpanded::LookupRef(_, _) => {
-                        panic!("test helper: unresolved lookup ref in value position")
-                    }
-                },
-                op: d.op,
-            })
-            .collect()
-    }
-
     async fn to_datoms_result_async(ops: &[TxOp], schema: &Schema) -> Result<Vec<Datom>> {
         let slate = in_memory_slate().await;
         let mut pm = PartitionMap::new();
-        let expanded = tx::expand_tx_ops(ops, schema).unwrap();
-        let with_tempids = expanded_to_tempids(expanded);
+        let with_tempids = tx::expand_tx_ops(ops, schema, &slate.db).await?;
         tempids::resolve_tempids(with_tempids, schema, &slate.db, &mut pm).await
     }
 
@@ -1265,10 +1239,11 @@ mod tests {
         // produces through the normal expand→resolve→validate→apply pipeline
         let bootstrap = bootstrap_schema();
         let tx_ops = bootstrap_schema_tx();
-        let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap).unwrap();
-        let with_tempids = expanded_to_tempids(expanded);
         let mut pm = PartitionMap::new();
         let slate = in_memory_slate().await;
+        let with_tempids = tx::expand_tx_ops(&tx_ops, &bootstrap, &slate.db)
+            .await
+            .unwrap();
         let datoms = tempids::resolve_tempids(with_tempids, &bootstrap, &slate.db, &mut pm)
             .await
             .unwrap();

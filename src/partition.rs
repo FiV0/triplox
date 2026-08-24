@@ -80,11 +80,6 @@ pub fn extract_counter(eid: i64) -> i64 {
     eid & COUNTER_MASK
 }
 
-/// Returns true if the entity ID is a tempid (sign bit set, i.e. negative).
-pub fn is_tempid(eid: i64) -> bool {
-    eid < 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,16 +137,6 @@ mod tests {
         assert_eq!(extract_partition(eid), USER_PARTITION);
         assert_eq!(extract_counter(eid), 500);
         assert_eq!(eid, (2i64 << 42) | 500);
-    }
-
-    #[test]
-    fn test_is_tempid() {
-        assert!(!is_tempid(0));
-        assert!(!is_tempid(1));
-        assert!(!is_tempid(make_entity_id(USER_PARTITION, 100)));
-        assert!(is_tempid(-1));
-        assert!(is_tempid(-100));
-        assert!(is_tempid(i64::MIN));
     }
 
     #[test]

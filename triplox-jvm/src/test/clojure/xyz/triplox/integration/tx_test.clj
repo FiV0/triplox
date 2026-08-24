@@ -96,6 +96,45 @@
     (is (false? committed?))
     (is (some? (re-find #"^No entity found for lookup ref" error-message)))))
 
+(deftest retract-entity-by-lookup-ref-releases-unique-value-in-same-tx
+  (api/transact *conn* [{:tx/name "Alice"
+                         :tx/handle "alice"
+                         :tx/email "alice@example.com"}
+                        {:tx/name "Bob"}])
+  (let [bob-id (ffirst (query-test/q '{:find [?e]
+                                       :where [[?e :tx/name "Bob"]]}))
+        result (api/transact *conn*
+                             [[:db/retractEntity [:tx/handle "alice"]]
+                              [:db/add bob-id :tx/email "alice@example.com"]])]
+    (is (:committed? result))
+    (is (= #{[bob-id]}
+           (query-test/q '{:find [?e]
+                           :where [[?e :tx/email "alice@example.com"]]})))
+    (is (= #{}
+           (query-test/q '{:find [?e]
+                           :where [[?e :tx/handle "alice"]]})))))
+
+(deftest retract-entity-uses-normal-datom-semantics-with-other-operations
+  (api/transact *conn* [{:tx/name "Alice"}])
+  (let [entity-id (ffirst (query-test/q '{:find [?e]
+                                          :where [[?e :tx/name "Alice"]]}))
+        replace-result (api/transact *conn*
+                                     [[:db/retractEntity entity-id]
+                                      [:db/add entity-id :tx/name "Alicia"]])]
+    (is (:committed? replace-result))
+    (is (= #{["Alicia"]}
+           (query-test/q '{:find [?name]
+                           :where [[?e :tx/name ?name]]})))
+
+    (let [{:keys [committed? error-message]}
+          (api/transact *conn* [[:db/retractEntity entity-id]
+                                [:db/add entity-id :tx/name "Alicia"]])]
+      (is (false? committed?))
+      (is (some? (re-find #"cannot both assert and retract" error-message)))
+      (is (= #{["Alicia"]}
+             (query-test/q '{:find [?name]
+                             :where [[?e :tx/name ?name]]}))))))
+
 (deftest rejects-unique-value-violation-within-tx
   ;; two distinct entities asserting the same :db.unique/value in one tx
   (let [{:keys [committed? error-message] :as _tx-res}

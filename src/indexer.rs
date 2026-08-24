@@ -310,21 +310,17 @@ impl Indexer {
         let tx_eid = tx_eid_from_tx_id(tx_key.tx_id);
         pending_pm.set_tx_counter(tx_key.tx_id)?;
 
-        // 2. Expand TxOps to DatomExpanded (resolves idents, keeps lookup refs + tempids)
-        let expanded = tx::expand_tx_ops(&tx_ops, &self.metadata.schema)?;
+        // 2. Expand TxOps, resolve lookup refs, and lower RetractEntity to retractions
+        let with_tempids = tx::expand_tx_ops(&tx_ops, &self.metadata.schema, &self.slatedb).await?;
 
-        // 3. Resolve lookup refs via AVE index → DatomWithTempids
-        let with_tempids =
-            tx::resolve_lookup_refs(expanded, &self.metadata.schema, &self.slatedb).await?;
-
-        // 4. Validate explicit entity IDs before tempids become concrete IDs
+        // 3. Validate explicit entity IDs before tempids become concrete IDs
         tx::validate_allocated_entity_ids(
             &with_tempids,
             &self.metadata.schema,
             &self.metadata.partition_map,
         )?;
 
-        // 5. Resolve tempids, including identity upserts, then build tx entity datoms
+        // 4. Resolve tempids, including identity upserts.
         let mut datoms = tempids::resolve_tempids(
             with_tempids,
             &self.metadata.schema,
@@ -334,34 +330,34 @@ impl Indexer {
         .await?;
         datoms.extend(build_tx_entity_datoms(tx_eid, tx_key, true, None));
 
-        // 6. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
+        // 5. Validate user datoms (intra-tx conflicts judge user intent, pre-finalize)
         let validation = self.metadata.schema.validate_datoms(&datoms)?;
 
-        // 7. Finalize datoms (card-one rewrite) against current storage state
+        // 6. Finalize datoms (card-one rewrite) against current storage state
         // This step can't invalidate the datom set because it can only ever do two things:
         // - Drop an assert whose value is already stored. No conflict possible.
         // - Add a retract for a stored value. By construction it's valid, and validation ensured
         //   that there is at most one assert per (entity, card-one attribute) pair.
         let datoms = self.finalize_datoms_for_commit(datoms).await?;
 
-        // 8. Unique validation (needs the auto-generated card-one retracts)
+        // 7. Unique validation (needs the auto-generated card-one retracts)
         self.validate_unique_constraints(&datoms).await?;
 
-        // 9. Prepare schema update before writing to avoid leaking rejected datoms
+        // 8. Prepare schema update before writing to avoid leaking rejected datoms
         let schema_update = if validation.schema_changes_detected {
             Some(self.metadata.schema.prepare_schema_update(&datoms)?)
         } else {
             None
         };
 
-        // 10. Write indices + commit
+        // 9. Write indices + commit
         let mut batch = WriteBatch::new();
         write_index_entries(&mut batch, &datoms, &self.metadata.schema, tx_eid)?;
         self.slatedb
             .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
             .await?;
 
-        // 11. Apply on success only
+        // 10. Apply on success only
         self.metadata.partition_map = pending_pm;
         if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
             self.metadata.schema.apply_schema_update(schema_update);
@@ -2139,6 +2135,132 @@ mod tests {
 
         assert!(saw_email, "unique :email should have a VAE entry");
         assert!(!saw_name, "non-unique :name should not have a VAE entry");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_retracts_all_active_entity_datoms_idempotently(
+    ) -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let slate = components.db.clone();
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let name_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:name))
+            .unwrap()
+            .0;
+        let age_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:age))
+            .unwrap()
+            .0;
+        let tags_id = indexer
+            .metadata()
+            .schema
+            .get_attribute(&kw!(:tags))
+            .unwrap()
+            .0;
+
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::put([
+                    (kw!(:name), "alice".into()),
+                    (kw!(:age), DataType::Long(30)),
+                    (kw!(:tags), DataType::String("engineer".to_string())),
+                ])],
+            )
+            .await?;
+        let entity_id = find_first_user_entity(&slate).await?;
+
+        let waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![TxOp::RetractEntity(EntityRef::Id(entity_id))],
+            )
+            .await?;
+        assert!(matches!(
+            waiter.await_tx(test_tx_key(3)).await?.outcome,
+            TxOutcome::Committed
+        ));
+
+        assert!(tx::batch_lookup_active_entity_datoms(
+            &slate,
+            &indexer.metadata().schema,
+            &[entity_id]
+        )
+        .await?
+        .is_empty());
+        for attribute_id in [name_id, age_id, tags_id] {
+            assert_eq!(
+                count_eav_ops(&slate, entity_id, attribute_id).await?,
+                (1, 1)
+            );
+        }
+
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                    TxOp::RetractEntity(EntityRef::Id(entity_id)),
+                ],
+            )
+            .await?;
+        for attribute_id in [name_id, age_id, tags_id] {
+            assert_eq!(
+                count_eav_ops(&slate, entity_id, attribute_id).await?,
+                (1, 1)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_retract_entity_rejects_reserved_partitions_and_unknown_user_is_noop(
+    ) -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+
+        let schema_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(2),
+                vec![TxOp::RetractEntity(EntityRef::Id(crate::schema::DB_IDENT))],
+            )
+            .await?;
+        assert_outcome_err(
+            &schema_waiter.await_tx(test_tx_key(2)).await?.outcome,
+            "schema partition",
+        );
+
+        let tx_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(3),
+                vec![TxOp::RetractEntity(EntityRef::Id(tx_eid_from_tx_id(1)))],
+            )
+            .await?;
+        assert_outcome_err(
+            &tx_waiter.await_tx(test_tx_key(3)).await?.outcome,
+            "transaction partition",
+        );
+
+        let unallocated = crate::partition::make_entity_id(crate::partition::USER_PARTITION, 999);
+        let unallocated_waiter = indexer.tx_waiter();
+        indexer
+            .transact_tx(
+                test_tx_key(4),
+                vec![TxOp::RetractEntity(EntityRef::Id(unallocated))],
+            )
+            .await?;
+        assert!(matches!(
+            unallocated_waiter.await_tx(test_tx_key(4)).await?.outcome,
+            TxOutcome::Committed
+        ));
         Ok(())
     }
 

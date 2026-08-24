@@ -104,8 +104,7 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
             let mut boot_pm = PartitionMap::new();
 
             // Same normalization and tempid-resolution stages as the indexer.
-            let expanded = tx::expand_tx_ops(&tx_ops, &bootstrap_schema).unwrap();
-            let with_tempids = tx::resolve_lookup_refs(expanded, &bootstrap_schema, &slate.db)
+            let with_tempids = tx::expand_tx_ops(&tx_ops, &bootstrap_schema, &slate.db)
                 .await
                 .unwrap();
             let mut datoms =
