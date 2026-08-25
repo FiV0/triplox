@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use anyhow::{ensure, Error};
 use slatedb::{DbMetadataOps, DbReadOps};
-use tokio::runtime::Handle;
 
 use crate::schema::IdentMap;
 
@@ -25,13 +24,13 @@ use edn::query::{
 
 use crate::aggregate::{make_accumulator, Accumulator};
 use crate::codec::Decode;
+use crate::db_value::DB;
 use crate::expr::{
     expr_variables, BinaryExpr, BinaryOp, Expr, IfExpr, RegexpLikeExpr, UnaryExpr, UnaryOp,
 };
 use crate::ops::{DataType, QueryArg};
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
-use crate::query::patterns::triple::DbValue;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
 use regex::Regex;
@@ -734,11 +733,7 @@ fn resolve_limit(limit: &Limit, in_bindings: &[Binding], args: &[QueryArg]) -> L
 pub fn execute_query<D, M>(
     query: &ParsedQuery,
     args: &[QueryArg],
-    slate: Arc<D>,
-    handle: Handle,
-    ident_map: Arc<IdentMap>,
-    as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
+    db: Arc<DB<D, M>>,
 ) -> Result<QueryResult, Error>
 where
     D: DbReadOps + Send + Sync + 'static,
@@ -747,7 +742,6 @@ where
     validate_query(query, args)?;
     let logical_plan = build_logical_plan(query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();
-    let db = Arc::new(DbValue::new(slate, handle, ident_map, as_of, range_stats));
     let stages = logical_plan.materialize(db, None)?;
     let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
     ensure!(
@@ -769,6 +763,9 @@ where
     let resolved_limit = resolve_limit(&query.limit, &query.in_bindings, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests {

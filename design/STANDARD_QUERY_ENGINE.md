@@ -241,11 +241,11 @@ that may propose from participants that only validate the completed binding.
 ## Runtime Materialization
 
 `LogicalPlan::materialize` binds one already-planned scope to a shared
-`DbValue` and an optional incoming pattern. It:
+`DB` value and an optional incoming pattern. It:
 
-- resolves fixed attribute idents through the `IdentMap` stored in `DbValue`;
-- constructs Slate-backed `TriplePattern` values with `as_of`, the Tokio
-  handle, and range statistics;
+- resolves fixed attribute idents through the `IdentMap` stored in `DB`;
+- constructs Slate-backed `TriplePattern` values that share the database
+  basis, Tokio handle, and range statistics from `DB`;
 - encodes relation descriptor rows;
 - constructs predicate and function patterns from the existing expression
   representation;

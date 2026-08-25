@@ -10,6 +10,7 @@ use itertools::Itertools;
 use slatedb::{DbMetadataOps, DbReadOps};
 
 use crate::codec::Encode;
+use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
@@ -24,7 +25,7 @@ use super::patterns::not::NotPattern;
 use super::patterns::or::OrPattern;
 use super::patterns::predicate::PredicatePattern;
 use super::patterns::relation::RelationPattern;
-use super::patterns::triple::{DbValue, TriplePattern, TripleTerm};
+use super::patterns::triple::{TriplePattern, TripleTerm};
 use super::stage::Stage;
 
 //////////////////////////////////
@@ -364,7 +365,7 @@ fn value_term(place: &PatternValuePlace) -> Result<TripleTerm> {
 }
 
 impl LogicalDescriptor {
-    fn materialize<D, M>(&self, db: Arc<DbValue<D, M>>) -> Result<Arc<dyn ExecPattern>>
+    fn materialize<D, M>(&self, db: Arc<DB<D, M>>) -> Result<Arc<dyn ExecPattern>>
     where
         D: DbReadOps + Send + Sync + 'static,
         M: DbMetadataOps + Send + Sync + 'static,
@@ -489,7 +490,7 @@ impl LogicalPlan {
 
     pub(crate) fn materialize<D, M>(
         &self,
-        db: Arc<DbValue<D, M>>,
+        db: Arc<DB<D, M>>,
         incoming: Option<Arc<dyn ExecPattern>>,
     ) -> Result<Vec<Stage>>
     where
@@ -963,6 +964,7 @@ mod tests {
     use super::*;
     use crate::codec::Decode;
     use crate::query::engine::GenericJoinEngine;
+    use crate::query::test_support::db_at_tx_id;
     use crate::query_validation::validate_query;
     use crate::slate::in_memory_slate;
 
@@ -1452,13 +1454,12 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e ?v :where [?e :name ?v]]").unwrap();
         let logical = build_logical_plan(&query, &[])?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::from([(kw!(:name), 42)])),
+        let db = db_at_tx_id(
+            &components,
+            runtime.handle(),
+            HashMap::from([(kw!(:name), 42)]),
             0,
-            components.range_stats,
-        ));
+        );
 
         let stages = logical.materialize(db, None)?;
 
@@ -1481,13 +1482,7 @@ mod tests {
         let query = edn::parse::parse_query("[:find ?x :in [?x ...] :where [(>= ?x 0)]]").unwrap();
         let arguments = [QueryArg::Collection(vec![DataType::Long(1)])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
         let stage = &stages[0];
@@ -1518,13 +1513,7 @@ mod tests {
             DataType::Long(2),
         ])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
         let result = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
@@ -1558,13 +1547,7 @@ mod tests {
             QueryArg::Collection(vec![DataType::Long(10)]),
         ];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let or_pattern = logical.descriptors[2].materialize(db)?;
         let encoded = |value| Bytes::from(DataType::Long(value).encode());
@@ -1633,13 +1616,7 @@ mod tests {
             DataType::Long(4),
         ])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
         let result = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
@@ -1660,13 +1637,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e :where [?e :missing \"value\"]]").unwrap();
         let logical = build_logical_plan(&query, &[])?;
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let error = logical
             .materialize(db, None)
@@ -1690,13 +1661,7 @@ mod tests {
             panic!("expected OR descriptor");
         };
         let branch = &branches[0];
-        let db = Arc::new(DbValue::new(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            0,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         assert!(root
             .materialize(

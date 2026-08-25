@@ -785,6 +785,7 @@ mod tests {
 
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
+    use crate::db_value::DB;
     use crate::ops::{DataType, EntityRef};
     use crate::query::execute_query;
     use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};
@@ -1784,14 +1785,14 @@ mod tests {
             .await?;
 
         let query: ParsedQuery = r#"[:find ?e ?name :where [?e :name ?name]]"#.parse()?;
-        let sdb = slate.clone();
-        let handle = tokio::runtime::Handle::current();
-        let ident_map = Arc::new(indexer.metadata().schema.ident_map.clone());
-        let range_stats = components.range_stats.clone();
-        let rows = tokio::task::spawn_blocking(move || {
-            execute_query(&query, &[], sdb, handle, ident_map, i64::MAX, range_stats)
-        })
-        .await??;
+        let db = Arc::new(DB::new(
+            slate.clone(),
+            indexer.metadata().schema.ident_map.clone(),
+            tokio::runtime::Handle::current(),
+            tx1,
+            Arc::clone(&components.range_stats),
+        ));
+        let rows = tokio::task::spawn_blocking(move || execute_query(&query, &[], db)).await??;
 
         let mut entities = std::collections::HashMap::new();
         for row in rows {

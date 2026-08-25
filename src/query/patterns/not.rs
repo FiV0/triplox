@@ -7,7 +7,7 @@ use slatedb::{DbMetadataOps, DbReadOps};
 
 use super::ensure_unique;
 use super::relation::RelationPattern;
-use super::triple::DbValue;
+use crate::db_value::DB;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
 use crate::query::exec_pattern::{ExecPattern, PatternId};
@@ -22,7 +22,7 @@ where
     variables: Vec<Variable>,
     incoming_variables: Vec<Variable>,
     logical_plan: LogicalPlan,
-    db: Arc<DbValue<D, M>>,
+    db: Arc<DB<D, M>>,
 }
 
 impl<D, M> NotPattern<D, M>
@@ -34,7 +34,7 @@ where
         id: PatternId,
         variables: Vec<Variable>,
         logical_plan: LogicalPlan,
-        db: Arc<DbValue<D, M>>,
+        db: Arc<DB<D, M>>,
     ) -> Result<Self> {
         ensure_unique("NOT", &variables)?;
         let variables_set: HashSet<&Variable> = variables.iter().collect();

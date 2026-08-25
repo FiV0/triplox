@@ -3,6 +3,7 @@ mod algo;
 mod bootstrap;
 mod clock;
 mod codec;
+mod db_value;
 mod error;
 mod expr;
 mod file_log;
