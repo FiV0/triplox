@@ -29,6 +29,23 @@ impl IncrementalQueryPlan {
     }
 }
 
+fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
+    let elements = match find_spec {
+        FindSpec::FindRel(elements) => elements,
+        _ => bail!("Incremental queries support only relational :find"),
+    };
+
+    elements
+        .iter()
+        .map(|element| match element {
+            Element::Variable(var) => Ok(var.clone()),
+            _ => Err(anyhow!(
+                "Incremental queries (currently) only support variables in :find"
+            )),
+        })
+        .collect()
+}
+
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
     reject_unsupported_query_shape(query)?;
     let find_vars = find_vars(&query.find_spec)?;
@@ -120,23 +137,6 @@ fn reject_unsupported_query_shape(query: &ParsedQuery) -> Result<()> {
         reject_unsupported_where_clause(clause)?;
     }
     Ok(())
-}
-
-fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
-    let elements = match find_spec {
-        FindSpec::FindRel(elements) => elements,
-        _ => bail!("Incremental queries support only relational :find"),
-    };
-
-    elements
-        .iter()
-        .map(|element| match element {
-            Element::Variable(var) => Ok(var.clone()),
-            _ => Err(anyhow!(
-                "Incremental queries (currently) only support variables in :find"
-            )),
-        })
-        .collect()
 }
 
 #[cfg(test)]
