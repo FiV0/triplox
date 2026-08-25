@@ -2,23 +2,9 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 
+use crate::numeric::NumericValue;
 use crate::ops::DataType;
 use crate::query::AggregateFunc;
-
-// TODO: loses precision for i64 values > 2^53
-/// Convert a DataType to an f64 for numeric aggregation.
-fn datatype_to_f64(dt: &DataType) -> Result<f64> {
-    match dt {
-        DataType::Long(n) => Ok(*n as f64),
-        DataType::Double(n) => Ok(*n),
-        DataType::Float(n) => Ok(*n as f64),
-        DataType::BigInt(n) => Ok(*n as f64),
-        other => Err(anyhow!(
-            "cannot convert {:?} to numeric for aggregation",
-            other
-        )),
-    }
-}
 
 // TODO: use schema type info and type promotion rules (like Postgres) instead of
 // eager f64 conversion — e.g. avg over integers should accumulate as (i64 sum, i64 count).
@@ -60,72 +46,26 @@ impl Accumulator for CountDistinctAccumulator {
     }
 }
 
-enum NumericAccum {
-    Long(i64),
-    Double(f64),
-}
-
 struct SumAccumulator {
-    accum: Option<NumericAccum>,
+    accum: Option<NumericValue>,
 }
 
 impl Accumulator for SumAccumulator {
     fn accumulate(&mut self, value: &DataType) -> Result<()> {
-        match (&mut self.accum, value) {
-            (None, DataType::Long(n)) => {
-                self.accum = Some(NumericAccum::Long(*n));
-            }
-            (None, DataType::Double(n)) => {
-                self.accum = Some(NumericAccum::Double(*n));
-            }
-            (Some(NumericAccum::Long(acc)), DataType::Long(n)) => {
-                *acc = acc
-                    .checked_add(*n)
-                    .ok_or_else(|| anyhow!("integer overflow in sum"))?;
-            }
-            (Some(NumericAccum::Long(acc)), DataType::Double(n)) => {
-                self.accum = Some(NumericAccum::Double(*acc as f64 + n));
-            }
-            (Some(NumericAccum::Double(acc)), DataType::Long(n)) => {
-                *acc += *n as f64;
-            }
-            (Some(NumericAccum::Double(acc)), DataType::Double(n)) => {
-                *acc += n;
-            }
-            (_, DataType::Float(n)) => {
-                let n = *n as f64;
-                match &mut self.accum {
-                    None => self.accum = Some(NumericAccum::Double(n)),
-                    Some(NumericAccum::Long(acc)) => {
-                        self.accum = Some(NumericAccum::Double(*acc as f64 + n));
-                    }
-                    Some(NumericAccum::Double(acc)) => *acc += n,
-                }
-            }
-            (_, DataType::BigInt(n)) => {
-                let n = *n as f64;
-                match &mut self.accum {
-                    None => self.accum = Some(NumericAccum::Double(n)),
-                    Some(NumericAccum::Long(acc)) => {
-                        self.accum = Some(NumericAccum::Double(*acc as f64 + n));
-                    }
-                    Some(NumericAccum::Double(acc)) => *acc += n,
-                }
-            }
-            (_, other) => {
-                return Err(anyhow!(
-                    "sum: cannot aggregate non-numeric value {:?}",
-                    other
-                ));
-            }
-        }
+        let value = NumericValue::from_aggregate(value)
+            .map_err(|_| anyhow!("sum: cannot aggregate non-numeric value {:?}", value))?;
+        self.accum = Some(match self.accum {
+            Some(accum) => accum
+                .checked_add(value)
+                .ok_or_else(|| anyhow!("integer overflow in sum"))?,
+            None => value,
+        });
         Ok(())
     }
 
     fn finalize(&self) -> Result<DataType> {
         match &self.accum {
-            Some(NumericAccum::Long(n)) => Ok(DataType::Long(*n)),
-            Some(NumericAccum::Double(n)) => Ok(DataType::Double(*n)),
+            Some(value) => Ok(value.into_data_type()),
             None => Ok(DataType::Long(0)),
         }
     }
@@ -138,7 +78,7 @@ struct AvgAccumulator {
 
 impl Accumulator for AvgAccumulator {
     fn accumulate(&mut self, value: &DataType) -> Result<()> {
-        self.sum += datatype_to_f64(value)?;
+        self.sum += NumericValue::from_aggregate(value)?.as_f64();
         self.count += 1;
         Ok(())
     }

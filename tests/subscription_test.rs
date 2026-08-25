@@ -33,6 +33,14 @@ fn add_name(entity: &'static str, name: &'static str) -> Vec<TxOp> {
     }]
 }
 
+fn add_age(entity: &'static str, age: i64) -> TxOp {
+    TxOp::Add {
+        entity: entity.into(),
+        attribute: kw!(:age),
+        value: age.into(),
+    }
+}
+
 async fn start_test_server_with_handle() -> (String, CancellationToken, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -195,6 +203,68 @@ async fn subscription_deltas_match_standard_query() {
     let expected: BTreeSet<String> = standard.iter().map(|row| format!("{row:?}")).collect();
 
     assert_eq!(reconstructed, expected);
+
+    token.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn aggregate_subscription_emits_priming_and_incremental_replacements() {
+    let (addr, token) = start_test_server().await;
+    let client = ClientNode::connect(&addr).await.unwrap();
+    client.execute_tx(test_schema_tx()).await.unwrap();
+    client
+        .execute_tx(vec![add_age("alice", 10), add_age("bob", 20)])
+        .await
+        .unwrap();
+
+    let mut sub = client
+        .subscribe(
+            "[:find (sum ?age) (min ?age) (max ?age) (count ?age) \
+             (count-distinct ?age) (avg ?age) :where [?e :age ?age]]",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        next_delta(&mut sub).await.rows,
+        vec![(
+            vec![
+                DataType::Long(30),
+                DataType::Long(10),
+                DataType::Long(20),
+                DataType::Long(2),
+                DataType::Long(2),
+                DataType::Double(15.0),
+            ],
+            1,
+        )]
+    );
+
+    client.execute_tx(vec![add_age("carol", 30)]).await.unwrap();
+    let rows = next_delta(&mut sub).await.rows;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.contains(&(
+        vec![
+            DataType::Long(30),
+            DataType::Long(10),
+            DataType::Long(20),
+            DataType::Long(2),
+            DataType::Long(2),
+            DataType::Double(15.0),
+        ],
+        -1,
+    )));
+    assert!(rows.contains(&(
+        vec![
+            DataType::Long(60),
+            DataType::Long(10),
+            DataType::Long(30),
+            DataType::Long(3),
+            DataType::Long(3),
+            DataType::Double(20.0),
+        ],
+        1,
+    )));
 
     token.cancel();
 }
