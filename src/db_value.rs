@@ -5,7 +5,7 @@ use edn::query::ParsedQuery;
 use tokio::runtime::Handle;
 
 use crate::indexer::latest_tx_key_from_sdb;
-use crate::ops::{Entid, QueryArg};
+use crate::ops::QueryArg;
 use crate::partition::tx_eid_from_tx_id;
 use crate::query::{execute_query, QueryResult};
 use crate::schema::IdentMap;
@@ -79,8 +79,8 @@ where
         })
     }
 
-    pub fn tx_key(&self) -> &TxKey {
-        &self.tx_key
+    pub fn tx_key(&self) -> TxKey {
+        self.tx_key
     }
 
     pub(crate) fn sdb(&self) -> &D {
@@ -101,10 +101,6 @@ where
 
     pub(crate) fn range_stats(&self) -> &Arc<slatedb_estimates::RangeStats<M>> {
         &self.range_stats
-    }
-
-    pub fn entity(&self, _eid: Entid) {
-        todo!()
     }
 }
 

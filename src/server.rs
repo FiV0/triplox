@@ -145,7 +145,7 @@ async fn open_db<L: TxLog + 'static>(
                 .db()
                 .await
                 .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
-            *db.tx_key()
+            db.tx_key()
         }
         (Some(tid), Some(system_time)) => {
             let tx_key = TxKey {
@@ -706,7 +706,7 @@ mod tests {
         node.execute_tx(crate::schema::test_schema_tx())
             .await
             .expect("schema tx");
-        let expected_tx_key = *node.db().await.unwrap().tx_key();
+        let expected_tx_key = node.db().await.unwrap().tx_key();
         let server = Arc::new(Server::new(node));
 
         let resp = subscribe(

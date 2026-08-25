@@ -1098,7 +1098,7 @@ mod tests {
         };
 
         let db = node.db_as_of(basis).await.unwrap();
-        assert_eq!(*db.tx_key(), basis);
+        assert_eq!(db.tx_key(), basis);
 
         let query_str = format!(
             "[:find ?ident ?error \
@@ -1981,7 +1981,7 @@ mod tests {
     async fn test_register_incremental_query_installs_subscription() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-        let expected_basis = *node.db().await.unwrap().tx_key();
+        let expected_basis = node.db().await.unwrap().tx_key();
 
         let mut subscription = node
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
