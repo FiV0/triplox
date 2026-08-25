@@ -20,113 +20,19 @@ use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMP
 use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
-use crate::ops::{Entid, QueryArg, TxOp};
-use crate::partition::tx_eid_from_tx_id;
-use crate::query::{execute_query, QueryResult};
-use crate::schema::{IdentMap, Schema};
+use crate::ops::{QueryArg, TxOp};
+use crate::schema::Schema;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
 
+pub use crate::db::DB;
 pub use triplox_client::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
 };
 pub use triplox_client::transaction::{TransactionResult, TxKey};
 
 const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub struct DB<D = slatedb::Db, M = slatedb::Db>
-where
-    D: slatedb::DbReadOps + Send + Sync + 'static,
-    M: slatedb::DbMetadataOps + Send + Sync + 'static,
-{
-    sdb: Arc<D>,
-    ident_map: Arc<IdentMap>,
-    handle: Handle,
-    tx_key: TxKey,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-}
-
-#[allow(unused)]
-impl<D, M> DB<D, M>
-where
-    D: slatedb::DbReadOps + Send + Sync + 'static,
-    M: slatedb::DbMetadataOps + Send + Sync + 'static,
-{
-    pub fn new(
-        sdb: Arc<D>,
-        ident_map: IdentMap,
-        handle: Handle,
-        tx_key: TxKey,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Self {
-        Self {
-            sdb,
-            ident_map: Arc::new(ident_map),
-            handle,
-            tx_key,
-            range_stats,
-        }
-    }
-
-    /// Construct a DB from a Db by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_sdb(
-        sdb: Arc<D>,
-        ident_map: IdentMap,
-        handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error> {
-        let tx_key = latest_tx_key_from_sdb(sdb.as_ref()).await?;
-        Ok(Self {
-            sdb,
-            ident_map: Arc::new(ident_map),
-            handle,
-            tx_key,
-            range_stats,
-        })
-    }
-
-    pub fn tx_key(&self) -> &TxKey {
-        &self.tx_key
-    }
-
-    pub fn entity(&self, _eid: Entid) {
-        todo!()
-    }
-}
-
-impl<D, M> Database for DB<D, M>
-where
-    D: slatedb::DbReadOps + Send + Sync + 'static,
-    M: slatedb::DbMetadataOps + Send + Sync + 'static,
-{
-    async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let parsed = query.into_query()?;
-        self.query_with_args(&parsed, &[]).await
-    }
-
-    /// Execute a query against this database basis.
-    /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
-    async fn query_with_args(
-        &self,
-        query: &ParsedQuery,
-        args: &[QueryArg],
-    ) -> Result<QueryResult, Error> {
-        let sdb = self.sdb.clone();
-        let handle = self.handle.clone();
-        let ident_map = Arc::clone(&self.ident_map);
-        let query = query.clone();
-        let args = args.to_vec();
-        let as_of = tx_eid_from_tx_id(self.tx_key.tx_id);
-        let range_stats = self.range_stats.clone();
-
-        tokio::task::spawn_blocking(move || {
-            execute_query(&query, &args, sdb, handle, ident_map, as_of, range_stats)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Query task failed: {}", e))?
-    }
-}
 
 pub struct Node<L: TxLog> {
     log: Arc<L>,

@@ -6,6 +6,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
 
+use crate::db::DB;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
@@ -839,10 +840,16 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
-    let bootstrap_ident_map = Arc::new(bootstrap_ident_map);
-    let sdb = slate.db.clone();
-    let range_stats = slate.range_stats.clone();
-    let handle = Handle::current();
+    let db = Arc::new(
+        DB::from_latest_sdb(
+            Arc::clone(&slate.db),
+            bootstrap_ident_map,
+            Handle::current(),
+            Arc::clone(&slate.range_stats),
+        )
+        .await
+        .expect("Schema load requires an indexed transaction basis"),
+    );
 
     let ident_query: ParsedQuery = "[:find ?e ?ident :where [?e :db/ident ?ident]]"
         .parse()
@@ -856,33 +863,9 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
 
     // Run all three queries in a single blocking task.
     let (ident_results, attr_results, unique_results) = tokio::task::spawn_blocking(move || {
-        let idents = execute_query(
-            &ident_query,
-            &[],
-            sdb.clone(),
-            handle.clone(),
-            Arc::clone(&bootstrap_ident_map),
-            i64::MAX,
-            range_stats.clone(),
-        )?;
-        let attrs = execute_query(
-            &attr_query,
-            &[],
-            sdb.clone(),
-            handle.clone(),
-            Arc::clone(&bootstrap_ident_map),
-            i64::MAX,
-            range_stats.clone(),
-        )?;
-        let uniques = execute_query(
-            &unique_query,
-            &[],
-            sdb,
-            handle,
-            bootstrap_ident_map,
-            i64::MAX,
-            range_stats,
-        )?;
+        let idents = execute_query(&ident_query, &[], Arc::clone(&db))?;
+        let attrs = execute_query(&attr_query, &[], Arc::clone(&db))?;
+        let uniques = execute_query(&unique_query, &[], db)?;
         Ok::<_, anyhow::Error>((idents, attrs, uniques))
     })
     .await

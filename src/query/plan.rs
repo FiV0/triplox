@@ -10,6 +10,7 @@ use itertools::Itertools;
 use slatedb::{DbMetadataOps, DbReadOps};
 
 use crate::codec::Encode;
+use crate::db::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
@@ -24,7 +25,7 @@ use super::patterns::not::NotPattern;
 use super::patterns::or::OrPattern;
 use super::patterns::predicate::PredicatePattern;
 use super::patterns::relation::RelationPattern;
-use super::patterns::triple::{DbValue, TriplePattern, TripleTerm};
+use super::patterns::triple::{TriplePattern, TripleTerm};
 use super::stage::Stage;
 
 //////////////////////////////////
@@ -364,7 +365,7 @@ fn value_term(place: &PatternValuePlace) -> Result<TripleTerm> {
 }
 
 impl LogicalDescriptor {
-    fn materialize<D, M>(&self, db: Arc<DbValue<D, M>>) -> Result<Arc<dyn ExecPattern>>
+    fn materialize<D, M>(&self, db: Arc<DB<D, M>>) -> Result<Arc<dyn ExecPattern>>
     where
         D: DbReadOps + Send + Sync + 'static,
         M: DbMetadataOps + Send + Sync + 'static,
@@ -489,7 +490,7 @@ impl LogicalPlan {
 
     pub(crate) fn materialize<D, M>(
         &self,
-        db: Arc<DbValue<D, M>>,
+        db: Arc<DB<D, M>>,
         incoming: Option<Arc<dyn ExecPattern>>,
     ) -> Result<Vec<Stage>>
     where
@@ -959,15 +960,40 @@ mod tests {
     use bytes::Bytes;
     use edn::kw;
     use edn::query::ToVariable;
+    use slatedb::Db;
+    use slatedb_estimates::RangeStats;
+    use tokio::runtime::Handle;
+    use triplox_client::transaction::TxKey;
 
     use super::*;
+    use crate::clock::st_from_unix_epoch;
     use crate::codec::Decode;
     use crate::query::engine::GenericJoinEngine;
     use crate::query_validation::validate_query;
+    use crate::schema::IdentMap;
     use crate::slate::in_memory_slate;
 
     fn var(name: &str) -> Variable {
         name.to_var()
+    }
+
+    fn db_at(
+        sdb: Arc<Db>,
+        handle: Handle,
+        ident_map: Arc<IdentMap>,
+        tx_id: i64,
+        range_stats: Arc<RangeStats<Db>>,
+    ) -> DB {
+        DB::new(
+            sdb,
+            ident_map.as_ref().clone(),
+            handle,
+            TxKey {
+                tx_id,
+                system_time: st_from_unix_epoch(0),
+            },
+            range_stats,
+        )
     }
 
     fn relation(id: PatternId, variables: &[&str]) -> Descriptor {
@@ -1443,7 +1469,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e ?v :where [?e :name ?v]]").unwrap();
         let logical = build_logical_plan(&query, &[])?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::from([(kw!(:name), 42)])),
@@ -1472,7 +1498,7 @@ mod tests {
         let query = edn::parse::parse_query("[:find ?x :in [?x ...] :where [(>= ?x 0)]]").unwrap();
         let arguments = [QueryArg::Collection(vec![DataType::Long(1)])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1509,7 +1535,7 @@ mod tests {
             DataType::Long(2),
         ])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1549,7 +1575,7 @@ mod tests {
             QueryArg::Collection(vec![DataType::Long(10)]),
         ];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1624,7 +1650,7 @@ mod tests {
             DataType::Long(4),
         ])];
         let logical = build_logical_plan(&query, &arguments)?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1651,7 +1677,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e :where [?e :missing \"value\"]]").unwrap();
         let logical = build_logical_plan(&query, &[])?;
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1681,7 +1707,7 @@ mod tests {
             panic!("expected OR descriptor");
         };
         let branch = &branches[0];
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),

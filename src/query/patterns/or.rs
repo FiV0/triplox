@@ -7,7 +7,7 @@ use slatedb::{DbMetadataOps, DbReadOps};
 
 use super::ensure_unique;
 use super::relation::RelationPattern;
-use super::triple::DbValue;
+use crate::db::DB;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
 use crate::query::exec_pattern::{ExecPattern, PatternId};
@@ -22,7 +22,7 @@ where
     variables: Vec<Variable>,
     incoming_variables: Vec<Variable>,
     branch_plans: Vec<LogicalPlan>,
-    db: Arc<DbValue<D, M>>,
+    db: Arc<DB<D, M>>,
 }
 
 impl<D, M> OrPattern<D, M>
@@ -34,7 +34,7 @@ where
         id: PatternId,
         variables: Vec<Variable>,
         branch_plans: Vec<LogicalPlan>,
-        db: Arc<DbValue<D, M>>,
+        db: Arc<DB<D, M>>,
     ) -> Result<Self> {
         ensure_unique("OR", &variables)?;
         let incoming_variables = branch_plans

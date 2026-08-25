@@ -5,15 +5,14 @@ use anyhow::{bail, ensure, Result};
 use bytes::Bytes;
 use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
-use tokio::runtime::Handle;
 
 use crate::codec;
+use crate::db::DB;
 use crate::index::IndexType;
 use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
-use crate::schema::IdentMap;
 use crate::util::make_extractor;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,46 +36,6 @@ enum TriplePosition {
     Value,
 }
 
-/// Immutable database value used by triple-pattern scans.
-/// Maybe unify with DB struct in node.rs
-pub(crate) struct DbValue<D, M>
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
-    slate: Arc<D>,
-    handle: Handle,
-    ident_map: Arc<IdentMap>,
-    as_of: i64,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-}
-
-impl<D, M> DbValue<D, M>
-where
-    D: DbReadOps + Send + Sync + 'static,
-    M: DbMetadataOps + Send + Sync + 'static,
-{
-    pub(crate) fn new(
-        slate: Arc<D>,
-        handle: Handle,
-        ident_map: Arc<IdentMap>,
-        as_of: i64,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Self {
-        Self {
-            slate,
-            handle,
-            ident_map,
-            as_of,
-            range_stats,
-        }
-    }
-
-    pub(crate) fn ident_map(&self) -> &IdentMap {
-        &self.ident_map
-    }
-}
-
 pub(crate) struct TriplePattern<D, M>
 where
     D: DbReadOps + Send + Sync + 'static,
@@ -87,7 +46,7 @@ where
     entity: TripleTerm,
     attribute: i64,
     value: TripleTerm,
-    db: Arc<DbValue<D, M>>,
+    db: Arc<DB<D, M>>,
 }
 
 impl<D, M> TriplePattern<D, M>
@@ -100,7 +59,7 @@ where
         entity: TripleTerm,
         attribute: i64,
         value: TripleTerm,
-        db: Arc<DbValue<D, M>>,
+        db: Arc<DB<D, M>>,
     ) -> Result<Self> {
         let mut variables = Vec::new();
         if let Some(variable) = entity.variable() {
@@ -152,8 +111,8 @@ where
     fn estimate_count(&self, prefix: &[u8]) -> Result<usize> {
         let count = self
             .db
-            .handle
-            .block_on(self.db.range_stats.estimate_key_count_with_prefix(prefix))?;
+            .handle()
+            .block_on(self.db.range_stats().estimate_key_count_with_prefix(prefix))?;
         Ok(usize::try_from(count)?)
     }
 
@@ -166,19 +125,19 @@ where
         match index_type {
             IndexType::AE | IndexType::AV => Ok(Box::new(SlateIterator::new(
                 &prefix,
-                self.db.slate.as_ref(),
-                self.db.handle.clone(),
+                self.db.sdb(),
+                self.db.handle().clone(),
                 extractor,
-                self.db.range_stats.clone(),
+                Arc::clone(self.db.range_stats()),
             )?)),
             IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
                 Ok(Box::new(TemporalFilterIterator::new(
                     &prefix,
-                    self.db.slate.as_ref(),
-                    self.db.handle.clone(),
+                    self.db.sdb(),
+                    self.db.handle().clone(),
                     extractor,
-                    self.db.as_of,
-                    self.db.range_stats.clone(),
+                    self.db.as_of(),
+                    Arc::clone(self.db.range_stats()),
                 )?))
             }
         }
@@ -650,13 +609,20 @@ mod tests {
     use edn::query::{ToVariable, Variable};
     use slatedb::Db;
 
-    use super::{DbValue, TriplePattern, TripleTerm};
+    use super::{TriplePattern, TripleTerm};
+    use crate::clock::st_from_unix_epoch;
     use crate::codec::{self, Encode};
+    use crate::db::DB;
     use crate::inc_query::test_support::NAME_ATTR_ID as NAME;
     use crate::ops::DataType;
+    use crate::partition::tx_eid_from_tx_id;
     use crate::query::binding_bag::BindingBag;
     use crate::query::exec_pattern::{ExecPattern, Proposal};
+    use crate::schema::IdentMap;
     use crate::slate::in_memory_slate;
+    use slatedb_estimates::RangeStats;
+    use tokio::runtime::Handle;
+    use triplox_client::transaction::TxKey;
 
     fn encoded(value: DataType) -> Bytes {
         Bytes::from(value.encode())
@@ -670,14 +636,34 @@ mod tests {
         .unwrap()
     }
 
+    fn db_at(
+        sdb: Arc<Db>,
+        handle: Handle,
+        ident_map: Arc<IdentMap>,
+        tx_id: i64,
+        range_stats: Arc<RangeStats<Db>>,
+    ) -> DB {
+        DB::new(
+            sdb,
+            ident_map.as_ref().clone(),
+            handle,
+            TxKey {
+                tx_id,
+                system_time: st_from_unix_epoch(0),
+            },
+            range_stats,
+        )
+    }
+
     async fn insert_version(
         slate: &Db,
         attribute: i64,
         entity: i64,
         value: &DataType,
-        tx_eid: i64,
+        tx_id: i64,
         op: u8,
     ) -> Result<()> {
+        let tx_eid = tx_eid_from_tx_id(tx_id);
         let entity = DataType::Long(entity).encode();
         let value = value.encode();
         let attribute = codec::encode_i64_bytes(attribute);
@@ -755,7 +741,7 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -919,7 +905,7 @@ mod tests {
             entity,
             NAME,
             value,
-            Arc::new(DbValue::new(
+            Arc::new(db_at(
                 components.db,
                 runtime.handle().clone(),
                 Arc::new(HashMap::new()),
@@ -973,7 +959,7 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1068,7 +1054,7 @@ mod tests {
             .await
         })?;
 
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1122,7 +1108,7 @@ mod tests {
     fn validation_rejects_patterns_without_bound_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1185,7 +1171,7 @@ mod tests {
             codec::ADD,
         ))?;
 
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1239,7 +1225,7 @@ mod tests {
             codec::ADD,
         ))?;
 
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
@@ -1309,7 +1295,7 @@ mod tests {
                 TripleTerm::Constant(encoded(DataType::Long(1))),
                 NAME,
                 TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-                Arc::new(DbValue::new(
+                Arc::new(db_at(
                     components.db.clone(),
                     runtime.handle().clone(),
                     Arc::new(HashMap::new()),
@@ -1338,7 +1324,7 @@ mod tests {
     fn constructor_rejects_repeated_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
-        let db = Arc::new(DbValue::new(
+        let db = Arc::new(db_at(
             components.db,
             runtime.handle().clone(),
             Arc::new(HashMap::new()),
