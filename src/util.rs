@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{codec, index::IndexType};
 

@@ -13,9 +13,9 @@ name = "edn"
 
 [dependencies]
 chrono = { workspace = true }
-itertools = "0.14"
+itertools = "0.15"
 num = "0.4"
-ordered-float = "4.0"
+ordered-float = "5.5"
 peg = "0.8"
 pretty = "0.12"
 uuid = { workspace = true, features = ["v4", "serde"] }
