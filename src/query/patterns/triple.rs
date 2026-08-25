@@ -602,7 +602,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     use anyhow::Result;
     use bytes::Bytes;
@@ -610,19 +609,14 @@ mod tests {
     use slatedb::Db;
 
     use super::{TriplePattern, TripleTerm};
-    use crate::clock::st_from_unix_epoch;
     use crate::codec::{self, Encode};
-    use crate::db::DB;
     use crate::inc_query::test_support::NAME_ATTR_ID as NAME;
     use crate::ops::DataType;
     use crate::partition::tx_eid_from_tx_id;
     use crate::query::binding_bag::BindingBag;
     use crate::query::exec_pattern::{ExecPattern, Proposal};
-    use crate::schema::IdentMap;
+    use crate::query::test_support::db_at_tx_id;
     use crate::slate::in_memory_slate;
-    use slatedb_estimates::RangeStats;
-    use tokio::runtime::Handle;
-    use triplox_client::transaction::TxKey;
 
     fn encoded(value: DataType) -> Bytes {
         Bytes::from(value.encode())
@@ -634,25 +628,6 @@ mod tests {
             rows,
         )
         .unwrap()
-    }
-
-    fn db_at(
-        sdb: Arc<Db>,
-        handle: Handle,
-        ident_map: Arc<IdentMap>,
-        tx_id: i64,
-        range_stats: Arc<RangeStats<Db>>,
-    ) -> DB {
-        DB::new(
-            sdb,
-            ident_map.as_ref().clone(),
-            handle,
-            TxKey {
-                tx_id,
-                system_time: st_from_unix_epoch(0),
-            },
-            range_stats,
-        )
     }
 
     async fn insert_version(
@@ -741,13 +716,7 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let pattern = TriplePattern::new(7, entity, NAME, value, db)?;
 
         let mut entity_proposal = vec![Proposal::default()];
@@ -905,13 +874,7 @@ mod tests {
             entity,
             NAME,
             value,
-            Arc::new(db_at(
-                components.db,
-                runtime.handle().clone(),
-                Arc::new(HashMap::new()),
-                20,
-                components.range_stats,
-            )),
+            db_at_tx_id(&components, runtime.handle(), HashMap::new(), 20),
         )?;
         let input = binding_bag(&["?e"], vec![vec![entity_1.clone()], vec![entity_1]]);
         let mut proposals = vec![Proposal::default(); 2];
@@ -959,13 +922,7 @@ mod tests {
         })?;
 
         let (entity, value) = variables("?e", "?v");
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            20,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 20);
         let pattern = TriplePattern::new(7, entity, NAME, value, db)?;
         let partial = binding_bag(
             &["?outer", "?e"],
@@ -1054,13 +1011,7 @@ mod tests {
             .await
         })?;
 
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let entity_pattern = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
@@ -1108,13 +1059,7 @@ mod tests {
     fn validation_rejects_patterns_without_bound_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let entity_unbound = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
@@ -1171,13 +1116,7 @@ mod tests {
             codec::ADD,
         ))?;
 
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let existing = TriplePattern::new(
             1,
             TripleTerm::Constant(encoded(DataType::Long(1))),
@@ -1225,13 +1164,7 @@ mod tests {
             codec::ADD,
         ))?;
 
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let entity_pattern = TriplePattern::new(
             1,
             TripleTerm::Variable("?e".to_var()),
@@ -1295,13 +1228,7 @@ mod tests {
                 TripleTerm::Constant(encoded(DataType::Long(1))),
                 NAME,
                 TripleTerm::Constant(encoded(DataType::String("alice".into()))),
-                Arc::new(db_at(
-                    components.db.clone(),
-                    runtime.handle().clone(),
-                    Arc::new(HashMap::new()),
-                    as_of,
-                    components.range_stats.clone(),
-                )),
+                db_at_tx_id(&components, runtime.handle(), HashMap::new(), as_of),
             )
         };
 
@@ -1324,13 +1251,7 @@ mod tests {
     fn constructor_rejects_repeated_variables() -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
-        let db = Arc::new(db_at(
-            components.db,
-            runtime.handle().clone(),
-            Arc::new(HashMap::new()),
-            10,
-            components.range_stats,
-        ));
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 10);
         let new = |entity, value| TriplePattern::new(7, entity, NAME, value, db.clone());
 
         assert!(new(
