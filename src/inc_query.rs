@@ -1,11 +1,11 @@
 //! Incremental-query planning helpers.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use edn::query::{
-    Element, FindSpec, Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    Variable, WhereClause,
+    Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, Variable, WhereClause,
 };
 
+use crate::query::{build_var_index, compile_find_plan, FindPlan};
 use crate::query_validation::validate_query;
 use crate::schema::Schema;
 
@@ -17,7 +17,7 @@ pub(crate) use planner::{PatternPlan, RelPlan, RelPlanKind};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryPlan {
-    pub find_vars: Vec<Variable>,
+    pub find_plan: FindPlan,
     pub where_plan: RelPlan,
 }
 
@@ -29,41 +29,17 @@ impl IncrementalQueryPlan {
     }
 }
 
-fn find_vars(find_spec: &FindSpec) -> Result<Vec<Variable>> {
-    let elements = match find_spec {
-        FindSpec::FindRel(elements) => elements,
-        _ => bail!("Incremental queries support only relational :find"),
-    };
-
-    elements
-        .iter()
-        .map(|element| match element {
-            Element::Variable(var) => Ok(var.clone()),
-            _ => Err(anyhow!(
-                "Incremental queries (currently) only support variables in :find"
-            )),
-        })
-        .collect()
-}
-
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
     reject_unsupported_query_shape(query)?;
-    let find_vars = find_vars(&query.find_spec)?;
     validate_query(query, &[])?;
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
     let where_plan = planner::plan_scope(&descriptors, None)?;
-    for var in &find_vars {
-        if !where_plan.output_vars.contains(var) {
-            bail!(
-                "Find variable {} is not bound by incremental query patterns",
-                var
-            );
-        }
-    }
+    let var_index = build_var_index(&where_plan.output_vars);
+    let find_plan = compile_find_plan(&query.find_spec, &var_index)?;
 
     Ok(IncrementalQueryPlan {
-        find_vars,
+        find_plan,
         where_plan,
     })
 }
@@ -197,6 +173,7 @@ mod tests {
     use super::*;
     use crate::codec::Encode;
     use crate::ops::DataType;
+    use crate::query::{AggregateFunc, Projection};
 
     fn assert_plan_err(query: &str, expected: &str) {
         let schema = test_schema();
@@ -218,7 +195,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.find_vars, vec!["?e".to_var(), "?name".to_var()]);
+        assert_eq!(plan.find_plan.group_key_indices, vec![0, 1]);
+        assert_eq!(
+            plan.find_plan.projections,
+            vec![Projection::GroupVar(0), Projection::GroupVar(1)]
+        );
         let leaf_patterns = plan.leaf_patterns();
         assert_eq!(leaf_patterns.len(), 1);
         assert_eq!(leaf_patterns[0].attribute, 10);
@@ -231,6 +212,64 @@ mod tests {
             panic!("expected pattern plan, got {:?}", &plan.where_plan.kind);
         };
         assert_eq!(pattern.attribute, 10);
+    }
+
+    #[test]
+    fn plans_grouped_aggregates_in_find_order() {
+        let plan = plan_query(
+            &parse_query(
+                "[:find (sum ?age) ?type (count ?e) (max ?age)
+                  :where [?e :type ?type] [?e :age ?age]]",
+            ),
+            &test_schema(),
+        )
+        .unwrap();
+        let entity_position = plan
+            .where_plan
+            .output_vars
+            .iter()
+            .position(|variable| variable == &"?e".to_var())
+            .unwrap();
+        let type_position = plan
+            .where_plan
+            .output_vars
+            .iter()
+            .position(|variable| variable == &"?type".to_var())
+            .unwrap();
+        let age_position = plan
+            .where_plan
+            .output_vars
+            .iter()
+            .position(|variable| variable == &"?age".to_var())
+            .unwrap();
+
+        assert_eq!(plan.find_plan.group_key_indices, vec![type_position]);
+        assert_eq!(
+            plan.find_plan.projections,
+            vec![
+                Projection::Aggregate(AggregateFunc::Sum, age_position),
+                Projection::GroupVar(0),
+                Projection::Aggregate(AggregateFunc::Count, entity_position),
+                Projection::Aggregate(AggregateFunc::Max, age_position),
+            ]
+        );
+        assert!(plan.find_plan.has_aggregates);
+    }
+
+    #[test]
+    fn plans_global_aggregates_without_a_group_key() {
+        let plan = plan_query(
+            &parse_query(
+                "[:find (count ?age) (count-distinct ?age) (avg ?age)
+                  :where [?e :age ?age]]",
+            ),
+            &test_schema(),
+        )
+        .unwrap();
+
+        assert!(plan.find_plan.group_key_indices.is_empty());
+        assert_eq!(plan.find_plan.projections.len(), 3);
+        assert!(plan.find_plan.has_aggregates);
     }
 
     #[test]
@@ -412,7 +451,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.find_vars, vec!["?e".to_var()]);
+        assert_eq!(plan.find_plan.group_key_indices, vec![0]);
+        assert_eq!(plan.find_plan.projections, vec![Projection::GroupVar(0)]);
         let RelPlanKind::Union { branches } = &plan.where_plan.kind else {
             panic!("expected union plan, got {:?}", &plan.where_plan.kind);
         };
@@ -956,17 +996,10 @@ mod tests {
 
     #[test]
     fn rejects_non_relational_find() {
-        assert_plan_err(
-            "[:find [?e ...] :where [?e :name ?name]]",
-            "relational :find",
-        );
-        assert_plan_err(
-            "[:find (count ?e) :where [?e :name ?name]]",
-            "variables in :find",
-        );
+        assert_plan_err("[:find [?e ...] :where [?e :name ?name]]", "Only FindRel");
         assert_plan_err(
             "[:find (pull ?e [*]) :where [?e :name ?name]]",
-            "variables in :find",
+            "Pull and corresponding",
         );
     }
 

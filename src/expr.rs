@@ -7,6 +7,7 @@ use regex::Regex;
 
 use chrono::Datelike;
 
+use crate::numeric::NumericValue;
 use crate::ops::DataType;
 use edn::query::{ToVariable, Variable};
 
@@ -236,48 +237,17 @@ fn eval_binary_op(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<Da
 }
 
 fn eval_arithmetic(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<DataType> {
-    match (left, right) {
-        (DataType::Long(a), DataType::Long(b)) => {
-            let result = match op {
-                BinaryOp::Add => a.checked_add(*b)?,
-                BinaryOp::Sub => a.checked_sub(*b)?,
-                BinaryOp::Mul => a.checked_mul(*b)?,
-                BinaryOp::Div => a.checked_div(*b)?,
-                BinaryOp::Mod => a.checked_rem(*b)?,
-                _ => unreachable!(),
-            };
-            Some(DataType::Long(result))
-        }
-        (DataType::Double(a), DataType::Double(b)) => {
-            let result = match op {
-                BinaryOp::Add => a + b,
-                BinaryOp::Sub => a - b,
-                BinaryOp::Mul => a * b,
-                BinaryOp::Div => {
-                    if *b == 0.0 {
-                        return None;
-                    }
-                    a / b
-                }
-                BinaryOp::Mod => {
-                    if *b == 0.0 {
-                        return None;
-                    }
-                    a % b
-                }
-                _ => unreachable!(),
-            };
-            Some(DataType::Double(result))
-        }
-        // Cross-numeric: Long × Double → Double
-        (DataType::Long(a), DataType::Double(b)) => {
-            eval_arithmetic(&DataType::Double(*a as f64), op, &DataType::Double(*b))
-        }
-        (DataType::Double(a), DataType::Long(b)) => {
-            eval_arithmetic(&DataType::Double(*a), op, &DataType::Double(*b as f64))
-        }
-        _ => None,
-    }
+    let left = NumericValue::from_expression(left)?;
+    let right = NumericValue::from_expression(right)?;
+    let result = match op {
+        BinaryOp::Add => left.checked_add(right),
+        BinaryOp::Sub => left.checked_sub(right),
+        BinaryOp::Mul => left.checked_mul(right),
+        BinaryOp::Div => left.checked_div(right),
+        BinaryOp::Mod => left.checked_rem(right),
+        _ => unreachable!(),
+    }?;
+    Some(result.into_data_type())
 }
 
 fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
