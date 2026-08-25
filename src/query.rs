@@ -6,8 +6,6 @@ pub(crate) mod exec_pattern;
 pub(crate) mod patterns;
 pub(crate) mod plan;
 pub(crate) mod stage;
-#[cfg(test)]
-pub(crate) mod test_support;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -765,6 +763,9 @@ where
     let resolved_limit = resolve_limit(&query.limit, &query.in_bindings, args);
     apply_order_and_limit(projected, &query.order, &resolved_limit, &query.find_spec)
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests {
