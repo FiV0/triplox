@@ -62,7 +62,7 @@ where
         }
     }
 
-    /// Construct a DB from a Db by scanning EAV for TX_PARTITION entities to find the latest TxKey.
+    /// Construct a DB from a SlateDB instance by scanning EAV for TX_PARTITION entities to find the latest TxKey.
     pub async fn from_latest_sdb(
         sdb: Arc<D>,
         ident_map: IdentMap,
