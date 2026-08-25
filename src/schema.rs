@@ -5,9 +5,12 @@ use anyhow::{Error, Result};
 use edn::kw;
 use edn::symbols::Keyword;
 use tokio::runtime::Handle;
+use triplox_client::transaction::TxKey;
 
+use crate::clock::st_from_unix_epoch;
 use crate::db::DB;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
+use crate::partition::COUNTER_MASK;
 use crate::query::execute_query;
 use edn::query::ParsedQuery;
 
@@ -150,6 +153,12 @@ static V1_ATTRIBUTES: LazyLock<Vec<(Keyword, Keyword, Keyword, Option<Keyword>)>
             ),
         ]
     });
+
+/// Synthetic maximum basis used while reconstructing the schema at startup.
+static SCHEMA_LOAD_TX_KEY: LazyLock<TxKey> = LazyLock::new(|| TxKey {
+    tx_id: COUNTER_MASK,
+    system_time: st_from_unix_epoch(0),
+});
 
 // --- Schema types ---
 
@@ -840,16 +849,13 @@ pub(crate) async fn load_schema_from_indices(slate: &crate::slate::SlateComponen
     bootstrap_ident_map.insert(kw!(:db/valueType), DB_VALUE_TYPE);
     bootstrap_ident_map.insert(kw!(:db/cardinality), DB_CARDINALITY);
     bootstrap_ident_map.insert(kw!(:db/unique), DB_UNIQUE);
-    let db = Arc::new(
-        DB::from_latest_sdb(
-            Arc::clone(&slate.db),
-            bootstrap_ident_map,
-            Handle::current(),
-            Arc::clone(&slate.range_stats),
-        )
-        .await
-        .expect("Schema load requires an indexed transaction basis"),
-    );
+    let db = Arc::new(DB::new(
+        Arc::clone(&slate.db),
+        bootstrap_ident_map,
+        Handle::current(),
+        *SCHEMA_LOAD_TX_KEY,
+        Arc::clone(&slate.range_stats),
+    ));
 
     let ident_query: ParsedQuery = "[:find ?e ?ident :where [?e :db/ident ?ident]]"
         .parse()

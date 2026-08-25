@@ -92,12 +92,8 @@ pub async fn init_db(slate: &SlateComponents) -> Result<Metadata> {
     {
         Some(_bytes) => {
             // Existing DB — load schema from indices, derive counters from EAV scan
+            let schema = load_schema_from_indices(slate).await;
             let pm = scan_partition_counters(&slate.db).await?;
-            let schema = if pm[&TX_PARTITION] == 0 {
-                Schema::default()
-            } else {
-                load_schema_from_indices(slate).await
-            };
             Ok(Metadata::new(schema, pm))
         }
         None => {
