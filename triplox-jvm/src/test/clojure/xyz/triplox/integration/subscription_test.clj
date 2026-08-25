@@ -225,6 +225,23 @@
         (api/transact *conn* [[:db/add eq-id :salary 20]])
         (is (= [[["Eq"] -1]] (take-delta! sub)))))))
 
+(deftest expression-failures-do-not-stop-subscription
+  (with-open [sub (api/subscribe *conn* '{:find [?name ?result]
+                                          :where [[?e :name ?name]
+                                                  [?e :age ?age]
+                                                  [?e :salary ?divisor]
+                                                  [(quot ?age ?divisor) ?result]]})]
+    (api/transact *conn* [{:name "Alice" :age 30 :salary 0}])
+    (is (= ::api/timeout (take-delta! sub 300)))
+
+    (let [alice-id (single-value '{:find [?e]
+                                   :where [[?e :name "Alice"]]})]
+      (api/transact *conn* [[:db/add alice-id :salary 2]])
+      (is (= [[["Alice" 15] 1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add alice-id :salary 0]])
+      (is (= [[["Alice" 15] -1]] (take-delta! sub))))))
+
 (deftest test-not-negative-scope-layouts
   (testing "Multi-clause negative scope"
     (api/transact *conn* [{:db/ident :friend
