@@ -7,7 +7,7 @@ use edn::query::Variable;
 use slatedb::{DbMetadataOps, DbReadOps};
 
 use crate::codec;
-use crate::db::DB;
+use crate::db_value::DB;
 use crate::index::IndexType;
 use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;

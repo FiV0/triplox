@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use triplox_client::transaction::TxKey;
 
 use crate::clock::st_from_unix_epoch;
-use crate::db::DB;
+use crate::db_value::DB;
 use crate::ops::{DataType, Datom, DatomOp, Entid, EntityRef, TxOp};
 use crate::partition::COUNTER_MASK;
 use crate::query::execute_query;

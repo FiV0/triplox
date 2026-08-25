@@ -4,7 +4,7 @@ use tokio::runtime::Handle;
 use triplox_client::transaction::TxKey;
 
 use crate::clock::st_from_unix_epoch;
-use crate::db::DB;
+use crate::db_value::DB;
 use crate::schema::IdentMap;
 use crate::slate::SlateComponents;
 

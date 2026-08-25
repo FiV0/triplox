@@ -7,7 +7,7 @@ use slatedb::{DbMetadataOps, DbReadOps};
 
 use super::ensure_unique;
 use super::relation::RelationPattern;
-use crate::db::DB;
+use crate::db_value::DB;
 use crate::query::binding_bag::BindingBag;
 use crate::query::engine::GenericJoinEngine;
 use crate::query::exec_pattern::{ExecPattern, PatternId};

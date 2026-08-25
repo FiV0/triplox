@@ -785,7 +785,7 @@ mod tests {
 
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
-    use crate::db::DB;
+    use crate::db_value::DB;
     use crate::ops::{DataType, EntityRef};
     use crate::query::execute_query;
     use crate::schema::{test_schema_tx, DB_CARDINALITY_ONE, DB_TYPE_LONG};

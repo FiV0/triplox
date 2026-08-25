@@ -10,7 +10,7 @@ use itertools::Itertools;
 use slatedb::{DbMetadataOps, DbReadOps};
 
 use crate::codec::Encode;
-use crate::db::DB;
+use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{

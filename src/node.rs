@@ -26,7 +26,7 @@ use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::db::DB;
+pub use crate::db_value::DB;
 pub use triplox_client::node::{
     collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode,
 };
