@@ -34,7 +34,7 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
-use crate::incremental::IncrementalQueryEvent;
+use crate::incremental::IncrementalQueryDelta;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
@@ -339,7 +339,7 @@ async fn subscribe<L: TxLog + 'static>(
 /// Stream state for subscription events after the leading `open` frame.
 enum SubscribeBody {
     Streaming {
-        events: mpsc::Receiver<IncrementalQueryEvent>,
+        events: mpsc::Receiver<Result<IncrementalQueryDelta>>,
         shutdown: CancellationToken,
     },
     Closed,
@@ -367,7 +367,7 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
 /// dropped response drops it and the engine tears the query down.
 fn subscription_body(
     open_frame: Vec<u8>,
-    events: mpsc::Receiver<IncrementalQueryEvent>,
+    events: mpsc::Receiver<Result<IncrementalQueryDelta>>,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
@@ -384,7 +384,7 @@ fn subscription_body(
                         biased;
                         _ = shutdown.cancelled() => None,
                         event = events.recv() => match event {
-                            Some(IncrementalQueryEvent::Delta(delta)) => {
+                            Some(Ok(delta)) => {
                                 let frame = SubscriptionFrame::Delta {
                                     tx_key: delta.tx_key,
                                     rows: delta
@@ -404,7 +404,7 @@ fn subscription_body(
                                     )),
                                 }
                             }
-                            Some(IncrementalQueryEvent::Error(error)) => Some((
+                            Some(Err(error)) => Some((
                                 Ok(Bytes::from(error_frame(
                                     ErrorCode::QueryError,
                                     format!("{error:#}"),
@@ -763,16 +763,14 @@ mod tests {
         .unwrap();
         let (sender, receiver) = mpsc::channel(2);
         sender
-            .send(IncrementalQueryEvent::Delta(
-                crate::incremental::IncrementalQueryDelta {
-                    tx_key,
-                    rows: vec![(vec![DataType::Long(10)], 1)],
-                },
-            ))
+            .send(Ok(IncrementalQueryDelta {
+                tx_key,
+                rows: vec![(vec![DataType::Long(10)], 1)],
+            }))
             .await
             .unwrap();
         sender
-            .send(IncrementalQueryEvent::Error(anyhow::anyhow!(
+            .send(Err(anyhow::anyhow!(
                 "sum: cannot aggregate non-numeric value"
             )))
             .await
