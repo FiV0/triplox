@@ -1,7 +1,8 @@
 (ns xyz.triplox.integration.subscription-test
   (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
             [xyz.triplox.api :as api]
-            [xyz.triplox.integration.query-test :refer [*conn* people-schema q with-conn with-schema]]))
+            [xyz.triplox.integration.query-test :refer [*conn* people-schema q with-conn with-schema]])
+  (:import (xyz.triplox.client TriploxException)))
 
 (def residence-schema
   [{:db/ident :person/name
@@ -102,6 +103,24 @@
     (is (= #{[[30 10 20 2 2 15.0] -1]
              [[60 10 30 3 3 20.0] 1]}
            (set (take-delta! sub))))))
+
+(deftest aggregate-subscription-priming-error-is-reported
+  (api/transact *conn* [{:name "Alice"}])
+  (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
+                        (api/subscribe *conn* '{:find [(sum ?name)]
+                                                :where [[?e :name ?name]]}))))
+
+(deftest live-aggregate-error-closes-only-the-affected-subscription
+  (api/transact *conn* [{:age 10}])
+  (with-open [aggregate-sub (api/subscribe *conn* '{:find [(sum ?value)]
+                                                    :where [(or [?e :age ?value]
+                                                                [?e :name ?value])]})
+              names-sub (api/subscribe *conn* names-query)]
+    (is (= [[[10] 1]] (take-priming! aggregate-sub)))
+
+    (is (:committed? (api/transact *conn* [{:name "Alice"}])))
+    (is (nil? (take-delta! aggregate-sub)))
+    (is (= [[["Alice"] 1]] (take-delta! names-sub)))))
 
 (deftest grouped-aggregate-subscription-updates-one-of-multiple-groups
   (api/transact *conn* [{:name "Alice" :sex :female :age 10}
