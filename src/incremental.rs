@@ -62,13 +62,19 @@ pub(crate) type IncrementalQueryHandle = u64;
 pub(crate) struct IncrementalQuerySubscription {
     pub handle: IncrementalQueryHandle,
     pub tx_key: TxKey,
-    pub deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    pub deltas: mpsc::Receiver<IncrementalQueryEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryDelta {
     pub tx_key: TxKey,
     pub rows: Vec<(Vec<DataType>, isize)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum IncrementalQueryEvent {
+    Delta(IncrementalQueryDelta),
+    Error(String),
 }
 
 type ServiceResult<T> = std::result::Result<T, String>;
@@ -276,26 +282,26 @@ impl IncrementalQueryService {
     }
 }
 
-enum DeltaDelivery {
+enum EventDelivery {
     Delivered,
     Closed,
     Cancelled,
 }
 
-fn send_delta(
+fn send_event(
     runtime: &Handle,
-    sender: &mpsc::Sender<IncrementalQueryDelta>,
-    delta: IncrementalQueryDelta,
+    sender: &mpsc::Sender<IncrementalQueryEvent>,
+    event: IncrementalQueryEvent,
     cancel: &CancellationToken,
-) -> DeltaDelivery {
+) -> EventDelivery {
     runtime.block_on(async {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => DeltaDelivery::Cancelled,
-            result = sender.send(delta) => {
+            _ = cancel.cancelled() => EventDelivery::Cancelled,
+            result = sender.send(event) => {
                 match result {
-                    Ok(()) => DeltaDelivery::Delivered,
-                    Err(_) => DeltaDelivery::Closed,
+                    Ok(()) => EventDelivery::Delivered,
+                    Err(_) => EventDelivery::Closed,
                 }
             }
         }
@@ -305,7 +311,7 @@ fn send_delta(
 struct RegisteredQuery {
     _plan: IncrementalQueryPlan,
     _circuit: QueryCircuit,
-    sender: mpsc::Sender<IncrementalQueryDelta>,
+    sender: mpsc::Sender<IncrementalQueryEvent>,
     _tx_key: TxKey,
     _wal_cursor: CdcCursor,
 }
@@ -386,10 +392,10 @@ impl IncrementalQueryServiceInner {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         if !priming_rows.is_empty() {
             sender
-                .try_send(IncrementalQueryDelta {
+                .try_send(IncrementalQueryEvent::Delta(IncrementalQueryDelta {
                     tx_key,
                     rows: priming_rows,
-                })
+                }))
                 .map_err(|err| format!("Failed to enqueue priming result set: {}", err))?;
         }
 
@@ -435,8 +441,8 @@ impl IncrementalQueryServiceInner {
 
             let rows = match query._circuit.apply(triples.clone()) {
                 Ok(rows) => rows,
-                Err(_) => {
-                    failed.push(*id);
+                Err(err) => {
+                    failed.push((*id, format!("{:#}", err)));
                     continue;
                 }
             };
@@ -444,19 +450,26 @@ impl IncrementalQueryServiceInner {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let delta = IncrementalQueryDelta { tx_key, rows };
-            match send_delta(&self.runtime, &query.sender, delta, &cancel) {
-                DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
-                DeltaDelivery::Closed => closed.push(*id),
-                DeltaDelivery::Cancelled => break 
+            let event = IncrementalQueryEvent::Delta(IncrementalQueryDelta { tx_key, rows });
+            match send_event(&self.runtime, &query.sender, event, &cancel) {
+                EventDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
+                EventDelivery::Closed => closed.push(*id),
+                EventDelivery::Cancelled => break,
             }
         }
 
         for id in closed {
             self.remove_query(id)?;
         }
-        for id in failed {
-            self.remove_failed_query(id);
+        for (id, error) in failed {
+            if let Some(sender) = self.remove_failed_query(id) {
+                let _ = send_event(
+                    &self.runtime,
+                    &sender,
+                    IncrementalQueryEvent::Error(error),
+                    &cancel,
+                );
+            }
         }
         Ok(())
     }
@@ -480,13 +493,19 @@ impl IncrementalQueryServiceInner {
         self.remove_query_storage(id)
     }
 
-    fn remove_failed_query(&mut self, id: IncrementalQueryHandle) {
-        if let Some(query) = self.queries.remove(&id) {
+    fn remove_failed_query(
+        &mut self,
+        id: IncrementalQueryHandle,
+    ) -> Option<mpsc::Sender<IncrementalQueryEvent>> {
+        let sender = self.queries.remove(&id).map(|query| {
+            let sender = query.sender.clone();
             drop(query);
-        }
+            sender
+        });
         if let Err(error) = self.remove_query_storage(id) {
             warn!("{}", error);
         }
+        sender
     }
 
     fn remove_query_storage(&self, id: IncrementalQueryHandle) -> ServiceResult<()> {
@@ -555,7 +574,7 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::test_support::{parse_query, test_schema};
+    use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID};
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
     use crate::query::{FindPlan, Projection};
 
@@ -639,17 +658,17 @@ mod tests {
 
         assert_eq!(
             subscription.deltas.try_recv().unwrap(),
-            IncrementalQueryDelta {
+            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
                 tx_key: registration_basis,
                 rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
-            }
+            })
         );
         assert_eq!(
             subscription.deltas.try_recv().unwrap(),
-            IncrementalQueryDelta {
+            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
                 tx_key: future_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
+            })
         );
     }
 
@@ -712,7 +731,10 @@ mod tests {
         );
         let mut aggregate_subscription = service
             .register(
-                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+                aggregate_plan(
+                    "[:find (sum ?value)
+                      :where (or [?e :age ?value] [?e :name ?value])]",
+                ),
                 test_tx_key(),
                 test_cursor(),
                 Vec::new(),
@@ -729,12 +751,21 @@ mod tests {
         aggregate_subscription.deltas.try_recv().unwrap();
 
         service
-            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![name_triple(42, "Alice")])
+            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
+            .unwrap();
+        service
+            .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Alice")])
             .unwrap();
 
         assert_eq!(
-            names_subscription.deltas.try_recv().unwrap().rows,
+            received_delta(names_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+        let prior_delta = received_delta(aggregate_subscription.deltas.try_recv().unwrap());
+        assert!(prior_delta.rows.contains(&(vec![DataType::Long(10)], 1)));
+        assert_eq!(
+            aggregate_subscription.deltas.try_recv().unwrap(),
+            IncrementalQueryEvent::Error("sum: cannot aggregate non-numeric value".to_string())
         );
         assert!(matches!(
             aggregate_subscription.deltas.try_recv(),
@@ -745,10 +776,10 @@ mod tests {
         assert!(!dir.path().join("query-1").exists());
 
         service
-            .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Bob")])
+            .apply_triples(test_tx_key_with_tx_id(4), 4, vec![name_triple(44, "Bob")])
             .unwrap();
         assert_eq!(
-            names_subscription.deltas.try_recv().unwrap().rows,
+            received_delta(names_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
         );
     }
@@ -790,7 +821,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            old_subscription.deltas.try_recv().unwrap().rows,
+            received_delta(old_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
         );
         assert!(new_subscription.deltas.try_recv().is_err());
@@ -1006,17 +1037,17 @@ mod tests {
 
         assert_eq!(
             first_subscription.deltas.recv().await.unwrap(),
-            IncrementalQueryDelta {
+            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
+            })
         );
         assert_eq!(
             second_subscription.deltas.recv().await.unwrap(),
-            IncrementalQueryDelta {
+            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
+            })
         );
 
         service.shutdown().await.unwrap();
@@ -1024,6 +1055,13 @@ mod tests {
 
     fn test_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Runtime::new().unwrap()
+    }
+
+    fn received_delta(event: IncrementalQueryEvent) -> IncrementalQueryDelta {
+        match event {
+            IncrementalQueryEvent::Delta(delta) => delta,
+            IncrementalQueryEvent::Error(error) => panic!("unexpected subscription error: {error}"),
+        }
     }
 
     fn single_pattern_plan() -> IncrementalQueryPlan {
@@ -1061,6 +1099,17 @@ mod tests {
                 entity: DataType::Long(entity).encode(),
                 attribute: 10,
                 value: DataType::String(name.to_string()).encode(),
+            },
+            1,
+        )
+    }
+
+    fn age_triple(entity: i64, age: i64) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: DataType::Long(entity).encode(),
+                attribute: AGE_ATTR_ID,
+                value: DataType::Long(age).encode(),
             },
             1,
         )

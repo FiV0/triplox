@@ -29,27 +29,47 @@ use crate::query::{AggregateFunc, FindPlan, Projection};
 
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
 type GroupedRows = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, EncodedRow>>;
-type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, Vec<u8>>>;
+type OutputRow = Vec<AggregateOutput>;
+type OutputZSet = OrdWSet<OutputRow, ZWeight, DynZWeight>;
+type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateOutput>>;
 
-const AGGREGATE_ERROR_PREFIX: &[u8] = b"\xfftriplox-aggregate-error\0";
-
-fn aggregate_error(message: impl AsRef<str>) -> Vec<u8> {
-    let mut encoded = AGGREGATE_ERROR_PREFIX.to_vec();
-    encoded.extend_from_slice(message.as_ref().as_bytes());
-    encoded
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+enum AggregateOutput {
+    Value(Vec<u8>),
+    Error(String),
 }
 
-fn decode_aggregate_output(value: &[u8]) -> Result<DataType> {
-    if let Some(message) = value.strip_prefix(AGGREGATE_ERROR_PREFIX) {
-        return Err(anyhow!(String::from_utf8_lossy(message).into_owned()));
+impl Default for AggregateOutput {
+    fn default() -> Self {
+        Self::Value(Vec::new())
     }
-    DataType::decode(value).map_err(anyhow::Error::from)
 }
 
-fn empty_global_aggregate(func: &AggregateFunc) -> Option<Vec<u8>> {
+fn decode_aggregate_output(value: &AggregateOutput) -> Result<DataType> {
+    match value {
+        AggregateOutput::Value(value) => DataType::decode(value).map_err(anyhow::Error::from),
+        AggregateOutput::Error(message) => Err(anyhow!(message.clone())),
+    }
+}
+
+fn empty_global_aggregate(func: &AggregateFunc) -> Option<AggregateOutput> {
     match func {
         AggregateFunc::Count | AggregateFunc::CountDistinct | AggregateFunc::Sum => {
-            Some(DataType::Long(0).encode())
+            Some(AggregateOutput::Value(DataType::Long(0).encode()))
         }
         AggregateFunc::Avg | AggregateFunc::Min | AggregateFunc::Max => None,
     }
@@ -103,16 +123,18 @@ impl DbspSum {
         }
     }
 
-    fn encode_result(&self) -> Vec<u8> {
+    fn encode_result(&self) -> AggregateOutput {
         if self.error_count != 0 {
-            return aggregate_error("sum: cannot aggregate non-numeric value");
+            return AggregateOutput::Error("sum: cannot aggregate non-numeric value".to_string());
         }
         if self.non_long_count != 0 {
-            return DataType::Double(self.long as f64 + self.double.into_inner()).encode();
+            return AggregateOutput::Value(
+                DataType::Double(self.long as f64 + self.double.into_inner()).encode(),
+            );
         }
         match i64::try_from(self.long) {
-            Ok(value) => DataType::Long(value).encode(),
-            Err(_) => aggregate_error("integer overflow in sum"),
+            Ok(value) => AggregateOutput::Value(DataType::Long(value).encode()),
+            Err(_) => AggregateOutput::Error("integer overflow in sum".to_string()),
         }
     }
 }
@@ -203,11 +225,11 @@ impl DbspAverage {
         }
     }
 
-    fn encode_result(&self) -> Vec<u8> {
+    fn encode_result(&self) -> AggregateOutput {
         if self.error_count != 0 {
-            aggregate_error("cannot convert value to numeric for aggregation")
+            AggregateOutput::Error("cannot convert value to numeric for aggregation".to_string())
         } else {
-            DataType::Double(self.value.into_inner()).encode()
+            AggregateOutput::Value(DataType::Double(self.value.into_inner()).encode())
         }
     }
 }
@@ -310,7 +332,7 @@ struct ComparableValue {
     rank: u8,
     sort_key: Vec<u8>,
     encoded: Vec<u8>,
-    error: Vec<u8>,
+    error: Option<String>,
 }
 
 impl ComparableValue {
@@ -335,7 +357,7 @@ impl ComparableValue {
             rank: if minimum { family + 1 } else { family },
             sort_key,
             encoded: encoded.to_vec(),
-            error: Vec::new(),
+            error: None,
         }
     }
 
@@ -344,15 +366,14 @@ impl ComparableValue {
             rank: if minimum { 0 } else { u8::MAX },
             sort_key: Vec::new(),
             encoded: encoded.to_vec(),
-            error: aggregate_error(message),
+            error: Some(message.to_string()),
         }
     }
 
-    fn encode_result(&self) -> Vec<u8> {
-        if self.error.is_empty() {
-            self.encoded.clone()
-        } else {
-            self.error.clone()
+    fn encode_result(&self) -> AggregateOutput {
+        match &self.error {
+            Some(message) => AggregateOutput::Error(message.clone()),
+            None => AggregateOutput::Value(self.encoded.clone()),
         }
     }
 }
@@ -725,13 +746,21 @@ fn aggregate_stream(
     input_position: usize,
 ) -> AggregateStream {
     match func {
-        AggregateFunc::Count => grouped
-            .weighted_count()
-            .map_index(|(group, count)| (group.clone(), DataType::Long(*count).encode())),
+        AggregateFunc::Count => grouped.weighted_count().map_index(|(group, count)| {
+            (
+                group.clone(),
+                AggregateOutput::Value(DataType::Long(*count).encode()),
+            )
+        }),
         AggregateFunc::CountDistinct => grouped
             .map_index(move |(group, row)| (group.clone(), row[input_position].clone()))
             .distinct_count()
-            .map_index(|(group, count)| (group.clone(), DataType::Long(*count).encode())),
+            .map_index(|(group, count)| {
+                (
+                    group.clone(),
+                    AggregateOutput::Value(DataType::Long(*count).encode()),
+                )
+            }),
         AggregateFunc::Sum => grouped
             .map_index(move |(group, row)| {
                 (group.clone(), DbspSum::from_encoded(&row[input_position]))
@@ -802,7 +831,7 @@ fn validate_comparable_aggregate(
         let value = if *family_count == 1 {
             value.clone()
         } else {
-            aggregate_error("min/max cannot compare aggregate values")
+            AggregateOutput::Error("min/max cannot compare aggregate values".to_string())
         };
         Some((group.clone(), value))
     })
@@ -811,7 +840,7 @@ fn validate_comparable_aggregate(
 fn project_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
-) -> Stream<RootCircuit, RowZSet> {
+) -> Stream<RootCircuit, OutputZSet> {
     let find_positions = plan
         .projections
         .iter()
@@ -820,15 +849,18 @@ fn project_find_stream(
             Projection::Aggregate(_, _) => unreachable!("projection plan has no aggregates"),
         })
         .collect::<Vec<_>>();
-    where_stream
-        .stream
-        .map(move |row| select_row_positions(row, &find_positions))
+    where_stream.stream.map(move |row| {
+        select_row_positions(row, &find_positions)
+            .into_iter()
+            .map(AggregateOutput::Value)
+            .collect()
+    })
 }
 
 fn aggregate_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
-) -> Stream<RootCircuit, RowZSet> {
+) -> Stream<RootCircuit, OutputZSet> {
     let group_positions = plan.group_key_indices.clone();
     let grouped = where_stream
         .stream
@@ -850,18 +882,13 @@ fn aggregate_find_stream(
             .circuit()
             .add_source(ConstantGenerator::new(singleton))
             .differentiate()
-            .map_index(|group| (group.clone(), Vec::<Vec<u8>>::new()));
+            .map_index(|group| (group.clone(), Vec::<AggregateOutput>::new()));
         for (func, aggregate) in aggregate_streams {
             let aggregate =
                 aggregate.map_index(|(group, value)| (group.clone(), Some(value.clone())));
             combined = combined.left_join_index(&aggregate, move |group, values, value| {
                 let mut output = values.clone();
-                output.push(
-                    value
-                        .clone()
-                        .or_else(|| empty_global_aggregate(&func))
-                        .unwrap_or_default(),
-                );
+                output.push(value.clone().or_else(|| empty_global_aggregate(&func))?);
                 Some((group.clone(), output))
             });
         }
@@ -883,32 +910,29 @@ fn aggregate_find_stream(
         )
     };
     let projections = plan.projections.clone();
-    combined.flat_map(move |(group, aggregate_values)| {
-        if aggregate_values.iter().any(Vec::is_empty) {
-            return None;
-        }
+    combined.map(move |(group, aggregate_values)| {
         let mut aggregate_position = 0;
-        Some(
-            projections
-                .iter()
-                .map(|projection| match projection {
-                    Projection::GroupVar(group_position) => group[*group_position].clone(),
-                    Projection::Aggregate(_, _) => {
-                        let value = aggregate_values[aggregate_position].clone();
-                        aggregate_position += 1;
-                        value
-                    }
-                })
-                .collect(),
-        )
+        projections
+            .iter()
+            .map(|projection| match projection {
+                Projection::GroupVar(group_position) => {
+                    AggregateOutput::Value(group[*group_position].clone())
+                }
+                Projection::Aggregate(_, _) => {
+                    let value = aggregate_values[aggregate_position].clone();
+                    aggregate_position += 1;
+                    value
+                }
+            })
+            .collect()
     })
 }
 
 // Creates the DBSP stream of rows projected and aggregated according to the find plan.
-pub(crate) fn query_find_stream(
+fn query_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
-) -> Stream<RootCircuit, RowZSet> {
+) -> Stream<RootCircuit, OutputZSet> {
     if plan.has_aggregates {
         aggregate_find_stream(where_stream, plan)
     } else {
@@ -917,13 +941,13 @@ pub(crate) fn query_find_stream(
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
-pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
     batch
         .iter()
         .map(|(row, (), weight)| {
             let decoded = row
                 .iter()
-                .map(|value| decode_aggregate_output(value))
+                .map(decode_aggregate_output)
                 .collect::<Result<Vec<_>>>()?;
             let weight = isize::try_from(weight)
                 .map_err(|_| anyhow!("DBSP weight {} does not fit in isize", weight))?;
@@ -956,7 +980,7 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 pub(super) struct QueryCircuit {
     _circuit: DBSPHandle,
     _input: ZSetHandle<EncodedTriple>,
-    _output: OutputHandle<RowZSet>,
+    _output: OutputHandle<OutputZSet>,
 }
 
 impl QueryCircuit {
@@ -1029,7 +1053,7 @@ mod tests {
     fn build_find_circuit(
         circuit: &mut RootCircuit,
         plan: IncrementalQueryPlan,
-    ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
+    ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<OutputZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let where_stream = query_where_stream(&input, &plan);
         let stream = query_find_stream(where_stream, &plan.find_plan);
@@ -2125,9 +2149,57 @@ mod tests {
 
     #[test]
     fn decode_errors_surface() {
-        let batch = RowZSet::from_keys((), vec![Tup2(vec![vec![0xff]], 1)]);
+        let batch =
+            OutputZSet::from_keys((), vec![Tup2(vec![AggregateOutput::Value(vec![0xff])], 1)]);
         let err = decode_output_rows(&batch).unwrap_err();
 
         assert!(err.to_string().contains("DecodeError"));
+    }
+
+    #[test]
+    fn aggregate_errors_surface_without_encoding() {
+        let batch = OutputZSet::from_keys(
+            (),
+            vec![Tup2(
+                vec![AggregateOutput::Error("aggregate failed".to_string())],
+                1,
+            )],
+        );
+        let err = decode_output_rows(&batch).unwrap_err();
+
+        assert_eq!(err.to_string(), "aggregate failed");
+    }
+
+    #[test]
+    fn aggregate_finalizers_return_typed_errors() {
+        assert_eq!(
+            DbspSum {
+                error_count: 1,
+                ..DbspSum::default()
+            }
+            .encode_result(),
+            AggregateOutput::Error("sum: cannot aggregate non-numeric value".to_string())
+        );
+        assert_eq!(
+            DbspSum {
+                long: i64::MAX as i128 + 1,
+                ..DbspSum::default()
+            }
+            .encode_result(),
+            AggregateOutput::Error("integer overflow in sum".to_string())
+        );
+        assert_eq!(
+            DbspAverage {
+                error_count: 1,
+                ..DbspAverage::default()
+            }
+            .encode_result(),
+            AggregateOutput::Error("cannot convert value to numeric for aggregation".to_string())
+        );
+        assert_eq!(
+            ComparableValue::from_encoded(&DataType::Double(f64::NAN).encode(), true)
+                .encode_result(),
+            AggregateOutput::Error("cannot compare NaN values".to_string())
+        );
     }
 }

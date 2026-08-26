@@ -79,7 +79,8 @@
 (defn take!
   "Block for the next delta. Returns a vector of `[row-values weight]` pairs
   or nil when the stream is closed. The 2-arity bounds the wait,
-  returning `::timeout` on expiry."
+  returning `::timeout` on expiry. A terminal subscription error throws
+  TriploxException."
   ([sub] (types/delta->clj (.take ^Subscription sub)))
   ([sub timeout-ms]
    (let [delta (.poll ^Subscription sub (long timeout-ms) TimeUnit/MILLISECONDS)]
