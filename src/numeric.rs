@@ -8,6 +8,12 @@ pub(crate) enum NumericValue {
     Double(f64),
 }
 
+// The differences and reaon of being for `from_expression` and `from_aggregate` is the following:
+// Expressions with incompatible types produces no results (tuples get filtered), hence the 
+// Option return value. On the other hand aggregates return an error when incompatible types
+// are aggregated. 
+// TODO: Look into the differences of Long/Double vs Long/Double/Float/BigInt
+
 impl NumericValue {
     pub(crate) fn from_expression(value: &DataType) -> Option<Self> {
         match value {
