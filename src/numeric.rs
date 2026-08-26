@@ -12,7 +12,7 @@ pub(crate) enum NumericValue {
 // Expressions with incompatible types produces no results (tuples get filtered), hence the
 // Option return value. On the other hand aggregates return an error when incompatible types
 // are aggregated.
-// TODO: Look into the differences of Long/Double vs Long/Double/Float/BigInt
+// TODO: Look into whether expressions should accept Float and BigInt like aggregates.
 
 impl NumericValue {
     pub(crate) fn from_expression(value: &DataType) -> Option<Self> {
