@@ -28,7 +28,7 @@
 
 Triplox is a [Datomic](https://www.datomic.com/)-inspired general-purpose database on top of object storage. The backbone of the engine is [SlateDB](https://github.com/slatedb/slatedb/), a key-value store on top of object-storage. Datomic is the main inspiration and the data model, transaction semantics and query API closely follow Datomic.
 
-The goals of Triplox are roughly the following (in no particular order):
+The ideas of Triplox are roughly the following (in no particular order):
 - Object storage centric. In it's final version Triplox should simply need a single (or likely two) S3 buckets for deployment. This is currently not the case. See [Architecture](###Architecture) below.
 - The Datomic data model and API as main inspiration. Datomic is awesome. Lets bring it directly to object storage.
 - A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM (where Datomic has had it's main success).
