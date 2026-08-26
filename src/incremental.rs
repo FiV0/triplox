@@ -276,26 +276,26 @@ impl IncrementalQueryService {
     }
 }
 
-enum EventDelivery {
+enum DeltaDelivery {
     Delivered,
     Closed,
     Cancelled,
 }
 
-fn send_event(
+fn send_delta(
     runtime: &Handle,
     sender: &mpsc::Sender<Result<IncrementalQueryDelta>>,
-    event: Result<IncrementalQueryDelta>,
+    delta: Result<IncrementalQueryDelta>,
     cancel: &CancellationToken,
-) -> EventDelivery {
+) -> DeltaDelivery {
     runtime.block_on(async {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => EventDelivery::Cancelled,
-            result = sender.send(event) => {
+            _ = cancel.cancelled() => DeltaDelivery::Cancelled,
+            result = sender.send(delta) => {
                 match result {
-                    Ok(()) => EventDelivery::Delivered,
-                    Err(_) => EventDelivery::Closed,
+                    Ok(()) => DeltaDelivery::Delivered,
+                    Err(_) => DeltaDelivery::Closed,
                 }
             }
         }
@@ -444,11 +444,11 @@ impl IncrementalQueryServiceInner {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let event = Ok(IncrementalQueryDelta { tx_key, rows });
-            match send_event(&self.runtime, &query.sender, event, &cancel) {
-                EventDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
-                EventDelivery::Closed => closed.push(*id),
-                EventDelivery::Cancelled => break,
+            let delta = Ok(IncrementalQueryDelta { tx_key, rows });
+            match send_delta(&self.runtime, &query.sender, delta, &cancel) {
+                DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
+                DeltaDelivery::Closed => closed.push(*id),
+                DeltaDelivery::Cancelled => break,
             }
         }
 
@@ -457,7 +457,7 @@ impl IncrementalQueryServiceInner {
         }
         for (id, error) in failed {
             if let Some(sender) = self.remove_failed_query(id) {
-                let _ = send_event(&self.runtime, &sender, Err(error), &cancel);
+                let _ = send_delta(&self.runtime, &sender, Err(error), &cancel);
             }
         }
         Ok(())
