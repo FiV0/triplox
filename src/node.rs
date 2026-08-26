@@ -1980,11 +1980,11 @@ mod tests {
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        let event = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+        let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
             .await
             .expect("timed out waiting for incremental delta")
             .expect("subscription should be open");
-        incremental_delta(event)
+        incremental_delta(delta)
     }
 
     async fn take_priming_delta(

@@ -336,10 +336,10 @@ async fn subscribe<L: TxLog + 'static>(
         .into_response())
 }
 
-/// Stream state for subscription events after the leading `open` frame.
+/// Stream state for subscription deltas after the leading `open` frame.
 enum SubscribeBody {
     Streaming {
-        events: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+        deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
         shutdown: CancellationToken,
     },
     Closed,
@@ -367,23 +367,23 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
 /// dropped response drops it and the engine tears the query down.
 fn subscription_body(
     open_frame: Vec<u8>,
-    events: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+    deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
         futures::stream::once(async move { Ok::<Bytes, Infallible>(Bytes::from(open_frame)) });
-    let events = futures::stream::unfold(
-        SubscribeBody::Streaming { events, shutdown },
+    let deltas = futures::stream::unfold(
+        SubscribeBody::Streaming { deltas, shutdown },
         |state| async move {
             match state {
                 SubscribeBody::Streaming {
-                    mut events,
+                    mut deltas,
                     shutdown,
                 } => {
                     tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => None,
-                        event = events.recv() => match event {
+                        delta = deltas.recv() => match delta {
                             Some(Ok(delta)) => {
                                 let frame = SubscriptionFrame::Delta {
                                     tx_key: delta.tx_key,
@@ -396,7 +396,7 @@ fn subscription_body(
                                 match encode_subscription_frame(&frame) {
                                     Ok(bytes) => Some((
                                         Ok(Bytes::from(bytes)),
-                                        SubscribeBody::Streaming { events, shutdown },
+                                        SubscribeBody::Streaming { deltas, shutdown },
                                     )),
                                     Err(err) => Some((
                                         Ok(Bytes::from(internal_error_frame(&err))),
@@ -419,7 +419,7 @@ fn subscription_body(
             }
         },
     );
-    Body::from_stream(open.chain(events))
+    Body::from_stream(open.chain(deltas))
 }
 
 // ---------------------------------------------------------------------------
