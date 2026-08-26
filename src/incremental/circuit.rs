@@ -46,11 +46,44 @@ type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateO
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    thiserror::Error,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+pub(super) enum AggregateError {
+    #[error("sum: cannot aggregate non-numeric value")]
+    SumNonNumeric,
+    #[error("integer overflow in sum")]
+    SumOverflow,
+    #[error("cannot convert value to numeric for aggregation")]
+    NonNumeric,
+    #[error("aggregate value failed to decode")]
+    Decode,
+    #[error("cannot compare NaN values")]
+    NanComparison,
+    #[error("min/max cannot compare aggregate value")]
+    UnsupportedComparison,
+    #[error("min/max cannot compare aggregate values")]
+    MixedComparison,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 enum AggregateOutput {
     Value(Vec<u8>),
-    Error(String),
+    Error(AggregateError),
 }
 
 impl Default for AggregateOutput {
@@ -62,7 +95,7 @@ impl Default for AggregateOutput {
 fn decode_aggregate_output(value: &AggregateOutput) -> Result<DataType> {
     match value {
         AggregateOutput::Value(value) => DataType::decode(value).map_err(anyhow::Error::from),
-        AggregateOutput::Error(message) => Err(anyhow!(message.clone())),
+        AggregateOutput::Error(error) => Err(error.clone().into()),
     }
 }
 
@@ -125,7 +158,7 @@ impl DbspSum {
 
     fn encode_result(&self) -> AggregateOutput {
         if self.error_count != 0 {
-            return AggregateOutput::Error("sum: cannot aggregate non-numeric value".to_string());
+            return AggregateOutput::Error(AggregateError::SumNonNumeric);
         }
         if self.non_long_count != 0 {
             return AggregateOutput::Value(
@@ -134,7 +167,7 @@ impl DbspSum {
         }
         match i64::try_from(self.long) {
             Ok(value) => AggregateOutput::Value(DataType::Long(value).encode()),
-            Err(_) => AggregateOutput::Error("integer overflow in sum".to_string()),
+            Err(_) => AggregateOutput::Error(AggregateError::SumOverflow),
         }
     }
 }
@@ -227,7 +260,7 @@ impl DbspAverage {
 
     fn encode_result(&self) -> AggregateOutput {
         if self.error_count != 0 {
-            AggregateOutput::Error("cannot convert value to numeric for aggregation".to_string())
+            AggregateOutput::Error(AggregateError::NonNumeric)
         } else {
             AggregateOutput::Value(DataType::Double(self.value.into_inner()).encode())
         }
@@ -332,26 +365,26 @@ struct ComparableValue {
     rank: u8,
     sort_key: Vec<u8>,
     encoded: Vec<u8>,
-    error: Option<String>,
+    error: Option<AggregateError>,
 }
 
 impl ComparableValue {
     fn from_encoded(encoded: &[u8], minimum: bool) -> Self {
         let Ok(value) = DataType::decode(encoded) else {
-            return Self::invalid(encoded, minimum, "aggregate value failed to decode");
+            return Self::invalid(encoded, minimum, AggregateError::Decode);
         };
         let (family, sort_key) = match &value {
             DataType::Long(_) | DataType::Double(_) | DataType::Float(_) | DataType::BigInt(_) => {
                 let numeric = NumericValue::from_aggregate(&value).expect("numeric value");
                 if numeric.as_f64().is_nan() {
-                    return Self::invalid(encoded, minimum, "cannot compare NaN values");
+                    return Self::invalid(encoded, minimum, AggregateError::NanComparison);
                 }
                 (0, DataType::Double(numeric.as_f64()).encode())
             }
             DataType::String(_) => (1, encoded.to_vec()),
             DataType::Boolean(_) => (2, encoded.to_vec()),
             DataType::Instant(_) => (3, encoded.to_vec()),
-            _ => return Self::invalid(encoded, minimum, "min/max cannot compare aggregate value"),
+            _ => return Self::invalid(encoded, minimum, AggregateError::UnsupportedComparison),
         };
         Self {
             rank: if minimum { family + 1 } else { family },
@@ -361,18 +394,18 @@ impl ComparableValue {
         }
     }
 
-    fn invalid(encoded: &[u8], minimum: bool, message: &str) -> Self {
+    fn invalid(encoded: &[u8], minimum: bool, error: AggregateError) -> Self {
         Self {
             rank: if minimum { 0 } else { u8::MAX },
             sort_key: Vec::new(),
             encoded: encoded.to_vec(),
-            error: Some(message.to_string()),
+            error: Some(error),
         }
     }
 
     fn encode_result(&self) -> AggregateOutput {
         match &self.error {
-            Some(message) => AggregateOutput::Error(message.clone()),
+            Some(error) => AggregateOutput::Error(error.clone()),
             None => AggregateOutput::Value(self.encoded.clone()),
         }
     }
@@ -831,7 +864,7 @@ fn validate_comparable_aggregate(
         let value = if *family_count == 1 {
             value.clone()
         } else {
-            AggregateOutput::Error("min/max cannot compare aggregate values".to_string())
+            AggregateOutput::Error(AggregateError::MixedComparison)
         };
         Some((group.clone(), value))
     })
@@ -2161,13 +2194,14 @@ mod tests {
         let batch = OutputZSet::from_keys(
             (),
             vec![Tup2(
-                vec![AggregateOutput::Error("aggregate failed".to_string())],
+                vec![AggregateOutput::Error(AggregateError::SumNonNumeric)],
                 1,
             )],
         );
         let err = decode_output_rows(&batch).unwrap_err();
 
-        assert_eq!(err.to_string(), "aggregate failed");
+        assert_eq!(err.to_string(), "sum: cannot aggregate non-numeric value");
+        assert!(err.downcast_ref::<AggregateError>().is_some());
     }
 
     #[test]
@@ -2178,7 +2212,7 @@ mod tests {
                 ..DbspSum::default()
             }
             .encode_result(),
-            AggregateOutput::Error("sum: cannot aggregate non-numeric value".to_string())
+            AggregateOutput::Error(AggregateError::SumNonNumeric)
         );
         assert_eq!(
             DbspSum {
@@ -2186,7 +2220,7 @@ mod tests {
                 ..DbspSum::default()
             }
             .encode_result(),
-            AggregateOutput::Error("integer overflow in sum".to_string())
+            AggregateOutput::Error(AggregateError::SumOverflow)
         );
         assert_eq!(
             DbspAverage {
@@ -2194,12 +2228,12 @@ mod tests {
                 ..DbspAverage::default()
             }
             .encode_result(),
-            AggregateOutput::Error("cannot convert value to numeric for aggregation".to_string())
+            AggregateOutput::Error(AggregateError::NonNumeric)
         );
         assert_eq!(
             ComparableValue::from_encoded(&DataType::Double(f64::NAN).encode(), true)
                 .encode_result(),
-            AggregateOutput::Error("cannot compare NaN values".to_string())
+            AggregateOutput::Error(AggregateError::NanComparison)
         );
     }
 }

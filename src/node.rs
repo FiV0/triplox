@@ -2086,13 +2086,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
-            crate::incremental::IncrementalQueryEvent::Delta(
-                crate::incremental::IncrementalQueryDelta {
-                    tx_key: basis,
-                    rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
-                },
-            )
+            incremental_delta(subscription.deltas.try_recv().unwrap()),
+            crate::incremental::IncrementalQueryDelta {
+                tx_key: basis,
+                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+            }
         );
     }
 

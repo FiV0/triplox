@@ -405,7 +405,10 @@ fn subscription_body(
                                 }
                             }
                             Some(IncrementalQueryEvent::Error(error)) => Some((
-                                Ok(Bytes::from(error_frame(ErrorCode::QueryError, error))),
+                                Ok(Bytes::from(error_frame(
+                                    ErrorCode::QueryError,
+                                    format!("{error:#}"),
+                                ))),
                                 SubscribeBody::Closed,
                             )),
                             None => None,
@@ -769,9 +772,9 @@ mod tests {
             .await
             .unwrap();
         sender
-            .send(IncrementalQueryEvent::Error(
-                "sum: cannot aggregate non-numeric value".to_string(),
-            ))
+            .send(IncrementalQueryEvent::Error(anyhow::anyhow!(
+                "sum: cannot aggregate non-numeric value"
+            )))
             .await
             .unwrap();
         drop(sender);
