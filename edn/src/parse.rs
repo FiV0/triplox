@@ -302,7 +302,6 @@ peg::parser! {
 
         rule find_elem() -> query::Element
             = __() v:variable() __() { query::Element::Variable(v) }
-            / __() "(" __() "the" v:variable() ")" __() { query::Element::Corresponding(v) }
             / __() "(" __() "pull" var:variable() "[" patterns:pull_attribute()+ "]" __() ")" __() { query::Element::Pull(query::Pull { var, patterns }) }
             / __() "(" func:query_function() args:fn_arg()* ")" __() { query::Element::Aggregate(query::Aggregate { func, args }) }
 

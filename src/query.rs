@@ -503,10 +503,8 @@ fn compile_find_plan(
                 })?;
                 projections.push(Projection::Aggregate(func, idx));
             }
-            Element::Corresponding(_) | Element::Pull(_) => {
-                return Err(anyhow::anyhow!(
-                    "Pull and corresponding elements are not yet supported"
-                ));
+            Element::Pull(_) => {
+                return Err(anyhow::anyhow!("Pull is not (yet) supported"));
             }
         }
     }
