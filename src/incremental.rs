@@ -62,19 +62,13 @@ pub(crate) type IncrementalQueryHandle = u64;
 pub(crate) struct IncrementalQuerySubscription {
     pub handle: IncrementalQueryHandle,
     pub tx_key: TxKey,
-    pub deltas: mpsc::Receiver<IncrementalQueryEvent>,
+    pub deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IncrementalQueryDelta {
     pub tx_key: TxKey,
     pub rows: Vec<(Vec<DataType>, isize)>,
-}
-
-#[derive(Debug)]
-pub(crate) enum IncrementalQueryEvent {
-    Delta(IncrementalQueryDelta),
-    Error(anyhow::Error),
 }
 
 type ServiceResult<T> = std::result::Result<T, String>;
@@ -290,8 +284,8 @@ enum EventDelivery {
 
 fn send_event(
     runtime: &Handle,
-    sender: &mpsc::Sender<IncrementalQueryEvent>,
-    event: IncrementalQueryEvent,
+    sender: &mpsc::Sender<Result<IncrementalQueryDelta>>,
+    event: Result<IncrementalQueryDelta>,
     cancel: &CancellationToken,
 ) -> EventDelivery {
     runtime.block_on(async {
@@ -311,7 +305,7 @@ fn send_event(
 struct RegisteredQuery {
     _plan: IncrementalQueryPlan,
     _circuit: QueryCircuit,
-    sender: mpsc::Sender<IncrementalQueryEvent>,
+    sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
     _tx_key: TxKey,
     _wal_cursor: CdcCursor,
 }
@@ -392,7 +386,7 @@ impl IncrementalQueryServiceInner {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         if !priming_rows.is_empty() {
             sender
-                .try_send(IncrementalQueryEvent::Delta(IncrementalQueryDelta {
+                .try_send(Ok(IncrementalQueryDelta {
                     tx_key,
                     rows: priming_rows,
                 }))
@@ -450,7 +444,7 @@ impl IncrementalQueryServiceInner {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let event = IncrementalQueryEvent::Delta(IncrementalQueryDelta { tx_key, rows });
+            let event = Ok(IncrementalQueryDelta { tx_key, rows });
             match send_event(&self.runtime, &query.sender, event, &cancel) {
                 EventDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 EventDelivery::Closed => closed.push(*id),
@@ -463,12 +457,7 @@ impl IncrementalQueryServiceInner {
         }
         for (id, error) in failed {
             if let Some(sender) = self.remove_failed_query(id) {
-                let _ = send_event(
-                    &self.runtime,
-                    &sender,
-                    IncrementalQueryEvent::Error(error),
-                    &cancel,
-                );
+                let _ = send_event(&self.runtime, &sender, Err(error), &cancel);
             }
         }
         Ok(())
@@ -496,7 +485,7 @@ impl IncrementalQueryServiceInner {
     fn remove_failed_query(
         &mut self,
         id: IncrementalQueryHandle,
-    ) -> Option<mpsc::Sender<IncrementalQueryEvent>> {
+    ) -> Option<mpsc::Sender<Result<IncrementalQueryDelta>>> {
         let sender = self.queries.remove(&id).map(|query| {
             let sender = query.sender.clone();
             drop(query);
@@ -1056,19 +1045,19 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap()
     }
 
-    fn received_delta(event: IncrementalQueryEvent) -> IncrementalQueryDelta {
-        match event {
-            IncrementalQueryEvent::Delta(delta) => delta,
-            IncrementalQueryEvent::Error(error) => panic!("unexpected subscription error: {error}"),
+    fn received_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
+        match result {
+            Ok(delta) => delta,
+            Err(error) => panic!("unexpected subscription error: {error}"),
         }
     }
 
-    fn received_error(event: IncrementalQueryEvent) -> anyhow::Error {
-        match event {
-            IncrementalQueryEvent::Delta(delta) => {
+    fn received_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
+        match result {
+            Ok(delta) => {
                 panic!("expected subscription error, got delta: {delta:?}")
             }
-            IncrementalQueryEvent::Error(error) => error,
+            Err(error) => error,
         }
     }
 

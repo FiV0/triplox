@@ -1912,11 +1912,11 @@ mod tests {
     }
 
     fn incremental_delta(
-        event: crate::incremental::IncrementalQueryEvent,
+        result: anyhow::Result<crate::incremental::IncrementalQueryDelta>,
     ) -> crate::incremental::IncrementalQueryDelta {
-        match event {
-            crate::incremental::IncrementalQueryEvent::Delta(delta) => delta,
-            crate::incremental::IncrementalQueryEvent::Error(error) => {
+        match result {
+            Ok(delta) => delta,
+            Err(error) => {
                 panic!("unexpected incremental query error: {error}")
             }
         }
