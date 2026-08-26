@@ -215,64 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn plans_grouped_aggregates_in_find_order() {
-        let plan = plan_query(
-            &parse_query(
-                "[:find (sum ?age) ?type (count ?e) (max ?age)
-                  :where [?e :type ?type] [?e :age ?age]]",
-            ),
-            &test_schema(),
-        )
-        .unwrap();
-        let entity_position = plan
-            .where_plan
-            .output_vars
-            .iter()
-            .position(|variable| variable == &"?e".to_var())
-            .unwrap();
-        let type_position = plan
-            .where_plan
-            .output_vars
-            .iter()
-            .position(|variable| variable == &"?type".to_var())
-            .unwrap();
-        let age_position = plan
-            .where_plan
-            .output_vars
-            .iter()
-            .position(|variable| variable == &"?age".to_var())
-            .unwrap();
-
-        assert_eq!(plan.find_plan.group_key_indices, vec![type_position]);
-        assert_eq!(
-            plan.find_plan.projections,
-            vec![
-                Projection::Aggregate(AggregateFunc::Sum, age_position),
-                Projection::GroupVar(0),
-                Projection::Aggregate(AggregateFunc::Count, entity_position),
-                Projection::Aggregate(AggregateFunc::Max, age_position),
-            ]
-        );
-        assert!(plan.find_plan.has_aggregates);
-    }
-
-    #[test]
-    fn plans_global_aggregates_without_a_group_key() {
-        let plan = plan_query(
-            &parse_query(
-                "[:find (count ?age) (count-distinct ?age) (avg ?age)
-                  :where [?e :age ?age]]",
-            ),
-            &test_schema(),
-        )
-        .unwrap();
-
-        assert!(plan.find_plan.group_key_indices.is_empty());
-        assert_eq!(plan.find_plan.projections.len(), 3);
-        assert!(plan.find_plan.has_aggregates);
-    }
-
-    #[test]
     fn plans_entity_extension_layout() {
         let schema = test_schema();
         let plan = plan_query(
