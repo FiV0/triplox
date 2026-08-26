@@ -769,7 +769,7 @@ fn aggregate_stream(
     }
 }
 
-// DBSP 0.299's typed average wrapper fixes custom sum storage to ZWeight.
+// DBSP's typed average wrapper fixes custom sum storage to ZWeight.
 fn average_data_type(
     values: &Stream<RootCircuit, OrdIndexedZSet<EncodedRow, Vec<u8>>>,
 ) -> Stream<RootCircuit, OrdIndexedZSet<EncodedRow, DbspAverage>> {
