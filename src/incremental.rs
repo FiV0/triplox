@@ -425,7 +425,6 @@ impl IncrementalQueryServiceInner {
         self.cleanup_closed_subscriptions()?;
         let mut closed = Vec::new();
         let mut failed = Vec::new();
-        let mut cancelled = false;
         let cancel = self.cancel.clone();
 
         for (id, query) in &mut self.queries {
@@ -449,10 +448,7 @@ impl IncrementalQueryServiceInner {
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
-                DeltaDelivery::Cancelled => {
-                    cancelled = true;
-                    break;
-                }
+                DeltaDelivery::Cancelled => break 
             }
         }
 
@@ -461,9 +457,6 @@ impl IncrementalQueryServiceInner {
         }
         for id in failed {
             self.remove_failed_query(id);
-        }
-        if cancelled {
-            return Ok(());
         }
         Ok(())
     }
