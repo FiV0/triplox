@@ -633,6 +633,13 @@
          (q '{:find [(min ?name) (max ?name)]
               :where [[?e :name ?name]]}))))
 
+(deftest test-aggregate-min-incompatible-types-errors
+  (tc/transact *conn* [{:name "Alice" :age 30}])
+  (is (thrown-with-msg? TriploxException #"cannot compare String with Long"
+                        (q '{:find [(min ?value)]
+                             :where [(or [?e :name ?value]
+                                         [?e :age ?value])]}) )))
+
 (deftest test-aggregate-empty-result
   (is (= #{[0]} (q '{:find [(count ?e)]
                      :where [[?e :name "nobody"]]}))))
