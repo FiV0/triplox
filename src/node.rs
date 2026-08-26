@@ -1980,10 +1980,11 @@ mod tests {
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+        let event = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
             .await
             .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open")
+            .expect("subscription should be open");
+        incremental_delta(event)
     }
 
     async fn take_priming_delta(
@@ -2001,6 +2002,18 @@ mod tests {
             .await
             .ok()
             .flatten()
+            .map(incremental_delta)
+    }
+
+    fn incremental_delta(
+        event: crate::incremental::IncrementalQueryEvent,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        match event {
+            crate::incremental::IncrementalQueryEvent::Delta(delta) => delta,
+            crate::incremental::IncrementalQueryEvent::Error(error) => {
+                panic!("unexpected incremental query error: {error}")
+            }
+        }
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -2061,7 +2074,7 @@ mod tests {
                         .recv()
                         .await
                         .expect("subscription should be open");
-                    integrate_delta(rows, delta);
+                    integrate_delta(rows, incremental_delta(delta));
                 }
             })
             .await
@@ -2168,10 +2181,12 @@ mod tests {
 
         assert_eq!(
             subscription.deltas.try_recv().unwrap(),
-            crate::incremental::IncrementalQueryDelta {
-                tx_key: basis,
-                rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
-            }
+            crate::incremental::IncrementalQueryEvent::Delta(
+                crate::incremental::IncrementalQueryDelta {
+                    tx_key: basis,
+                    rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
+                },
+            )
         );
     }
 

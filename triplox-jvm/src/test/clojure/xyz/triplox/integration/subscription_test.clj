@@ -106,9 +106,15 @@
 
 (deftest aggregate-subscription-priming-error-is-reported
   (api/transact *conn* [{:name "Alice"}])
-  (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
-                        (api/subscribe *conn* '{:find [(sum ?name)]
-                                                :where [[?e :name ?name]]}))))
+  (let [error (try
+                (api/subscribe *conn* '{:find [(sum ?name)]
+                                        :where [[?e :name ?name]]})
+                nil
+                (catch TriploxException error error))]
+    (is (some? error))
+    (is (= 2001 (Short/toUnsignedInt (.code ^TriploxException error))))
+    (is (re-find #"sum: cannot aggregate non-numeric value"
+                 (.getMessage ^TriploxException error)))))
 
 (deftest live-aggregate-error-closes-only-the-affected-subscription
   (api/transact *conn* [{:age 10}])
@@ -119,8 +125,19 @@
     (is (= [[[10] 1]] (take-priming! aggregate-sub)))
 
     (is (:committed? (api/transact *conn* [{:name "Alice"}])))
-    (is (nil? (take-delta! aggregate-sub)))
-    (is (= [[["Alice"] 1]] (take-delta! names-sub)))))
+    (let [error (try
+                  (take-delta! aggregate-sub)
+                  nil
+                  (catch TriploxException error error))]
+      (is (some? error))
+      (is (= 2001 (Short/toUnsignedInt (.code ^TriploxException error))))
+      (is (re-find #"sum: cannot aggregate non-numeric value"
+                   (.getMessage ^TriploxException error))))
+    (is (.isDone aggregate-sub))
+    (is (= [[["Alice"] 1]] (take-delta! names-sub)))
+
+    (is (:committed? (api/transact *conn* [{:name "Bob"}])))
+    (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
 
 (deftest grouped-aggregate-subscription-updates-one-of-multiple-groups
   (api/transact *conn* [{:name "Alice" :sex :female :age 10}

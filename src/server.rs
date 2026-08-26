@@ -34,7 +34,7 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
-use crate::incremental::IncrementalQueryDelta;
+use crate::incremental::IncrementalQueryEvent;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
@@ -336,25 +336,29 @@ async fn subscribe<L: TxLog + 'static>(
         .into_response())
 }
 
-/// Stream state for subscription deltas after the leading `open` frame.
+/// Stream state for subscription events after the leading `open` frame.
 enum SubscribeBody {
     Streaming {
-        deltas: mpsc::Receiver<IncrementalQueryDelta>,
+        events: mpsc::Receiver<IncrementalQueryEvent>,
         shutdown: CancellationToken,
     },
     Closed,
 }
 
-/// Encode a terminal `error` frame for a failure that occurs mid-stream.
-fn internal_error_frame(err: &Error) -> Vec<u8> {
+fn error_frame(code: ErrorCode, message: String) -> Vec<u8> {
     let frame = SubscriptionFrame::Error(ErrorResponseBody {
         severity: SEVERITY_ERROR,
-        code: ErrorCode::InternalError.as_u16(),
-        message: err.to_string(),
+        code: code.as_u16(),
+        message,
         detail: None,
         hint: None,
     });
     encode_subscription_frame(&frame).unwrap_or_default()
+}
+
+/// Encode a terminal `error` frame for an internal streaming failure.
+fn internal_error_frame(err: &Error) -> Vec<u8> {
+    error_frame(ErrorCode::InternalError, err.to_string())
 }
 
 /// Build the subscription response body: the `open` frame, then one `delta` frame
@@ -363,24 +367,24 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
 /// dropped response drops it and the engine tears the query down.
 fn subscription_body(
     open_frame: Vec<u8>,
-    deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    events: mpsc::Receiver<IncrementalQueryEvent>,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
         futures::stream::once(async move { Ok::<Bytes, Infallible>(Bytes::from(open_frame)) });
-    let deltas = futures::stream::unfold(
-        SubscribeBody::Streaming { deltas, shutdown },
+    let events = futures::stream::unfold(
+        SubscribeBody::Streaming { events, shutdown },
         |state| async move {
             match state {
                 SubscribeBody::Streaming {
-                    mut deltas,
+                    mut events,
                     shutdown,
                 } => {
                     tokio::select! {
                         biased;
                         _ = shutdown.cancelled() => None,
-                        delta = deltas.recv() => match delta {
-                            Some(delta) => {
+                        event = events.recv() => match event {
+                            Some(IncrementalQueryEvent::Delta(delta)) => {
                                 let frame = SubscriptionFrame::Delta {
                                     tx_key: delta.tx_key,
                                     rows: delta
@@ -392,7 +396,7 @@ fn subscription_body(
                                 match encode_subscription_frame(&frame) {
                                     Ok(bytes) => Some((
                                         Ok(Bytes::from(bytes)),
-                                        SubscribeBody::Streaming { deltas, shutdown },
+                                        SubscribeBody::Streaming { events, shutdown },
                                     )),
                                     Err(err) => Some((
                                         Ok(Bytes::from(internal_error_frame(&err))),
@@ -400,6 +404,10 @@ fn subscription_body(
                                     )),
                                 }
                             }
+                            Some(IncrementalQueryEvent::Error(error)) => Some((
+                                Ok(Bytes::from(error_frame(ErrorCode::QueryError, error))),
+                                SubscribeBody::Closed,
+                            )),
                             None => None,
                         }
                     }
@@ -408,7 +416,7 @@ fn subscription_body(
             }
         },
     );
-    Body::from_stream(open.chain(deltas))
+    Body::from_stream(open.chain(events))
 }
 
 // ---------------------------------------------------------------------------
@@ -737,5 +745,56 @@ mod tests {
             }
             other => panic!("expected open frame, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn subscription_body_streams_queued_delta_then_query_error() {
+        let tx_key = TxKey {
+            tx_id: 1,
+            system_time: chrono::Utc::now(),
+        };
+        let open_frame = encode_subscription_frame(&SubscriptionFrame::Open {
+            tx_key,
+            columns: Vec::new(),
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .send(IncrementalQueryEvent::Delta(
+                crate::incremental::IncrementalQueryDelta {
+                    tx_key,
+                    rows: vec![(vec![DataType::Long(10)], 1)],
+                },
+            ))
+            .await
+            .unwrap();
+        sender
+            .send(IncrementalQueryEvent::Error(
+                "sum: cannot aggregate non-numeric value".to_string(),
+            ))
+            .await
+            .unwrap();
+        drop(sender);
+
+        let body = subscription_body(open_frame, receiver, CancellationToken::new());
+        let mut stream = body.into_data_stream();
+
+        assert!(matches!(
+            decode_subscription_frame(&stream.next().await.unwrap().unwrap()).unwrap(),
+            SubscriptionFrame::Open { .. }
+        ));
+        assert!(matches!(
+            decode_subscription_frame(&stream.next().await.unwrap().unwrap()).unwrap(),
+            SubscriptionFrame::Delta { .. }
+        ));
+        match decode_subscription_frame(&stream.next().await.unwrap().unwrap()).unwrap() {
+            SubscriptionFrame::Error(error) => {
+                assert_eq!(error.severity, SEVERITY_ERROR);
+                assert_eq!(error.code, ErrorCode::QueryError.as_u16());
+                assert_eq!(error.message, "sum: cannot aggregate non-numeric value");
+            }
+            other => panic!("expected error frame, got {other:?}"),
+        }
+        assert!(stream.next().await.is_none());
     }
 }
