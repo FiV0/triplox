@@ -89,12 +89,12 @@
   (api/transact *conn* [{:name "Alice" :age 10}
                         {:name "Bob" :age 20}])
   (with-open [sub (api/subscribe *conn* '{:find [(sum ?age)
-                                                  (min ?age)
-                                                  (max ?age)
-                                                  (count ?age)
-                                                  (count-distinct ?age)
-                                                  (avg ?age)]
-                                           :where [[?e :age ?age]]})]
+                                                 (min ?age)
+                                                 (max ?age)
+                                                 (count ?age)
+                                                 (count-distinct ?age)
+                                                 (avg ?age)]
+                                          :where [[?e :age ?age]]})]
     (is (= [[[30 10 20 2 2 15.0] 1]]
            (take-priming! sub)))
 
@@ -108,11 +108,11 @@
                         {:name "Bob" :sex :male :age 20}
                         {:name "Dave" :sex :male :age 30}])
   (with-open [sub (api/subscribe *conn* '{:find [(sum ?age)
-                                                  ?sex
-                                                  (count ?e)
-                                                  (max ?age)]
-                                           :where [[?e :sex ?sex]
-                                                   [?e :age ?age]]})]
+                                                 ?sex
+                                                 (count ?e)
+                                                 (max ?age)]
+                                          :where [[?e :sex ?sex]
+                                                  [?e :age ?age]]})]
     (is (= #{[[10 :female 1 10] 1]
              [[50 :male 2 30] 1]}
            (set (take-priming! sub))))
