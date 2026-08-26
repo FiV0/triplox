@@ -563,7 +563,7 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
-    use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID};
+    use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
     use crate::query::{FindPlan, Projection};
 
@@ -614,7 +614,7 @@ mod tests {
         Tup2(
             EncodedTriple {
                 entity: DataType::Long(entity).encode(),
-                attribute: 10,
+                attribute: NAME_ATTR_ID,
                 value: DataType::String(name.to_string()).encode(),
             },
             1,
