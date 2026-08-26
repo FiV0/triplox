@@ -71,10 +71,10 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum IncrementalQueryEvent {
     Delta(IncrementalQueryDelta),
-    Error(String),
+    Error(anyhow::Error),
 }
 
 type ServiceResult<T> = std::result::Result<T, String>;
@@ -442,7 +442,7 @@ impl IncrementalQueryServiceInner {
             let rows = match query._circuit.apply(triples.clone()) {
                 Ok(rows) => rows,
                 Err(err) => {
-                    failed.push((*id, format!("{:#}", err)));
+                    failed.push((*id, err));
                     continue;
                 }
             };
@@ -657,18 +657,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
-            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
+            received_delta(subscription.deltas.try_recv().unwrap()),
+            IncrementalQueryDelta {
                 tx_key: registration_basis,
                 rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
-            })
+            }
         );
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
-            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
+            received_delta(subscription.deltas.try_recv().unwrap()),
+            IncrementalQueryDelta {
                 tx_key: future_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            })
+            }
         );
     }
 
@@ -763,10 +763,9 @@ mod tests {
         );
         let prior_delta = received_delta(aggregate_subscription.deltas.try_recv().unwrap());
         assert!(prior_delta.rows.contains(&(vec![DataType::Long(10)], 1)));
-        assert_eq!(
-            aggregate_subscription.deltas.try_recv().unwrap(),
-            IncrementalQueryEvent::Error("sum: cannot aggregate non-numeric value".to_string())
-        );
+        let error = received_error(aggregate_subscription.deltas.try_recv().unwrap());
+        assert_eq!(error.to_string(), "sum: cannot aggregate non-numeric value");
+        assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
         assert!(matches!(
             aggregate_subscription.deltas.try_recv(),
             Err(mpsc::error::TryRecvError::Disconnected)
@@ -1036,18 +1035,18 @@ mod tests {
         apply.await.unwrap().unwrap();
 
         assert_eq!(
-            first_subscription.deltas.recv().await.unwrap(),
-            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
+            received_delta(first_subscription.deltas.recv().await.unwrap()),
+            IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            })
+            }
         );
         assert_eq!(
-            second_subscription.deltas.recv().await.unwrap(),
-            IncrementalQueryEvent::Delta(IncrementalQueryDelta {
+            received_delta(second_subscription.deltas.recv().await.unwrap()),
+            IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            })
+            }
         );
 
         service.shutdown().await.unwrap();
@@ -1061,6 +1060,15 @@ mod tests {
         match event {
             IncrementalQueryEvent::Delta(delta) => delta,
             IncrementalQueryEvent::Error(error) => panic!("unexpected subscription error: {error}"),
+        }
+    }
+
+    fn received_error(event: IncrementalQueryEvent) -> anyhow::Error {
+        match event {
+            IncrementalQueryEvent::Delta(delta) => {
+                panic!("expected subscription error, got delta: {delta:?}")
+            }
+            IncrementalQueryEvent::Error(error) => error,
         }
     }
 
