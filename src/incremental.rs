@@ -646,14 +646,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            received_delta(subscription.deltas.try_recv().unwrap()),
+            expect_delta(subscription.deltas.try_recv().unwrap()),
             IncrementalQueryDelta {
                 tx_key: registration_basis,
                 rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
             }
         );
         assert_eq!(
-            received_delta(subscription.deltas.try_recv().unwrap()),
+            expect_delta(subscription.deltas.try_recv().unwrap()),
             IncrementalQueryDelta {
                 tx_key: future_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
@@ -747,12 +747,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            received_delta(names_subscription.deltas.try_recv().unwrap()).rows,
+            expect_delta(names_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Alice".to_string())], 1)]
         );
-        let prior_delta = received_delta(aggregate_subscription.deltas.try_recv().unwrap());
+        let prior_delta = expect_delta(aggregate_subscription.deltas.try_recv().unwrap());
         assert!(prior_delta.rows.contains(&(vec![DataType::Long(10)], 1)));
-        let error = received_error(aggregate_subscription.deltas.try_recv().unwrap());
+        let error = expect_error(aggregate_subscription.deltas.try_recv().unwrap());
         assert_eq!(error.to_string(), "sum: cannot aggregate non-numeric value");
         assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
         assert!(matches!(
@@ -767,7 +767,7 @@ mod tests {
             .apply_triples(test_tx_key_with_tx_id(4), 4, vec![name_triple(44, "Bob")])
             .unwrap();
         assert_eq!(
-            received_delta(names_subscription.deltas.try_recv().unwrap()).rows,
+            expect_delta(names_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
         );
     }
@@ -809,7 +809,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            received_delta(old_subscription.deltas.try_recv().unwrap()).rows,
+            expect_delta(old_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
         );
         assert!(new_subscription.deltas.try_recv().is_err());
@@ -1024,14 +1024,14 @@ mod tests {
         apply.await.unwrap().unwrap();
 
         assert_eq!(
-            received_delta(first_subscription.deltas.recv().await.unwrap()),
+            expect_delta(first_subscription.deltas.recv().await.unwrap()),
             IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );
         assert_eq!(
-            received_delta(second_subscription.deltas.recv().await.unwrap()),
+            expect_delta(second_subscription.deltas.recv().await.unwrap()),
             IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
@@ -1045,20 +1045,14 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap()
     }
 
-    fn received_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
-        match result {
-            Ok(delta) => delta,
-            Err(error) => panic!("unexpected subscription error: {error}"),
-        }
+    #[track_caller]
+    fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
+        result.expect("expected subscription delta")
     }
 
-    fn received_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
-        match result {
-            Ok(delta) => {
-                panic!("expected subscription error, got delta: {delta:?}")
-            }
-            Err(error) => error,
-        }
+    #[track_caller]
+    fn expect_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
+        result.expect_err("expected subscription error")
     }
 
     fn single_pattern_plan() -> IncrementalQueryPlan {
