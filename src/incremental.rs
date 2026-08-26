@@ -606,10 +606,6 @@ mod tests {
         plan_query(&parse_query(query), &test_schema()).unwrap()
     }
 
-    fn initial_triples() -> Vec<Tup2<EncodedTriple, ZWeight>> {
-        vec![name_triple(42, "Alice")]
-    }
-
     fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
         Tup2(
             EncodedTriple {
@@ -630,10 +626,6 @@ mod tests {
             },
             1,
         )
-    }
-
-    fn test_tx_key() -> TxKey {
-        test_tx_key_with_tx_id(1)
     }
 
     fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
@@ -671,9 +663,9 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .unwrap();
         let storage_path = dir.path().join("query-1");
@@ -697,9 +689,9 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .unwrap();
         let storage_path = dir.path().join("query-1");
@@ -765,7 +757,7 @@ mod tests {
         let mut subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -790,7 +782,7 @@ mod tests {
         let err = service
             .register(
                 aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 vec![name_triple(42, "Alice")],
             )
@@ -816,7 +808,7 @@ mod tests {
                     "[:find (sum ?value)
                       :where (or [?e :age ?value] [?e :name ?value])]",
                 ),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -824,7 +816,7 @@ mod tests {
         let mut names_subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -938,7 +930,7 @@ mod tests {
         let _subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -1034,9 +1026,9 @@ mod tests {
         let _subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .await
             .unwrap();
