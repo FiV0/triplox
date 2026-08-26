@@ -567,6 +567,98 @@ mod tests {
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
     use crate::query::{FindPlan, Projection};
 
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().unwrap()
+    }
+
+    #[track_caller]
+    fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
+        result.expect("expected subscription delta")
+    }
+
+    #[track_caller]
+    fn expect_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
+        result.expect_err("expected subscription error")
+    }
+
+    fn single_pattern_plan() -> IncrementalQueryPlan {
+        let pattern = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Variable("?name".to_var()),
+            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
+        };
+        IncrementalQueryPlan {
+            find_plan: FindPlan {
+                group_key_indices: vec![1],
+                projections: vec![Projection::GroupVar(0)],
+                has_aggregates: false,
+            },
+            where_plan: RelPlan {
+                incoming_vars: None,
+                output_vars: pattern.pattern_vars.clone(),
+                kind: RelPlanKind::Pattern(pattern),
+            },
+        }
+    }
+
+    fn aggregate_plan(query: &str) -> IncrementalQueryPlan {
+        plan_query(&parse_query(query), &test_schema()).unwrap()
+    }
+
+    fn initial_triples() -> Vec<Tup2<EncodedTriple, ZWeight>> {
+        vec![name_triple(42, "Alice")]
+    }
+
+    fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: DataType::Long(entity).encode(),
+                attribute: 10,
+                value: DataType::String(name.to_string()).encode(),
+            },
+            1,
+        )
+    }
+
+    fn age_triple(entity: i64, age: i64) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: DataType::Long(entity).encode(),
+                attribute: AGE_ATTR_ID,
+                value: DataType::Long(age).encode(),
+            },
+            1,
+        )
+    }
+
+    fn test_tx_key() -> TxKey {
+        test_tx_key_with_tx_id(1)
+    }
+
+    fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
+        TxKey {
+            tx_id,
+            system_time: Utc::now(),
+        }
+    }
+
+    fn test_cursor() -> CdcCursor {
+        CdcCursor {
+            wal_id: 0,
+            last_seq: 0,
+        }
+    }
+
+    fn path_has_entries(path: &Path) -> bool {
+        std::fs::read_dir(path)
+            .unwrap()
+            .next()
+            .transpose()
+            .unwrap()
+            .is_some()
+    }
+
     #[test]
     fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
@@ -1039,97 +1131,5 @@ mod tests {
         );
 
         service.shutdown().await.unwrap();
-    }
-
-    fn test_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Runtime::new().unwrap()
-    }
-
-    #[track_caller]
-    fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
-        result.expect("expected subscription delta")
-    }
-
-    #[track_caller]
-    fn expect_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
-        result.expect_err("expected subscription error")
-    }
-
-    fn single_pattern_plan() -> IncrementalQueryPlan {
-        let pattern = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Variable("?name".to_var()),
-            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
-        };
-        IncrementalQueryPlan {
-            find_plan: FindPlan {
-                group_key_indices: vec![1],
-                projections: vec![Projection::GroupVar(0)],
-                has_aggregates: false,
-            },
-            where_plan: RelPlan {
-                incoming_vars: None,
-                output_vars: pattern.pattern_vars.clone(),
-                kind: RelPlanKind::Pattern(pattern),
-            },
-        }
-    }
-
-    fn aggregate_plan(query: &str) -> IncrementalQueryPlan {
-        plan_query(&parse_query(query), &test_schema()).unwrap()
-    }
-
-    fn initial_triples() -> Vec<Tup2<EncodedTriple, ZWeight>> {
-        vec![name_triple(42, "Alice")]
-    }
-
-    fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
-        Tup2(
-            EncodedTriple {
-                entity: DataType::Long(entity).encode(),
-                attribute: 10,
-                value: DataType::String(name.to_string()).encode(),
-            },
-            1,
-        )
-    }
-
-    fn age_triple(entity: i64, age: i64) -> Tup2<EncodedTriple, ZWeight> {
-        Tup2(
-            EncodedTriple {
-                entity: DataType::Long(entity).encode(),
-                attribute: AGE_ATTR_ID,
-                value: DataType::Long(age).encode(),
-            },
-            1,
-        )
-    }
-
-    fn test_tx_key() -> TxKey {
-        test_tx_key_with_tx_id(1)
-    }
-
-    fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
-        TxKey {
-            tx_id,
-            system_time: Utc::now(),
-        }
-    }
-
-    fn test_cursor() -> CdcCursor {
-        CdcCursor {
-            wal_id: 0,
-            last_seq: 0,
-        }
-    }
-
-    fn path_has_entries(path: &Path) -> bool {
-        std::fs::read_dir(path)
-            .unwrap()
-            .next()
-            .transpose()
-            .unwrap()
-            .is_some()
     }
 }
