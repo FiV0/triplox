@@ -385,6 +385,7 @@ fn project_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
 ) -> Stream<RootCircuit, OutputZSet> {
+
     let find_positions = plan
         .projections
         .iter()
@@ -393,6 +394,8 @@ fn project_find_stream(
             Projection::Aggregate(_, _) => unreachable!("projection plan has no aggregates"),
         })
         .collect::<Vec<_>>();
+
+    // TODO: After find every position is an AggregateOutput. This should likely be named differently.
     where_stream.stream.map(move |row| {
         select_row_positions(row, &find_positions)
             .into_iter()
