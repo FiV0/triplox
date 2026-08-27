@@ -468,6 +468,7 @@ fn aggregate_stream(
                 AggregateOutput::Value(DataType::Long(*count).encode()),
             )
         }),
+
         AggregateFunc::CountDistinct => grouped
             .map_index(move |(group, row)| (group.clone(), row[input_position].clone()))
             .distinct_count()
@@ -477,12 +478,14 @@ fn aggregate_stream(
                     AggregateOutput::Value(DataType::Long(*count).encode()),
                 )
             }),
+
         AggregateFunc::Sum => grouped
             .map_index(move |(group, row)| {
                 (group.clone(), DbspSum::from_encoded(&row[input_position]))
             })
             .aggregate_linear(|value| value.clone())
             .map_index(|(group, sum)| (group.clone(), sum.encode_result())),
+
         AggregateFunc::Avg => grouped
             .map_index(move |(group, row)| {
                 (
@@ -492,6 +495,7 @@ fn aggregate_stream(
             })
             .aggregate_linear(|value| value.clone())
             .map_index(|(group, average)| (group.clone(), average.encode_result())),
+
         AggregateFunc::Min => {
             let values = grouped.map_index(move |(group, row)| {
                 (
@@ -504,6 +508,7 @@ fn aggregate_stream(
                 .map_index(|(group, minimum)| (group.clone(), minimum.encode_result()));
             validate_comparable_aggregate(grouped, minimum, input_position)
         }
+
         AggregateFunc::Max => {
             let values = grouped.map_index(move |(group, row)| {
                 (
