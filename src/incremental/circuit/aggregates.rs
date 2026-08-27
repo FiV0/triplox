@@ -523,10 +523,14 @@ pub(super) fn aggregate_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
 ) -> Stream<RootCircuit, OutputZSet> {
+    // Group complete input rows by the variables selected as the aggregate key.
     let group_positions = plan.group_key_indices.clone();
     let grouped = where_stream
         .stream
         .map_index(move |row| (select_row_positions(row, &group_positions), row.clone()));
+
+    // Build one independent result stream for each aggregate projection.
+    // Aggregate results are kept in the same order as they appera in plan.projections.
     let aggregate_streams = plan
         .projections
         .iter()
@@ -538,16 +542,20 @@ pub(super) fn aggregate_find_stream(
             Projection::GroupVar(_) => None,
         })
         .collect::<Vec<_>>();
+
     let combined = if plan.group_key_indices.is_empty() {
+        // Seed the empty group so global aggregates produce a row for empty input.
         let singleton = OrdZSet::from_keys((), vec![Tup2(Vec::<Vec<u8>>::new(), 1)]);
         let mut combined = grouped
             .circuit()
             .add_source(ConstantGenerator::new(singleton))
+            // The differentiate assures there are no changes after the first tick.
             .differentiate()
             .map_index(|group| (group.clone(), Vec::<AggregateOutput>::new()));
         for (func, aggregate) in aggregate_streams {
             let aggregate =
                 aggregate.map_index(|(group, value)| (group.clone(), Some(value.clone())));
+            // This needs to be a left_join because an empty global result has no group key. With left_join the left group is preserved.
             combined = combined.left_join_index(&aggregate, move |group, values, value| {
                 let mut output = values.clone();
                 output.push(value.clone().or_else(|| empty_global_aggregate(&func))?);
@@ -556,13 +564,16 @@ pub(super) fn aggregate_find_stream(
         }
         combined
     } else {
+        // Join per-group aggregate streams into one vector of results.
         let mut streams = aggregate_streams.into_iter().map(|(_, stream)| stream);
         let first = streams
             .next()
             .expect("aggregate find plan must contain an aggregate");
+        // Restuls remain indexed, because the group-key becomes important below.
         streams.fold(
             first.map_index(|(group, value)| (group.clone(), vec![value.clone()])),
             |combined, aggregate| {
+                // This always triggers a join as the group keys *must* exist on both sides.
                 combined.join_index(&aggregate, |group, values, value| {
                     let mut output = values.clone();
                     output.push(value.clone());
@@ -571,6 +582,8 @@ pub(super) fn aggregate_find_stream(
             },
         )
     };
+
+    // Restore group variables and aggregate results to find-clause order.
     let projections = plan.projections.clone();
     combined.map(move |(group, aggregate_values)| {
         let mut aggregate_position = 0;
