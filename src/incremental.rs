@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 
 use crate::partition::tx_eid_from_tx_id;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
@@ -71,7 +71,7 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-type ServiceResult<T> = std::result::Result<T, String>;
+type ServiceResult<T> = Result<T>;
 
 enum IncrementalCommand {
     Register {
@@ -211,10 +211,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
@@ -222,10 +219,7 @@ impl IncrementalQueryService {
         self.commands
             .send(IncrementalCommand::Unregister { handle, response })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn apply_triples(
@@ -243,10 +237,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -257,21 +248,19 @@ impl IncrementalQueryService {
             .commands
             .send(IncrementalCommand::Shutdown { response })
         {
-            Ok(()) => result
-                .await
-                .map_err(|_| anyhow!("Incremental query service stopped"))
-                .and_then(|result| result.map_err(|err| anyhow!("{}", err))),
+            Ok(()) => match result.await {
+                Ok(result) => result,
+                Err(err) => Err(err).context("Incremental query service stopped"),
+            },
             Err(_) => Err(anyhow!("Incremental query service stopped")),
         };
 
         match (cdc_result, service_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(cdc_err), Err(service_err)) => Err(anyhow!(
-                "Incremental query CDC shutdown failed: {:#}; incremental query service shutdown failed: {:#}",
-                cdc_err,
-                service_err
-            )),
+            (Err(cdc_err), Err(service_err)) => Err(cdc_err.context(format!(
+                "Incremental query service shutdown also failed: {service_err:#}"
+            ))),
         }
     }
 }
@@ -373,14 +362,14 @@ impl IncrementalQueryServiceInner {
         let mut circuit = match QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
         {
             Ok(circuit) => circuit,
-            Err(err) => return Err(self.cleanup_failed_registration(handle, format!("{:#}", err))),
+            Err(err) => return Err(self.cleanup_failed_registration(handle, err)),
         };
         // Priming is the circuit's first batch, so its delta is the whole query result.
         let priming_rows = match circuit.apply(initial_triples) {
             Ok(rows) => rows,
             Err(err) => {
                 drop(circuit);
-                return Err(self.cleanup_failed_registration(handle, format!("{:#}", err)));
+                return Err(self.cleanup_failed_registration(handle, err));
             }
         };
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
@@ -390,7 +379,7 @@ impl IncrementalQueryServiceInner {
                     tx_key,
                     rows: priming_rows,
                 }))
-                .map_err(|err| format!("Failed to enqueue priming result set: {}", err))?;
+                .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
         }
 
         self.queries.insert(
@@ -477,7 +466,7 @@ impl IncrementalQueryServiceInner {
         let query = self
             .queries
             .remove(&id)
-            .ok_or_else(|| format!("Unknown incremental query handle: {:?}", id))?;
+            .ok_or_else(|| anyhow!("Unknown incremental query handle: {:?}", id))?;
         drop(query);
         self.remove_query_storage(id)
     }
@@ -501,17 +490,18 @@ impl IncrementalQueryServiceInner {
         match std::fs::remove_dir_all(self.query_storage_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!(
-                "Failed to remove incremental query storage for {:?}: {}",
-                id, err
-            )),
+            Err(err) => Err(err).with_context(|| {
+                format!("Failed to remove incremental query storage for {:?}", id)
+            }),
         }
     }
 
-    fn cleanup_failed_registration(&self, id: IncrementalQueryHandle, error: String) -> String {
+    fn cleanup_failed_registration(&self, id: IncrementalQueryHandle, error: Error) -> Error {
         match self.remove_query_storage(id) {
             Ok(()) => error,
-            Err(cleanup_error) => format!("{}; {}", error, cleanup_error),
+            Err(cleanup_error) => error.context(format!(
+                "Incremental query registration cleanup also failed: {cleanup_error:#}"
+            )),
         }
     }
 
@@ -523,11 +513,16 @@ impl IncrementalQueryServiceInner {
                 errors.push(err);
             }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
+        let mut errors = errors.into_iter();
+        let Some(mut error) = errors.next() else {
+            return Ok(());
+        };
+        for parallel_error in errors {
+            error = error.context(format!(
+                "An additional incremental query cleanup failed: {parallel_error:#}"
+            ));
         }
+        Err(error)
     }
 
     fn cleanup_closed_subscriptions(&mut self) -> ServiceResult<()> {
@@ -701,7 +696,7 @@ mod tests {
         drop(subscription);
 
         let err = service.unregister(handle).unwrap_err();
-        assert!(err.contains("Unknown incremental query handle"));
+        assert!(err.to_string().contains("Unknown incremental query handle"));
         assert!(!storage_path.exists());
     }
 
@@ -788,7 +783,10 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(err.contains("sum: cannot aggregate non-numeric value"));
+        assert!(err
+            .to_string()
+            .contains("sum: cannot aggregate non-numeric value"));
+        assert!(err.downcast_ref::<circuit::AggregateError>().is_some());
         assert!(service.queries.is_empty());
         assert!(!dir.path().join("query-1").exists());
     }
