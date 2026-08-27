@@ -27,10 +27,15 @@ use crate::numeric::NumericValue;
 use crate::ops::DataType;
 use crate::query::{AggregateFunc, FindPlan, Projection};
 
+// Standard row -> weight
 pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
+// Grouped key -> Full row -> weight
 type GroupedRows = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, EncodedRow>>;
+// Output row 
 type OutputRow = Vec<AggregateOutput>;
+// Output row -> weight
 type OutputZSet = OrdWSet<OutputRow, ZWeight, DynZWeight>;
+// Stream type of one aggregate expression
 type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateOutput>>;
 
 #[derive(
