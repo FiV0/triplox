@@ -1,10 +1,8 @@
-use std::ops::{Add, AddAssign, Div, Neg};
+use std::ops::{Add, AddAssign};
 
 use anyhow::Result;
 use dbsp::{
     algebra::{HasZero, MulByRef, F64},
-    dynamic::{ClonableTrait, DowncastTrait, DynData, DynWeight},
-    operator::dynamic::aggregate::AvgFactories,
     operator::{ConstantGenerator, Max, Min},
     typed_batch::OrdIndexedZSet,
     utils::Tup2,
@@ -115,48 +113,68 @@ fn empty_global_aggregate(func: &AggregateFunc) -> Option<AggregateOutput> {
     feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
-struct DbspSum {
+struct SumValue {
     long: i128,
     double: F64,
     non_long_count: i64,
-    error_count: i64,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+enum DbspSum {
+    Value(SumValue),
+    Error(AggregateError),
+}
+
+impl Default for DbspSum {
+    fn default() -> Self {
+        Self::Value(SumValue::default())
+    }
 }
 
 impl DbspSum {
     fn from_encoded(value: &[u8]) -> Self {
         let Ok(value) = DataType::decode(value) else {
-            return Self {
-                error_count: 1,
-                ..Self::default()
-            };
+            return Self::Error(AggregateError::SumNonNumeric);
         };
         match NumericValue::from_aggregate(&value) {
-            Ok(NumericValue::Long(value)) => Self {
+            Ok(NumericValue::Long(value)) => Self::Value(SumValue {
                 long: value as i128,
-                ..Self::default()
-            },
-            Ok(NumericValue::Double(value)) => Self {
+                ..SumValue::default()
+            }),
+            Ok(NumericValue::Double(value)) => Self::Value(SumValue {
                 double: F64::new(value),
                 non_long_count: 1,
-                ..Self::default()
-            },
-            Err(_) => Self {
-                error_count: 1,
-                ..Self::default()
-            },
+                ..SumValue::default()
+            }),
+            Err(_) => Self::Error(AggregateError::SumNonNumeric),
         }
     }
 
     fn encode_result(&self) -> AggregateOutput {
-        if self.error_count != 0 {
-            return AggregateOutput::Error(AggregateError::SumNonNumeric);
-        }
-        if self.non_long_count != 0 {
+        let value = match self {
+            Self::Value(value) => value,
+            Self::Error(error) => return AggregateOutput::Error(error.clone()),
+        };
+        if value.non_long_count != 0 {
             return AggregateOutput::Value(
-                DataType::Double(self.long as f64 + self.double.into_inner()).encode(),
+                DataType::Double(value.long as f64 + value.double.into_inner()).encode(),
             );
         }
-        match i64::try_from(self.long) {
+        match i64::try_from(value.long) {
             Ok(value) => AggregateOutput::Value(DataType::Long(value).encode()),
             Err(_) => AggregateOutput::Error(AggregateError::SumOverflow),
         }
@@ -167,27 +185,30 @@ impl<'a> Add<&'a DbspSum> for &'a DbspSum {
     type Output = DbspSum;
 
     fn add(self, other: &'a DbspSum) -> Self::Output {
-        DbspSum {
-            long: self.long + other.long,
-            double: self.double + other.double,
-            non_long_count: self.non_long_count + other.non_long_count,
-            error_count: self.error_count + other.error_count,
+        match (self, other) {
+            (DbspSum::Value(left), DbspSum::Value(right)) => DbspSum::Value(SumValue {
+                long: left.long + right.long,
+                double: left.double + right.double,
+                non_long_count: left.non_long_count + right.non_long_count,
+            }),
+            (DbspSum::Error(left), DbspSum::Error(right)) => {
+                DbspSum::Error(left.min(right).clone())
+            }
+            (DbspSum::Error(error), DbspSum::Value(_))
+            | (DbspSum::Value(_), DbspSum::Error(error)) => DbspSum::Error(error.clone()),
         }
     }
 }
 
 impl AddAssign<&DbspSum> for DbspSum {
     fn add_assign(&mut self, other: &DbspSum) {
-        self.long += other.long;
-        self.double += other.double;
-        self.non_long_count += other.non_long_count;
-        self.error_count += other.error_count;
+        *self = &*self + other;
     }
 }
 
 impl HasZero for DbspSum {
     fn is_zero(&self) -> bool {
-        self == &Self::default()
+        matches!(self, Self::Value(value) if value == &SumValue::default())
     }
 
     fn zero() -> Self {
@@ -199,11 +220,16 @@ impl MulByRef<ZWeight> for DbspSum {
     type Output = Self;
 
     fn mul_by_ref(&self, weight: &ZWeight) -> Self::Output {
-        Self {
-            long: self.long * *weight as i128,
-            double: self.double * F64::new(*weight as f64),
-            non_long_count: self.non_long_count * *weight,
-            error_count: self.error_count * *weight,
+        if *weight == 0 {
+            return Self::default();
+        }
+        match self {
+            Self::Value(value) => Self::Value(SumValue {
+                long: value.long * *weight as i128,
+                double: value.double * F64::new(*weight as f64),
+                non_long_count: value.non_long_count * *weight,
+            }),
+            Self::Error(error) => Self::Error(error.clone()),
         }
     }
 }
@@ -224,45 +250,57 @@ impl MulByRef<ZWeight> for DbspSum {
     feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
-struct DbspAverage {
-    value: F64,
-    error_count: i64,
+struct AverageValue {
+    sum: F64,
+    count: i64,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+enum DbspAverage {
+    Value(AverageValue),
+    Error(AggregateError),
+}
+
+impl Default for DbspAverage {
+    fn default() -> Self {
+        Self::Value(AverageValue::default())
+    }
 }
 
 impl DbspAverage {
     fn from_encoded(value: &[u8]) -> Self {
         let Ok(value) = DataType::decode(value) else {
-            return Self {
-                error_count: 1,
-                ..Self::default()
-            };
+            return Self::Error(AggregateError::NonNumeric);
         };
         match NumericValue::from_aggregate(&value) {
-            Ok(value) => Self {
-                value: F64::new(value.as_f64()),
-                error_count: 0,
-            },
-            Err(_) => Self {
-                error_count: 1,
-                ..Self::default()
-            },
+            Ok(value) => Self::Value(AverageValue {
+                sum: F64::new(value.as_f64()),
+                count: 1,
+            }),
+            Err(_) => Self::Error(AggregateError::NonNumeric),
         }
     }
 
     fn encode_result(&self) -> AggregateOutput {
-        if self.error_count != 0 {
-            AggregateOutput::Error(AggregateError::NonNumeric)
-        } else {
-            AggregateOutput::Value(DataType::Double(self.value.into_inner()).encode())
-        }
-    }
-}
-
-impl From<ZWeight> for DbspAverage {
-    fn from(value: ZWeight) -> Self {
-        Self {
-            value: F64::new(value as f64),
-            error_count: 0,
+        match self {
+            Self::Value(value) => AggregateOutput::Value(
+                DataType::Double(value.sum.into_inner() / value.count as f64).encode(),
+            ),
+            Self::Error(error) => AggregateOutput::Error(error.clone()),
         }
     }
 }
@@ -271,23 +309,33 @@ impl<'a> Add<&'a DbspAverage> for &'a DbspAverage {
     type Output = DbspAverage;
 
     fn add(self, other: &'a DbspAverage) -> Self::Output {
-        DbspAverage {
-            value: self.value + other.value,
-            error_count: self.error_count + other.error_count,
+        match (self, other) {
+            (DbspAverage::Value(left), DbspAverage::Value(right)) => {
+                DbspAverage::Value(AverageValue {
+                    sum: left.sum + right.sum,
+                    count: left.count + right.count,
+                })
+            }
+            (DbspAverage::Error(left), DbspAverage::Error(right)) => {
+                DbspAverage::Error(left.min(right).clone())
+            }
+            (DbspAverage::Error(error), DbspAverage::Value(_))
+            | (DbspAverage::Value(_), DbspAverage::Error(error)) => {
+                DbspAverage::Error(error.clone())
+            }
         }
     }
 }
 
 impl AddAssign<&DbspAverage> for DbspAverage {
     fn add_assign(&mut self, other: &DbspAverage) {
-        self.value += other.value;
-        self.error_count += other.error_count;
+        *self = &*self + other;
     }
 }
 
 impl HasZero for DbspAverage {
     fn is_zero(&self) -> bool {
-        self == &Self::default()
+        matches!(self, Self::Value(value) if value == &AverageValue::default())
     }
 
     fn zero() -> Self {
@@ -295,43 +343,19 @@ impl HasZero for DbspAverage {
     }
 }
 
-impl Neg for DbspAverage {
-    type Output = Self;
-
-    fn neg(self) -> Self::Output {
-        Self {
-            value: -self.value,
-            error_count: -self.error_count,
-        }
-    }
-}
-
-impl Neg for &DbspAverage {
-    type Output = DbspAverage;
-
-    fn neg(self) -> Self::Output {
-        self.clone().neg()
-    }
-}
-
 impl MulByRef<ZWeight> for DbspAverage {
     type Output = Self;
 
     fn mul_by_ref(&self, weight: &ZWeight) -> Self::Output {
-        Self {
-            value: self.value * F64::new(*weight as f64),
-            error_count: self.error_count * *weight,
+        if *weight == 0 {
+            return Self::default();
         }
-    }
-}
-
-impl Div for DbspAverage {
-    type Output = Self;
-
-    fn div(self, denominator: Self) -> Self::Output {
-        Self {
-            value: self.value / denominator.value,
-            error_count: self.error_count,
+        match self {
+            Self::Value(value) => Self::Value(AverageValue {
+                sum: value.sum * F64::new(*weight as f64),
+                count: value.count * *weight,
+            }),
+            Self::Error(error) => Self::Error(error.clone()),
         }
     }
 }
@@ -414,27 +438,6 @@ fn comparable_family(encoded: &[u8]) -> u8 {
     }
 }
 
-// DBSP's typed average wrapper fixes custom sum storage to ZWeight.
-fn average_data_type(
-    values: &Stream<RootCircuit, OrdIndexedZSet<EncodedRow, Vec<u8>>>,
-) -> Stream<RootCircuit, OrdIndexedZSet<EncodedRow, DbspAverage>> {
-    let factories: AvgFactories<_, DynData, DynWeight, _> =
-        AvgFactories::new::<EncodedRow, DbspAverage, DbspAverage>();
-    values
-        .inner()
-        .dyn_average::<DynData, DynWeight>(
-            None,
-            &factories,
-            Box::new(|_key, value, weight, sum| unsafe {
-                *sum.downcast_mut::<DbspAverage>() =
-                    DbspAverage::from_encoded(value.downcast::<Vec<u8>>())
-                        .mul_by_ref(weight.downcast::<ZWeight>());
-            }),
-            Box::new(|value, output| value.as_data_mut().move_to(output)),
-        )
-        .typed()
-}
-
 fn validate_comparable_aggregate(
     grouped: &GroupedRows,
     aggregate: AggregateStream,
@@ -480,10 +483,15 @@ fn aggregate_stream(
             })
             .aggregate_linear(|value| value.clone())
             .map_index(|(group, sum)| (group.clone(), sum.encode_result())),
-        AggregateFunc::Avg => average_data_type(
-            &grouped.map_index(move |(group, row)| (group.clone(), row[input_position].clone())),
-        )
-        .map_index(|(group, average)| (group.clone(), average.encode_result())),
+        AggregateFunc::Avg => grouped
+            .map_index(move |(group, row)| {
+                (
+                    group.clone(),
+                    DbspAverage::from_encoded(&row[input_position]),
+                )
+            })
+            .aggregate_linear(|value| value.clone())
+            .map_index(|(group, average)| (group.clone(), average.encode_result())),
         AggregateFunc::Min => {
             let values = grouped.map_index(move |(group, row)| {
                 (
@@ -589,27 +597,19 @@ mod tests {
     #[test]
     fn aggregate_finalizers_return_typed_errors() {
         assert_eq!(
-            DbspSum {
-                error_count: 1,
-                ..DbspSum::default()
-            }
-            .encode_result(),
+            DbspSum::Error(AggregateError::SumNonNumeric).encode_result(),
             AggregateOutput::Error(AggregateError::SumNonNumeric)
         );
         assert_eq!(
-            DbspSum {
+            DbspSum::Value(SumValue {
                 long: i64::MAX as i128 + 1,
-                ..DbspSum::default()
-            }
+                ..SumValue::default()
+            })
             .encode_result(),
             AggregateOutput::Error(AggregateError::SumOverflow)
         );
         assert_eq!(
-            DbspAverage {
-                error_count: 1,
-                ..DbspAverage::default()
-            }
-            .encode_result(),
+            DbspAverage::Error(AggregateError::NonNumeric).encode_result(),
             AggregateOutput::Error(AggregateError::NonNumeric)
         );
         assert_eq!(
@@ -617,5 +617,37 @@ mod tests {
                 .encode_result(),
             AggregateOutput::Error(AggregateError::NanComparison)
         );
+    }
+
+    #[test]
+    fn sum_error_is_terminal_aggregate_state() {
+        let error = DbspSum::from_encoded(&DataType::String("bad".to_string()).encode());
+        let value = DbspSum::from_encoded(&DataType::Long(10).encode());
+
+        assert_eq!(
+            (&error + &value).encode_result(),
+            AggregateOutput::Error(AggregateError::SumNonNumeric)
+        );
+        assert_eq!(
+            error.mul_by_ref(&-1).encode_result(),
+            AggregateOutput::Error(AggregateError::SumNonNumeric)
+        );
+        assert!(error.mul_by_ref(&0).is_zero());
+    }
+
+    #[test]
+    fn average_error_is_terminal_aggregate_state() {
+        let error = DbspAverage::from_encoded(&DataType::String("bad".to_string()).encode());
+        let value = DbspAverage::from_encoded(&DataType::Long(10).encode());
+
+        assert_eq!(
+            (&error + &value).encode_result(),
+            AggregateOutput::Error(AggregateError::NonNumeric)
+        );
+        assert_eq!(
+            error.mul_by_ref(&-1).encode_result(),
+            AggregateOutput::Error(AggregateError::NonNumeric)
+        );
+        assert!(error.mul_by_ref(&0).is_zero());
     }
 }
