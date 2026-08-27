@@ -14,8 +14,7 @@ use dbsp::{
     operator::{ConstantGenerator, Max, Min},
     typed_batch::{IndexedZSetReader, OrdIndexedZSet},
     utils::Tup2,
-    Circuit, DBSPHandle, DynZWeight, OrdWSet, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream,
-    ZSetHandle, ZWeight,
+    Circuit, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
 };
 use edn::query::Variable;
 
@@ -28,13 +27,13 @@ use crate::ops::DataType;
 use crate::query::{AggregateFunc, FindPlan, Projection};
 
 // Standard row -> weight
-pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
+pub(crate) type RowZSet = OrdZSet<EncodedRow>;
 // Grouped key -> Full row -> weight
 type GroupedRows = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, EncodedRow>>;
-// Output row 
+// Output row
 type OutputRow = Vec<AggregateOutput>;
 // Output row -> weight
-type OutputZSet = OrdWSet<OutputRow, ZWeight, DynZWeight>;
+type OutputZSet = OrdZSet<OutputRow>;
 // Stream type of one aggregate expression
 type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateOutput>>;
 
