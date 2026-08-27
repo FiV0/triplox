@@ -259,7 +259,7 @@ impl IncrementalQueryService {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
             (Err(cdc_err), Err(service_err)) => Err(cdc_err.context(format!(
-                "Incremental query service shutdown also failed: {service_err:#}"
+                "Incremental query service shutdown failed: {service_err:#}"
             ))),
         }
     }
@@ -500,7 +500,7 @@ impl IncrementalQueryServiceInner {
         match self.remove_query_storage(id) {
             Ok(()) => error,
             Err(cleanup_error) => error.context(format!(
-                "Incremental query registration cleanup also failed: {cleanup_error:#}"
+                "Incremental query registration cleanup failed: {cleanup_error:#}"
             )),
         }
     }
