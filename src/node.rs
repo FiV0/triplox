@@ -1883,6 +1883,17 @@ mod tests {
         assert_eq!(result[0], vec![DataType::String("Ivannotov".to_string())]);
     }
 
+    fn incremental_delta(
+        result: anyhow::Result<crate::incremental::IncrementalQueryDelta>,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        match result {
+            Ok(delta) => delta,
+            Err(error) => {
+                panic!("unexpected incremental query error: {error}")
+            }
+        }
+    }
+
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
@@ -1911,16 +1922,6 @@ mod tests {
             .map(incremental_delta)
     }
 
-    fn incremental_delta(
-        result: anyhow::Result<crate::incremental::IncrementalQueryDelta>,
-    ) -> crate::incremental::IncrementalQueryDelta {
-        match result {
-            Ok(delta) => delta,
-            Err(error) => {
-                panic!("unexpected incremental query error: {error}")
-            }
-        }
-    }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
         rows.sort_by_key(|row| format!("{:?}", row));
