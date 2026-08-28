@@ -58,7 +58,8 @@ modules:
 - `src/inc_query/planner.rs` orders descriptors and lowers them to physical
   relation plans.
 - `src/incremental/circuit.rs` assembles the relation plans into a per-query
-  DBSP circuit.
+  DBSP circuit. `src/incremental/circuit/aggregates.rs` builds aggregate result
+  streams.
 
 `src/incremental.rs` owns registered query handles, channels, per-query circuit
 instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
@@ -211,8 +212,80 @@ correlated with the positive input, while DBSP antijoin treats the resulting
 negative key relation by presence. This gives the expected add/retract behavior
 when a key has multiple negative matches.
 
-The completed `:where` relation is projected to the query's `:find` variable
-order.
+For a non-aggregate query, the completed `:where` relation is projected to the
+query's `:find` variable order. An aggregate query passes that relation to the
+aggregate assembly described below.
+
+### Aggregate assembly
+
+The find plan identifies the non-aggregate find variables as the group key and
+records all find elements in projection order. Circuit assembly indexes the
+completed `:where` rows by that group key and builds one independent result
+stream for each aggregate expression. It then joins those streams by group and
+restores group values and aggregate values to find-clause order. Equivalent
+aggregate expressions are not deduplicated.
+
+The incremental engine supports `count`, `count-distinct`, `sum`, `avg`, `min`,
+and `max`. `sum` and `avg` use additive state that DBSP can multiply by signed
+row weights, so insertions and retractions update the same state. Aggregate
+failures remain typed as `AggregateError` values until circuit output is
+decoded.
+
+A global aggregate has an empty group key. The circuit seeds that group so an
+empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
+and `max` produce no row for an empty input.
+
+#### Minimum and maximum
+
+DBSP's standard `Min` and `Max` operators require a total `Ord` value, while
+Triplox comparison is fallible and defined only within compatible value
+families. `ComparableValue` is the current adapter between those models:
+
+```text
+ComparableValue {
+    rank: comparison family and invalid-value placement,
+    sort_key: bytes used by DBSP ordering,
+    encoded: original value returned to the caller,
+    error: optional AggregateError,
+}
+```
+
+Long, big integer, float, and double values form the numeric family. String,
+boolean, and instant values each form separate families. NaN and all other
+`DataType` variants are invalid. Numeric inputs are converted to an encoded
+`Double` sort key; string, boolean, and instant inputs use their encoded value
+as the sort key. The adapter retains the original bytes so the selected result
+keeps its original `DataType` representation. Invalid inputs are placed at the
+winning extreme for the selected operator so they surface as aggregate errors.
+
+Candidate selection and compatibility validation are separate branches:
+
+```text
+grouped rows
+    -> ComparableValue -> DBSP Min or Max candidate
+    -> family id       -> distinct family count
+                         |
+                         v
+                    validation join
+                         |
+                         v
+              value or MixedComparison
+```
+
+The family branch decodes the input again and succeeds only when the live group
+contains one distinct family id. Multiple family ids replace the provisional
+candidate with `MixedComparison`. This branch is necessary because DBSP's
+standard operators can select only an input value; they cannot synthesize a
+mixed-family error. Issue #474 tracks options for combining selection and
+validation into one aggregate operation.
+
+The current adapter duplicates comparison rules from
+`DataType::partial_compare` and does not guarantee the same ordering. Numeric
+normalization to `f64` loses integer precision, and ordering strings and
+instants by their encoded bytes assumes an order-preserving codec. A future
+refactor should define one canonical comparison representation shared by the
+standard and incremental query paths while retaining an owned, serializable
+adapter for DBSP traces.
 
 The DBSP state is trace-backed and configured with file-backed storage.
 Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
@@ -282,10 +355,10 @@ There are two channel directions:
 
 - `std::sync::mpsc` carries commands into the service thread. It fits the
   blocking `receiver.recv()` loop used by the dedicated thread.
-- `tokio::sync::mpsc` carries `IncrementalQueryDelta` values back to async
-  subscribers. The service thread retries bounded sends, so a slow subscriber
-  applies backpressure instead of losing deltas; node cancellation breaks that
-  wait during shutdown.
+- `tokio::sync::mpsc` carries `Result<IncrementalQueryDelta>` values back to
+  async subscribers. The service thread retries bounded sends, so a slow
+  subscriber applies backpressure instead of losing deltas; node cancellation
+  breaks that wait during shutdown.
 
 In the future the server should drain these subscribers eagerly server side and send
 the appropriate deltas to the corresponding clients. The clients then need to deal
@@ -293,9 +366,13 @@ with the backpressure themselves, depending on the client implementation.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
-basis; later deltas describe transactions after that basis. The command protocol
-exists to serialize mutations to the query registry and DBSP circuits onto the
-single service thread.
+basis; later deltas describe transactions after that basis. An aggregate failure
+is preserved as a typed error through the circuit and service channel. A priming
+failure rejects registration. A live failure removes only the affected query,
+sends one error through its channel, and closes that subscription. The server
+encodes the error as a terminal `QueryError` frame. The command protocol exists
+to serialize mutations to the query registry and DBSP circuits onto the single
+service thread.
 
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
@@ -384,8 +461,8 @@ Each registration returns:
 - a bounded Tokio channel of result deltas.
 
 Queries can be explicitly unregistered. They are also cleaned up when their
-receiver is dropped. Cleanup removes the in-memory query state and deletes the
-query's per-query DBSP storage directory.
+receiver is dropped or their circuit returns an error. Cleanup removes the
+in-memory query state and deletes the query's per-query DBSP storage directory.
 
 ---
 
