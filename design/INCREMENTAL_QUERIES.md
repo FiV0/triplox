@@ -229,6 +229,7 @@ A global aggregate has an empty group key. The circuit seeds that group so an
 empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
 and `max` produce no row for an empty input.
 
+
 `min` and `max` currently use a rather convoluted way to produce a result. The
 main reason is duplicated behaviour for dealing with different non-comparable
 types (i.e. "string" vs "int") and that the existing Min implementations from
@@ -236,6 +237,11 @@ the DBSP crate do not carry errors through the circuits, because `min`/`max`
 can only produce a value from either left or right, without producing a
 new value (error) and the signatures for the standard implementation does not
 produce a `Result` value.
+
+The DBSP state is trace-backed and configured with file-backed storage.
+Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
+query state. The trace files get currently deleted when a query gets unregistered.
+Future work should consider query restart and DBSP checkpointing.
 
 ---
 
