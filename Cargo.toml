@@ -37,7 +37,7 @@ chrono = { workspace = true, features = ["serde"] }
 dbsp = "0.337.0"
 edn = { workspace = true }
 feldera-macros = "0.337.0"
-triplox-client = { workspace = true }
+triplox-client = { workspace = true, features = ["dbsp"] }
 futures = "0.3"
 indexmap = "2.14.0"
 itertools = "0.15"

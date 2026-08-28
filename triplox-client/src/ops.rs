@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use edn::symbols::Keyword;
 use edn::types::Value;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -58,6 +59,253 @@ pub enum DataType {
     Map(BTreeMap<String, DataType>), // Map (BTreeMap of string keys and DataType values)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+pub enum ComparisonFamily {
+    Numeric,
+    String,
+    Boolean,
+    Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ComparisonError {
+    #[error("cannot compare NaN values")]
+    Nan,
+    #[error("value type is not comparable")]
+    Unsupported,
+    #[error("cannot compare different value families")]
+    MixedFamilies,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+struct BinaryMagnitude {
+    highest_bit: i16,
+    normalized_significand: u128,
+}
+
+impl BinaryMagnitude {
+    fn new(significand: u128, exponent: i16) -> Self {
+        debug_assert_ne!(significand, 0);
+        let leading_zeros = significand.leading_zeros();
+        Self {
+            highest_bit: (127 - leading_zeros) as i16 + exponent,
+            normalized_significand: significand << leading_zeros,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+struct NegativeMagnitude {
+    reversed_highest_bit: i16,
+    reversed_significand: u128,
+}
+
+impl From<BinaryMagnitude> for NegativeMagnitude {
+    fn from(value: BinaryMagnitude) -> Self {
+        Self {
+            reversed_highest_bit: -value.highest_bit,
+            reversed_significand: !value.normalized_significand,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+enum NumericKeyValue {
+    NegativeInfinity,
+    Negative(NegativeMagnitude),
+    Zero,
+    Positive(BinaryMagnitude),
+    PositiveInfinity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+pub struct NumericKey(NumericKeyValue);
+
+impl NumericKey {
+    fn from_i128(value: i128) -> Self {
+        Self(match value.cmp(&0) {
+            Ordering::Less => {
+                NumericKeyValue::Negative(BinaryMagnitude::new(value.unsigned_abs(), 0).into())
+            }
+            Ordering::Equal => NumericKeyValue::Zero,
+            Ordering::Greater => NumericKeyValue::Positive(BinaryMagnitude::new(value as u128, 0)),
+        })
+    }
+
+    fn from_f32(value: f32) -> Result<Self, ComparisonError> {
+        let bits = value.to_bits();
+        let negative = bits >> 31 != 0;
+        let exponent = (bits >> 23) & 0xff;
+        let fraction = bits & ((1 << 23) - 1);
+
+        if exponent == 0xff {
+            return if fraction == 0 {
+                Ok(if negative {
+                    Self(NumericKeyValue::NegativeInfinity)
+                } else {
+                    Self(NumericKeyValue::PositiveInfinity)
+                })
+            } else {
+                Err(ComparisonError::Nan)
+            };
+        }
+        if exponent == 0 && fraction == 0 {
+            return Ok(Self(NumericKeyValue::Zero));
+        }
+
+        let (significand, exponent) = if exponent == 0 {
+            (fraction as u128, -149)
+        } else {
+            (((1 << 23) | fraction) as u128, exponent as i16 - 127 - 23)
+        };
+        Ok(Self::from_magnitude(
+            negative,
+            BinaryMagnitude::new(significand, exponent),
+        ))
+    }
+
+    fn from_f64(value: f64) -> Result<Self, ComparisonError> {
+        let bits = value.to_bits();
+        let negative = bits >> 63 != 0;
+        let exponent = (bits >> 52) & 0x7ff;
+        let fraction = bits & ((1_u64 << 52) - 1);
+
+        if exponent == 0x7ff {
+            return if fraction == 0 {
+                Ok(if negative {
+                    Self(NumericKeyValue::NegativeInfinity)
+                } else {
+                    Self(NumericKeyValue::PositiveInfinity)
+                })
+            } else {
+                Err(ComparisonError::Nan)
+            };
+        }
+        if exponent == 0 && fraction == 0 {
+            return Ok(Self(NumericKeyValue::Zero));
+        }
+
+        let (significand, exponent) = if exponent == 0 {
+            (fraction as u128, -1074)
+        } else {
+            (
+                ((1_u64 << 52) | fraction) as u128,
+                exponent as i16 - 1023 - 52,
+            )
+        };
+        Ok(Self::from_magnitude(
+            negative,
+            BinaryMagnitude::new(significand, exponent),
+        ))
+    }
+
+    fn from_magnitude(negative: bool, magnitude: BinaryMagnitude) -> Self {
+        Self(if negative {
+            NumericKeyValue::Negative(magnitude.into())
+        } else {
+            NumericKeyValue::Positive(magnitude)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+pub struct InstantKey {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonKey<'a> {
+    Numeric(NumericKey),
+    String(&'a str),
+    Boolean(bool),
+    Instant(InstantKey),
+}
+
+impl ComparisonKey<'_> {
+    pub fn family(&self) -> ComparisonFamily {
+        match self {
+            Self::Numeric(_) => ComparisonFamily::Numeric,
+            Self::String(_) => ComparisonFamily::String,
+            Self::Boolean(_) => ComparisonFamily::Boolean,
+            Self::Instant(_) => ComparisonFamily::Instant,
+        }
+    }
+
+    pub fn partial_compare(&self, other: &Self) -> Result<Ordering, ComparisonError> {
+        match (self, other) {
+            (Self::Numeric(left), Self::Numeric(right)) => Ok(left.cmp(right)),
+            (Self::String(left), Self::String(right)) => Ok(left.cmp(right)),
+            (Self::Boolean(left), Self::Boolean(right)) => Ok(left.cmp(right)),
+            (Self::Instant(left), Self::Instant(right)) => Ok(left.cmp(right)),
+            _ => Err(ComparisonError::MixedFamilies),
+        }
+    }
+
+    pub fn into_owned(self) -> OwnedComparisonKey {
+        match self {
+            Self::Numeric(value) => OwnedComparisonKey::Numeric(value),
+            Self::String(value) => OwnedComparisonKey::String(value.to_string()),
+            Self::Boolean(value) => OwnedComparisonKey::Boolean(value),
+            Self::Instant(value) => OwnedComparisonKey::Instant(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "dbsp",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, size_of::SizeOf)
+)]
+#[cfg_attr(feature = "dbsp", archive_attr(derive(Eq, PartialEq, Ord, PartialOrd)))]
+pub enum OwnedComparisonKey {
+    Numeric(NumericKey),
+    String(String),
+    Boolean(bool),
+    Instant(InstantKey),
+}
+
+impl OwnedComparisonKey {
+    pub fn family(&self) -> ComparisonFamily {
+        match self {
+            Self::Numeric(_) => ComparisonFamily::Numeric,
+            Self::String(_) => ComparisonFamily::String,
+            Self::Boolean(_) => ComparisonFamily::Boolean,
+            Self::Instant(_) => ComparisonFamily::Instant,
+        }
+    }
+}
+
 impl Eq for DataType {}
 
 impl std::hash::Hash for DataType {
@@ -100,33 +348,45 @@ impl DataType {
         }
     }
 
+    pub fn comparison_family(&self) -> Option<ComparisonFamily> {
+        match self {
+            Self::Long(_) | Self::BigInt(_) | Self::Double(_) | Self::Float(_) => {
+                Some(ComparisonFamily::Numeric)
+            }
+            Self::String(_) => Some(ComparisonFamily::String),
+            Self::Boolean(_) => Some(ComparisonFamily::Boolean),
+            Self::Instant(_) => Some(ComparisonFamily::Instant),
+            _ => None,
+        }
+    }
+
+    pub fn comparison_key(&self) -> Result<ComparisonKey<'_>, ComparisonError> {
+        match self {
+            Self::Long(value) => Ok(ComparisonKey::Numeric(NumericKey::from_i128(
+                *value as i128,
+            ))),
+            Self::BigInt(value) => Ok(ComparisonKey::Numeric(NumericKey::from_i128(*value))),
+            Self::Double(value) => NumericKey::from_f64(*value).map(ComparisonKey::Numeric),
+            Self::Float(value) => NumericKey::from_f32(*value).map(ComparisonKey::Numeric),
+            Self::String(value) => Ok(ComparisonKey::String(value)),
+            Self::Boolean(value) => Ok(ComparisonKey::Boolean(*value)),
+            Self::Instant(value) => Ok(ComparisonKey::Instant(InstantKey {
+                seconds: value.timestamp(),
+                nanoseconds: value.timestamp_subsec_nanos(),
+            })),
+            _ => Err(ComparisonError::Unsupported),
+        }
+    }
+
     /// Compare two DataType values. Returns an error if the types are incompatible
     /// or if floats are NaN.
-    pub fn partial_compare(&self, other: &DataType) -> Result<std::cmp::Ordering> {
-        use DataType::*;
-        let nan_err = || anyhow::anyhow!("cannot compare NaN values");
-        match (self, other) {
-            (Long(a), Long(b)) => Ok(a.cmp(b)),
-            (BigInt(a), BigInt(b)) => Ok(a.cmp(b)),
-            (Double(a), Double(b)) => a.partial_cmp(b).ok_or_else(nan_err),
-            (Float(a), Float(b)) => a.partial_cmp(b).ok_or_else(nan_err),
-            (String(a), String(b)) => Ok(a.cmp(b)),
-            (Boolean(a), Boolean(b)) => Ok(a.cmp(b)),
-            (Instant(a), Instant(b)) => Ok(a.cmp(b)),
-            // Cross-numeric promotion
-            // NOTE: casting BigInt(i128) to f32/f64 may lose precision for large values.
-            (Long(a), BigInt(b)) => Ok((*a as i128).cmp(b)),
-            (BigInt(a), Long(b)) => Ok(a.cmp(&(*b as i128))),
-            (Long(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
-            (Double(a), Long(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
-            (Long(a), Float(b)) => (*a as f32).partial_cmp(b).ok_or_else(nan_err),
-            (Float(a), Long(b)) => a.partial_cmp(&(*b as f32)).ok_or_else(nan_err),
-            (BigInt(a), Float(b)) => (*a as f32).partial_cmp(b).ok_or_else(nan_err),
-            (Float(a), BigInt(b)) => a.partial_cmp(&(*b as f32)).ok_or_else(nan_err),
-            (BigInt(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
-            (Double(a), BigInt(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
-            (Float(a), Double(b)) => (*a as f64).partial_cmp(b).ok_or_else(nan_err),
-            (Double(a), Float(b)) => a.partial_cmp(&(*b as f64)).ok_or_else(nan_err),
+    pub fn partial_compare(&self, other: &DataType) -> Result<Ordering> {
+        match (self.comparison_family(), other.comparison_family()) {
+            (Some(left), Some(right)) if left == right => self
+                .comparison_key()
+                .map_err(anyhow::Error::new)?
+                .partial_compare(&other.comparison_key().map_err(anyhow::Error::new)?)
+                .map_err(anyhow::Error::new),
             _ => Err(anyhow::anyhow!(
                 "cannot compare {} with {}",
                 self.variant_name(),
@@ -427,6 +687,12 @@ mod tests {
                 .unwrap(),
             Ordering::Less,
         );
+        assert_eq!(
+            DataType::Instant("2020-01-01T00:00:00Z".parse().unwrap())
+                .partial_compare(&DataType::Instant("2021-01-01T00:00:00Z".parse().unwrap()))
+                .unwrap(),
+            Ordering::Less,
+        );
     }
 
     #[test]
@@ -506,6 +772,113 @@ mod tests {
                 .unwrap(),
             Ordering::Greater
         );
+    }
+
+    #[test]
+    fn numeric_comparison_is_exact_across_representations() {
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            DataType::Long(16_777_217)
+                .partial_compare(&DataType::Float(16_777_216.0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::Long(9_007_199_254_740_993)
+                .partial_compare(&DataType::Double(9_007_199_254_740_992.0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::BigInt((1_i128 << 100) + 1)
+                .partial_compare(&DataType::Double((1_u128 << 100) as f64))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::BigInt(i128::MIN)
+                .partial_compare(&DataType::Double(-((1_u128 << 126) as f64)))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::BigInt(i128::MAX)
+                .partial_compare(&DataType::Double((1_u128 << 126) as f64))
+                .unwrap(),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn numeric_comparison_is_transitive_at_float_boundaries() {
+        use std::cmp::Ordering;
+
+        let lower = DataType::Float(16_777_216.0);
+        let middle = DataType::Double(16_777_216.5);
+        let upper = DataType::Long(16_777_217);
+
+        assert_eq!(lower.partial_compare(&middle).unwrap(), Ordering::Less);
+        assert_eq!(middle.partial_compare(&upper).unwrap(), Ordering::Less);
+        assert_eq!(lower.partial_compare(&upper).unwrap(), Ordering::Less);
+    }
+
+    #[test]
+    fn numeric_comparison_handles_special_non_nan_values() {
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            DataType::Double(-0.0)
+                .partial_compare(&DataType::Long(0))
+                .unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            DataType::Double(f64::from_bits(1))
+                .partial_compare(&DataType::Long(0))
+                .unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            DataType::Double(f64::NEG_INFINITY)
+                .partial_compare(&DataType::BigInt(i128::MIN))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            DataType::Float(f32::INFINITY)
+                .partial_compare(&DataType::Double(f64::MAX))
+                .unwrap(),
+            Ordering::Greater
+        );
+    }
+
+    #[cfg(feature = "dbsp")]
+    #[test]
+    fn archived_numeric_key_order_matches_live_order() {
+        let values = [
+            DataType::Double(f64::NEG_INFINITY),
+            DataType::BigInt(-((1_i128 << 100) + 1)),
+            DataType::Double(-0.0),
+            DataType::Double(f64::from_bits(1)),
+            DataType::Double(9_007_199_254_740_992.0),
+            DataType::Long(9_007_199_254_740_993),
+            DataType::Double(f64::INFINITY),
+        ];
+        let keys = values
+            .iter()
+            .map(|value| value.comparison_key().unwrap().into_owned())
+            .collect::<Vec<_>>();
+
+        for pair in keys.windows(2) {
+            let left = rkyv::to_bytes::<_, 256>(&pair[0]).unwrap();
+            let right = rkyv::to_bytes::<_, 256>(&pair[1]).unwrap();
+            let archived_left = unsafe { rkyv::archived_root::<OwnedComparisonKey>(&left) };
+            let archived_right = unsafe { rkyv::archived_root::<OwnedComparisonKey>(&right) };
+
+            assert_eq!(pair[0].cmp(&pair[1]), Ordering::Less);
+            assert_eq!(archived_left.cmp(archived_right), Ordering::Less);
+        }
     }
 
     #[test]

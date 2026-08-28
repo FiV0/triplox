@@ -14,7 +14,10 @@ pub mod transaction;
 
 pub use client::{ClientDb, ClientNode};
 pub use node::{collect_tx_ops, Database, IntoQuery, IntoTxOp, QueryNode, SubmitNode};
-pub use ops::{DataType, Entid, EntityRef, QueryArg, TxOp};
+pub use ops::{
+    ComparisonError, ComparisonFamily, ComparisonKey, DataType, Entid, EntityRef, NumericKey,
+    OwnedComparisonKey, QueryArg, TxOp,
+};
 pub use query::QueryResult;
 pub use subscription::{Delta, Subscription};
 pub use transaction::{TransactionResult, TxKey};

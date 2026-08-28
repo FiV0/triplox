@@ -259,6 +259,22 @@ mod tests {
     }
 
     #[test]
+    fn min_and_max_use_exact_cross_numeric_order() {
+        let lower = DataType::Double(9_007_199_254_740_992.0);
+        let upper = DataType::Long(9_007_199_254_740_993);
+
+        let mut min = make_accumulator(&AggregateFunc::Min);
+        min.accumulate(&upper).unwrap();
+        min.accumulate(&lower).unwrap();
+        assert_eq!(min.finalize().unwrap(), lower);
+
+        let mut max = make_accumulator(&AggregateFunc::Max);
+        max.accumulate(&lower).unwrap();
+        max.accumulate(&upper).unwrap();
+        assert_eq!(max.finalize().unwrap(), upper);
+    }
+
+    #[test]
     fn test_count_empty() {
         let acc = make_accumulator(&AggregateFunc::Count);
         assert_eq!(acc.finalize().unwrap(), DataType::Long(0));

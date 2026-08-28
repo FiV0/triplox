@@ -19,11 +19,16 @@ futures = "0.3"
 reqwest = { workspace = true, features = ["stream"] }
 rmp = { workspace = true }
 rmpv = { workspace = true }
+rkyv = { version = "0.7.45", features = ["std", "size_64", "validation"], default-features = false, optional = true }
 serde = { workspace = true, features = ["derive"] }
+size-of = { version = "0.1.7", package = "feldera-size-of", optional = true }
 thiserror = { workspace = true }
 tokio = { version = "1.40.0", features = ["rt", "sync"] }
 tokio-util = { version = "0.7", features = ["io", "codec"] }
 uuid = { workspace = true, features = ["serde"] }
+
+[features]
+dbsp = ["dep:rkyv", "dep:size-of"]
 
 [dev-dependencies]
 bincode = "1.3"

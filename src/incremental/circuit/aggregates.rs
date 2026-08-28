@@ -12,7 +12,7 @@ use dbsp::{
 use crate::codec::{Decode, Encode};
 use crate::incremental::EncodedRow;
 use crate::numeric::NumericValue;
-use crate::ops::DataType;
+use crate::ops::{ComparisonError, ComparisonFamily, DataType, OwnedComparisonKey};
 use crate::query::{AggregateFunc, FindPlan, Projection};
 
 use super::{select_row_positions, OutputZSet, PlannedWhereStream};
@@ -21,6 +21,7 @@ use super::{select_row_positions, OutputZSet, PlannedWhereStream};
 type GroupedRows = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, EncodedRow>>;
 // Stream type of one aggregate expression
 type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateOutput>>;
+type ComparisonStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, ComparisonValue>>;
 
 #[derive(
     Clone,
@@ -363,7 +364,6 @@ impl MulByRef<ZWeight> for DbspAverage {
 #[derive(
     Clone,
     Debug,
-    Default,
     Eq,
     PartialEq,
     Ord,
@@ -376,89 +376,105 @@ impl MulByRef<ZWeight> for DbspAverage {
     feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
-// This is a giant hack. We should add proper type analysis to the where stream outputs and 
-// only allow valid aggregations from the typed query. This would also restrict the aggregates
-// to only sensible aggregates like min(numeric), min(string) etc..
-struct ComparableValue {
-    rank: u8,
-    sort_key: Vec<u8>,
-    encoded: Vec<u8>,
-    error: Option<AggregateError>,
+enum ComparisonValue {
+    Invalid(AggregateError),
+    Valid {
+        key: OwnedComparisonKey,
+        encoded: Vec<u8>,
+    },
 }
 
-impl ComparableValue {
-    fn from_encoded(encoded: &[u8], minimum: bool) -> Self {
+impl Default for ComparisonValue {
+    fn default() -> Self {
+        Self::Invalid(AggregateError::Decode)
+    }
+}
+
+impl ComparisonValue {
+    fn from_encoded(encoded: &[u8]) -> Self {
         let Ok(value) = DataType::decode(encoded) else {
-            return Self::invalid(encoded, minimum, AggregateError::Decode);
+            return Self::Invalid(AggregateError::Decode);
         };
-        let (family, sort_key) = match &value {
-            DataType::Long(_) | DataType::Double(_) | DataType::Float(_) | DataType::BigInt(_) => {
-                let numeric = NumericValue::from_aggregate(&value).expect("numeric value");
-                if numeric.as_f64().is_nan() {
-                    return Self::invalid(encoded, minimum, AggregateError::NanComparison);
-                }
-                (1, DataType::Double(numeric.as_f64()).encode())
+        let key = match value.comparison_key() {
+            Ok(key) => key.into_owned(),
+            Err(ComparisonError::Nan) => {
+                return Self::Invalid(AggregateError::NanComparison);
             }
-            DataType::String(_) => (2, encoded.to_vec()),
-            DataType::Boolean(_) => (3, encoded.to_vec()),
-            DataType::Instant(_) => (4, encoded.to_vec()),
-            _ => return Self::invalid(encoded, minimum, AggregateError::UnsupportedComparison),
+            Err(ComparisonError::Unsupported) => {
+                return Self::Invalid(AggregateError::UnsupportedComparison);
+            }
+            Err(ComparisonError::MixedFamilies) => {
+                return Self::Invalid(AggregateError::MixedComparison);
+            }
         };
-        Self {
-            rank: family,
-            sort_key,
+        Self::Valid {
+            key,
             encoded: encoded.to_vec(),
-            error: None,
         }
     }
 
-    // invalid only carries the information that a single value is non comparable. Not
-    // that two values are incomparable.
-    fn invalid(encoded: &[u8], minimum: bool, error: AggregateError) -> Self {
-        Self {
-            rank: if minimum { 0 } else { u8::MAX },
-            sort_key: Vec::new(),
-            encoded: encoded.to_vec(),
-            error: Some(error),
+    fn class(&self) -> ComparisonClass {
+        match self {
+            Self::Invalid(error) => ComparisonClass::Error(error.clone()),
+            Self::Valid { key, .. } => ComparisonClass::Family(key.family()),
         }
     }
 
     fn encode_result(&self) -> AggregateOutput {
-        match &self.error {
-            Some(error) => AggregateOutput::Error(error.clone()),
-            None => AggregateOutput::Value(self.encoded.clone()),
+        match self {
+            Self::Invalid(error) => AggregateOutput::Error(error.clone()),
+            Self::Valid { encoded, .. } => AggregateOutput::Value(encoded.clone()),
         }
     }
 }
 
-fn comparable_family(encoded: &[u8]) -> u8 {
-    match DataType::decode(encoded) {
-        Ok(DataType::Long(_) | DataType::BigInt(_)) => 1,
-        Ok(DataType::Double(value)) if !value.is_nan() => 1,
-        Ok(DataType::Float(value)) if !value.is_nan() => 1,
-        Ok(DataType::String(_)) => 2,
-        Ok(DataType::Boolean(_)) => 3,
-        Ok(DataType::Instant(_)) => 4,
-        _ => u8::MAX,
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    size_of::SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    feldera_macros::IsNone,
+)]
+#[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+enum ComparisonClass {
+    Error(AggregateError),
+    Family(ComparisonFamily),
+}
+
+impl Default for ComparisonClass {
+    fn default() -> Self {
+        Self::Error(AggregateError::Decode)
     }
 }
 
-// TODO: The DBSP min/max implementations can only produce values from the left or right side, not an error.
-// This is the reason we need the family and actual comparison above. We find different families in a
-// second pass. See #474 for more complete explanation and options.
+// DBSP min/max cannot synthesize mixed-family errors, so validate the converted values separately.
+// See #474 for options that could collapse this into one aggregate operation.
 fn validate_comparable_aggregate(
-    grouped: &GroupedRows,
+    values: &ComparisonStream,
     aggregate: AggregateStream,
-    input_position: usize,
 ) -> AggregateStream {
-    let family_count = grouped
-        .map_index(move |(group, row)| (group.clone(), comparable_family(&row[input_position])))
-        .distinct_count();
-    aggregate.join_index(&family_count, |group, value, family_count| {
-        let value = if *family_count == 1 {
-            value.clone()
-        } else {
-            AggregateOutput::Error(AggregateError::MixedComparison)
+    let classes = values.map_index(|(group, value)| (group.clone(), value.class()));
+    let first_class = classes.aggregate(Min);
+    let class_count = classes.distinct_count();
+    let validation = first_class.join_index(&class_count, |group, class, class_count| {
+        let error = match class {
+            ComparisonClass::Error(error) => Some(error.clone()),
+            ComparisonClass::Family(_) if *class_count == 1 => None,
+            ComparisonClass::Family(_) => Some(AggregateError::MixedComparison),
+        };
+        Some((group.clone(), error))
+    });
+    aggregate.join_index(&validation, |group, value, error| {
+        let value = match error {
+            Some(error) => AggregateOutput::Error(error.clone()),
+            None => value.clone(),
         };
         Some((group.clone(), value))
     })
@@ -508,28 +524,26 @@ fn aggregate_stream(
             let values = grouped.map_index(move |(group, row)| {
                 (
                     group.clone(),
-                    ComparableValue::from_encoded(&row[input_position], true),
+                    ComparisonValue::from_encoded(&row[input_position]),
                 )
             });
             let minimum = values
                 .aggregate(Min)
                 .map_index(|(group, minimum)| (group.clone(), minimum.encode_result()));
-            // TODO: This validate_comparable_aggregate looks smelly. We iterate the stream twice.
-            // See #474
-            validate_comparable_aggregate(grouped, minimum, input_position)
+            validate_comparable_aggregate(&values, minimum)
         }
 
         AggregateFunc::Max => {
             let values = grouped.map_index(move |(group, row)| {
                 (
                     group.clone(),
-                    ComparableValue::from_encoded(&row[input_position], false),
+                    ComparisonValue::from_encoded(&row[input_position]),
                 )
             });
             let maximum = values
                 .aggregate(Max)
                 .map_index(|(group, maximum)| (group.clone(), maximum.encode_result()));
-            validate_comparable_aggregate(grouped, maximum, input_position)
+            validate_comparable_aggregate(&values, maximum)
         }
     }
 }
@@ -641,9 +655,16 @@ mod tests {
             AggregateOutput::Error(AggregateError::NonNumeric)
         );
         assert_eq!(
-            ComparableValue::from_encoded(&DataType::Double(f64::NAN).encode(), true)
-                .encode_result(),
+            ComparisonValue::from_encoded(&DataType::Double(f64::NAN).encode()).encode_result(),
             AggregateOutput::Error(AggregateError::NanComparison)
+        );
+        assert_eq!(
+            ComparisonValue::from_encoded(&DataType::Bytes(vec![1]).encode()).encode_result(),
+            AggregateOutput::Error(AggregateError::UnsupportedComparison)
+        );
+        assert_eq!(
+            ComparisonValue::from_encoded(&[0xff]).encode_result(),
+            AggregateOutput::Error(AggregateError::Decode)
         );
     }
 

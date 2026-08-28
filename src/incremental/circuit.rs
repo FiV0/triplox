@@ -1498,6 +1498,36 @@ mod tests {
     }
 
     #[test]
+    fn numeric_min_and_max_use_exact_cross_numeric_order() {
+        let plan = query_plan(
+            "[:find (min ?age) (max ?age)
+              :where [?e :age ?age]]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Double(9_007_199_254_740_992.0)), 1),
+                (triple(2, AGE, DataType::Long(9_007_199_254_740_993)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![
+                    DataType::Double(9_007_199_254_740_992.0),
+                    DataType::Long(9_007_199_254_740_993),
+                ],
+                1,
+            )]
+        );
+    }
+
+    #[test]
     fn min_rejects_incompatible_type_families() {
         let plan = query_plan(
             "[:find (min ?value)
@@ -1519,6 +1549,96 @@ mod tests {
         assert!(err
             .to_string()
             .contains("aggregate encountered uncomparable values"));
+    }
+
+    #[test]
+    fn max_rejects_incompatible_type_families() {
+        let plan = query_plan(
+            "[:find (max ?value)
+              :where (or [?e :age ?value] [?e :name ?value])]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(10)), 1),
+                (triple(2, NAME, DataType::String("Alice".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let err = decode_output_rows(&output.consolidate()).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<AggregateError>(),
+            Some(&AggregateError::MixedComparison)
+        );
+    }
+
+    #[test]
+    fn max_validation_error_retracts_and_restores_valid_result() {
+        let plan = query_plan("[:find (max ?age) :where [?e :age ?age]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+        let valid = triple(1, AGE, DataType::Long(10));
+        let nan = triple(2, AGE, DataType::Double(f64::NAN));
+
+        append(&handle, [(valid, 1), (nan.clone(), 1)]);
+        circuit.transaction().unwrap();
+        let error_rows = output
+            .consolidate()
+            .iter()
+            .map(|(row, (), weight)| (row.clone(), weight))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            error_rows,
+            vec![(
+                vec![AggregateOutput::Error(AggregateError::NanComparison)],
+                1,
+            )]
+        );
+
+        append(&handle, [(nan, -1)]);
+        circuit.transaction().unwrap();
+        let recovery_rows = output
+            .consolidate()
+            .iter()
+            .map(|(row, (), weight)| (row.clone(), weight))
+            .collect::<Vec<_>>();
+        assert!(recovery_rows.contains(&(
+            vec![AggregateOutput::Error(AggregateError::NanComparison)],
+            -1,
+        )));
+        assert!(recovery_rows
+            .contains(&(vec![AggregateOutput::Value(DataType::Long(10).encode())], 1,)));
+    }
+
+    #[test]
+    fn comparison_validation_uses_deterministic_error_precedence() {
+        let plan = query_plan("[:find (max ?age) :where [?e :age ?age]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+        let malformed = EncodedTriple {
+            entity: DataType::Long(1).encode(),
+            attribute: AGE,
+            value: vec![0xff],
+        };
+
+        append(
+            &handle,
+            [
+                (malformed, 1),
+                (triple(2, AGE, DataType::Double(f64::NAN)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let err = decode_output_rows(&output.consolidate()).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<AggregateError>(),
+            Some(&AggregateError::Decode)
+        );
     }
 
     #[test]
