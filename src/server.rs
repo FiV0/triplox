@@ -339,22 +339,26 @@ async fn subscribe<L: TxLog + 'static>(
 /// Stream state for subscription deltas after the leading `open` frame.
 enum SubscribeBody {
     Streaming {
-        deltas: mpsc::Receiver<IncrementalQueryDelta>,
+        deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
         shutdown: CancellationToken,
     },
     Closed,
 }
 
-/// Encode a terminal `error` frame for a failure that occurs mid-stream.
-fn internal_error_frame(err: &Error) -> Vec<u8> {
+fn error_frame(code: ErrorCode, message: String) -> Vec<u8> {
     let frame = SubscriptionFrame::Error(ErrorResponseBody {
         severity: SEVERITY_ERROR,
-        code: ErrorCode::InternalError.as_u16(),
-        message: err.to_string(),
+        code: code.as_u16(),
+        message,
         detail: None,
         hint: None,
     });
     encode_subscription_frame(&frame).unwrap_or_default()
+}
+
+/// Encode a terminal `error` frame for an internal streaming failure.
+fn internal_error_frame(err: &Error) -> Vec<u8> {
+    error_frame(ErrorCode::InternalError, err.to_string())
 }
 
 /// Build the subscription response body: the `open` frame, then one `delta` frame
@@ -363,7 +367,7 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
 /// dropped response drops it and the engine tears the query down.
 fn subscription_body(
     open_frame: Vec<u8>,
-    deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
@@ -380,7 +384,7 @@ fn subscription_body(
                         biased;
                         _ = shutdown.cancelled() => None,
                         delta = deltas.recv() => match delta {
-                            Some(delta) => {
+                            Some(Ok(delta)) => {
                                 let frame = SubscriptionFrame::Delta {
                                     tx_key: delta.tx_key,
                                     rows: delta
@@ -400,6 +404,13 @@ fn subscription_body(
                                     )),
                                 }
                             }
+                            Some(Err(error)) => Some((
+                                Ok(Bytes::from(error_frame(
+                                    ErrorCode::QueryError,
+                                    format!("{error:#}"),
+                                ))),
+                                SubscribeBody::Closed,
+                            )),
                             None => None,
                         }
                     }

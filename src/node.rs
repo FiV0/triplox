@@ -1883,13 +1883,25 @@ mod tests {
         assert_eq!(result[0], vec![DataType::String("Ivannotov".to_string())]);
     }
 
+    fn incremental_delta(
+        result: anyhow::Result<crate::incremental::IncrementalQueryDelta>,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        match result {
+            Ok(delta) => delta,
+            Err(error) => {
+                panic!("unexpected incremental query error: {error}")
+            }
+        }
+    }
+
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+        let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
             .await
             .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open")
+            .expect("subscription should be open");
+        incremental_delta(delta)
     }
 
     async fn take_priming_delta(
@@ -1907,6 +1919,7 @@ mod tests {
             .await
             .ok()
             .flatten()
+            .map(incremental_delta)
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -1967,7 +1980,7 @@ mod tests {
                         .recv()
                         .await
                         .expect("subscription should be open");
-                    integrate_delta(rows, delta);
+                    integrate_delta(rows, incremental_delta(delta));
                 }
             })
             .await
@@ -2073,7 +2086,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
+            incremental_delta(subscription.deltas.try_recv().unwrap()),
             crate::incremental::IncrementalQueryDelta {
                 tx_key: basis,
                 rows: vec![(vec![DataType::String("Alice".to_string())], 1)],

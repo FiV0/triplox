@@ -18,6 +18,7 @@ mod log;
 pub mod logging;
 mod memory_log;
 pub(crate) mod metadata;
+mod numeric;
 pub mod ops;
 pub mod partition;
 mod query;

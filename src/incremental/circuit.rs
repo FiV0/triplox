@@ -1,3 +1,5 @@
+mod aggregates;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,18 +9,27 @@ use dbsp::circuit::{
     CircuitConfig, CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions,
 };
 use dbsp::{
-    typed_batch::IndexedZSetReader, utils::Tup2, DBSPHandle, DynZWeight, OrdWSet, OrdZSet,
-    OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
+    typed_batch::IndexedZSetReader, utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit,
+    Runtime, Stream, ZSetHandle, ZWeight,
 };
 use edn::query::Variable;
+
+pub(super) use aggregates::AggregateError;
+use aggregates::{aggregate_find_stream, decode_aggregate_output, AggregateOutput};
 
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
+use crate::query::{FindPlan, Projection};
 
-pub(crate) type RowZSet = OrdWSet<EncodedRow, ZWeight, DynZWeight>;
+// Standard row -> weight
+pub(crate) type RowZSet = OrdZSet<EncodedRow>;
+// Output row
+type OutputRow = Vec<AggregateOutput>;
+// Output row -> weight
+type OutputZSet = OrdZSet<OutputRow>;
 
 // Checks whether a pattern slot accepts the encoded triple value.
 fn slot_matches(slot: &PatternSlot, value: &[u8]) -> bool {
@@ -370,25 +381,48 @@ pub(crate) fn query_where_stream(
     rel_stream(fact_input, &plan.where_plan, None)
 }
 
-// Creates the DBSP stream of rows projected to the query find variables.
-pub(crate) fn query_find_stream(
+fn project_find_stream(
     where_stream: PlannedWhereStream,
-    find_vars: &[Variable],
-) -> Stream<RootCircuit, RowZSet> {
-    let find_positions = positions(&where_stream.vars, find_vars);
-    where_stream
-        .stream
-        .map(move |row| select_row_positions(row, &find_positions))
+    plan: &FindPlan,
+) -> Stream<RootCircuit, OutputZSet> {
+    let find_positions = plan
+        .projections
+        .iter()
+        .map(|projection| match projection {
+            Projection::GroupVar(group_position) => plan.group_key_indices[*group_position],
+            Projection::Aggregate(_, _) => unreachable!("projection plan has no aggregates"),
+        })
+        .collect::<Vec<_>>();
+
+    // TODO: After find every position is an AggregateOutput. This should likely be named differently.
+    where_stream.stream.map(move |row| {
+        select_row_positions(row, &find_positions)
+            .into_iter()
+            .map(AggregateOutput::Value)
+            .collect()
+    })
+}
+
+// Creates the DBSP stream of rows projected and aggregated according to the find plan.
+fn query_find_stream(
+    where_stream: PlannedWhereStream,
+    plan: &FindPlan,
+) -> Stream<RootCircuit, OutputZSet> {
+    if plan.has_aggregates {
+        aggregate_find_stream(where_stream, plan)
+    } else {
+        project_find_stream(where_stream, plan)
+    }
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
-pub(crate) fn decode_output_rows(batch: &RowZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
     batch
         .iter()
         .map(|(row, (), weight)| {
             let decoded = row
                 .iter()
-                .map(|value| DataType::decode(value).map_err(anyhow::Error::from))
+                .map(decode_aggregate_output)
                 .collect::<Result<Vec<_>>>()?;
             let weight = isize::try_from(weight)
                 .map_err(|_| anyhow!("DBSP weight {} does not fit in isize", weight))?;
@@ -421,7 +455,7 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 pub(super) struct QueryCircuit {
     _circuit: DBSPHandle,
     _input: ZSetHandle<EncodedTriple>,
-    _output: OutputHandle<RowZSet>,
+    _output: OutputHandle<OutputZSet>,
 }
 
 impl QueryCircuit {
@@ -431,7 +465,7 @@ impl QueryCircuit {
         let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
-            let stream = query_find_stream(where_stream, &plan.find_vars);
+            let stream = query_find_stream(where_stream, &plan.find_plan);
             Ok((handle, stream.output()))
         })
         .map_err(anyhow::Error::from)?;
@@ -494,10 +528,10 @@ mod tests {
     fn build_find_circuit(
         circuit: &mut RootCircuit,
         plan: IncrementalQueryPlan,
-    ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<RowZSet>)> {
+    ) -> anyhow::Result<(ZSetHandle<EncodedTriple>, OutputHandle<OutputZSet>)> {
         let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
         let where_stream = query_where_stream(&input, &plan);
-        let stream = query_find_stream(where_stream, &plan.find_vars);
+        let stream = query_find_stream(where_stream, &plan.find_plan);
         Ok((handle, stream.output()))
     }
 
@@ -1257,16 +1291,22 @@ mod tests {
     }
 
     #[test]
-    fn projects_rows_to_find_order_and_decodes() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+    fn global_aggregates_share_a_group_and_preserve_find_order() {
+        let plan = query_plan(
+            "[:find (sum ?age) (min ?age) (max ?age) (count ?age)
+              (count-distinct ?age) (avg ?age)
+              :where [?e :age ?age]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
             [
-                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
-                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(1, AGE, DataType::Long(3)), 1),
+                (triple(2, AGE, DataType::Long(1)), 1),
+                (triple(3, AGE, DataType::Long(1)), 1),
+                (triple(4, AGE, DataType::Long(1)), 1),
             ],
         );
         circuit.transaction().unwrap();
@@ -1274,52 +1314,216 @@ mod tests {
         assert_eq!(
             decode_output_rows(&output.consolidate()).unwrap(),
             vec![(
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                1
+                vec![
+                    DataType::Long(6),
+                    DataType::Long(1),
+                    DataType::Long(3),
+                    DataType::Long(4),
+                    DataType::Long(2),
+                    DataType::Double(1.5),
+                ],
+                1,
             )]
         );
     }
 
     #[test]
-    fn preserves_negative_delta_weights() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+    fn grouped_aggregates_reassemble_arbitrary_find_order() {
+        let plan = query_plan(
+            "[:find (sum ?age) ?type (count ?e) (max ?age)
+              :where [?e :type ?type] [?e :age ?age]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         append(
             &handle,
             [
-                (triple(42, NAME, DataType::String("Alice".to_string())), -1),
-                (triple(42, AGE, DataType::Long(30)), 1),
+                (triple(1, TYPE, DataType::Keyword(kw!(:alpha))), 1),
+                (triple(1, AGE, DataType::Long(10)), 1),
+                (triple(2, TYPE, DataType::Keyword(kw!(:alpha))), 1),
+                (triple(2, AGE, DataType::Long(20)), 1),
+                (triple(3, TYPE, DataType::Keyword(kw!(:beta))), 1),
+                (triple(3, AGE, DataType::Long(7)), 1),
             ],
         );
         circuit.transaction().unwrap();
 
-        assert_eq!(
-            decode_output_rows(&output.consolidate()).unwrap(),
-            vec![(
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                -1
-            )]
-        );
+        let rows = decode_output_rows(&output.consolidate()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&(
+            vec![
+                DataType::Long(30),
+                DataType::Keyword(kw!(:alpha)),
+                DataType::Long(2),
+                DataType::Long(20),
+            ],
+            1,
+        )));
+        assert!(rows.contains(&(
+            vec![
+                DataType::Long(7),
+                DataType::Keyword(kw!(:beta)),
+                DataType::Long(1),
+                DataType::Long(7),
+            ],
+            1,
+        )));
     }
 
     #[test]
-    fn empty_transaction_decodes_to_no_rows() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+    fn aggregate_changes_retract_the_old_row_and_add_the_new_row() {
+        let plan = query_plan(
+            "[:find (sum ?age) (count ?age) (avg ?age)
+              :where [?e :age ?age]]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(10)), 1),
+                (triple(2, AGE, DataType::Long(20)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![
+                    DataType::Long(30),
+                    DataType::Long(2),
+                    DataType::Double(15.0),
+                ],
+                1,
+            )]
+        );
+
+        append(&handle, [(triple(3, AGE, DataType::Long(30)), 1)]);
+        circuit.transaction().unwrap();
+        let rows = decode_output_rows(&output.consolidate()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&(
+            vec![
+                DataType::Long(30),
+                DataType::Long(2),
+                DataType::Double(15.0),
+            ],
+            -1,
+        )));
+        assert!(rows.contains(&(
+            vec![
+                DataType::Long(60),
+                DataType::Long(3),
+                DataType::Double(20.0),
+            ],
+            1,
+        )));
+    }
+
+    #[test]
+    fn empty_global_zero_aggregates_produce_a_row() {
+        let plan = query_plan(
+            "[:find (count ?age) (count-distinct ?age) (sum ?age)
+              :where [?e :age ?age]]",
+        );
         let (mut circuit, (_handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
         circuit.transaction().unwrap();
 
-        assert!(decode_output_rows(&output.consolidate())
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![DataType::Long(0), DataType::Long(0), DataType::Long(0)],
+                1,
+            )]
+        );
+    }
+
+    #[test]
+    fn aggregate_row_is_removed_when_a_value_becomes_undefined() {
+        let plan = query_plan("[:find (count ?age) (avg ?age) :where [?e :age ?age]]");
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+        let age = triple(1, AGE, DataType::Long(10));
+
+        append(&handle, [(age.clone(), 1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1), DataType::Double(10.0)], 1,)]
+        );
+
+        append(&handle, [(age, -1)]);
+        circuit.transaction().unwrap();
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(vec![DataType::Long(1), DataType::Double(10.0)], -1,)]
+        );
+    }
+
+    #[test]
+    fn numeric_aggregates_promote_mixed_inputs() {
+        let plan = query_plan(
+            "[:find (min ?age) (max ?age) (sum ?age) (avg ?age)
+              :where [?e :age ?age]]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(10)), 1),
+                (triple(2, AGE, DataType::Double(1.5)), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        assert_eq!(
+            decode_output_rows(&output.consolidate()).unwrap(),
+            vec![(
+                vec![
+                    DataType::Double(1.5),
+                    DataType::Long(10),
+                    DataType::Double(11.5),
+                    DataType::Double(5.75),
+                ],
+                1,
+            )]
+        );
+    }
+
+    #[test]
+    fn min_rejects_incompatible_type_families() {
+        let plan = query_plan(
+            "[:find (min ?value)
+              :where (or [?e :age ?value] [?e :name ?value])]",
+        );
+        let (mut circuit, (handle, output), _storage) =
+            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
+
+        append(
+            &handle,
+            [
+                (triple(1, AGE, DataType::Long(10)), 1),
+                (triple(2, NAME, DataType::String("Alice".to_string())), 1),
+            ],
+        );
+        circuit.transaction().unwrap();
+
+        let err = decode_output_rows(&output.consolidate()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("aggregate encountered uncomparable values"));
     }
 
     #[test]
     fn decode_errors_surface() {
-        let batch = RowZSet::from_keys((), vec![Tup2(vec![vec![0xff]], 1)]);
+        let batch =
+            OutputZSet::from_keys((), vec![Tup2(vec![AggregateOutput::Value(vec![0xff])], 1)]);
         let err = decode_output_rows(&batch).unwrap_err();
 
         assert!(err.to_string().contains("DecodeError"));

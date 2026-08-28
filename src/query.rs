@@ -437,6 +437,7 @@ pub(crate) fn build_var_index(join_order: &[Variable]) -> HashMap<&Variable, usi
 /// `GroupVar` uses a group position (indirect) so that `group_key_indices` can
 /// be iterated directly in the hot loop without filtering. `Aggregate` uses a
 /// join-order index (direct) since aggregates are only read once per row.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Projection {
     /// Index into `group_key_indices`, which itself holds a join-order index.
     GroupVar(usize),
@@ -445,6 +446,7 @@ pub(crate) enum Projection {
 }
 
 /// Compiled find plan that describes how to project + aggregate results.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FindPlan {
     /// Join-order indices of the group-by variables, iterated directly to build group keys.
     pub group_key_indices: Vec<usize>,
@@ -455,7 +457,7 @@ pub(crate) struct FindPlan {
 }
 
 /// Compile a find spec into a FindPlan.
-fn compile_find_plan(
+pub(crate) fn compile_find_plan(
     find: &FindSpec,
     var_index: &HashMap<&Variable, usize>,
 ) -> Result<FindPlan, Error> {

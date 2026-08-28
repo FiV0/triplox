@@ -8,13 +8,14 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 
 use crate::partition::tx_eid_from_tx_id;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 use triplox_client::transaction::TxKey;
 
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
@@ -61,7 +62,7 @@ pub(crate) type IncrementalQueryHandle = u64;
 pub(crate) struct IncrementalQuerySubscription {
     pub handle: IncrementalQueryHandle,
     pub tx_key: TxKey,
-    pub deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    pub deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,7 +71,7 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-type ServiceResult<T> = std::result::Result<T, String>;
+type ServiceResult<T> = Result<T>;
 
 enum IncrementalCommand {
     Register {
@@ -210,10 +211,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
@@ -221,10 +219,7 @@ impl IncrementalQueryService {
         self.commands
             .send(IncrementalCommand::Unregister { handle, response })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn apply_triples(
@@ -242,10 +237,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result
-            .await
-            .map_err(|_| anyhow!("Incremental query service stopped"))?
-            .map_err(|err| anyhow!("{}", err))
+        result.await.context("Incremental query service stopped")?
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -256,21 +248,19 @@ impl IncrementalQueryService {
             .commands
             .send(IncrementalCommand::Shutdown { response })
         {
-            Ok(()) => result
-                .await
-                .map_err(|_| anyhow!("Incremental query service stopped"))
-                .and_then(|result| result.map_err(|err| anyhow!("{}", err))),
+            Ok(()) => match result.await {
+                Ok(result) => result,
+                Err(err) => Err(err).context("Incremental query service stopped"),
+            },
             Err(_) => Err(anyhow!("Incremental query service stopped")),
         };
 
         match (cdc_result, service_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(cdc_err), Err(service_err)) => Err(anyhow!(
-                "Incremental query CDC shutdown failed: {:#}; incremental query service shutdown failed: {:#}",
-                cdc_err,
-                service_err
-            )),
+            (Err(cdc_err), Err(service_err)) => Err(cdc_err.context(format!(
+                "Incremental query service shutdown failed: {service_err:#}"
+            ))),
         }
     }
 }
@@ -283,8 +273,8 @@ enum DeltaDelivery {
 
 fn send_delta(
     runtime: &Handle,
-    sender: &mpsc::Sender<IncrementalQueryDelta>,
-    delta: IncrementalQueryDelta,
+    sender: &mpsc::Sender<Result<IncrementalQueryDelta>>,
+    delta: Result<IncrementalQueryDelta>,
     cancel: &CancellationToken,
 ) -> DeltaDelivery {
     runtime.block_on(async {
@@ -304,7 +294,7 @@ fn send_delta(
 struct RegisteredQuery {
     _plan: IncrementalQueryPlan,
     _circuit: QueryCircuit,
-    sender: mpsc::Sender<IncrementalQueryDelta>,
+    sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
     _tx_key: TxKey,
     _wal_cursor: CdcCursor,
 }
@@ -369,20 +359,27 @@ impl IncrementalQueryServiceInner {
         self.cleanup_closed_subscriptions()?;
 
         let handle = self.allocate_query_id();
-        let mut circuit = QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
-            .map_err(|err| format!("{:#}", err))?;
+        let mut circuit = match QueryCircuit::build(plan.clone(), &self.query_storage_path(handle))
+        {
+            Ok(circuit) => circuit,
+            Err(err) => return Err(self.cleanup_failed_registration(handle, err)),
+        };
         // Priming is the circuit's first batch, so its delta is the whole query result.
-        let priming_rows = circuit
-            .apply(initial_triples)
-            .map_err(|err| format!("{:#}", err))?;
+        let priming_rows = match circuit.apply(initial_triples) {
+            Ok(rows) => rows,
+            Err(err) => {
+                drop(circuit);
+                return Err(self.cleanup_failed_registration(handle, err));
+            }
+        };
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         if !priming_rows.is_empty() {
             sender
-                .try_send(IncrementalQueryDelta {
+                .try_send(Ok(IncrementalQueryDelta {
                     tx_key,
                     rows: priming_rows,
-                })
-                .map_err(|err| format!("Failed to enqueue priming result set: {}", err))?;
+                }))
+                .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
         }
 
         self.queries.insert(
@@ -416,6 +413,7 @@ impl IncrementalQueryServiceInner {
     ) -> ServiceResult<()> {
         self.cleanup_closed_subscriptions()?;
         let mut closed = Vec::new();
+        let mut failed = Vec::new();
         let cancel = self.cancel.clone();
 
         for (id, query) in &mut self.queries {
@@ -424,24 +422,32 @@ impl IncrementalQueryServiceInner {
                 continue;
             }
 
-            let rows = query
-                ._circuit
-                .apply(triples.clone())
-                .map_err(|err| format!("{:#}", err))?;
+            let rows = match query._circuit.apply(triples.clone()) {
+                Ok(rows) => rows,
+                Err(err) => {
+                    failed.push((*id, err));
+                    continue;
+                }
+            };
             if rows.is_empty() {
                 query._wal_cursor.last_seq = wal_seq;
                 continue;
             }
-            let delta = IncrementalQueryDelta { tx_key, rows };
+            let delta = Ok(IncrementalQueryDelta { tx_key, rows });
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
-                DeltaDelivery::Cancelled => return Ok(()),
+                DeltaDelivery::Cancelled => break,
             }
         }
 
         for id in closed {
             self.remove_query(id)?;
+        }
+        for (id, error) in failed {
+            if let Some(sender) = self.remove_failed_query(id) {
+                let _ = send_delta(&self.runtime, &sender, Err(error), &cancel);
+            }
         }
         Ok(())
     }
@@ -460,18 +466,41 @@ impl IncrementalQueryServiceInner {
         let query = self
             .queries
             .remove(&id)
-            .ok_or_else(|| format!("Unknown incremental query handle: {:?}", id))?;
+            .ok_or_else(|| anyhow!("Unknown incremental query handle: {:?}", id))?;
         drop(query);
         self.remove_query_storage(id)
+    }
+
+    fn remove_failed_query(
+        &mut self,
+        id: IncrementalQueryHandle,
+    ) -> Option<mpsc::Sender<Result<IncrementalQueryDelta>>> {
+        let sender = self.queries.remove(&id).map(|query| {
+            let sender = query.sender.clone();
+            drop(query);
+            sender
+        });
+        if let Err(error) = self.remove_query_storage(id) {
+            warn!("{}", error);
+        }
+        sender
     }
 
     fn remove_query_storage(&self, id: IncrementalQueryHandle) -> ServiceResult<()> {
         match std::fs::remove_dir_all(self.query_storage_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!(
-                "Failed to remove incremental query storage for {:?}: {}",
-                id, err
+            Err(err) => Err(err).with_context(|| {
+                format!("Failed to remove incremental query storage for {:?}", id)
+            }),
+        }
+    }
+
+    fn cleanup_failed_registration(&self, id: IncrementalQueryHandle, error: Error) -> Error {
+        match self.remove_query_storage(id) {
+            Ok(()) => error,
+            Err(cleanup_error) => error.context(format!(
+                "Incremental query registration cleanup failed: {cleanup_error:#}"
             )),
         }
     }
@@ -484,11 +513,16 @@ impl IncrementalQueryServiceInner {
                 errors.push(err);
             }
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
+        let mut errors = errors.into_iter();
+        let Some(mut error) = errors.next() else {
+            return Ok(());
+        };
+        for parallel_error in errors {
+            error = error.context(format!(
+                "An additional incremental query cleanup failed: {parallel_error:#}"
+            ));
         }
+        Err(error)
     }
 
     fn cleanup_closed_subscriptions(&mut self) -> ServiceResult<()> {
@@ -524,7 +558,93 @@ mod tests {
 
     use super::*;
     use crate::codec::Encode;
+    use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
+    use crate::query::{FindPlan, Projection};
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().unwrap()
+    }
+
+    #[track_caller]
+    fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
+        result.expect("expected subscription delta")
+    }
+
+    #[track_caller]
+    fn expect_error(result: Result<IncrementalQueryDelta>) -> anyhow::Error {
+        result.expect_err("expected subscription error")
+    }
+
+    fn single_pattern_plan() -> IncrementalQueryPlan {
+        let pattern = PatternPlan {
+            attribute: 10,
+            entity: PatternSlot::Variable("?e".to_var()),
+            value: PatternSlot::Variable("?name".to_var()),
+            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
+        };
+        IncrementalQueryPlan {
+            find_plan: FindPlan {
+                group_key_indices: vec![1],
+                projections: vec![Projection::GroupVar(0)],
+                has_aggregates: false,
+            },
+            where_plan: RelPlan {
+                incoming_vars: None,
+                output_vars: pattern.pattern_vars.clone(),
+                kind: RelPlanKind::Pattern(pattern),
+            },
+        }
+    }
+
+    fn aggregate_plan(query: &str) -> IncrementalQueryPlan {
+        plan_query(&parse_query(query), &test_schema()).unwrap()
+    }
+
+    fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: DataType::Long(entity).encode(),
+                attribute: NAME_ATTR_ID,
+                value: DataType::String(name.to_string()).encode(),
+            },
+            1,
+        )
+    }
+
+    fn age_triple(entity: i64, age: i64) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: DataType::Long(entity).encode(),
+                attribute: AGE_ATTR_ID,
+                value: DataType::Long(age).encode(),
+            },
+            1,
+        )
+    }
+
+    fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
+        TxKey {
+            tx_id,
+            system_time: Utc::now(),
+        }
+    }
+
+    fn test_cursor() -> CdcCursor {
+        CdcCursor {
+            wal_id: 0,
+            last_seq: 0,
+        }
+    }
+
+    fn path_has_entries(path: &Path) -> bool {
+        std::fs::read_dir(path)
+            .unwrap()
+            .next()
+            .transpose()
+            .unwrap()
+            .is_some()
+    }
 
     #[test]
     fn unregister_removes_query_storage() {
@@ -538,9 +658,9 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .unwrap();
         let storage_path = dir.path().join("query-1");
@@ -564,9 +684,9 @@ mod tests {
         let subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .unwrap();
         let storage_path = dir.path().join("query-1");
@@ -576,7 +696,7 @@ mod tests {
         drop(subscription);
 
         let err = service.unregister(handle).unwrap_err();
-        assert!(err.contains("Unknown incremental query handle"));
+        assert!(err.to_string().contains("Unknown incremental query handle"));
         assert!(!storage_path.exists());
     }
 
@@ -605,14 +725,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
+            expect_delta(subscription.deltas.try_recv().unwrap()),
             IncrementalQueryDelta {
                 tx_key: registration_basis,
                 rows: vec![(vec![DataType::String("Alice".to_string())], 1)],
             }
         );
         assert_eq!(
-            subscription.deltas.try_recv().unwrap(),
+            expect_delta(subscription.deltas.try_recv().unwrap()),
             IncrementalQueryDelta {
                 tx_key: future_basis,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
@@ -632,7 +752,7 @@ mod tests {
         let mut subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -642,6 +762,96 @@ mod tests {
             subscription.deltas.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+
+        let err = service
+            .register(
+                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                vec![name_triple(42, "Alice")],
+            )
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("sum: cannot aggregate non-numeric value"));
+        assert!(err.downcast_ref::<circuit::AggregateError>().is_some());
+        assert!(service.queries.is_empty());
+        assert!(!dir.path().join("query-1").exists());
+    }
+
+    #[test]
+    fn live_aggregate_error_removes_only_the_affected_subscription() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime();
+        let mut service = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            runtime.handle().clone(),
+            CancellationToken::new(),
+        );
+        let mut aggregate_subscription = service
+            .register(
+                aggregate_plan(
+                    "[:find (sum ?value)
+                      :where (or [?e :age ?value] [?e :name ?value])]",
+                ),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        let mut names_subscription = service
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        aggregate_subscription.deltas.try_recv().unwrap();
+
+        service
+            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
+            .unwrap();
+        service
+            .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Alice")])
+            .unwrap();
+
+        assert_eq!(
+            expect_delta(names_subscription.deltas.try_recv().unwrap()).rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+        let prior_delta = expect_delta(aggregate_subscription.deltas.try_recv().unwrap());
+        assert!(prior_delta.rows.contains(&(vec![DataType::Long(10)], 1)));
+        let error = expect_error(aggregate_subscription.deltas.try_recv().unwrap());
+        assert_eq!(error.to_string(), "sum: cannot aggregate non-numeric value");
+        assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
+        assert!(matches!(
+            aggregate_subscription.deltas.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(!service.queries.contains_key(&aggregate_subscription.handle));
+        assert!(service.queries.contains_key(&names_subscription.handle));
+        assert!(!dir.path().join("query-1").exists());
+
+        service
+            .apply_triples(test_tx_key_with_tx_id(4), 4, vec![name_triple(44, "Bob")])
+            .unwrap();
+        assert_eq!(
+            expect_delta(names_subscription.deltas.try_recv().unwrap()).rows,
+            vec![(vec![DataType::String("Bob".to_string())], 1)]
+        );
     }
 
     #[test]
@@ -681,7 +891,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            old_subscription.deltas.try_recv().unwrap().rows,
+            expect_delta(old_subscription.deltas.try_recv().unwrap()).rows,
             vec![(vec![DataType::String("Bob".to_string())], 1)]
         );
         assert!(new_subscription.deltas.try_recv().is_err());
@@ -718,7 +928,7 @@ mod tests {
         let _subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
                 Vec::new(),
             )
@@ -814,9 +1024,9 @@ mod tests {
         let _subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
-                test_tx_key(),
+                test_tx_key_with_tx_id(1),
                 test_cursor(),
-                initial_triples(),
+                vec![name_triple(42, "Alice")],
             )
             .await
             .unwrap();
@@ -896,14 +1106,14 @@ mod tests {
         apply.await.unwrap().unwrap();
 
         assert_eq!(
-            first_subscription.deltas.recv().await.unwrap(),
+            expect_delta(first_subscription.deltas.recv().await.unwrap()),
             IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
             }
         );
         assert_eq!(
-            second_subscription.deltas.recv().await.unwrap(),
+            expect_delta(second_subscription.deltas.recv().await.unwrap()),
             IncrementalQueryDelta {
                 tx_key: apply_tx_key,
                 rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
@@ -911,68 +1121,5 @@ mod tests {
         );
 
         service.shutdown().await.unwrap();
-    }
-
-    fn test_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Runtime::new().unwrap()
-    }
-
-    fn single_pattern_plan() -> IncrementalQueryPlan {
-        let pattern = PatternPlan {
-            attribute: 10,
-            entity: PatternSlot::Variable("?e".to_var()),
-            value: PatternSlot::Variable("?name".to_var()),
-            pattern_vars: vec!["?e".to_var(), "?name".to_var()],
-        };
-        IncrementalQueryPlan {
-            find_vars: vec!["?name".to_var()],
-            where_plan: RelPlan {
-                incoming_vars: None,
-                output_vars: pattern.pattern_vars.clone(),
-                kind: RelPlanKind::Pattern(pattern),
-            },
-        }
-    }
-
-    fn initial_triples() -> Vec<Tup2<EncodedTriple, ZWeight>> {
-        vec![name_triple(42, "Alice")]
-    }
-
-    fn name_triple(entity: i64, name: &str) -> Tup2<EncodedTriple, ZWeight> {
-        Tup2(
-            EncodedTriple {
-                entity: DataType::Long(entity).encode(),
-                attribute: 10,
-                value: DataType::String(name.to_string()).encode(),
-            },
-            1,
-        )
-    }
-
-    fn test_tx_key() -> TxKey {
-        test_tx_key_with_tx_id(1)
-    }
-
-    fn test_tx_key_with_tx_id(tx_id: i64) -> TxKey {
-        TxKey {
-            tx_id,
-            system_time: Utc::now(),
-        }
-    }
-
-    fn test_cursor() -> CdcCursor {
-        CdcCursor {
-            wal_id: 0,
-            last_seq: 0,
-        }
-    }
-
-    fn path_has_entries(path: &Path) -> bool {
-        std::fs::read_dir(path)
-            .unwrap()
-            .next()
-            .transpose()
-            .unwrap()
-            .is_some()
     }
 }

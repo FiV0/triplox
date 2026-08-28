@@ -58,7 +58,8 @@ modules:
 - `src/inc_query/planner.rs` orders descriptors and lowers them to physical
   relation plans.
 - `src/incremental/circuit.rs` assembles the relation plans into a per-query
-  DBSP circuit.
+  DBSP circuit. `src/incremental/circuit/aggregates.rs` builds aggregate result
+  streams.
 
 `src/incremental.rs` owns registered query handles, channels, per-query circuit
 instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
@@ -211,13 +212,30 @@ correlated with the positive input, while DBSP antijoin treats the resulting
 negative key relation by presence. This gives the expected add/retract behavior
 when a key has multiple negative matches.
 
-The completed `:where` relation is projected to the query's `:find` variable
-order.
+For a non-aggregate query, the completed `:where` relation is projected to the
+query's `:find` variable order. An aggregate query passes that relation to the
+aggregate assembly described below.
 
-The DBSP state is trace-backed and configured with file-backed storage.
-Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
-query state. The trace files get currently deleted when a query gets unregistered.
-Future work should consider query restart and DBSP checkpointing.
+### Aggregate assembly
+
+The find plan identifies the non-aggregate find variables as the group key and
+records all find elements in projection order. Circuit assembly indexes the
+completed `:where` rows by that group key and builds one independent result
+stream for each aggregate expression. It then joins those streams by group and
+restores group values and aggregate values to find-clause order. Equivalent
+aggregate expressions are not deduplicated.
+
+A global aggregate has an empty group key. The circuit seeds that group so an
+empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
+and `max` produce no row for an empty input.
+
+`min` and `max` currently use a rather convoluted way to produce a result. The
+main reason is duplicated behaviour for dealing with different non-comparable
+types (i.e. "string" vs "int") and that the existing Min implementations from
+the DBSP crate do not carry errors through the circuits, because `min`/`max`
+can only produce a value from either left or right, without producing a
+new value (error) and the signatures for the standard implementation does not
+produce a `Result` value.
 
 ---
 
@@ -282,10 +300,10 @@ There are two channel directions:
 
 - `std::sync::mpsc` carries commands into the service thread. It fits the
   blocking `receiver.recv()` loop used by the dedicated thread.
-- `tokio::sync::mpsc` carries `IncrementalQueryDelta` values back to async
-  subscribers. The service thread retries bounded sends, so a slow subscriber
-  applies backpressure instead of losing deltas; node cancellation breaks that
-  wait during shutdown.
+- `tokio::sync::mpsc` carries `Result<IncrementalQueryDelta>` values back to
+  async subscribers. The service thread retries bounded sends, so a slow
+  subscriber applies backpressure instead of losing deltas; node cancellation
+  breaks that wait during shutdown.
 
 In the future the server should drain these subscribers eagerly server side and send
 the appropriate deltas to the corresponding clients. The clients then need to deal
@@ -293,9 +311,13 @@ with the backpressure themselves, depending on the client implementation.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
-basis; later deltas describe transactions after that basis. The command protocol
-exists to serialize mutations to the query registry and DBSP circuits onto the
-single service thread.
+basis; later deltas describe transactions after that basis. An aggregate failure
+is preserved as a typed error through the circuit and service channel. A priming
+failure rejects registration. A live failure removes only the affected query,
+sends one error through its channel, and closes that subscription. The server
+encodes the error as a terminal `QueryError` frame. The command protocol exists
+to serialize mutations to the query registry and DBSP circuits onto the single
+service thread.
 
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
@@ -383,9 +405,10 @@ Each registration returns:
 - the registration `TxKey`, and
 - a bounded Tokio channel of result deltas.
 
-Queries can be explicitly unregistered. They are also cleaned up when their
-receiver is dropped. Cleanup removes the in-memory query state and deletes the
-query's per-query DBSP storage directory.
+DBSP query state is trace-backed and stored in a per-query directory instead of
+being accumulated in ordinary Rust memory. The service deletes that directory
+when registration fails, a query is explicitly unregistered, its receiver is
+dropped, its circuit returns an error, or the service shuts down.
 
 ---
 
@@ -441,7 +464,6 @@ save a lot of space in the incremental circuits.
 
 ### Cleanup
 
-Currently the cleanup of queries happens when the incremental query gets unregistered
-or the node shuts down. There is no cleaner process. I think we should consider
-a client heartbeat (which is also useful for other purposes) and close incremental
-queries if we have the impression the client is dead.
+Cleanup is currently event-driven; there is no separate process for detecting
+clients that are no longer responsive. A client heartbeat could provide that
+liveness signal and allow the service to close abandoned incremental queries.
