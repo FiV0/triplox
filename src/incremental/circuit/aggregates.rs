@@ -506,6 +506,7 @@ fn aggregate_stream(
             let minimum = values
                 .aggregate(Min)
                 .map_index(|(group, minimum)| (group.clone(), minimum.encode_result()));
+            // TODO: This validate_comparable_aggregate looks smelly. We iterate the stream twice.
             validate_comparable_aggregate(grouped, minimum, input_position)
         }
 
