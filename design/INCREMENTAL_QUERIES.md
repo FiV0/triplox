@@ -229,7 +229,6 @@ A global aggregate has an empty group key. The circuit seeds that group so an
 empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
 and `max` produce no row for an empty input.
 
-
 `min` and `max` currently use a rather convoluted way to produce a result. The
 main reason is duplicated behaviour for dealing with different non-comparable
 types (i.e. "string" vs "int") and that the existing Min implementations from
@@ -237,11 +236,6 @@ the DBSP crate do not carry errors through the circuits, because `min`/`max`
 can only produce a value from either left or right, without producing a
 new value (error) and the signatures for the standard implementation does not
 produce a `Result` value.
-
-The DBSP state is trace-backed and configured with file-backed storage.
-Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
-query state. The trace files get currently deleted when a query gets unregistered.
-Future work should consider query restart and DBSP checkpointing.
 
 ---
 
@@ -411,9 +405,10 @@ Each registration returns:
 - the registration `TxKey`, and
 - a bounded Tokio channel of result deltas.
 
-Queries can be explicitly unregistered. They are also cleaned up when their
-receiver is dropped or their circuit returns an error. Cleanup removes the
-in-memory query state and deletes the query's per-query DBSP storage directory.
+DBSP query state is trace-backed and stored in a per-query directory instead of
+being accumulated in ordinary Rust memory. The service deletes that directory
+when registration fails, a query is explicitly unregistered, its receiver is
+dropped, its circuit returns an error, or the service shuts down.
 
 ---
 
@@ -469,7 +464,6 @@ save a lot of space in the incremental circuits.
 
 ### Cleanup
 
-Currently the cleanup of queries happens when the incremental query gets unregistered
-or the node shuts down. There is no cleaner process. I think we should consider
-a client heartbeat (which is also useful for other purposes) and close incremental
-queries if we have the impression the client is dead.
+Cleanup is currently event-driven; there is no separate process for detecting
+clients that are no longer responsive. A client heartbeat could provide that
+liveness signal and allow the service to close abandoned incremental queries.
