@@ -225,72 +225,17 @@ stream for each aggregate expression. It then joins those streams by group and
 restores group values and aggregate values to find-clause order. Equivalent
 aggregate expressions are not deduplicated.
 
-The incremental engine supports `count`, `count-distinct`, `sum`, `avg`, `min`,
-and `max`. `sum` and `avg` use additive state that DBSP can multiply by signed
-row weights, so insertions and retractions update the same state. Aggregate
-failures remain typed as `AggregateError` values until circuit output is
-decoded.
-
 A global aggregate has an empty group key. The circuit seeds that group so an
 empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
 and `max` produce no row for an empty input.
 
-#### Minimum and maximum
-
-DBSP's standard `Min` and `Max` operators require a total `Ord` value, while
-Triplox comparison is fallible and defined only within compatible value
-families. `ComparableValue` is the current adapter between those models:
-
-```text
-ComparableValue {
-    rank: comparison family and invalid-value placement,
-    sort_key: bytes used by DBSP ordering,
-    encoded: original value returned to the caller,
-    error: optional AggregateError,
-}
-```
-
-Long, big integer, float, and double values form the numeric family. String,
-boolean, and instant values each form separate families. NaN and all other
-`DataType` variants are invalid. Numeric inputs are converted to an encoded
-`Double` sort key; string, boolean, and instant inputs use their encoded value
-as the sort key. The adapter retains the original bytes so the selected result
-keeps its original `DataType` representation. Invalid inputs are placed at the
-winning extreme for the selected operator so they surface as aggregate errors.
-
-Candidate selection and compatibility validation are separate branches:
-
-```text
-grouped rows
-    -> ComparableValue -> DBSP Min or Max candidate
-    -> family id       -> distinct family count
-                         |
-                         v
-                    validation join
-                         |
-                         v
-              value or MixedComparison
-```
-
-The family branch decodes the input again and succeeds only when the live group
-contains one distinct family id. Multiple family ids replace the provisional
-candidate with `MixedComparison`. This branch is necessary because DBSP's
-standard operators can select only an input value; they cannot synthesize a
-mixed-family error. Issue #474 tracks options for combining selection and
-validation into one aggregate operation.
-
-The current adapter duplicates comparison rules from
-`DataType::partial_compare` and does not guarantee the same ordering. Numeric
-normalization to `f64` loses integer precision, and ordering strings and
-instants by their encoded bytes assumes an order-preserving codec. A future
-refactor should define one canonical comparison representation shared by the
-standard and incremental query paths while retaining an owned, serializable
-adapter for DBSP traces.
-
-The DBSP state is trace-backed and configured with file-backed storage.
-Triplox does not keep full accumulated relation Z-sets in ordinary Rust memory as the
-query state. The trace files get currently deleted when a query gets unregistered.
-Future work should consider query restart and DBSP checkpointing.
+`min` and `max` currently use a rather convoluted way to produce a result. The
+main reason is duplicated behaviour for dealing with different non-comparable
+types (i.e. "string" vs "int") and that the existing Min implementations from
+the DBSP crate do not carry errors through the circuits, because `min`/`max`
+can only produce a value from either left or right, without producing a
+new value (error) and the signatures for the standard implementation does not
+produce a `Result` value.
 
 ---
 
