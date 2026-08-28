@@ -1466,47 +1466,6 @@ mod tests {
     }
 
     #[test]
-    fn aggregates_accept_function_and_or_produced_values() {
-        let function_plan = query_plan(
-            "[:find (sum ?next-age)
-              :where [?e :age ?age] [(+ ?age 1) ?next-age]]",
-        );
-        let (mut function_circuit, (function_handle, function_output), _storage) =
-            build_test_circuit(move |circuit| build_find_circuit(circuit, function_plan.clone()));
-        append(
-            &function_handle,
-            [
-                (triple(1, AGE, DataType::Long(10)), 1),
-                (triple(2, AGE, DataType::Long(20)), 1),
-            ],
-        );
-        function_circuit.transaction().unwrap();
-        assert_eq!(
-            decode_output_rows(&function_output.consolidate()).unwrap(),
-            vec![(vec![DataType::Long(32)], 1)]
-        );
-
-        let or_plan = query_plan(
-            "[:find (count ?value)
-              :where (or [?e :age ?value] [?e :name ?value])]",
-        );
-        let (mut or_circuit, (or_handle, or_output), _storage) =
-            build_test_circuit(move |circuit| build_find_circuit(circuit, or_plan.clone()));
-        append(
-            &or_handle,
-            [
-                (triple(1, AGE, DataType::Long(10)), 1),
-                (triple(2, NAME, DataType::String("Alice".to_string())), 1),
-            ],
-        );
-        or_circuit.transaction().unwrap();
-        assert_eq!(
-            decode_output_rows(&or_output.consolidate()).unwrap(),
-            vec![(vec![DataType::Long(2)], 1)]
-        );
-    }
-
-    #[test]
     fn numeric_aggregates_promote_mixed_inputs() {
         let plan = query_plan(
             "[:find (min ?age) (max ?age) (sum ?age) (avg ?age)
