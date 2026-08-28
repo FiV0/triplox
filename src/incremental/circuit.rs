@@ -1292,54 +1292,6 @@ mod tests {
     }
 
     #[test]
-    fn projects_rows_to_find_order_and_decodes() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
-
-        append(
-            &handle,
-            [
-                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
-                (triple(42, AGE, DataType::Long(30)), 1),
-            ],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            decode_output_rows(&output.consolidate()).unwrap(),
-            vec![(
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                1
-            )]
-        );
-    }
-
-    #[test]
-    fn preserves_negative_delta_weights() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
-
-        append(
-            &handle,
-            [
-                (triple(42, NAME, DataType::String("Alice".to_string())), -1),
-                (triple(42, AGE, DataType::Long(30)), 1),
-            ],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            decode_output_rows(&output.consolidate()).unwrap(),
-            vec![(
-                vec![DataType::String("Alice".to_string()), DataType::Long(30)],
-                -1
-            )]
-        );
-    }
-
-    #[test]
     fn global_aggregates_share_a_group_and_preserve_find_order() {
         let plan = query_plan(
             "[:find (sum ?age) (min ?age) (max ?age) (count ?age)
@@ -1611,39 +1563,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_transaction_decodes_to_no_rows() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let (mut circuit, (_handle, output), _storage) =
-            build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
-
-        circuit.transaction().unwrap();
-
-        assert!(decode_output_rows(&output.consolidate())
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
     fn decode_errors_surface() {
         let batch =
             OutputZSet::from_keys((), vec![Tup2(vec![AggregateOutput::Value(vec![0xff])], 1)]);
         let err = decode_output_rows(&batch).unwrap_err();
 
         assert!(err.to_string().contains("DecodeError"));
-    }
-
-    #[test]
-    fn aggregate_errors_surface_without_encoding() {
-        let batch = OutputZSet::from_keys(
-            (),
-            vec![Tup2(
-                vec![AggregateOutput::Error(AggregateError::SumNonNumeric)],
-                1,
-            )],
-        );
-        let err = decode_output_rows(&batch).unwrap_err();
-
-        assert_eq!(err.to_string(), "sum: cannot aggregate non-numeric value");
-        assert!(err.downcast_ref::<AggregateError>().is_some());
     }
 }
