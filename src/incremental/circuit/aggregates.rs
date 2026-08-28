@@ -535,7 +535,7 @@ pub(super) fn aggregate_find_stream(
         .map_index(move |row| (select_row_positions(row, &group_positions), row.clone()));
 
     // Build one independent result stream for each aggregate projection.
-    // Aggregate results are kept in the same order as they appera in plan.projections.
+    // Aggregate results are kept in the same order as they appear in plan.projections.
     let aggregate_streams = plan
         .projections
         .iter()
@@ -574,7 +574,7 @@ pub(super) fn aggregate_find_stream(
         let first = streams
             .next()
             .expect("aggregate find plan must contain an aggregate");
-        // Restuls remain indexed, because the group-key becomes important below.
+        // Results remain indexed, because the group-key becomes important below.
         streams.fold(
             first.map_index(|(group, value)| (group.clone(), vec![value.clone()])),
             |combined, aggregate| {
