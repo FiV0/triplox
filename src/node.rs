@@ -1922,7 +1922,6 @@ mod tests {
             .map(incremental_delta)
     }
 
-
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
         rows.sort_by_key(|row| format!("{:?}", row));
     }

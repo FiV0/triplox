@@ -385,7 +385,6 @@ fn project_find_stream(
     where_stream: PlannedWhereStream,
     plan: &FindPlan,
 ) -> Stream<RootCircuit, OutputZSet> {
-
     let find_positions = plan
         .projections
         .iter()

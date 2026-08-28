@@ -376,7 +376,7 @@ impl MulByRef<ZWeight> for DbspAverage {
     feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
-// This is a giant hack. We should add proper type analysis to the where stream outputs and 
+// This is a giant hack. We should add proper type analysis to the where stream outputs and
 // only allow valid aggregations from the typed query. This would also restrict the aggregates
 // to only sensible aggregates like min(numeric), min(string) etc..
 struct ComparableValue {
