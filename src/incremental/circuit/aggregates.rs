@@ -376,6 +376,9 @@ impl MulByRef<ZWeight> for DbspAverage {
     feldera_macros::IsNone,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
+// This looks like a hack to me. We should add proper type analysis to the where stream outputs and 
+// only allow valid aggregations from the typed query. This would also restrict the aggregates
+// to only sensible aggregates like min(numeric), min(string) etc..
 struct ComparableValue {
     rank: u8,
     sort_key: Vec<u8>,
@@ -410,7 +413,7 @@ impl ComparableValue {
     }
 
     // invalid only carries the information that a single value is non comparable. Not
-    // that two values are imcomparable.
+    // that two values are incomparable.
     fn invalid(encoded: &[u8], minimum: bool, error: AggregateError) -> Self {
         Self {
             rank: if minimum { 0 } else { u8::MAX },
@@ -441,7 +444,7 @@ fn comparable_family(encoded: &[u8]) -> u8 {
 }
 
 // TODO: The DBSP min/max implementations can only produce values from the left or right side, not an error.
-// This is the reason we need the family and actualy comparsion above. We find different families in a
+// This is the reason we need the family and actual comparison above. We find different families in a
 // second pass. See #474 for more complete explanation and options.
 fn validate_comparable_aggregate(
     grouped: &GroupedRows,
