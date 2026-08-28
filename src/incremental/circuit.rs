@@ -1559,7 +1559,7 @@ mod tests {
         let err = decode_output_rows(&output.consolidate()).unwrap_err();
         assert!(err
             .to_string()
-            .contains("min/max cannot compare aggregate values"));
+            .contains("aggregate encountered uncomparable values"));
     }
 
     #[test]
