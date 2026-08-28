@@ -49,9 +49,9 @@ pub(in crate::incremental) enum AggregateError {
     Decode,
     #[error("cannot compare NaN values")]
     NanComparison,
-    #[error("min/max cannot compare aggregate value")]
+    #[error("aggregate encountered uncomparable values")]
     UnsupportedComparison,
-    #[error("min/max cannot compare aggregate values")]
+    #[error("aggregate encountered uncomparable values")]
     MixedComparison,
 }
 
