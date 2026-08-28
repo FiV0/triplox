@@ -512,6 +512,7 @@ fn aggregate_stream(
                 .aggregate(Min)
                 .map_index(|(group, minimum)| (group.clone(), minimum.encode_result()));
             // TODO: This validate_comparable_aggregate looks smelly. We iterate the stream twice.
+            // See #474
             validate_comparable_aggregate(grouped, minimum, input_position)
         }
 
