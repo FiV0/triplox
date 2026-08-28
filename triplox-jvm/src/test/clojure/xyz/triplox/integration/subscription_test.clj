@@ -86,72 +86,6 @@
               [["Ivanov"] 1]]
              (take-delta! sub))))))
 
-(deftest aggregate-subscription-emits-priming-and-incremental-replacements
-  (api/transact *conn* [{:name "Alice" :age 10}
-                        {:name "Bob" :age 20}])
-  (with-open [sub (api/subscribe *conn* '{:find [(sum ?age)
-                                                 (min ?age)
-                                                 (max ?age)
-                                                 (count ?age)
-                                                 (count-distinct ?age)
-                                                 (avg ?age)]
-                                          :where [[?e :age ?age]]})]
-    (is (= [[[30 10 20 2 2 15.0] 1]]
-           (take-priming! sub)))
-
-    (api/transact *conn* [{:name "Carol" :age 30}])
-    (is (= #{[[30 10 20 2 2 15.0] -1]
-             [[60 10 30 3 3 20.0] 1]}
-           (set (take-delta! sub))))))
-
-(deftest aggregate-subscription-priming-error-is-reported
-  (api/transact *conn* [{:name "Alice"}])
-  (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
-                        (api/subscribe *conn* '{:find [(sum ?name)]
-                                                :where [[?e :name ?name]]}))))
-
-(deftest live-aggregate-error-closes-only-the-affected-subscription
-  (api/transact *conn* [{:age 10}])
-  (with-open [aggregate-sub (api/subscribe *conn* '{:find [(sum ?value)]
-                                                    :where [(or [?e :age ?value]
-                                                                [?e :name ?value])]})
-              names-sub (api/subscribe *conn* names-query)]
-    (is (= [[[10] 1]] (take-priming! aggregate-sub)))
-
-    (is (:committed? (api/transact *conn* [{:name "Alice"}])))
-    (let [error (try
-                  (take-delta! aggregate-sub)
-                  nil
-                  (catch TriploxException error error))]
-      (is (some? error))
-      (is (= 2001 (Short/toUnsignedInt (.code ^TriploxException error))))
-      (is (re-find #"sum: cannot aggregate non-numeric value"
-                   (.getMessage ^TriploxException error))))
-    (is (.isDone aggregate-sub))
-    (is (= [[["Alice"] 1]] (take-delta! names-sub)))
-
-    (is (:committed? (api/transact *conn* [{:name "Bob"}])))
-    (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
-
-(deftest grouped-aggregate-subscription-updates-one-of-multiple-groups
-  (api/transact *conn* [{:name "Alice" :sex :female :age 10}
-                        {:name "Bob" :sex :male :age 20}
-                        {:name "Dave" :sex :male :age 30}])
-  (with-open [sub (api/subscribe *conn* '{:find [(sum ?age)
-                                                 ?sex
-                                                 (count ?e)
-                                                 (max ?age)]
-                                          :where [[?e :sex ?sex]
-                                                  [?e :age ?age]]})]
-    (is (= #{[[10 :female 1 10] 1]
-             [[50 :male 2 30] 1]}
-           (set (take-priming! sub))))
-
-    (api/transact *conn* [{:name "Carol" :sex :female :age 30}])
-    (is (= #{[[10 :female 1 10] -1]
-             [[40 :female 2 30] 1]}
-           (set (take-delta! sub))))))
-
 (deftest test-basic-query-1
   (with-open [sub (api/subscribe *conn* '{:find [?name]
                                           :where [[?e :name "Ivan"]
@@ -596,3 +530,55 @@
       (is (= [[["Ada Lovelace" "12 St. James's Square"] -1]
               [["Ada Lovelace" "Buckingham Palace"] 1]]
              (take-delta! sub))))))
+
+(deftest aggregate-subscription-emits-priming-and-incremental-replacements
+  (api/transact *conn* [{:name "Alice" :age 10}
+                        {:name "Bob" :age 20}])
+  (with-open [sub (api/subscribe *conn* '{:find [(sum ?age) (min ?age) (max ?age) (count ?age) (count-distinct ?age) (avg ?age)]
+                                          :where [[?e :age ?age]]})]
+    (is (= [[[30 10 20 2 2 15.0] 1]]
+           (take-priming! sub)))
+
+    (api/transact *conn* [{:name "Carol" :age 30}])
+    (is (= [[[60 10 30 3 3 20.0] 1]
+            [[30 10 20 2 2 15.0] -1]]
+           (take-delta! sub)))))
+
+(deftest grouped-aggregate-subscription-updates-one-of-multiple-groups
+  (api/transact *conn* [{:name "Alice" :sex :female :age 10}
+                        {:name "Bob" :sex :male :age 20}
+                        {:name "Dave" :sex :male :age 30}])
+  (with-open [sub (api/subscribe *conn* '{:find [(sum ?age) ?sex (count ?e) (max ?age)]
+                                          :where [[?e :sex ?sex]
+                                                  [?e :age ?age]]})]
+    (is (= [[[50 :male 2 30] 1]
+            [[10 :female 1 10] 1]]
+           (take-priming! sub)))
+
+    (api/transact *conn* [{:name "Carol" :sex :female :age 30}])
+    (is (= [[[40 :female 2 30] 1]
+            [[10 :female 1 10] -1]]
+           (take-delta! sub)))))
+
+(deftest aggregate-subscription-priming-error-is-reported
+  (api/transact *conn* [{:name "Alice"}])
+  (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
+                        (api/subscribe *conn* '{:find [(sum ?name)]
+                                                :where [[?e :name ?name]]}))))
+
+(deftest live-aggregate-error-closes-only-the-affected-subscription
+  (api/transact *conn* [{:age 10}])
+  (with-open [aggregate-sub (api/subscribe *conn* '{:find [(sum ?value)]
+                                                    :where [(or [?e :age ?value]
+                                                                [?e :name ?value])]})
+              names-sub (api/subscribe *conn* names-query)]
+    (is (= [[[10] 1]] (take-priming! aggregate-sub)))
+
+    (api/transact *conn* [{:name "Alice"}])
+    (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
+                          (take-delta! aggregate-sub)))
+
+    (is (= [[["Alice"] 1]] (take-delta! names-sub)))
+
+    (api/transact *conn* [{:name "Bob"}])
+    (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
