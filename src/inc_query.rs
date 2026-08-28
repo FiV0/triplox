@@ -941,7 +941,7 @@ mod tests {
         assert_plan_err("[:find [?e ...] :where [?e :name ?name]]", "Only FindRel");
         assert_plan_err(
             "[:find (pull ?e [*]) :where [?e :name ?name]]",
-            "Pull and corresponding",
+            "Pull is not (yet) supported",
         );
     }
 
