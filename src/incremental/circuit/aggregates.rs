@@ -394,15 +394,15 @@ impl ComparableValue {
                 if numeric.as_f64().is_nan() {
                     return Self::invalid(encoded, minimum, AggregateError::NanComparison);
                 }
-                (0, DataType::Double(numeric.as_f64()).encode())
+                (1, DataType::Double(numeric.as_f64()).encode())
             }
-            DataType::String(_) => (1, encoded.to_vec()),
-            DataType::Boolean(_) => (2, encoded.to_vec()),
-            DataType::Instant(_) => (3, encoded.to_vec()),
+            DataType::String(_) => (2, encoded.to_vec()),
+            DataType::Boolean(_) => (3, encoded.to_vec()),
+            DataType::Instant(_) => (4, encoded.to_vec()),
             _ => return Self::invalid(encoded, minimum, AggregateError::UnsupportedComparison),
         };
         Self {
-            rank: if minimum { family + 1 } else { family },
+            rank: family,
             sort_key,
             encoded: encoded.to_vec(),
             error: None,
