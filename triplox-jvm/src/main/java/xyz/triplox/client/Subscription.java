@@ -59,15 +59,15 @@ public final class Subscription implements AutoCloseable {
         return open(stream, stream);
     }
 
-    static Subscription open(InputStream stream, Closeable closeable) throws IOException {
+    static Subscription open(InputStream stream, Closeable closeable) throws IOException, TriploxException {
         MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(stream);
         SubscriptionFrame first = WireCodec.decodeSubscriptionFrame(unpacker);
         if (first instanceof SubscriptionFrame.Open open) {
             return new Subscription(open.txKey(), closeable, unpacker);
         }
         closeable.close();
-        if (first instanceof SubscriptionFrame.Error error) {
-            throw toException(error.error());
+        if (first instanceof SubscriptionFrame.Error(BackendMessage.ErrorResponse error1)) {
+            throw toException(error1);
         }
         throw new IOException("expected open frame, got " + first);
     }
@@ -90,8 +90,8 @@ public final class Subscription implements AutoCloseable {
     }
 
     private Delta unwrap(QueueEvent event) {
-        if (event instanceof QueueEvent.DeltaEvent delta) {
-            return delta.delta();
+        if (event instanceof QueueEvent.DeltaEvent(Delta delta1)) {
+            return delta1;
         }
         closed = true;
         return endResult();
@@ -136,14 +136,16 @@ public final class Subscription implements AutoCloseable {
                     break;
                 }
                 SubscriptionFrame frame = WireCodec.decodeSubscriptionFrame(unpacker);
-                if (frame instanceof Delta delta) {
-                    queue.put(new QueueEvent.DeltaEvent(delta));
-                } else if (frame instanceof SubscriptionFrame.Error error) {
-                    finishWithError(toException(error.error()));
-                    break;
-                } else if (frame instanceof SubscriptionFrame.Open) {
-                    finishWithError(new IllegalStateException("unexpected open frame mid-stream"));
-                    break;
+                switch (frame) {
+                    case Delta delta -> queue.put(new QueueEvent.DeltaEvent(delta));
+                    case SubscriptionFrame.Error(BackendMessage.ErrorResponse error1) -> {
+                        finishWithError(toException(error1));
+                        return;
+                    }
+                    case SubscriptionFrame.Open ignored -> {
+                        finishWithError(new IllegalStateException("unexpected open frame mid-stream"));
+                        return;
+                    }
                 }
             }
         } catch (IOException e) {
