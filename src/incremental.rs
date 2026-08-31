@@ -293,10 +293,10 @@ fn send_delta(
 
 struct RegisteredQuery {
     _plan: IncrementalQueryPlan,
-    _circuit: QueryCircuit,
+    circuit: QueryCircuit,
     sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
-    _tx_key: TxKey,
-    _wal_cursor: CdcCursor,
+    tx_key: TxKey,
+    wal_cursor: CdcCursor,
 }
 
 struct IncrementalQueryServiceInner {
@@ -386,10 +386,10 @@ impl IncrementalQueryServiceInner {
             handle,
             RegisteredQuery {
                 _plan: plan,
-                _circuit: circuit,
+                circuit,
                 sender,
-                _tx_key: tx_key,
-                _wal_cursor: wal_cursor,
+                tx_key,
+                wal_cursor,
             },
         );
 
@@ -417,12 +417,12 @@ impl IncrementalQueryServiceInner {
         let cancel = self.cancel.clone();
 
         for (id, query) in &mut self.queries {
-            if tx_key.tx_id <= query._tx_key.tx_id {
-                query._wal_cursor.last_seq = wal_seq;
+            if tx_key.tx_id <= query.tx_key.tx_id {
+                query.wal_cursor.last_seq = wal_seq;
                 continue;
             }
 
-            let rows = match query._circuit.apply(triples.clone()) {
+            let rows = match query.circuit.apply(triples.clone()) {
                 Ok(rows) => rows,
                 Err(err) => {
                     failed.push((*id, err));
@@ -430,12 +430,12 @@ impl IncrementalQueryServiceInner {
                 }
             };
             if rows.is_empty() {
-                query._wal_cursor.last_seq = wal_seq;
+                query.wal_cursor.last_seq = wal_seq;
                 continue;
             }
             let delta = Ok(IncrementalQueryDelta { tx_key, rows });
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
-                DeltaDelivery::Delivered => query._wal_cursor.last_seq = wal_seq,
+                DeltaDelivery::Delivered => query.wal_cursor.last_seq = wal_seq,
                 DeltaDelivery::Closed => closed.push(*id),
                 DeltaDelivery::Cancelled => break,
             }
@@ -900,7 +900,7 @@ mod tests {
                 .queries
                 .get(&old_subscription.handle)
                 .unwrap()
-                ._wal_cursor
+                .wal_cursor
                 .last_seq,
             2
         );
@@ -909,7 +909,7 @@ mod tests {
                 .queries
                 .get(&new_subscription.handle)
                 .unwrap()
-                ._wal_cursor
+                .wal_cursor
                 .last_seq,
             2
         );

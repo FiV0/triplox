@@ -453,9 +453,9 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 }
 
 pub(super) struct QueryCircuit {
-    _circuit: DBSPHandle,
-    _input: ZSetHandle<EncodedTriple>,
-    _output: OutputHandle<OutputZSet>,
+    circuit: DBSPHandle,
+    input: ZSetHandle<EncodedTriple>,
+    output: OutputHandle<OutputZSet>,
 }
 
 impl QueryCircuit {
@@ -471,9 +471,9 @@ impl QueryCircuit {
         .map_err(anyhow::Error::from)?;
 
         Ok(Self {
-            _circuit: circuit,
-            _input: input,
-            _output: output,
+            circuit,
+            input,
+            output,
         })
     }
 
@@ -483,9 +483,9 @@ impl QueryCircuit {
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        self._input.append(&mut triples);
-        self._circuit.transaction().map_err(anyhow::Error::from)?;
-        decode_output_rows(&self._output.consolidate())
+        self.input.append(&mut triples);
+        self.circuit.transaction().map_err(anyhow::Error::from)?;
+        decode_output_rows(&self.output.consolidate())
     }
 }
 
