@@ -97,6 +97,6 @@
     {:tx-id (.txId b)
      :system-time (.systemTime b)}))
 
-(defn ^:no-doc dbsp-q [conn query & args]
+(defn ^:no-doc dbsp-q [conn query timeout-ms & args]
   (with-open [sub (apply subscribe conn query args)]
-    (take! sub 5000)))
+    (take! sub (or timeout-ms 5000))))
