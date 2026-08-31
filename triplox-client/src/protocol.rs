@@ -86,6 +86,7 @@ pub enum ErrorCode {
     InvalidMessageType = 4002,
     QueryCancelled = 4003,
     ServerShuttingDown = 4004,
+    SubscriptionLagged = 4005,
 }
 
 impl ErrorCode {
@@ -105,6 +106,7 @@ impl ErrorCode {
             4002 => Ok(ErrorCode::InvalidMessageType),
             4003 => Ok(ErrorCode::QueryCancelled),
             4004 => Ok(ErrorCode::ServerShuttingDown),
+            4005 => Ok(ErrorCode::SubscriptionLagged),
             _ => bail!("Unknown error code: {}", code),
         }
     }

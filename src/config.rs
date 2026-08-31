@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -84,6 +85,8 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
+    pub incremental_query_apply_workers: Option<NonZeroUsize>,
 }
 
 impl Default for ServerConfig {
@@ -91,6 +94,30 @@ impl Default for ServerConfig {
         ServerConfig {
             host: default_host(),
             port: default_port(),
+            incremental_query_apply_workers: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct IncrementalQueryOptions {
+    pub apply_workers: NonZeroUsize,
+}
+
+impl Default for IncrementalQueryOptions {
+    fn default() -> Self {
+        Self {
+            apply_workers: std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+        }
+    }
+}
+
+impl ServerConfig {
+    pub fn incremental_query_options(&self) -> IncrementalQueryOptions {
+        IncrementalQueryOptions {
+            apply_workers: self
+                .incremental_query_apply_workers
+                .unwrap_or_else(|| IncrementalQueryOptions::default().apply_workers),
         }
     }
 }
@@ -396,6 +423,65 @@ mod tests {
             path = "/tmp/triplox-log/log"
             "#,
         );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn incremental_query_apply_workers_default_to_available_parallelism() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "memory"
+
+            [log]
+            type = "memory"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.server.incremental_query_options().apply_workers,
+            IncrementalQueryOptions::default().apply_workers
+        );
+    }
+
+    #[test]
+    fn parses_incremental_query_apply_workers() {
+        let config: Config = toml::from_str(
+            r#"
+            [storage]
+            type = "memory"
+
+            [log]
+            type = "memory"
+
+            [server]
+            incremental_query_apply_workers = 4
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.server.incremental_query_options().apply_workers,
+            NonZeroUsize::new(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_zero_incremental_query_apply_workers() {
+        let result = toml::from_str::<Config>(
+            r#"
+            [storage]
+            type = "memory"
+
+            [log]
+            type = "memory"
+
+            [server]
+            incremental_query_apply_workers = 0
+            "#,
+        );
+
         assert!(result.is_err());
     }
 }

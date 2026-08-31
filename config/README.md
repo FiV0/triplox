@@ -25,6 +25,17 @@ sections. The supported combinations are:
 other mode requires the matching `[log]` shown above. Any other (log, storage)
 combination is rejected at startup.
 
+The optional server setting `incremental_query_apply_workers` controls the
+number of incremental query circuits stepped concurrently. It must be greater
+than zero and defaults to the logical CPUs available to the process:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 5490
+incremental_query_apply_workers = 8
+```
+
 | File                  | Mode   | Notes                                             |
 |-----------------------|--------|---------------------------------------------------|
 | `triplox.toml`        | memory | In-process, no persistence. Default.              |

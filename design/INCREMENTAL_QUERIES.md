@@ -249,13 +249,10 @@ triplox-incremental-query thread
     returns an IncrementalQuerySubscription
 ```
 
-Node should stay relative clean and should not know anything about internal circuit maintenance and
-initialization logic. The `IncrementalQueryService` should deal with the lifecycle of incremental
-queries and their state. The dedicated service thread is where things get executed. This is currently
-single threaded which won't scale we add incremental queries to the service and we should pass to some
-executor service in the future. The `IncrementalQueryService`
-sends `IncrementalCommand`s to the one dedicated service thread. That thread owns the registry
-of active queries and every query's DBSP circuit.
+Node should stay relatively clean and should not know about internal circuit maintenance and
+initialization. `IncrementalQueryService` owns incremental-query lifecycle and state. Its dedicated
+service thread owns the registry and serializes commands, while a bounded apply pool steps distinct
+DBSP circuits in parallel for each transaction.
 
 Live WAL application reaches the dedicated service thread through the same
 command channel, but it enters from the internal side rather than the node side.
@@ -272,10 +269,9 @@ Tokio CDC task
     sends ApplyTriples to IncrementalQueryService
 
 triplox-incremental-query thread
-    loops over registered queries
     skips transactions at or before each query basis
-    steps each relevant QueryCircuit
-    sends non-empty IncrementalQueryDelta values to that query's receiver
+    applies the transaction to relevant QueryCircuits in the bounded worker pool
+    publishes non-empty deltas without waiting for subscriber I/O
 ```
 
 There are two channel directions:
@@ -283,13 +279,10 @@ There are two channel directions:
 - `std::sync::mpsc` carries commands into the service thread. It fits the
   blocking `receiver.recv()` loop used by the dedicated thread.
 - `tokio::sync::mpsc` carries `IncrementalQueryDelta` values back to async
-  subscribers. The service thread retries bounded sends, so a slow subscriber
-  applies backpressure instead of losing deltas; node cancellation breaks that
-  wait during shutdown.
-
-In the future the server should drain these subscribers eagerly server side and send
-the appropriate deltas to the corresponding clients. The clients then need to deal
-with the backpressure themselves, depending on the client implementation.
+  subscribers. Publishing is non-blocking; when the bounded mailbox is full,
+  only that subscription is terminated with `SubscriptionLagged` and removed.
+- A separate one-shot channel carries terminal subscription failures so a full
+  delta mailbox cannot prevent the server from observing the failure.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
@@ -394,17 +387,20 @@ query's per-query DBSP storage directory.
 The current tuning knobs:
 
 - `SUBSCRIPTION_CAPACITY` controls each result channel's bounded capacity.
-  Raising it absorbs longer subscriber pauses at the cost of memory and lag;
-  lowering it applies backpressure sooner.
+  Raising it absorbs longer subscriber pauses at the cost of memory and lag.
+  When it fills, only that subscription is terminated.
+- `[server].incremental_query_apply_workers` controls how many distinct query
+  circuits can be stepped concurrently. It defaults to the process's available
+  logical CPUs and falls back to one.
 - `CDC_POLL_INTERVAL` controls how often the CDC stream polls for new WAL
   transactions when no transaction is immediately available.
 - `CircuitConfig::with_workers(1)` makes each query circuit single-worker
   today. Increasing DBSP workers would require checking circuit handle
   ownership, storage layout, and whether one service thread should still drive
   all query steps.
-- The current service has one command loop for all queries. Future scaling
-  options include sharding registered queries across service threads
-  or introducing a worker pool for circuit stepping.
+- The service still has one command loop and waits for all circuit applies for
+  one transaction before processing the next transaction. A DBSP apply that
+  never returns can therefore still hold this transaction barrier.
 
 ---
 

@@ -43,6 +43,7 @@ indexmap = "2.14.0"
 itertools = "0.15"
 log = "0.4"
 rand = "0.10"
+rayon = "1.10"
 regex = "1.12.3"
 rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"], default-features = false }
 serde = { workspace = true, features = ["derive"] }

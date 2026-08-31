@@ -24,7 +24,7 @@ use axum::routing::post;
 use axum::Router;
 use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -34,7 +34,7 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
-use crate::incremental::IncrementalQueryDelta;
+use crate::incremental::{IncrementalQueryDelta, IncrementalQueryTermination};
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
@@ -331,7 +331,12 @@ async fn subscribe<L: TxLog + 'static>(
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
-        subscription_body(open_frame, subscription.deltas, state.shutdown.clone()),
+        subscription_body(
+            open_frame,
+            subscription.deltas,
+            subscription.termination,
+            state.shutdown.clone(),
+        ),
     )
         .into_response())
 }
@@ -340,6 +345,7 @@ async fn subscribe<L: TxLog + 'static>(
 enum SubscribeBody {
     Streaming {
         deltas: mpsc::Receiver<IncrementalQueryDelta>,
+        termination: Option<oneshot::Receiver<IncrementalQueryTermination>>,
         shutdown: CancellationToken,
     },
     Closed,
@@ -357,54 +363,98 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
     encode_subscription_frame(&frame).unwrap_or_default()
 }
 
-/// Build the subscription response body: the `open` frame, then one `delta` frame
-/// per received delta (write-one/recv-one, so HTTP/2 flow control backpressures the
-/// engine instead of buffering unboundedly). The receiver lives in the stream, so a
-/// dropped response drops it and the engine tears the query down.
+fn termination_frame(termination: IncrementalQueryTermination) -> Vec<u8> {
+    let IncrementalQueryTermination::Lagged { tx_key, capacity } = termination;
+    let frame = SubscriptionFrame::Error(ErrorResponseBody {
+        severity: SEVERITY_ERROR,
+        code: ErrorCode::SubscriptionLagged.as_u16(),
+        message: "Incremental query subscription lagged behind".to_string(),
+        detail: Some(format!(
+            "The server mailbox reached its capacity of {capacity} deltas while publishing transaction {}",
+            tx_key.tx_id
+        )),
+        hint: Some(
+            "Create a new subscription to restart from the latest indexed basis".to_string(),
+        ),
+    });
+    encode_subscription_frame(&frame).unwrap_or_default()
+}
+
+fn delta_frame(delta: IncrementalQueryDelta) -> Result<Vec<u8>> {
+    encode_subscription_frame(&SubscriptionFrame::Delta {
+        tx_key: delta.tx_key,
+        rows: delta
+            .rows
+            .into_iter()
+            .map(|(values, weight)| (values, weight as i64))
+            .collect(),
+    })
+}
+
+/// Build the subscription response body from bounded deltas and an independent
+/// terminal signal. A lagged signal discards queued server deltas and closes the stream.
 fn subscription_body(
     open_frame: Vec<u8>,
     deltas: mpsc::Receiver<IncrementalQueryDelta>,
+    termination: oneshot::Receiver<IncrementalQueryTermination>,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
         futures::stream::once(async move { Ok::<Bytes, Infallible>(Bytes::from(open_frame)) });
     let deltas = futures::stream::unfold(
-        SubscribeBody::Streaming { deltas, shutdown },
+        SubscribeBody::Streaming {
+            deltas,
+            termination: Some(termination),
+            shutdown,
+        },
         |state| async move {
-            match state {
-                SubscribeBody::Streaming {
-                    mut deltas,
-                    shutdown,
-                } => {
-                    tokio::select! {
-                        biased;
-                        _ = shutdown.cancelled() => None,
-                        delta = deltas.recv() => match delta {
-                            Some(delta) => {
-                                let frame = SubscriptionFrame::Delta {
-                                    tx_key: delta.tx_key,
-                                    rows: delta
-                                        .rows
-                                        .into_iter()
-                                        .map(|(values, weight)| (values, weight as i64))
-                                        .collect(),
-                                };
-                                match encode_subscription_frame(&frame) {
-                                    Ok(bytes) => Some((
-                                        Ok(Bytes::from(bytes)),
-                                        SubscribeBody::Streaming { deltas, shutdown },
-                                    )),
-                                    Err(err) => Some((
-                                        Ok(Bytes::from(internal_error_frame(&err))),
-                                        SubscribeBody::Closed,
-                                    )),
-                                }
-                            }
-                            None => None,
+            let SubscribeBody::Streaming {
+                mut deltas,
+                mut termination,
+                shutdown,
+            } = state
+            else {
+                return None;
+            };
+
+            loop {
+                let wait_for_termination = async {
+                    match termination.as_mut() {
+                        Some(receiver) => receiver.await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    terminal = wait_for_termination => match terminal {
+                        Ok(termination) => return Some((
+                            Ok(Bytes::from(termination_frame(termination))),
+                            SubscribeBody::Closed,
+                        )),
+                        Err(_) => {
+                            termination = None;
+                            continue;
                         }
+                    },
+                    _ = shutdown.cancelled() => return None,
+                    delta = deltas.recv() => match delta {
+                        Some(delta) => return match delta_frame(delta) {
+                            Ok(bytes) => Some((
+                                Ok(Bytes::from(bytes)),
+                                SubscribeBody::Streaming {
+                                    deltas,
+                                    termination,
+                                    shutdown,
+                                },
+                            )),
+                            Err(err) => Some((
+                                Ok(Bytes::from(internal_error_frame(&err))),
+                                SubscribeBody::Closed,
+                            )),
+                        },
+                        None => return None,
                     }
                 }
-                SubscribeBody::Closed => None,
             }
         },
     );
@@ -470,7 +520,9 @@ impl<L: TxLog + 'static> Server<L> {
 // Dev Server (per-connection in-memory nodes)
 // ---------------------------------------------------------------------------
 
-pub struct DevServer;
+pub struct DevServer {
+    incremental_options: crate::config::IncrementalQueryOptions,
+}
 
 impl Default for DevServer {
     fn default() -> Self {
@@ -480,7 +532,17 @@ impl Default for DevServer {
 
 impl DevServer {
     pub fn new() -> Self {
-        DevServer
+        DevServer {
+            incremental_options: crate::config::IncrementalQueryOptions::default(),
+        }
+    }
+
+    pub fn with_incremental_query_options(
+        incremental_options: crate::config::IncrementalQueryOptions,
+    ) -> Self {
+        DevServer {
+            incremental_options,
+        }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -489,13 +551,16 @@ impl DevServer {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
+        let incremental_options = self.incremental_options;
         accept_loop(
             listener,
             token,
             "Dev HTTP",
             move |stream, _peer, conn_id, conn_token, join_set| {
                 join_set.spawn(async move {
-                    let node = Arc::new(Node::memory_node().await);
+                    let node = Arc::new(
+                        Node::memory_node_with_incremental_query_options(incremental_options).await,
+                    );
 
                     let app_state = Arc::new(Server {
                         node: node.clone(),
@@ -737,5 +802,54 @@ mod tests {
             }
             other => panic!("expected open frame, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn subscription_termination_bypasses_queued_server_deltas() {
+        let tx_key = TxKey {
+            tx_id: 42,
+            system_time: chrono::Utc::now(),
+        };
+        let open_frame = encode_subscription_frame(&SubscriptionFrame::Open {
+            tx_key,
+            columns: Vec::new(),
+        })
+        .unwrap();
+        let (delta_sender, delta_receiver) = mpsc::channel(2);
+        delta_sender
+            .try_send(IncrementalQueryDelta {
+                tx_key,
+                rows: vec![(vec![DataType::String("queued".to_string())], 1)],
+            })
+            .unwrap();
+        let (termination_sender, termination_receiver) = oneshot::channel();
+        termination_sender
+            .send(IncrementalQueryTermination::Lagged {
+                tx_key,
+                capacity: 2,
+            })
+            .unwrap();
+
+        let body = subscription_body(
+            open_frame,
+            delta_receiver,
+            termination_receiver,
+            CancellationToken::new(),
+        );
+        let mut stream = body.into_data_stream();
+
+        let open = stream.next().await.unwrap().unwrap();
+        assert!(matches!(
+            decode_subscription_frame(&open).unwrap(),
+            SubscriptionFrame::Open { .. }
+        ));
+
+        let terminal = stream.next().await.unwrap().unwrap();
+        let SubscriptionFrame::Error(error) = decode_subscription_frame(&terminal).unwrap() else {
+            panic!("expected terminal error frame");
+        };
+        assert_eq!(error.code, ErrorCode::SubscriptionLagged.as_u16());
+        assert!(error.detail.unwrap().contains("transaction 42"));
+        assert!(stream.next().await.is_none());
     }
 }
