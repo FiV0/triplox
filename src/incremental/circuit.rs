@@ -453,7 +453,7 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 }
 
 pub(super) struct QueryCircuit {
-    circuit: DBSPHandle,
+    handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
     output: OutputHandle<OutputZSet>,
 }
@@ -462,7 +462,7 @@ impl QueryCircuit {
     // Builds a DBSP circuit for one incremental query plan.
     pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
         let config = storage_circuit_config(storage_path)?;
-        let (circuit, (input, output)) = Runtime::init_circuit(config, move |circuit| {
+        let (handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
             let stream = query_find_stream(where_stream, &plan.find_plan);
@@ -471,7 +471,7 @@ impl QueryCircuit {
         .map_err(anyhow::Error::from)?;
 
         Ok(Self {
-            circuit,
+            handle,
             input,
             output,
         })
@@ -484,7 +484,7 @@ impl QueryCircuit {
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
-        self.circuit.transaction().map_err(anyhow::Error::from)?;
+        self.handle.transaction().map_err(anyhow::Error::from)?;
         decode_output_rows(&self.output.consolidate())
     }
 }
