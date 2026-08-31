@@ -644,6 +644,11 @@
   (is (= #{[0]} (q '{:find [(count ?e)]
                      :where [[?e :name "nobody"]]}))))
 
+(deftest test-expressions-in-aggregates
+  (is (thrown-with-msg? TriploxException #"Nested expressions are not supported as arguments to aggregate 'sum'"
+                        (q '{:find [(sum (if (= (mod ?e 2) 0) 1 0))]
+                             :where [[?e :name "nobody"]]}))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests — lookup refs
 ;; ---------------------------------------------------------------------------
