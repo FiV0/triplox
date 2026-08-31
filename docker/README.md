@@ -181,7 +181,7 @@ docker run -p 5490:5490 \
 
 | Port | Protocol | Description |
 |---|---|---|
-| 5490 | TCP | Triplox wire protocol |
+| 5490 | HTTP/2 | Triplox Http endpoint |
 | 9092 | TCP | Kafka broker (AutoMQ, kafka mode only) |
 
 ## Volumes

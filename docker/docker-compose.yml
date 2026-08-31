@@ -51,6 +51,8 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       TRIPLOX_STORAGE: remote
+      # RUST_LOG: 'triplox=trace,slatedb=trace,object_store=trace'
+      # RUST_LOG: 'triplox=trace'
     ports:
       - "5490:5490"
     volumes:
