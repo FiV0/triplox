@@ -29,10 +29,11 @@
       (let [[_ channel] (async/alts! [stop (async/timeout 300)])]
         (if (= channel stop)
           (async/close! done)
-          (let [delta (api/take! sub 10)]
-            (when (not= delta ::api/timeout)
-              (update-view! view delta))
-            (recur)))))
+          (do (loop [delta (api/take! sub 10)]
+                (when (and delta (not= delta ::api/timeout))
+                  (update-view! view delta)
+                  (recur (api/take! sub 10))))
+              (recur)))))
     {:stop stop :done done}))
 
 (defrecord View [sub view stop-chan done-chan]
