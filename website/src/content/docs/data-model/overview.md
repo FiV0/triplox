@@ -49,7 +49,7 @@ you actually get the following expanded Datoms in Triplox
 [124 :db/Instant #inst "2026" 124 true]
 [124 :db/txResult :db.result/commited 124 true]
 ```
-The first 4 Datoms are the same as above (plus the transaction and assertion parts), the latter 3 are transaction Datoms. So also the transaction history is represented as triples (I hope you slowly get it, it's triples everywhere 😉). In case Ada Lovelace had a different profession before she became a programmer like carpenter,  you would also get a retraction like
+The first 4 Datoms are the same as above (plus the transaction and assertion parts), the latter 3 are transaction Datoms. So also the transaction history is represented as triples (I hope you slowly get it, it's triples everywhere 😉). If Ada Lovelace had previously worked as a carpenter before becoming a programmer, you would also get a retraction like this:
 ```clojure
 [123 :person/profession "carpenter" 124 false]
 ```
