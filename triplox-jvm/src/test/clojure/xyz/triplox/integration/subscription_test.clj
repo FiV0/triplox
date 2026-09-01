@@ -57,9 +57,11 @@
   (with-open [sub (api/subscribe *conn* names-query)]
     (is (some? (:tx-id (api/registration-tx-key sub))))
     (is (nil? (api/tx-key sub)))
+    (is (= [] (take-delta! sub)))
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))
     ;; No transaction after the subscription -> bounded take! times out.
     (is (= ::api/timeout (api/take! sub 200)))
-    (is (nil? (api/tx-key sub)))))
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))))
 
 (deftest subscription-tx-key-tracks-consumed-deltas
   (api/transact *conn* [{:name "Alice"}])
@@ -109,6 +111,7 @@
   (with-open [sub (api/subscribe *conn* '{:find [?name]
                                           :where [[?e :name "Ivan"]
                                                   [?e :name ?name]]})]
+    (is (= [] (api/take! sub)))
     (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                           {:name "Petr" :last-name "Petrov"}])
     (is (= [[["Ivan"] 1]] (take-delta! sub)))))
@@ -117,6 +120,7 @@
   (testing "Can query entity by single field"
     (with-open [sub (api/subscribe *conn* '{:find [?e]
                                             :where [[?e :name "Ivan"]]})]
+      (is (= [] (api/take! sub)))
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}])
       (let [[[row weight]] (take-delta! sub)]
@@ -130,6 +134,7 @@
                                                     [?e :last-name ?last-name]
                                                     [?e :name "Ivan"]
                                                     [?e :last-name "Ivanov"]]})]
+      (is (= [] (api/take! sub)))
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}])
       (is (= [[["Ivan" "Ivanov"] 1]]
@@ -140,6 +145,7 @@
     (with-open [sub (api/subscribe *conn* '{:find [?e]
                                             :where [[?e :name "Ivan"]
                                                     [?e :last-name "Ivanov-does-not-match"]]})]
+      (is (= [] (api/take! sub 300)))
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}])
       (is (= ::api/timeout (api/take! sub 300))))))
@@ -148,6 +154,7 @@
   (with-open [sub (api/subscribe *conn* '{:find [?name]
                                           :where [[?e :name ?name]
                                                   (not [?e :age 30])]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [{:name "Alice"}])
     (is (= [[["Alice"] 1]] (take-delta! sub)))
 
@@ -166,6 +173,7 @@
   (with-open [sub (api/subscribe *conn* '{:find [?alias]
                                           :where [[?e :alias ?alias]
                                                   (not [?e :age 30])]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [{:db/id "alice" :alias "Alice"}])
     (is (= [[["Alice"] 1]] (take-delta! sub)))
 
@@ -191,6 +199,7 @@
                                                    (and [(> ?age 20)]
                                                         [(< ?age 40)])
                                                    (not [(< ?age 30)]))]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [{:name "Alice" :age 20}
                           {:name "Bob" :age 25}
                           {:name "Cara" :age 35}
@@ -213,6 +222,7 @@
                                                     [?e :age ?age]
                                                     [(quot ?age 2) ?half]
                                                     [(< ?half 20)]]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Ivan" :age 30}
                             {:name "Bob" :age 40}])
       (is (= [[["Ivan" 15] 1]] (take-delta! sub)))
@@ -233,6 +243,7 @@
                                                     [?e :name ?name]
                                                     [?e :salary ?salary]
                                                     [(quot ?age 2) ?salary]]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Eq" :age 30 :salary 15}
                             {:name "Neq" :age 30 :salary 20}])
       (is (= [[["Eq"] 1]] (take-delta! sub)))
@@ -251,6 +262,7 @@
                                                   [?e :age ?age]
                                                   [?e :salary ?divisor]
                                                   [(quot ?age ?divisor) ?result]]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [{:name "Alice" :age 30 :salary 0}])
     (is (= ::api/timeout (take-delta! sub 300)))
 
@@ -295,6 +307,7 @@
                                             :where [[?e :name ?name]
                                                     (not (or [?e :age 30]
                                                              [?e :city "Berlin"]))]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Alice"}])
       (is (= [[["Alice"] 1]] (take-delta! sub)))
 
@@ -316,6 +329,8 @@
   (testing "Can query for multiple results"
     (with-open [sub (api/subscribe *conn* '{:find [?name]
                                             :where [[?e :name ?name]]})]
+
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Ivan"}
                             {:name "Petr"}])
       (is (= [[["Ivan"] 1]
@@ -327,6 +342,7 @@
     (with-open [sub (api/subscribe *conn* '{:find [?p1]
                                             :where [[?p1 :name ?name]
                                                     [?p1 :last-name ?name]]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}
                             {:name "Smith" :last-name "Smith"}])
@@ -340,6 +356,7 @@
                                             :where [[?p1 :name ?name]
                                                     [?p1 :last-name ?name]
                                                     [?p1 :name "Smith"]]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}
                             {:name "Smith" :last-name "Smith"}])
@@ -408,6 +425,7 @@
                                           :where [[?e :name ?name]
                                                   (or [?e :name "Alice"]
                                                       [?e :age 40])]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [{:name "Alice" :age 40}
                           {:name "Bob" :age 30}])
     (is (= [[["Alice"] 1]] (take-delta! sub 300)))
@@ -455,6 +473,7 @@
                                                      (and [?e :friend ?friend]
                                                           [?friend :age 50]
                                                           [?friend :name ?friend-name]))]})]
+      (is (= [] (take-delta! sub)))
       (api/transact *conn* [[:db/add bob-id :age 30]])
       (is (= [[["Alice" "Bob"] 1]]
              (take-delta! sub)))
@@ -514,6 +533,7 @@
                                           :where [[?a :g/to ?b]
                                                   [?b :g/to ?c]
                                                   [?c :g/to ?a]]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* [[:db/add graph-a :g/to graph-b]
                           [:db/add graph-b :g/to graph-c]
                           [:db/add graph-c :g/to graph-a]])
@@ -529,6 +549,7 @@
                                           :where [[?a :r/to ?b]
                                                   [?b :s/to ?c]
                                                   [?c :t/to ?a]]})]
+    (is (= [] (take-delta! sub)))
     (api/transact *conn* (into graph-nodes
                                [[:db/add graph-b :s/to graph-c]]))
     (is (= ::api/timeout (api/take! sub 300)))))
@@ -597,6 +618,7 @@
     (is (thrown-with-msg? TriploxException #"sum: cannot aggregate non-numeric value"
                           (take-delta! aggregate-sub)))
 
+    (is (= [] (take-delta! names-sub)))
     (is (= [[["Alice"] 1]] (take-delta! names-sub)))
 
     (api/transact *conn* [{:name "Bob"}])
