@@ -373,14 +373,12 @@ impl IncrementalQueryServiceInner {
             }
         };
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(Ok(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                }))
-                .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
-        }
+        sender
+            .try_send(Ok(IncrementalQueryDelta {
+                tx_key,
+                rows: priming_rows,
+            }))
+            .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
 
         self.queries.insert(
             handle,
@@ -741,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn register_skips_empty_priming_result() {
+    fn register_enqueues_empty_priming_result() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = test_runtime();
         let mut service = IncrementalQueryServiceInner::new(
@@ -749,19 +747,23 @@ mod tests {
             runtime.handle().clone(),
             CancellationToken::new(),
         );
+        let registration_basis = test_tx_key_with_tx_id(1);
         let mut subscription = service
             .register(
                 single_pattern_plan(),
-                test_tx_key_with_tx_id(1),
+                registration_basis,
                 test_cursor(),
                 Vec::new(),
             )
             .unwrap();
 
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
+        assert_eq!(
+            expect_delta(subscription.deltas.try_recv().unwrap()),
+            IncrementalQueryDelta {
+                tx_key: registration_basis,
+                rows: Vec::new(),
+            }
+        );
     }
 
     #[test]
@@ -820,6 +822,7 @@ mod tests {
             )
             .unwrap();
         aggregate_subscription.deltas.try_recv().unwrap();
+        names_subscription.deltas.try_recv().unwrap();
 
         service
             .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
@@ -925,7 +928,7 @@ mod tests {
             runtime.handle().clone(),
             cancel.clone(),
         );
-        let _subscription = service
+        let mut subscription = service
             .register(
                 single_pattern_plan(),
                 test_tx_key_with_tx_id(1),
@@ -933,6 +936,7 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
+        expect_delta(subscription.deltas.try_recv().unwrap());
 
         for seq in 1..=SUBSCRIPTION_CAPACITY {
             let name = format!("Alice {seq}");
@@ -1079,6 +1083,9 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(expect_delta(first_subscription.deltas.try_recv().unwrap())
+            .rows
+            .is_empty());
 
         let registration_guard = service.registration_gate.lock().await;
         let applying_service = service.clone();
@@ -1100,7 +1107,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(second_subscription.deltas.try_recv().is_err());
+        assert!(expect_delta(second_subscription.deltas.try_recv().unwrap())
+            .rows
+            .is_empty());
 
         drop(registration_guard);
         apply.await.unwrap().unwrap();
