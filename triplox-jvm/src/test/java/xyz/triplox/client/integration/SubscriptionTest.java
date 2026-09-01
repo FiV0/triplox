@@ -29,12 +29,20 @@ class SubscriptionTest {
                 ":db/cardinality", kw(":db.cardinality/one")))));
     }
 
+    private static void takeEmptyInitialDelta(Subscription sub) throws InterruptedException {
+        Delta delta = sub.poll(10, TimeUnit.SECONDS);
+        assertNotNull(delta, "expected an initial delta within 10s");
+        assertEquals(sub.txKey(), delta.txKey());
+        assertTrue(delta.rows().isEmpty());
+    }
+
     @Test
     void testSubscribeReceivesDelta() throws Exception {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
             try (Subscription sub = node.subscribe(NAMES_QUERY)) {
                 assertNotNull(sub.txKey());
+                takeEmptyInitialDelta(sub);
 
                 node.executeTx(List.of(new TxOp.Put(map(":name", "Ivan"))));
 
@@ -52,6 +60,8 @@ class SubscriptionTest {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
             try (Subscription sub = node.subscribe(NAMES_QUERY)) {
+                takeEmptyInitialDelta(sub);
+
                 // No transaction after the subscription -> poll returns null on timeout.
                 assertNull(sub.poll(300, TimeUnit.MILLISECONDS));
             }

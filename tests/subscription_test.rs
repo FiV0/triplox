@@ -25,6 +25,13 @@ async fn next_delta(sub: &mut triplox::subscription::Subscription) -> triplox::s
         .expect("the delta is Ok")
 }
 
+async fn take_empty_initial_delta(sub: &mut triplox::subscription::Subscription) {
+    let registration_basis = sub.tx_key();
+    let delta = next_delta(sub).await;
+    assert_eq!(delta.tx_key, registration_basis);
+    assert!(delta.rows.is_empty());
+}
+
 fn add_name(entity: &'static str, name: &'static str) -> Vec<TxOp> {
     vec![TxOp::Add {
         entity: entity.into(),
@@ -67,6 +74,7 @@ async fn subscribe_receives_transaction_delta() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    take_empty_initial_delta(&mut sub).await;
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
     let delta = next_delta(&mut sub).await;
@@ -109,6 +117,7 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    take_empty_initial_delta(&mut sub).await;
 
     // Transact several times without reading the subscription.
     let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -142,6 +151,7 @@ async fn subscription_deltas_match_standard_query() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    take_empty_initial_delta(&mut sub).await;
 
     client.execute_tx(add_name("a", "Ann")).await.unwrap();
     client.execute_tx(add_name("b", "Bob")).await.unwrap();
@@ -238,6 +248,7 @@ async fn shutdown_ends_live_subscription_and_drains_server() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    take_empty_initial_delta(&mut sub).await;
 
     token.cancel();
 
