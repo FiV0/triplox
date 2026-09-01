@@ -8,19 +8,24 @@
 //!   cargo run --bin simple-example  (from examples/rust/)
 
 use anyhow::Result;
-use edn::kw;
-use edn::Keyword;
-use triplox::client::ClientNode;
-use triplox::node::{Database, QueryNode, SubmitNode, TransactionResult};
-use triplox::ops::{DataType, TxOp};
+use triplox_client::edn::{kw, Keyword};
+use triplox_client::{
+    ClientNode, DataType, Database, QueryNode, SubmitNode, TransactionResult, TxOp,
+};
 
 /// Build a schema attribute definition as a Put document.
 /// This mirrors the internal `plain_schema_attribute` helper.
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
     TxOp::put([
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
-        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
-        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
+        (
+            kw!(:db/valueType),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        ),
+        (
+            kw!(:db/cardinality),
+            DataType::Keyword(kw!(:db.cardinality/one)),
+        ),
     ])
 }
 
@@ -48,14 +53,8 @@ async fn main() -> Result<()> {
 
     // 2. Insert some data
     let data_ops = vec![
-        TxOp::put([
-            (kw!(:name), "alice".into()),
-            (kw!(:age), 30_i64.into()),
-        ]),
-        TxOp::put([
-            (kw!(:name), "bob".into()),
-            (kw!(:age), 25_i64.into()),
-        ]),
+        TxOp::put([(kw!(:name), "alice".into()), (kw!(:age), 30_i64.into())]),
+        TxOp::put([(kw!(:name), "bob".into()), (kw!(:age), 25_i64.into())]),
     ];
     let result = node.execute_tx(data_ops).await?;
     match &result {

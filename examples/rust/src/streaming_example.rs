@@ -8,19 +8,22 @@
 //!   cargo run --bin streaming-example
 
 use anyhow::Result;
-use edn::kw;
-use edn::Keyword;
 use futures::StreamExt;
-use triplox::client::ClientNode;
-use triplox::node::{SubmitNode, TransactionResult};
-use triplox::ops::{DataType, TxOp};
+use triplox_client::edn::{kw, Keyword};
+use triplox_client::{ClientNode, DataType, SubmitNode, TransactionResult, TxOp};
 
 /// Build a schema attribute definition as a Put document.
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
     TxOp::put([
         (kw!(:db/ident), DataType::Keyword(Keyword::plain(name))),
-        (kw!(:db/valueType), DataType::Keyword(Keyword::namespaced("db.type", value_type))),
-        (kw!(:db/cardinality), DataType::Keyword(kw!(:db.cardinality/one))),
+        (
+            kw!(:db/valueType),
+            DataType::Keyword(Keyword::namespaced("db.type", value_type)),
+        ),
+        (
+            kw!(:db/cardinality),
+            DataType::Keyword(kw!(:db.cardinality/one)),
+        ),
     ])
 }
 
