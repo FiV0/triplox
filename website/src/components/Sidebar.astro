@@ -1,0 +1,39 @@
+---
+import SidebarSublist from './SidebarSublist.astro'
+
+const { sidebar } = Astro.locals.starlightRoute
+
+const filteredSidebar = sidebar.filter(
+  (entry) => !(entry.type === 'link' && entry.label === 'All posts'),
+)
+---
+
+<div class="sidebar">
+  <div class="container-sidebar">
+    <SidebarSublist sublist={filteredSidebar} />
+  </div>
+</div>
+
+<style>
+  .sidebar {
+    scrollbar-width: none;
+    padding-right: 1rem;
+    padding-top: 1.5rem;
+    padding-bottom: 1.5rem;
+    overflow: auto;
+    height: 100%;
+  }
+
+  @media (min-width: 1024px) {
+    .sidebar {
+      padding-top: 2rem;
+      padding-bottom: 2rem;
+    }
+  }
+
+  .container-sidebar {
+    gap: 1.5rem;
+    flex-direction: column;
+    display: flex;
+  }
+</style>

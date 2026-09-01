@@ -1,0 +1,233 @@
+:root {
+  --color-grey: #f6f5f6;
+  --color-orange: #f68e2c;
+  --color-blue: #faf8f9;
+  --color-title-prefix: #4a4a4a;
+}
+
+[data-theme='dark'] {
+  --color-title-prefix: #ffffff;
+}
+
+/*
+ * Header title: render "Trip" in grey/white + "lox" in orange.
+ * starlight-theme-black hard-imports its own SiteTitle inside Header.astro,
+ * which makes a normal Starlight `components.SiteTitle` override a no-op,
+ * so we replace the rendered "Triplox" text with pseudo-elements instead.
+ */
+.site-title .title-text {
+  font-size: 0;
+}
+
+.site-title .title-text::before {
+  content: 'Trip';
+  color: var(--color-title-prefix);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.site-title .title-text::after {
+  content: 'lox';
+  color: var(--color-orange);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+/* Splash hero title styling: matches the header's "Trip" (theme-aware grey/white) + "lox" (orange). */
+.hero-trip {
+  color: var(--color-title-prefix);
+}
+
+.hero-lox {
+  color: var(--color-orange);
+}
+
+/* Splash hero layout: logo beside text on tablet+, larger title. */
+@media (min-width: 768px) {
+  .hero {
+    display: grid !important;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 3rem;
+    row-gap: 1rem;
+    align-items: center;
+  }
+
+  .hero > img,
+  .hero > .hero-html {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+    max-width: 18rem;
+    height: auto;
+  }
+
+  .hero > .title {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .hero > .tagline,
+  .hero > .actions {
+    grid-column: 1 / -1;
+  }
+}
+
+.hero .title {
+  font-size: 3rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  font-weight: 800;
+}
+
+@media (min-width: 768px) {
+  .hero .title {
+    font-size: 4rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .hero .title {
+    font-size: 5rem;
+  }
+}
+
+/* Splash hero tagline: enlarged. */
+.hero .tagline {
+  font-size: 1.5rem;
+  line-height: 1.5;
+}
+
+@media (min-width: 768px) {
+  .hero .tagline {
+    font-size: 1.75rem;
+  }
+}
+
+/* Splash page: vertically center the entire content within the viewport. */
+main.main:has(.hero) {
+  justify-content: center;
+}
+
+/* Splash page: hero on the left, body content (code tabs) on the right at lg+. */
+/* Responsive max-widths mirror theme-black's `.container` so the grid aligns with the header. */
+@media (min-width: 1024px) {
+  main:not(.main):has(.hero) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 3rem;
+    align-items: center;
+    margin-inline: auto;
+    width: 100%;
+    max-width: 1024px;
+    padding-inline: 1rem;
+  }
+
+  main:not(.main):has(.hero) > .container-section {
+    grid-column: 1;
+  }
+
+  main:not(.main):has(.hero) > .markdown-wrapper {
+    grid-column: 2;
+  }
+
+  /* Strip the redundant centering layers inside ContainerSection when it's in the grid. */
+  main:not(.main):has(.hero) > .container-section,
+  main:not(.main):has(.hero) > .container-section > .container-wrapper,
+  main:not(.main):has(.hero) > .container-section > .container-wrapper > .container {
+    max-width: none !important;
+    padding-inline: 0 !important;
+    margin-inline: 0 !important;
+  }
+}
+
+@media (min-width: 1280px) {
+  main:not(.main):has(.hero) {
+    max-width: 1280px;
+    padding-inline: 1.5rem;
+  }
+}
+
+@media (min-width: 1536px) {
+  main:not(.main):has(.hero) {
+    max-width: 1536px;
+    padding-inline: 1rem;
+  }
+}
+
+/* Remove the thin separator lines between layout sections globally. */
+.container-wrapper {
+  border-left: none !important;
+  border-right: none !important;
+}
+
+.layout__header {
+  border-bottom: none !important;
+}
+
+.container-section {
+  border-bottom: none !important;
+}
+
+/* Keep identifier columns readable in docs tables. */
+.sl-markdown-content table :is(th, td):is(:first-child, :nth-child(2)) {
+  white-space: nowrap;
+}
+
+/* Tighten the left indent of lists in docs content (browser default is 40px). */
+.sl-markdown-content :is(ul, ol):not(:where(.not-content *)) {
+  padding-inline-start: 1rem;
+}
+
+/* Disable code-font ligatures so operators like `<=` and `>=` render as separate glyphs. */
+.sl-markdown-content :is(code, pre, kbd, samp) {
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'clig' 0, 'calt' 0;
+}
+
+/*
+ * Stopgap for the ASCII box-drawing architecture diagrams (architecture.md,
+ * life-of-a-transaction.md, triplox-log-1-introduction.md). Their alignment
+ * depends on every glyph — including the box characters `─│┌┐└┘├┤▲▼` — sharing
+ * one monospace cell width. On mobile
+ * the default code-font stack substitutes a different-width fallback for the box
+ * glyphs and text-size-adjust inflates the grid unevenly, so the columns drift.
+ *
+ * Freeze mobile text inflation and keep wide diagrams on a horizontal scroll
+ * rather than wrapping. The matching font pin lives in astro.config.mjs via
+ * Expressive Code's `styleOverrides.codeFontFamily` (its font variable is
+ * minified, so it can't be overridden from plain CSS). The font stack here
+ * covers inline code and any non-Expressive-Code `<pre>`. The proper fix is to
+ * replace the ASCII art with responsive SVG/Mermaid diagrams.
+ */
+.sl-markdown-content :is(code, pre, kbd, samp) {
+  font-family: 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.sl-markdown-content pre {
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* The blog architecture diagram uses a `txt` fence so its box strokes can be
+ * rendered as a continuous grid without changing the spacing of other code. */
+.sl-markdown-content .expressive-code pre[data-language='txt'] > code {
+  line-height: 1;
+}
+
+.sl-markdown-content .expressive-code pre[data-language='txt'] + .copy {
+  display: none;
+}
+
+/* Make asides (Note/Tip/Caution/Danger) quieter: drop the tinted background,
+ * keep just a thin accent border and smaller text. */
+.starlight-aside {
+  background-color: transparent;
+  padding-block: 0.25rem;
+  border-inline-start-width: 2px;
+  font-size: var(--sl-text-sm);
+}
