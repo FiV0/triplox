@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     // Subscribe at the latest indexed basis. The subscription is a `Stream` that
     // yields one delta per transaction affecting the query; dropping it unsubscribes.
     let mut sub = node
-        .subscribe("[:find ?name :where [?e :name ?name]]", &[])
+        .subscribe("[:find ?name :where [?e :name ?name]]")
         .await?;
     println!("Subscribed at tx_id={}.", sub.tx_key().tx_id);
 

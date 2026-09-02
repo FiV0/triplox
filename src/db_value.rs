@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Error;
-use edn::query::ParsedQuery;
 use tokio::runtime::Handle;
 
 use crate::indexer::latest_tx_key_from_sdb;
@@ -110,19 +109,18 @@ where
     M: slatedb::DbMetadataOps + Send + Sync + 'static,
 {
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let parsed = query.into_query()?;
-        self.query_with_args(&parsed, &[]).await
+        self.query_with_args(query, &[]).await
     }
 
     /// Execute a query against this database basis.
     /// Runs the sync join algorithm in a blocking task to avoid blocking the async runtime.
     async fn query_with_args(
         &self,
-        query: &ParsedQuery,
+        query: impl IntoQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
         let db = Arc::new(self.clone());
-        let query = query.clone();
+        let query = query.into_query()?;
         let args = args.to_vec();
 
         tokio::task::spawn_blocking(move || execute_query(&query, &args, db))

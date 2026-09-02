@@ -16,7 +16,6 @@ use crate::ops::QueryArg;
 use crate::query::QueryResult;
 use crate::subscription::Subscription;
 use crate::transaction::{TransactionResult, TxKey};
-use edn::query::ParsedQuery;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,16 +68,12 @@ impl ClientNode {
     /// Subscribes at the latest indexed basis. The returned [`Subscription`] is a
     /// `Stream` of [`Delta`](crate::Delta)s. A non-empty initial result is emitted
     /// first at the registration basis; dropping the subscription unsubscribes.
-    pub async fn subscribe(
-        &self,
-        query: impl IntoQuery,
-        args: &[QueryArg],
-    ) -> Result<Subscription> {
+    pub async fn subscribe(&self, query: impl IntoQuery) -> Result<Subscription> {
         let parsed = query.into_query()?;
         let body = encode_subscribe_request(&SubscribeRequest {
             tx_key: None,
             query: parsed.to_string(),
-            args: args.to_vec(),
+            args: vec![],
         })?;
         let resp = self
             .client
@@ -207,18 +202,18 @@ impl ClientDb {
 
 impl Database for ClientDb {
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error> {
-        let parsed = query.into_query()?;
-        self.query_with_args(&parsed, &[]).await
+        self.query_with_args(query, &[]).await
     }
 
     async fn query_with_args(
         &self,
-        query: &ParsedQuery,
+        query: impl IntoQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error> {
+        let parsed = query.into_query()?;
         let body = encode_query_request(&QueryRequest {
             tx_key: self.tx_key,
-            query: query.to_string(),
+            query: parsed.to_string(),
             args: args.to_vec(),
         })?;
         let resp = self
