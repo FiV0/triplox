@@ -29,34 +29,37 @@
   (t/take! sub 1000)
 
   ;; Clean up
-  (.close conn)
+  (.close conn))
 
+;; incremental example for the website
+(with-open [conn (t/connect "localhost" 5490)]
 
-  (with-open [conn (t/connect "localhost" 5490)]
+  ;; schema
+  (t/transact conn [{:db/ident :person/name
+                     :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one
+                     :db/unique :db.unique/identity}
+                    {:db/ident :person/residence
+                     :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one
+                     :db/unique :db.unique/value}])
 
-    (t/transact conn [{:db/ident :person/name
-                       :db/valueType :db.type/string
-                       :db/cardinality :db.cardinality/one
-                       :db/unique :db.unique/identity}
-                      {:db/ident :person/residence
-                       :db/valueType :db.type/string
-                       :db/cardinality :db.cardinality/one
-                       :db/unique :db.unique/value}])
+  ;; initial data
+  (t/transact conn [{:person/name "Ada Lovelace"
+                     :person/residence "12 St. James's Square"}
+                    {:person/name "Alan Turing"
+                     :person/residence "Bletchley Park"}])
 
-    (t/transact conn [{:person/name "Ada Lovelace"
-                       :person/residence "12 St. James's Square"}
-                      {:person/name "Alan Turing"
-                       :person/residence "Bletchley Park"}])
+  (with-open [sub (t/subscribe conn '{:find [?name ?residence]
+                                      :where [[?p :person/name ?name]
+                                              [?p :person/residence ?residence]]})]
 
-    (with-open [sub (t/subscribe conn '{:find [?name ?residence]
-                                        :where [[?p :person/name ?name]
-                                                [?p :person/residence ?residence]]})]
+    ;; The initial subscription result set is just the result from the standard query.
+    (t/take! sub 200)
 
-      (t/transact conn
-                  [[:db/add [:person/name "Ada Lovelace"] :person/residence "Buckingham Palace"]])
+    ;; change
+    (t/transact conn [[:db/add [:person/name "Ada Lovelace"] :person/residence "Buckingham Palace"]])
 
-      (t/take! sub 1000)))
-  ;; => [[["Ada Lovelace" "12 St. James's Square"] -1]
-  ;;     [["Ada Lovelace" "Buckingham Palace"] 1]]
-
-  )
+    (t/take! sub 1000)))
+;; => [[["Ada Lovelace" "12 St. James's Square"] -1]
+;;     [["Ada Lovelace" "Buckingham Palace"] 1]]

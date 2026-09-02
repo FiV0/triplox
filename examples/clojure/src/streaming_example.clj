@@ -1,9 +1,6 @@
 (require '[xyz.triplox.api :as tc])
 
-(def host "localhost")
-(def port 5490)
-
-(def conn (tc/connect host port))
+(def conn (tc/connect "localhost" 5490))
 
 ;; Define a :name attribute
 (tc/transact conn [{:db/ident :name
@@ -18,7 +15,7 @@
 (tc/tx-key sub)
 ;; => {:tx-id 1,
 ;;     :system-time
-;;     #object[java.time.Instant 0x64cae1b "2026-06-02T13:52:43.058559Z"]}
+;;     #object[java.time.Instant 0x7c107312 "2026-09-02T12:31:24.534987Z"]}
 
 
 ;; Transact a name; the subscription receives a delta.

@@ -4,20 +4,20 @@ description: The Triplox Clojure client.
 ---
 
 The Triplox Clojure client is published on [Maven Central](https://central.sonatype.com/artifact/xyz.triplox/triplox) under `xyz.triplox/triplox`.
-The full API reference is available at [cljdoc.org](https://cljdoc.org/d/xyz.triplox/triplox/0.1.0-alpha.5/api/xyz.triplox.api).
+The full API reference is available at [cljdoc.org](https://cljdoc.org/d/xyz.triplox/triplox/0.1.0-alpha.8/api/xyz.triplox.api).
 
 ## Installation
 
 Add the dependency to your `deps.edn`:
 
 ```clojure
-xyz.triplox/triplox {:mvn/version "0.1.0-alpha.4"}
+xyz.triplox/triplox {:mvn/version "0.1.0-alpha.8"}
 ```
 
 Or, with Leiningen, in your `project.clj`:
 
 ```clojure
-[xyz.triplox/triplox "0.1.0-alpha.4"]
+[xyz.triplox/triplox "0.1.0-alpha.8"]
 ```
 
 ## Example
@@ -28,10 +28,7 @@ You will need a running Triplox server. See the [quick start](/getting-started/q
 ```clojure
 (require '[xyz.triplox.api :as tc])
 
-(def host "localhost")
-(def port 5490)
-
-(def conn (tc/connect host port))
+(def conn (tc/connect "localhost" 5490))
 
 ;; 1. Transact a schema
 (tc/transact conn [{:db/ident :name
@@ -40,23 +37,26 @@ You will need a running Triplox server. See the [quick start](/getting-started/q
                    {:db/ident :age
                     :db/valueType :db.type/long
                     :db/cardinality :db.cardinality/one}])
-;; => {:tx-id 0,
-;;     :system-time 1775733871873835,
-;;     :committed? true,
-;;     :error-message nil}
+;; => {:tx-id 1,
+;;     :system-time
+;;     #object[java.time.Instant 0xd2e9b4 "2026-09-02T12:30:20.557187Z"],
+;;     :committed? true}
+
 
 ;; 2. Transact some data
 (tc/transact conn [{:name "alice" :age 30}
                    {:name "bob" :age 25}])
-;; => {:tx-id 1,
-;;     :system-time 1775733942779513,
-;;     :committed? true,
-;;     :error-message nil}
+;; => {:tx-id 2,
+;;     :system-time
+;;     #object[java.time.Instant 0x6b26b3c6 "2026-09-02T12:30:29.598486Z"],
+;;     :committed? true}
+
+
 
 ;; 3. Open a DB value and query
 (def db (tc/db conn))
 (tc/q db '{:find [?e ?name ?age]
            :where [[?e :name ?name]
                    [?e :age ?age]]})
-;; => [[8796093022209 "alice" 30] [8796093022208 "bob" 25]]
+;; => [[8796093022209 "bob" 25] [8796093022208 "alice" 30]]
 ```

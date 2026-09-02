@@ -68,7 +68,8 @@ The following is the above example spelled out in full using the Clojure API.
 
 ```clojure
 (with-open [conn (t/connect "localhost" 5490)]
-  ;; schmema
+
+  ;; schema
   (t/transact conn [{:db/ident :person/name
                      :db/valueType :db.type/string
                      :db/cardinality :db.cardinality/one
@@ -77,6 +78,7 @@ The following is the above example spelled out in full using the Clojure API.
                      :db/valueType :db.type/string
                      :db/cardinality :db.cardinality/one
                      :db/unique :db.unique/value}])
+
   ;; initial data
   (t/transact conn [{:person/name "Ada Lovelace"
                      :person/residence "12 St. James's Square"}
@@ -86,6 +88,10 @@ The following is the above example spelled out in full using the Clojure API.
   (with-open [sub (t/subscribe conn '{:find [?name ?residence]
                                       :where [[?p :person/name ?name]
                                               [?p :person/residence ?residence]]})]
+
+    ;; The initial subscription result set is just the result from the standard query.
+    (t/take! sub 200)
+
     ;; change
     (t/transact conn [[:db/add [:person/name "Ada Lovelace"] :person/residence "Buckingham Palace"]])
 

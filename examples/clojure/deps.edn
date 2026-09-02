@@ -1,4 +1,4 @@
 {:paths ["src"]
 
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
-        xyz.triplox/triplox {:mvn/version "0.1.0-alpha"}}}
+        xyz.triplox/triplox {:mvn/version "0.1.0-alpha.8"}}}
