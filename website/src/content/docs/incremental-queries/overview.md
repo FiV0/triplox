@@ -97,4 +97,4 @@ The following is the above example spelled out in full using the Clojure API.
 
 ### Outlook
 
-As all the historical data is available in the indexes, nothing prevents us to start an incremental query at an older transaction basis. The catch-up phase (the phase where we play through transactions that have already made it through the indexer) needs a different mechanism to play through the transactions compared to the CDC backed listening of SlateDB. Either we
+As all the historical data is available in the indexes, nothing prevents us to start an incremental query at an older transaction basis. The catch-up phase (the phase where we play through transactions that have already made it through the indexer) needs a different mechanism to play through the transactions compared to the CDC backed listening of SlateDB.
