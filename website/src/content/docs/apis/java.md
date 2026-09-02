@@ -12,7 +12,7 @@ With Gradle (`build.gradle.kts`):
 
 ```kotlin
 dependencies {
-    implementation("xyz.triplox:triplox:0.1.0-alpha.4")
+    implementation("xyz.triplox:triplox:0.1.0-alpha.8")
 }
 ```
 
@@ -22,7 +22,7 @@ With Maven (`pom.xml`):
 <dependency>
     <groupId>xyz.triplox</groupId>
     <artifactId>triplox</artifactId>
-    <version>0.1.0-alpha.4</version>
+    <version>0.1.0-alpha.8</version>
 </dependency>
 ```
 
@@ -77,7 +77,7 @@ public final class SimpleExample {
             System.out.println("Data inserted (tx_id=" + dataResult.txId() + ").");
 
             var db = node.openDb();
-            System.out.println("Opened DB value (tx_eid=" + db.txEid() + ").");
+            System.out.println("Opened DB value (tx_id=" + db.txKey().txId() + ").");
             var rows = db.query("""
                     {:find [?e ?name ?age]
                      :where [[?e :name ?name]
