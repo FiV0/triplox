@@ -30,8 +30,8 @@ Triplox is a [Datomic](https://www.datomic.com/)-inspired general-purpose databa
 
 The ideas of Triplox are roughly the following (in no particular order):
 - Object storage centric. In it's final version Triplox should simply need a single (or likely two) S3 buckets for deployment. This is currently not the case. See [Architecture](###Architecture) below.
-- The Datomic data model and API as main inspiration. Datomic is awesome. Lets bring it directly to object storage.
-- A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM (where Datomic has had it's main success).
+- The Datomic data model and API as main inspiration.
+- A Client/Server architecture. I hope that this will open the door to ecosystems outside of the JVM.
 - Incremental Datalog queries. You should be able to dynamically subscribe and detach from incremental Datalog queries. This is the most experimental part of Triplox and will need quite a bit of engineering effort to get right, make fast, and fully support of all features of Datalog. See [this page](https://triplox.xyz/incremental-queries/overview/) for an introduction. Views can be built on top of
 them. We use [Feldera](https://github.com/feldera/feldera)'s [DBSP](https://crates.io/crates/dbsp) crate under the hood.
 
@@ -46,8 +46,8 @@ This will start a Triplox server with an in-memory DB to which you can connect a
 ```bash
 docker run -p 5490:5490 -e TRIPLOX_STORAGE=local -v triplox-data:/var/lib/triplox  ghcr.io/fiv0/triplox:0.1.0-alpha.8
 ```
-In case you are already convinced and want to deploy Triplox in a distributed setting I suggest you have a look at the
-[Operations](https://triplox.xyz/operations/overview/) section on the website.
+In case you are already convinced (which you shouldn't) and want to deploy Triplox in a distributed setting
+I suggest you have a look at the [Operations](https://triplox.xyz/operations/overview/) section on the website.
 
 There is also the option to run Triplox in `dev` mode which is particular useful for testing.
 ```bash
