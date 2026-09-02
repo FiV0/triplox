@@ -8,15 +8,13 @@ fi
 
 if [ -n "${TRIPLOX_CONFIG_FILE:-}" ]; then
     CONFIG_FILE="$TRIPLOX_CONFIG_FILE"
-else
-    TRIPLOX_STORAGE="${TRIPLOX_STORAGE:-memory}"
-
+elif [ -n "${TRIPLOX_STORAGE:-}" ]; then
     case "$TRIPLOX_STORAGE" in
         dev)
             CONFIG_FILE="/etc/triplox/triplox-dev.toml"
             ;;
         memory)
-            CONFIG_FILE="/etc/triplox/config.toml"
+            CONFIG_FILE="/etc/triplox/triplox-memory.toml"
             ;;
         local)
             CONFIG_FILE="/etc/triplox/triplox-local.toml"
@@ -33,6 +31,8 @@ else
             exit 1
             ;;
     esac
+else
+    CONFIG_FILE="/etc/triplox/config.toml"
 fi
 
 exec triplox "$CONFIG_FILE"
