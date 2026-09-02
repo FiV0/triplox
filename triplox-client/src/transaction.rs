@@ -12,5 +12,5 @@ pub struct TxKey {
 #[derive(Debug)]
 pub enum TransactionResult {
     TxCommitted(TxKey),
-    TxAborted(TxKey, Box<dyn Error>),
+    TxAborted(TxKey, Box<dyn Error + Send + Sync>),
 }
