@@ -55,7 +55,8 @@ COPY --from=builder /app/target/release/triplox /usr/local/bin/triplox
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker/config/ /etc/triplox/
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
+RUN cp /etc/triplox/triplox-memory.toml /etc/triplox/config.toml && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh && \
     mkdir -p /var/lib/triplox && \
     chown -R triplox:triplox /var/lib/triplox
 
