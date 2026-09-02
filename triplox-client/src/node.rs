@@ -101,8 +101,9 @@ pub trait Database {
     /// Returns an error if the query cannot be parsed, validated, or executed.
     async fn query(&self, query: impl IntoQuery) -> Result<QueryResult, Error>;
 
-    /// Executes a parsed query against this database basis with input arguments.
+    /// Executes a query against this database basis with input arguments.
     ///
+    /// `query` may be a parsed query or an EDN query accepted by [`IntoQuery`].
     /// Arguments correspond positionally to the query's `:in` bindings. Scalar
     /// and collection bindings require the matching [`QueryArg`] variant.
     ///
@@ -110,7 +111,7 @@ pub trait Database {
     /// cannot be validated or executed.
     async fn query_with_args(
         &self,
-        query: &ParsedQuery,
+        query: impl IntoQuery,
         args: &[QueryArg],
     ) -> Result<QueryResult, Error>;
 }

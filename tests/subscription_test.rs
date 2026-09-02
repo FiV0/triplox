@@ -66,7 +66,7 @@ async fn subscribe_receives_transaction_delta() {
     let client = ClientNode::connect(&addr).await.unwrap();
     client.execute_tx(test_schema_tx()).await.unwrap();
 
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
     let delta = next_delta(&mut sub).await;
@@ -87,7 +87,7 @@ async fn subscription_returns_existing_rows_as_priming_delta() {
     client.execute_tx(test_schema_tx()).await.unwrap();
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
     let registration_basis = sub.tx_key();
     let delta = next_delta(&mut sub).await;
 
@@ -108,7 +108,7 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
     let client = ClientNode::connect(&addr).await.unwrap();
     client.execute_tx(test_schema_tx()).await.unwrap();
 
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
 
     // Transact several times without reading the subscription.
     let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -141,7 +141,7 @@ async fn subscription_deltas_match_standard_query() {
     let client = ClientNode::connect(&addr).await.unwrap();
     client.execute_tx(test_schema_tx()).await.unwrap();
 
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
 
     client.execute_tx(add_name("a", "Ann")).await.unwrap();
     client.execute_tx(add_name("b", "Bob")).await.unwrap();
@@ -209,14 +209,14 @@ async fn dropping_a_subscription_keeps_the_server_serving() {
 
     // Open and immediately drop a subscription.
     {
-        let _sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+        let _sub = client.subscribe(NAMES_QUERY).await.unwrap();
     }
 
     // A transaction drives the CDC apply that reaps the dropped subscription.
     client.execute_tx(add_name("a", "Ann")).await.unwrap();
 
     // A fresh subscription still works.
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
     let priming_delta = next_delta(&mut sub).await;
     assert_eq!(priming_delta.tx_key, sub.tx_key());
     client.execute_tx(add_name("b", "Bob")).await.unwrap();
@@ -237,7 +237,7 @@ async fn shutdown_ends_live_subscription_and_drains_server() {
     let client = ClientNode::connect(&addr).await.unwrap();
     client.execute_tx(test_schema_tx()).await.unwrap();
 
-    let mut sub = client.subscribe(NAMES_QUERY, &[]).await.unwrap();
+    let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
 
     token.cancel();
 
