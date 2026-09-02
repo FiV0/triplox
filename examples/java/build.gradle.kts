@@ -4,7 +4,7 @@ plugins {
 }
 
 dependencies {
-    implementation("xyz.triplox:triplox:0.1.0-alpha.3")
+    implementation("xyz.triplox:triplox:0.1.0-alpha.8")
     implementation("org.clojure:clojure:1.12.3")
 }
 
