@@ -2,6 +2,10 @@ services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
+    networks:
+      default:
+        aliases:
+          - object-storage
     # Dev-only credentials — do not use in production
     environment:
       MINIO_ROOT_USER: triplox
@@ -49,6 +53,10 @@ services:
 
   automq:
     image: automqinc/automq:1.7.0-strimzi
+    networks:
+      default:
+        aliases:
+          - kafka
     environment:
       - KAFKA_S3_ACCESS_KEY=triplox
       - KAFKA_S3_SECRET_KEY=triplox123
@@ -76,7 +84,7 @@ services:
         --override controller.quorum.voters=0@automq:9093 \
         --override controller.quorum.bootstrap.servers=automq:9093 \
         --override listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
-        --override advertised.listeners=PLAINTEXT://${KAFKA_ADVERTISED_HOST:-automq}:9092 \
+        --override advertised.listeners=PLAINTEXT://${KAFKA_ADVERTISED_HOST:-kafka}:9092 \
         --override listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
         --override s3.data.buckets='0@s3://automq-data?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
         --override s3.ops.buckets='1@s3://automq-ops?region=us-east-1&endpoint=http://minio:9000&pathStyle=true' \
@@ -109,7 +117,7 @@ services:
     command: >
       -c "
       /opt/kafka/bin/kafka-topics.sh
-      --bootstrap-server automq:9092
+      --bootstrap-server kafka:9092
       --create --if-not-exists
       --topic triplox-tx-log
       --partitions 1

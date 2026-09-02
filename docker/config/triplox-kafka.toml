@@ -1,6 +1,6 @@
 [storage]
 type = "remote"
-endpoint = "http://minio:9000"
+endpoint = "http://object-storage:9000"
 bucket = "triplox-kafka"
 access_key = "triplox"
 secret_key = "triplox123"
@@ -8,7 +8,7 @@ cache_path = "/var/lib/triplox"
 
 [log]
 type = "kafka"
-bootstrap_servers = "automq:9092"
+bootstrap_servers = "kafka:9092"
 topic = "triplox-tx-log"
 
 [server]
