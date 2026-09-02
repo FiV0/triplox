@@ -14,7 +14,6 @@ pub enum EntityRef {
     Id(i64),
     TempId(String),
     Ident(Keyword),
-    /// Accepted in the type but errors at expansion (not yet supported).
     LookupRef(Keyword, DataType),
 }
 
