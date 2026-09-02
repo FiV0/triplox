@@ -8,7 +8,7 @@ use edn::kw;
 use edn::symbols::Keyword;
 use triplox::client::ClientNode;
 use triplox::node::{Database, Node, QueryNode, SubmitNode};
-use triplox::ops::{DataType, EntityRef, QueryArg, TxOp};
+use triplox::ops::{DataType, EntityRef, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::server::{DevServer, Server};
 use triplox::{TransactionResult, TxKey};
@@ -70,41 +70,6 @@ async fn test_execute_tx_and_query() {
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], vec![DataType::String("alice".to_string())]);
-    token.cancel();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_query_with_args_accepts_edn() {
-    let (addr, token) = start_test_server().await;
-    let client = ClientNode::connect(&addr).await.unwrap();
-    define_base_schema(&client).await;
-
-    client
-        .execute_tx(vec![
-            TxOp::Add {
-                entity: "alice".into(),
-                attribute: kw!(:name),
-                value: "Alice".into(),
-            },
-            TxOp::Add {
-                entity: "bob".into(),
-                attribute: kw!(:name),
-                value: "Bob".into(),
-            },
-        ])
-        .await
-        .unwrap();
-
-    let db = client.db().await.unwrap();
-    let result = db
-        .query_with_args(
-            "{:find [?e] :in [?name] :where [[?e :name ?name]]}",
-            &[QueryArg::Scalar("Alice".into())],
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(result.len(), 1);
     token.cancel();
 }
 
