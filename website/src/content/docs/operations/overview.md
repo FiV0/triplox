@@ -13,7 +13,7 @@ GCP and Azure configurations will follow.
 
 Triplox comes as a docker image. The images are published to the
 [GitHub Container Registry](https://github.com/FiV0/triplox/pkgs/container/triplox). Please
-check there to make sure you are using the latest version when initially testing. See also the [Quick Start]() section.
+check there to make sure you are using the latest version when initially testing. See also the [Quick Start](/getting-started/quick-start/) section.
 
 ```bash
 docker run --rm -p 5490:5490 ghcr.io/fiv0/triplox:0.1.0-alpha.8
