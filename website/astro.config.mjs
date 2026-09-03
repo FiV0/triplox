@@ -43,7 +43,7 @@ export default defineConfig({
         {
           icon: 'discord',
           label: 'Discord',
-          href: 'https://discord.gg/CYaAYFwC',
+          href: 'https://discord.gg/JSaGCaVre',
         },
       ],
       plugins: [

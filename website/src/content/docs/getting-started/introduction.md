@@ -25,4 +25,4 @@ To further explore Triplox:
  - See [query language](/query-language/overview) to understand and learn the syntax for EDN Datalog queries.
  - Have look at [incremental queries](/incremental-queries/overview/) overview if you want to learn about how to subscribe to changes in Triplox.
  - See [APIs](/apis/clojure/) to have a look at the available language bindings. We currently support Clojure, Rust and Java. If you wish to create a new client, have a look at the [protocol doc](https://github.com/FiV0/triplox/blob/main/design/PROTOCOL.md) in the repository.
- - Finally there is the [roadmap](/roadmap/roadmap) along with some open questions up for discussion. Feel free to join the [Discord](https://discord.gg/CYaAYFwC) or open a ticket in the [repo](https://github.com/FiV0/triplox/) if you have ideas or insights on those.
+ - Finally there is the [roadmap](/roadmap/roadmap) along with some open questions up for discussion. Feel free to join the [Discord](https://discord.gg/JSaGCaVre) or open a ticket in the [repo](https://github.com/FiV0/triplox/) if you have ideas or insights on those.
