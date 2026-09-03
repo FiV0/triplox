@@ -42,6 +42,16 @@
   color: var(--color-orange);
 }
 
+/* Starlight's reset sets `overflow-wrap: break-word` on h1, letting the
+ * one-word title break mid-word on small screens. The break point between the
+ * two spans is governed by the h1 (their nearest common ancestor), so nowrap
+ * must live on the title itself; the spans inherit it. */
+.hero .title,
+.hero-trip,
+.hero-lox {
+  white-space: nowrap;
+}
+
 /* Splash hero layout: logo beside text on tablet+, larger title. */
 @media (min-width: 768px) {
   .hero {
@@ -87,9 +97,23 @@
   }
 }
 
+/* At ≥1024px the splash page goes two-column, so the hero gets only half the
+ * viewport and a fixed 5rem wordmark overflows its grid column into the code
+ * tabs. Make the h1 a size container and scale the spans from the column
+ * width: "TRIPLOX" is ~4.2em wide, so 22cqi keeps it just inside 100cqi,
+ * capped at the 5rem design size once the column is wide enough. */
 @media (min-width: 1024px) {
   .hero .title {
     font-size: 5rem;
+  }
+
+  .hero > .title {
+    container-type: inline-size;
+  }
+
+  .hero-trip,
+  .hero-lox {
+    font-size: min(5rem, 22cqi);
   }
 }
 
