@@ -4,7 +4,7 @@ description: The core methods every Triplox client API exposes.
 ---
 
 Every Triplox client API, regardless of language, currently exposes the same small set of methods. `connect` returns a node object, and on that node you get two ways to submit transactions (`submit_tx` and `execute_tx`). From that node object you can also
-take out a consistent db value (sometimes called db snapshot in other systems) with `db` or `db_as_of`. You can query
+open an immutable db value at the latest indexed transaction or as of an earlier transaction. You can query
 data on db values with `q`/`query`. [Incremental query](/incremental-queries/overview/) subscriptions give you a way to listen to changes to the Triplox system with the full power of Datalog.
 
 ## connect
@@ -19,9 +19,11 @@ Establishes a connection to a running Triplox server and returns a client node. 
 
 `execute_tx` submits a transaction and waits until the indexer has applied it, returning a `TransactionResult` that reports whether the transaction committed or aborted along with the `TxKey`. This is the method you want when you need to know the outcome of the transaction before continuing, or when the next step relies on the new data being visible.
 
-## db value
+## DB values and as-of queries
 
-Open an immutable database value at the latest transaction known to the node with `db`. All reads happening against this db value see a consistent point-in-time view that is unaffected by concurrent writes.
+Open an immutable database value at the latest indexed transaction with `db`. All reads against this db value see a consistent point-in-time view.
+
+To query an earlier state, pass a `TxKey` returned by `submit_tx` or `execute_tx` to the client's `db_as_of` operation (see the clients specific API for the details). This opens a db value at that transaction basis, so transactions after it are not visible. If the transaction has been submitted but not indexed yet, opening the db value waits for the indexer. See [DB value](/getting-started/concepts/#db-value) for the underlying concept.
 
 ## query
 

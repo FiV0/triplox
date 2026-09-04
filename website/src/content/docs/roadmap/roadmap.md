@@ -4,7 +4,7 @@ description: Planned work and direction for Triplox.
 ---
 
 In an initial version, Triplox will have quite the bare bones API. We want to focus on transactions, queries and incremental queries.
-In later steps the APIs can be extended to support a wider set of features. This includes the `pull` and `entity` API as well as querying over the whole history and all of that in an incremental way.
+In later steps the APIs can be extended to support a wider set of features. This includes the `pull` and `entity` API as well as querying the complete transaction history as data and doing so incrementally.
 
 Some parts which are (currently) explicitly left unsupported are:
 - Triplox Datalog doesn't support the `:with` clause. As everything is bag based for now (see [bag vs. set semantics](/roadmap/open-questions/#bag-vs-set-semantics)) there is no need or rather no use for a `:with` clause.
@@ -20,7 +20,7 @@ The following is a non-exhaustive list of things that we plan to add to Triplox 
   - `or-join`
   - `not-join`
   - rules
-  - queries over all of history
+  - queries over the complete transaction history as data
 - the `entity` API
 - incremental queries (IQs)
   - `or`/`or-join`

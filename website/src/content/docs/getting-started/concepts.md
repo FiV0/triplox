@@ -21,7 +21,7 @@ concept of the database as a value which means an immutable snapshot view of fac
 at a certain point in time. The term snapshot might make you think that the db value is perishable. Something
 that exists for certain amount of time to for example guarantee consistency during MVCC, but we really mean
 an immutable value that remains valid until the end of time. A query against a database value
-will always work and always return the same set of facts.
+will always work and always return the same set of facts (with [erasure](/transactions/transaction-data/#entity-erasure) being the only exception to this rule).
 
 ## Keyword
 
