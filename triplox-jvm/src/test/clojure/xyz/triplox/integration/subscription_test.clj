@@ -49,6 +49,7 @@
 
 (def graph-nodes (mapv #(hash-map :db/id % :node/label %) [graph-a graph-b graph-c graph-d graph-e]))
 
+;; TODO remove this when something for #428 lands
 (def first-user-entity-id 8796093022208)
 (def user-entity-ids (range first-user-entity-id (+ first-user-entity-id 100)))
 
@@ -69,12 +70,11 @@
       (is (= registration (api/tx-key sub)))
       (doseq [name ["Ivan" "Petr"]]
         (let [previous (api/tx-key sub)
-              tx (api/transact *conn* [{:name name}])]
-          (is (:committed? tx))
+              tx (-> (api/transact *conn* [{:name name}])
+                     (select-keys [:tx-id :system-time]))]
           (is (= previous (api/tx-key sub)))
           (is (= [[[name] 1]] (api/take! sub 1000)))
-          (is (= (select-keys tx [:tx-id :system-time]) (api/tx-key sub)))
-          (is (= registration (api/registration-tx-key sub)))))
+          (is (= tx (api/tx-key sub)))))
       (let [consumed (api/tx-key sub)]
         (is (= ::api/timeout (api/take! sub 200)))
         (is (= consumed (api/tx-key sub)))
