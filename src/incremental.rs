@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -40,8 +40,10 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 const QUERY_INBOX_CAPACITY: usize = 256;
 // How many circuits may step at once. Kept well under the runtime's blocking pool.
 const MAX_CONCURRENT_STEPS: usize = 4;
-// How long shutdown and unregister wait for a worker to drop its circuit and clean up.
+// How long shutdown waits for workers, and terminal errors wait for delivery.
 const RETIRE_TIMEOUT: Duration = Duration::from_secs(10);
+const RETIRE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DROP_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) type EncodedValue = Vec<u8>;
 pub(crate) type EncodedRow = Vec<EncodedValue>;
@@ -114,6 +116,11 @@ enum IncrementalCommand {
     // everything queued ahead of it.
     Flush {
         response: oneshot::Sender<ServiceResult<Vec<oneshot::Receiver<()>>>>,
+    },
+    #[cfg(test)]
+    InjectPanic {
+        handle: IncrementalQueryHandle,
+        response: oneshot::Sender<ServiceResult<()>>,
     },
     Shutdown {
         response: oneshot::Sender<ServiceResult<()>>,
@@ -284,6 +291,16 @@ impl IncrementalQueryService {
         Ok(())
     }
 
+    /// Makes one worker panic, so its isolation from the service can be tested for real.
+    #[cfg(test)]
+    pub(crate) async fn inject_panic(&self, handle: IncrementalQueryHandle) -> Result<()> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::InjectPanic { handle, response })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result.await.context("Incremental query service stopped")?
+    }
+
     pub(crate) async fn shutdown(&self) -> Result<()> {
         self.cancel.cancel();
         let cdc_result = self.await_cdc_task().await;
@@ -311,12 +328,19 @@ impl IncrementalQueryService {
 
 struct RegisteredQuery {
     inbox: mpsc::Sender<WorkerMessage>,
+    routed: u64,
+    delivered: watch::Receiver<u64>,
     terminate: Option<oneshot::Sender<RetireReason>>,
     // Weak so the router can spot a dropped receiver without keeping the subscription open:
     // a strong clone here would delay end-of-stream until the next command reaped it.
     subscriber: mpsc::WeakSender<Result<IncrementalQueryDelta>>,
     tx_key: TxKey,
     wal_cursor: CdcCursor,
+}
+
+struct PendingUnregister {
+    response: oneshot::Sender<ServiceResult<()>>,
+    known: bool,
 }
 
 /// Sizing for the service. The defaults are the production values; tests shrink them to
@@ -348,6 +372,7 @@ struct IncrementalQueryServiceInner {
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
     // Retired here but not yet acked by their worker, so their storage may still exist.
     retiring: HashSet<IncrementalQueryHandle>,
+    pending_unregister: HashMap<IncrementalQueryHandle, PendingUnregister>,
     // Owned rather than borrowed from the node, so circuit work cannot starve request
     // serving and workers can still retire while the node's runtime is going away.
     // `None` only while dropping.
@@ -383,6 +408,7 @@ impl IncrementalQueryServiceInner {
             storage_root,
             queries: HashMap::new(),
             retiring: HashSet::new(),
+            pending_unregister: HashMap::new(),
             runtime: Some(runtime),
             steps: Arc::new(Semaphore::new(config.max_concurrent_steps)),
             config,
@@ -418,6 +444,22 @@ impl IncrementalQueryServiceInner {
     fn apply_retirement(&mut self, outcome: RetireOutcome) -> ServiceResult<()> {
         self.retiring.remove(&outcome.id);
         self.queries.remove(&outcome.id);
+        if let Some(pending) = self.pending_unregister.remove(&outcome.id) {
+            let result = outcome.storage.and_then(|()| {
+                if pending.known {
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "Unknown incremental query handle: {:?}",
+                        outcome.id
+                    ))
+                }
+            });
+            if let Err(Err(error)) = pending.response.send(result) {
+                warn!("{}", error);
+            }
+            return Ok(());
+        }
         outcome.storage
     }
 
@@ -448,8 +490,7 @@ impl IncrementalQueryServiceInner {
         }
     }
 
-    // Blocks the router until every retiring worker has dropped its circuit and cleaned up.
-    // Only unregister and shutdown reach this, and it is bounded by `retire_timeout`.
+    // Shutdown waits for teardown; ordinary unregister leaves the router running.
     fn await_retirements(&mut self) -> ServiceResult<()> {
         let deadline = Instant::now() + self.config.retire_timeout;
         let mut failure: Option<Error> = None;
@@ -472,13 +513,18 @@ impl IncrementalQueryServiceInner {
 
         // A worker wedged inside a circuit step cannot be interrupted - DBSP exposes no
         // external kill - so leave its storage rather than unlinking under a live circuit.
-        for id in self.retiring.drain().collect::<Vec<_>>() {
+        for id in &self.retiring {
             warn!(
                 "Incremental query {} did not retire within {:?}; leaving {} behind",
                 id,
                 self.config.retire_timeout,
-                self.query_storage_path(id).display()
+                self.query_storage_path(*id).display()
             );
+        }
+        for (id, pending) in self.pending_unregister.drain() {
+            let _ = pending.response.send(Err(anyhow!(
+                "Incremental query {id} did not retire before shutdown timed out"
+            )));
         }
 
         match failure {
@@ -488,7 +534,14 @@ impl IncrementalQueryServiceInner {
     }
 
     fn run(mut self, receiver: std_mpsc::Receiver<IncrementalCommand>) {
-        while let Ok(command) = receiver.recv() {
+        loop {
+            self.reap();
+            // Retirements use a separate channel so workers cannot keep commands alive.
+            let command = match receiver.recv_timeout(RETIRE_POLL_INTERVAL) {
+                Ok(command) => command,
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            };
             self.reap();
             match command {
                 IncrementalCommand::Register { request, response } => {
@@ -501,7 +554,7 @@ impl IncrementalQueryServiceInner {
                     let _ = response.send(self.register(plan, tx_key, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
-                    let _ = response.send(self.unregister(handle));
+                    self.unregister(handle, response);
                 }
                 IncrementalCommand::ApplyTriples {
                     tx_key,
@@ -513,6 +566,17 @@ impl IncrementalQueryServiceInner {
                 }
                 IncrementalCommand::Flush { response } => {
                     let _ = response.send(self.flush());
+                }
+                #[cfg(test)]
+                IncrementalCommand::InjectPanic { handle, response } => {
+                    let result = match self.queries.get(&handle) {
+                        Some(query) => query
+                            .inbox
+                            .try_send(WorkerMessage::Panic)
+                            .map_err(|err| anyhow!("Failed to inject worker panic: {}", err)),
+                        None => Err(anyhow!("Unknown incremental query handle: {:?}", handle)),
+                    };
+                    let _ = response.send(result);
                 }
                 IncrementalCommand::Shutdown { response } => {
                     let _ = response.send(self.remove_all_queries());
@@ -557,6 +621,7 @@ impl IncrementalQueryServiceInner {
         }
 
         let (inbox, inbox_receiver) = mpsc::channel(self.config.inbox_capacity);
+        let (delivered, delivery_progress) = watch::channel(0);
         let (terminate, terminate_receiver) = oneshot::channel();
         spawn_query_worker(
             self.runtime
@@ -568,8 +633,8 @@ impl IncrementalQueryServiceInner {
                 circuit: Some(circuit),
                 storage_path,
                 inbox: inbox_receiver,
-                // The worker holds the only strong sender, so the subscription ends the
-                // moment it retires.
+                delivered,
+                // Only the worker and supervisor keep the subscription open.
                 subscriber: subscriber.clone(),
                 terminate: terminate_receiver,
                 retirements: self.retirements.clone(),
@@ -583,6 +648,8 @@ impl IncrementalQueryServiceInner {
             handle,
             RegisteredQuery {
                 inbox,
+                routed: 0,
+                delivered: delivery_progress,
                 terminate: Some(terminate),
                 subscriber: subscriber.downgrade(),
                 tx_key,
@@ -597,14 +664,29 @@ impl IncrementalQueryServiceInner {
         })
     }
 
-    fn unregister(&mut self, handle: IncrementalQueryHandle) -> ServiceResult<()> {
-        let known = self.retire(handle, RetireReason::Unregistered);
-        // Wait either way, so storage really is gone by the time the caller hears back.
-        let cleanup = self.await_retirements();
-        if !known {
-            return Err(anyhow!("Unknown incremental query handle: {:?}", handle));
+    fn unregister(
+        &mut self,
+        handle: IncrementalQueryHandle,
+        response: oneshot::Sender<ServiceResult<()>>,
+    ) {
+        if self.pending_unregister.contains_key(&handle)
+            || (!self.queries.contains_key(&handle) && !self.retiring.contains(&handle))
+        {
+            let _ = response.send(Err(anyhow!(
+                "Unknown incremental query handle: {:?}",
+                handle
+            )));
+            return;
         }
-        cleanup
+        let known = self.queries.get(&handle).is_some_and(|query| {
+            query
+                .subscriber
+                .upgrade()
+                .is_some_and(|subscriber| !subscriber.is_closed())
+        });
+        self.retire(handle, RetireReason::Unregistered);
+        self.pending_unregister
+            .insert(handle, PendingUnregister { response, known });
     }
 
     fn apply_triples(
@@ -627,7 +709,10 @@ impl IncrementalQueryServiceInner {
                 triples: triples.clone(),
             };
             match query.inbox.try_send(work) {
-                Ok(()) => query.wal_cursor.last_seq = wal_seq,
+                Ok(()) => {
+                    query.routed += 1;
+                    query.wal_cursor.last_seq = wal_seq;
+                }
                 // Full means the query is behind; closed means its worker already stopped.
                 Err(_) => lagged.push(*id),
             }
@@ -644,19 +729,20 @@ impl IncrementalQueryServiceInner {
     // queued ahead of the barrier.
     fn flush(&mut self) -> ServiceResult<Vec<oneshot::Receiver<()>>> {
         let mut acks = Vec::new();
-        let mut lagged = Vec::new();
-
-        for (id, query) in &self.queries {
+        for query in self.queries.values() {
             let (ack, wait) = oneshot::channel();
-            match query.inbox.try_send(WorkerMessage::Flush(ack)) {
-                Ok(()) => acks.push(wait),
-                Err(_) => lagged.push(*id),
-            }
-        }
-
-        let capacity = self.config.inbox_capacity;
-        for id in lagged {
-            self.retire(id, RetireReason::Lagged { capacity });
+            let target = query.routed;
+            let mut delivered = query.delivered.clone();
+            // A barrier must not consume inbox capacity or terminate a busy query.
+            self.runtime.as_ref().unwrap().spawn(async move {
+                while *delivered.borrow_and_update() < target {
+                    if delivered.changed().await.is_err() {
+                        return;
+                    }
+                }
+                let _ = ack.send(());
+            });
+            acks.push(wait);
         }
         Ok(acks)
     }
@@ -671,6 +757,7 @@ impl IncrementalQueryServiceInner {
     }
 
     fn remove_all_queries(&mut self) -> ServiceResult<()> {
+        self.cancel.cancel();
         for id in self.queries.keys().copied().collect::<Vec<_>>() {
             self.retire(id, RetireReason::Shutdown);
         }
@@ -680,12 +767,14 @@ impl IncrementalQueryServiceInner {
 
 impl Drop for IncrementalQueryServiceInner {
     fn drop(&mut self) {
+        self.config.retire_timeout = self.config.retire_timeout.min(DROP_TIMEOUT);
+        let deadline = Instant::now() + self.config.retire_timeout;
         if let Err(error) = self.remove_all_queries() {
             warn!("{}", error);
         }
         // Bounded, because a worker wedged in a circuit step would otherwise block for ever.
         if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_timeout(self.config.retire_timeout);
+            runtime.shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -1135,6 +1224,462 @@ mod tests {
             .expect("shutdown must not wait on a parked worker")
             .unwrap();
         assert!(!dir.path().join("query-1").exists());
+    }
+
+    // Bound delivery waits so a stalled worker fails the test instead of hanging it.
+    async fn recv_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> Result<IncrementalQueryDelta> {
+        tokio::time::timeout(Duration::from_secs(10), subscription.deltas.recv())
+            .await
+            .expect("a delta should arrive")
+            .expect("the subscription should still be open")
+    }
+
+    fn pause_worker(
+        inner: &IncrementalQueryServiceInner,
+        handle: IncrementalQueryHandle,
+    ) -> oneshot::Sender<()> {
+        let (started, wait) = oneshot::channel();
+        let (resume, paused) = oneshot::channel();
+        inner.queries[&handle]
+            .inbox
+            .try_send(WorkerMessage::Pause {
+                started,
+                resume: paused,
+            })
+            .unwrap();
+        test_runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), wait)
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        resume
+    }
+
+    #[test]
+    fn unregister_waits_for_its_worker_without_blocking_the_router() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig::default(),
+            CancellationToken::new(),
+        );
+        let basis = test_tx_key_with_tx_id(1);
+        let paused = inner
+            .register(single_pattern_plan(), basis, test_cursor(), Vec::new())
+            .unwrap();
+        let mut healthy = inner
+            .register(single_pattern_plan(), basis, test_cursor(), Vec::new())
+            .unwrap();
+        let resume = pause_worker(&inner, paused.handle);
+        let (commands, receiver) = std_mpsc::channel();
+        let router = thread::spawn(move || inner.run(receiver));
+
+        test_runtime().block_on(async {
+            let (response, mut unregistered) = oneshot::channel();
+            commands
+                .send(IncrementalCommand::Unregister {
+                    handle: paused.handle,
+                    response,
+                })
+                .unwrap();
+            let (response, applied) = oneshot::channel();
+            commands
+                .send(IncrementalCommand::ApplyTriples {
+                    tx_key: test_tx_key_with_tx_id(2),
+                    wal_seq: 2,
+                    triples: Arc::from(vec![name_triple(42, "Alice")]),
+                    response,
+                })
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), applied)
+                .await
+                .expect("unregister must leave the router responsive")
+                .unwrap()
+                .unwrap();
+            assert_eq!(expect_delta(recv_delta(&mut healthy).await).tx_key.tx_id, 2);
+            assert!(matches!(
+                unregistered.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(dir.path().join("query-1").exists());
+
+            resume.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), unregistered)
+                .await
+                .expect("retirement must be reaped without another command")
+                .unwrap()
+                .unwrap();
+            assert!(!dir.path().join("query-1").exists());
+        });
+
+        drop(commands);
+        router.join().unwrap();
+        assert!(!dir.path().join("query-2").exists());
+    }
+
+    #[test]
+    fn flush_does_not_overflow_a_full_worker_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig {
+                inbox_capacity: 2,
+                ..IncrementalServiceConfig::default()
+            },
+            CancellationToken::new(),
+        );
+        let mut subscription = inner
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        let resume = pause_worker(&inner, subscription.handle);
+        for seq in 2..=3 {
+            inner
+                .apply_triples(
+                    test_tx_key_with_tx_id(seq),
+                    seq as u64,
+                    Arc::from(vec![name_triple(seq, "Alice")]),
+                )
+                .unwrap();
+        }
+        assert_eq!(inner.queries[&subscription.handle].inbox.capacity(), 0);
+        let mut ack = inner.flush().unwrap().pop().unwrap();
+        assert!(inner.queries.contains_key(&subscription.handle));
+        assert!(matches!(
+            ack.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        resume.send(()).unwrap();
+        test_runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), ack)
+                .await
+                .unwrap()
+                .unwrap();
+            for seq in 2..=3 {
+                assert_eq!(
+                    expect_delta(recv_delta(&mut subscription).await)
+                        .tx_key
+                        .tx_id,
+                    seq
+                );
+            }
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deltas_arrive_in_wal_order_for_a_slow_subscriber() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = IncrementalServiceConfig {
+            // Small enough that the worker parks on the subscriber between transactions.
+            subscription_capacity: 2,
+            inbox_capacity: 64,
+            ..IncrementalServiceConfig::default()
+        };
+        let service = test_service(dir.path(), config);
+        let mut subscription = register(
+            &service,
+            single_pattern_plan(),
+            test_tx_key_with_tx_id(1),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        let applied = 24;
+        for seq in 1..=applied {
+            let name = format!("Alice {seq}");
+            service
+                .apply_triples(
+                    test_tx_key_with_tx_id(seq as i64 + 1),
+                    seq as u64,
+                    vec![name_triple(seq as i64, &name)],
+                )
+                .await
+                .unwrap();
+        }
+
+        let mut seen = Vec::new();
+        while seen.len() < applied {
+            let delta = expect_delta(recv_delta(&mut subscription).await);
+            seen.push(delta.tx_key.tx_id);
+            // Drain slowly, so the worker keeps parking on a full subscriber channel.
+            tokio::task::yield_now().await;
+        }
+
+        let mut ordered = seen.clone();
+        ordered.sort_unstable();
+        assert_eq!(seen, ordered, "deltas must arrive in WAL order");
+        assert_eq!(seen, (2..=applied as i64 + 1).collect::<Vec<_>>());
+        service.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn lag_error_timeout_closes_the_subscription_and_cleans_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig {
+                subscription_capacity: 1,
+                inbox_capacity: 1,
+                retire_timeout: Duration::from_millis(50),
+                ..IncrementalServiceConfig::default()
+            },
+            CancellationToken::new(),
+        );
+        let mut subscription = inner
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                vec![name_triple(1, "Priming")],
+            )
+            .unwrap();
+        let resume = pause_worker(&inner, subscription.handle);
+        for seq in 2..=3 {
+            inner
+                .apply_triples(
+                    test_tx_key_with_tx_id(seq),
+                    seq as u64,
+                    Arc::from(vec![name_triple(seq, "Alice")]),
+                )
+                .unwrap();
+        }
+        resume.send(()).unwrap();
+        let outcome = inner.retired.recv_timeout(Duration::from_secs(5)).unwrap();
+        inner.apply_retirement(outcome).unwrap();
+        assert!(!dir.path().join("query-1").exists());
+        assert_eq!(
+            expect_delta(subscription.deltas.try_recv().unwrap())
+                .tx_key
+                .tx_id,
+            1
+        );
+        test_runtime().block_on(async {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_slow_query_does_not_stall_a_fast_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = IncrementalServiceConfig {
+            subscription_capacity: 1,
+            inbox_capacity: 32,
+            ..IncrementalServiceConfig::default()
+        };
+        let service = test_service(dir.path(), config);
+        let basis = test_tx_key_with_tx_id(1);
+        // Nobody ever reads `_wedged`, so its worker parks on the very first delivery.
+        let _wedged = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+        let mut healthy = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+
+        let applied = 8;
+        for seq in 1..=applied {
+            let name = format!("Alice {seq}");
+            service
+                .apply_triples(
+                    test_tx_key_with_tx_id(seq as i64 + 1),
+                    seq as u64,
+                    vec![name_triple(seq as i64, &name)],
+                )
+                .await
+                .unwrap();
+        }
+
+        // The old lock-step service could not pass this: the wedged subscriber held the
+        // single service thread and no other query made progress.
+        for seq in 1..=applied {
+            let delta = expect_delta(recv_delta(&mut healthy).await);
+            assert_eq!(delta.tx_key.tx_id, seq as i64 + 1);
+        }
+        service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inbox_overflow_terminates_only_the_lagging_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = IncrementalServiceConfig {
+            subscription_capacity: 1,
+            inbox_capacity: 2,
+            ..IncrementalServiceConfig::default()
+        };
+        let service = test_service(dir.path(), config);
+        let basis = test_tx_key_with_tx_id(1);
+        let mut lagging = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+        let mut healthy = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+
+        // Far more than `lagging` can buffer while nobody reads it.
+        let applied = 12;
+        for seq in 1..=applied {
+            let name = format!("Alice {seq}");
+            service
+                .apply_triples(
+                    test_tx_key_with_tx_id(seq as i64 + 1),
+                    seq as u64,
+                    vec![name_triple(seq as i64, &name)],
+                )
+                .await
+                .unwrap();
+            // Drain `healthy` as it goes - on this deliberately tiny config it would
+            // otherwise fall behind too, and both queries would be terminated.
+            let delta = expect_delta(recv_delta(&mut healthy).await);
+            assert_eq!(delta.tx_key.tx_id, seq as i64 + 1);
+        }
+
+        // The lagging subscription ends with a terminal error rather than silently gapping.
+        let mut delivered = 0;
+        let error = loop {
+            match tokio::time::timeout(Duration::from_secs(10), lagging.deltas.recv())
+                .await
+                .expect("the lagging subscription should resolve")
+            {
+                Some(Ok(_)) => delivered += 1,
+                Some(Err(error)) => break error,
+                None => panic!(
+                    "lagging subscription closed after {delivered} deltas without a \
+                     terminal error"
+                ),
+            }
+        };
+        assert!(
+            error.to_string().contains("fell behind"),
+            "unexpected terminal error: {error}"
+        );
+        assert!(error
+            .downcast_ref::<crate::incremental::worker::SubscriptionLagError>()
+            .is_some());
+        assert!(delivered < applied, "the lagging query should have gapped");
+        assert!(lagging.deltas.recv().await.is_none());
+        assert!(service.unregister(lagging.handle).await.is_err());
+        assert!(!dir.path().join("query-1").exists());
+
+        // The healthy neighbour is untouched and still receiving.
+        service
+            .apply_triples(
+                test_tx_key_with_tx_id(applied as i64 + 2),
+                applied as u64 + 1,
+                vec![name_triple(99, "Zoe")],
+            )
+            .await
+            .unwrap();
+        let delta = expect_delta(recv_delta(&mut healthy).await);
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Zoe".to_string())], 1)]
+        );
+        service.shutdown().await.unwrap();
+    }
+
+    // The CDC loop replays the WAL from the beginning, so a query registered on a node with
+    // history sees a burst of transactions at or below its basis. Those must be skipped at
+    // the router; routing them would fill the inbox and terminate a healthy new query.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replayed_history_does_not_terminate_a_fresh_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = IncrementalServiceConfig {
+            subscription_capacity: 1,
+            inbox_capacity: 2,
+            ..IncrementalServiceConfig::default()
+        };
+        let service = test_service(dir.path(), config);
+        let basis = test_tx_key_with_tx_id(500);
+        let mut subscription = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+
+        // Replay far more history than the inbox could ever hold.
+        for tx_id in 1..=100 {
+            let name = format!("Historic {tx_id}");
+            service
+                .apply_triples(
+                    test_tx_key_with_tx_id(tx_id),
+                    tx_id as u64,
+                    vec![name_triple(tx_id, &name)],
+                )
+                .await
+                .unwrap();
+        }
+        service.flush().await.unwrap();
+
+        // Still alive, and still able to receive a transaction after its basis.
+        let live = test_tx_key_with_tx_id(501);
+        service
+            .apply_triples(live, 501, vec![name_triple(1000, "Live")])
+            .await
+            .unwrap();
+        let delta = expect_delta(recv_delta(&mut subscription).await);
+        assert_eq!(delta.tx_key, live);
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Live".to_string())], 1)]
+        );
+        service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn worker_panic_retires_only_that_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = test_service(dir.path(), IncrementalServiceConfig::default());
+        let basis = test_tx_key_with_tx_id(1);
+        let mut panicking = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+        let mut healthy = register(&service, single_pattern_plan(), basis, Vec::new())
+            .await
+            .unwrap();
+
+        service.inject_panic(panicking.handle).await.unwrap();
+
+        let error = expect_error(recv_delta(&mut panicking).await);
+        assert!(
+            error.to_string().contains("panicked"),
+            "unexpected terminal error: {error}"
+        );
+        assert!(panicking.deltas.recv().await.is_none());
+        // Whether this reports the handle as unknown depends on whether the retirement was
+        // already reaped, but either way it waits for the teardown to finish.
+        let _ = service.unregister(panicking.handle).await;
+        assert!(!dir.path().join("query-1").exists());
+
+        // The service survived, the neighbour still works, and new queries still register.
+        service
+            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![name_triple(42, "Alice")])
+            .await
+            .unwrap();
+        let delta = expect_delta(recv_delta(&mut healthy).await);
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("Alice".to_string())], 1)]
+        );
+        let _fresh = register(
+            &service,
+            single_pattern_plan(),
+            test_tx_key_with_tx_id(2),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        service.shutdown().await.unwrap();
     }
 
     #[tokio::test]

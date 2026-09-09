@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Error, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxKey;
@@ -35,11 +35,14 @@ pub(in crate::incremental) enum WorkerMessage {
         tx_key: TxKey,
         triples: Arc<[Tup2<EncodedTriple, ZWeight>]>,
     },
-    /// Barrier: acked once everything queued ahead of it has been stepped and delivered.
-    Flush(oneshot::Sender<()>),
     /// Injects a worker panic, so the supervisor's isolation can be tested for real.
     #[cfg(test)]
     Panic,
+    #[cfg(test)]
+    Pause {
+        started: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    },
 }
 
 /// Why a worker stopped. Only the first two reach the subscriber as a terminal error.
@@ -75,6 +78,7 @@ pub(in crate::incremental) struct QueryWorker {
     pub circuit: Option<QueryCircuit>,
     pub storage_path: PathBuf,
     pub inbox: mpsc::Receiver<WorkerMessage>,
+    pub delivered: watch::Sender<u64>,
     pub subscriber: mpsc::Sender<Result<IncrementalQueryDelta>>,
     pub terminate: oneshot::Receiver<RetireReason>,
     pub retirements: std_mpsc::Sender<RetireOutcome>,
@@ -110,6 +114,7 @@ pub(in crate::incremental) fn spawn_query_worker(runtime: &Handle, worker: Query
     let subscriber = worker.subscriber.clone();
     let retirements = worker.retirements.clone();
     let retire_timeout = worker.retire_timeout;
+    let cancel = worker.cancel.clone();
 
     runtime.spawn(async move {
         if tokio::spawn(worker.run()).await.is_ok() {
@@ -118,7 +123,11 @@ pub(in crate::incremental) fn spawn_query_worker(runtime: &Handle, worker: Query
         // The worker panicked, so its circuit was already dropped while unwinding; only the
         // subscriber notice, the storage directory and the ack are left to do.
         let error = anyhow!("Incremental query circuit worker panicked");
-        let _ = tokio::time::timeout(retire_timeout, subscriber.send(Err(error))).await;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {},
+            _ = tokio::time::timeout(retire_timeout, subscriber.send(Err(error))) => {},
+        }
         drop(subscriber);
         finish_retirement(id, None, storage_path, retirements).await;
     });
@@ -151,13 +160,16 @@ impl QueryWorker {
             match message {
                 #[cfg(test)]
                 WorkerMessage::Panic => panic!("injected incremental query worker panic"),
-                WorkerMessage::Flush(ack) => {
-                    let _ = ack.send(());
+                #[cfg(test)]
+                WorkerMessage::Pause { started, resume } => {
+                    let _ = started.send(());
+                    let _ = resume.await;
                 }
                 WorkerMessage::Apply { tx_key, triples } => {
                     if let Err(reason) = self.step(tx_key, triples).await {
                         return reason;
                     }
+                    self.delivered.send_modify(|count| *count += 1);
                 }
             }
         }
@@ -231,13 +243,18 @@ impl QueryWorker {
             subscriber,
             retirements,
             retire_timeout,
+            cancel,
             ..
         } = self;
 
         if let Some(error) = reason.into_subscriber_error() {
             // A lagging query is precisely the one whose channel is full, so bound the wait
             // rather than parking here forever; the subscriber then just sees a clean end.
-            let _ = tokio::time::timeout(retire_timeout, subscriber.send(Err(error))).await;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {},
+                _ = tokio::time::timeout(retire_timeout, subscriber.send(Err(error))) => {},
+            }
         }
         drop(subscriber);
         finish_retirement(id, circuit, storage_path, retirements).await;
