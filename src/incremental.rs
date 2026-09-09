@@ -497,6 +497,42 @@ impl IncrementalQueryServiceInner {
         }
     }
 
+    async fn prepare_query<C: Circuit>(
+        &self,
+        handle: IncrementalQueryHandle,
+        prepare: impl FnOnce(&std::path::Path) -> Result<(C, worker::Rows)> + Send + 'static,
+    ) -> Result<(C, worker::Rows)> {
+        let storage_path = self.query_storage_path(handle);
+        let result = self
+            .runtime
+            .spawn_blocking(move || prepare(&storage_path))
+            .await
+            .context("Incremental query registration task panicked")
+            .and_then(|result| result);
+        let error = match result {
+            Ok(prepared) => return Ok(prepared),
+            Err(error) => error,
+        };
+        // The preparation task has finished unwinding before storage can be removed.
+        let storage_path = self.query_storage_path(handle);
+        let cleanup = self
+            .runtime
+            .spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            })
+            .await
+            .context("Incremental query registration cleanup task panicked")
+            .and_then(|result| result.map_err(Error::from));
+        Err(match cleanup {
+            Ok(()) => error,
+            Err(cleanup) => error.context(format!(
+                "Incremental query registration cleanup failed: {cleanup:#}"
+            )),
+        })
+    }
+
     async fn register(
         &mut self,
         plan: IncrementalQueryPlan,
@@ -505,27 +541,15 @@ impl IncrementalQueryServiceInner {
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<IncrementalQuerySubscription> {
         let handle = self.allocate_query_id();
-        let storage_path = self.query_storage_path(handle);
         // Registration remains serialized, but DBSP construction and destruction stay off async threads.
-        let built = self
-            .runtime
-            .spawn_blocking(move || {
-                let result = (|| {
-                    let mut circuit = QueryCircuit::build(plan, &storage_path)?;
-                    let rows = circuit.apply(initial_triples)?;
-                    Ok::<_, Error>((circuit, rows))
-                })();
-                result.map_err(|error| match std::fs::remove_dir_all(&storage_path) {
-                    Ok(()) => error,
-                    Err(cleanup) if cleanup.kind() == ErrorKind::NotFound => error,
-                    Err(cleanup) => error.context(format!(
-                        "Incremental query registration cleanup failed: {cleanup}"
-                    )),
-                })
+        let (circuit, rows) = self
+            .prepare_query(handle, move |storage_path| {
+                let mut circuit = QueryCircuit::build(plan, storage_path)?;
+                let rows = circuit.apply(initial_triples)?;
+                Ok((circuit, rows))
             })
-            .await
-            .context("Incremental query registration task panicked")??;
-        Ok(self.install(handle, built.0, tx_key, wal_cursor, built.1))
+            .await?;
+        Ok(self.install(handle, circuit, tx_key, wal_cursor, rows))
     }
 
     fn apply_triples(&mut self, batch: Arc<Batch>) {
