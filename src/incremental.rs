@@ -73,12 +73,18 @@ pub(crate) struct IncrementalQueryDelta {
 
 type ServiceResult<T> = Result<T>;
 
+struct RegisterRequest {
+    plan: IncrementalQueryPlan,
+    tx_key: TxKey,
+    wal_cursor: CdcCursor,
+    initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+}
+
 enum IncrementalCommand {
+    // Boxed because registration is rare while `ApplyTriples` crosses this channel once per
+    // WAL transaction and would otherwise pay for the registration payload's size.
     Register {
-        plan: IncrementalQueryPlan,
-        tx_key: TxKey,
-        wal_cursor: CdcCursor,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        request: Box<RegisterRequest>,
         response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
     },
     Unregister {
@@ -88,7 +94,8 @@ enum IncrementalCommand {
     ApplyTriples {
         tx_key: TxKey,
         wal_seq: u64,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        // Shared so fan-out to every registered query is a refcount bump, not a deep clone.
+        triples: Arc<[Tup2<EncodedTriple, ZWeight>]>,
         response: oneshot::Sender<ServiceResult<()>>,
     },
     Shutdown {
@@ -204,10 +211,12 @@ impl IncrementalQueryService {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
-                plan,
-                tx_key,
-                wal_cursor,
-                initial_triples,
+                request: Box::new(RegisterRequest {
+                    plan,
+                    tx_key,
+                    wal_cursor,
+                    initial_triples,
+                }),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -233,7 +242,8 @@ impl IncrementalQueryService {
             .send(IncrementalCommand::ApplyTriples {
                 tx_key,
                 wal_seq,
-                triples,
+                // Convert on the caller's task so the service thread only moves refcounts.
+                triples: Arc::from(triples),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -321,13 +331,13 @@ impl IncrementalQueryServiceInner {
     fn run(mut self, receiver: std_mpsc::Receiver<IncrementalCommand>) {
         while let Ok(command) = receiver.recv() {
             match command {
-                IncrementalCommand::Register {
-                    plan,
-                    tx_key,
-                    wal_cursor,
-                    initial_triples,
-                    response,
-                } => {
+                IncrementalCommand::Register { request, response } => {
+                    let RegisterRequest {
+                        plan,
+                        tx_key,
+                        wal_cursor,
+                        initial_triples,
+                    } = *request;
                     let _ = response.send(self.register(plan, tx_key, wal_cursor, initial_triples));
                 }
                 IncrementalCommand::Unregister { handle, response } => {
@@ -409,7 +419,7 @@ impl IncrementalQueryServiceInner {
         &mut self,
         tx_key: TxKey,
         wal_seq: u64,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        triples: Arc<[Tup2<EncodedTriple, ZWeight>]>,
     ) -> ServiceResult<()> {
         self.cleanup_closed_subscriptions()?;
         let mut closed = Vec::new();
@@ -422,7 +432,8 @@ impl IncrementalQueryServiceInner {
                 continue;
             }
 
-            let rows = match query.circuit.apply(triples.clone()) {
+            // DBSP's `append` steals the buffer, so each circuit needs its own copy.
+            let rows = match query.circuit.apply(triples.to_vec()) {
                 Ok(rows) => rows,
                 Err(err) => {
                     failed.push((*id, err));
@@ -721,7 +732,7 @@ mod tests {
             .unwrap();
 
         service
-            .apply_triples(future_basis, 2, vec![name_triple(43, "Bob")])
+            .apply_triples(future_basis, 2, vec![name_triple(43, "Bob")].into())
             .unwrap();
 
         assert_eq!(
@@ -822,10 +833,18 @@ mod tests {
         aggregate_subscription.deltas.try_recv().unwrap();
 
         service
-            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
+            .apply_triples(
+                test_tx_key_with_tx_id(2),
+                2,
+                vec![age_triple(42, 10)].into(),
+            )
             .unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Alice")])
+            .apply_triples(
+                test_tx_key_with_tx_id(3),
+                3,
+                vec![name_triple(43, "Alice")].into(),
+            )
             .unwrap();
 
         assert_eq!(
@@ -846,7 +865,11 @@ mod tests {
         assert!(!dir.path().join("query-1").exists());
 
         service
-            .apply_triples(test_tx_key_with_tx_id(4), 4, vec![name_triple(44, "Bob")])
+            .apply_triples(
+                test_tx_key_with_tx_id(4),
+                4,
+                vec![name_triple(44, "Bob")].into(),
+            )
             .unwrap();
         assert_eq!(
             expect_delta(names_subscription.deltas.try_recv().unwrap()).rows,
@@ -887,7 +910,7 @@ mod tests {
         new_subscription.deltas.try_recv().unwrap();
 
         service
-            .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")])
+            .apply_triples(new_basis, 2, vec![name_triple(43, "Bob")].into())
             .unwrap();
 
         assert_eq!(
@@ -940,7 +963,7 @@ mod tests {
                 .apply_triples(
                     test_tx_key_with_tx_id(seq as i64 + 1),
                     seq as u64,
-                    vec![name_triple(seq as i64, &name)],
+                    vec![name_triple(seq as i64, &name)].into(),
                 )
                 .unwrap();
         }
@@ -951,7 +974,7 @@ mod tests {
             let result = service.apply_triples(
                 test_tx_key_with_tx_id(SUBSCRIPTION_CAPACITY as i64 + 2),
                 (SUBSCRIPTION_CAPACITY + 1) as u64,
-                vec![name_triple((SUBSCRIPTION_CAPACITY + 1) as i64, &name)],
+                vec![name_triple((SUBSCRIPTION_CAPACITY + 1) as i64, &name)].into(),
             );
             done_tx.send(result).unwrap();
         });
