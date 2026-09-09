@@ -3,6 +3,7 @@
   subscriptions. This namespace may change or be removed without notice."
   (:require
    [clojure.core.async :as async]
+   [clojure.tools.logging :as log]
    [xyz.triplox.api :as api])
   (:import
    [java.io Closeable]
@@ -25,15 +26,20 @@
 (defn- start-worker [sub view]
   (let [stop (async/chan)
         done (async/chan)]
-    (async/go-loop []
-      (let [[_ channel] (async/alts! [stop (async/timeout 300)])]
-        (if (= channel stop)
-          (async/close! done)
-          (do (loop [delta (api/take! sub 10)]
-                (when (and delta (not= delta ::api/timeout))
-                  (update-view! view delta)
-                  (recur (api/take! sub 10))))
-              (recur)))))
+    (async/thread
+      (try
+        (loop []
+          (let [[_ channel] (async/alts!! [stop] :default ::running)]
+            (when (not= channel stop)
+              (let [delta (api/take! sub 100)]
+                (when delta
+                  (when (not= delta ::api/timeout)
+                    (update-view! view delta))
+                  (recur))))))
+        (catch Exception error
+          (log/error error "Materialized view subscription failed"))
+        (finally
+          (async/close! done))))
     {:stop stop :done done}))
 
 (defrecord View [sub view stop-chan done-chan]
