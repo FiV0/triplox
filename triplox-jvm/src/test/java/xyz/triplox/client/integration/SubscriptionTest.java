@@ -34,15 +34,20 @@ class SubscriptionTest {
         try (var node = TriploxNode.connect(host(), port())) {
             defineNameSchema(node);
             try (Subscription sub = node.subscribe(NAMES_QUERY)) {
-                assertNotNull(sub.txKey());
+                var registration = sub.registrationTxKey();
+                assertNotNull(registration);
+                assertNull(sub.txKey());
 
-                node.executeTx(List.of(new TxOp.Put(map(":name", "Ivan"))));
+                var tx = node.executeTx(List.of(new TxOp.Put(map(":name", "Ivan"))));
 
                 Delta delta = sub.poll(10, TimeUnit.SECONDS);
                 assertNotNull(delta, "expected a delta within 10s");
                 assertEquals(1, delta.rows().size());
                 assertEquals(List.of("Ivan"), delta.rows().get(0).values());
                 assertEquals(1L, delta.rows().get(0).weight());
+                assertEquals(tx.txKey(), sub.txKey());
+                assertEquals(delta.txKey(), sub.txKey());
+                assertEquals(registration, sub.registrationTxKey());
             }
         }
     }
@@ -54,6 +59,7 @@ class SubscriptionTest {
             try (Subscription sub = node.subscribe(NAMES_QUERY)) {
                 // No transaction after the subscription -> poll returns null on timeout.
                 assertNull(sub.poll(300, TimeUnit.MILLISECONDS));
+                assertNull(sub.txKey());
             }
         }
     }

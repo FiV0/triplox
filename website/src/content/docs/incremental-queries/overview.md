@@ -53,6 +53,14 @@ Every Client API has a concept of a `subscribe` method which registers the incre
 
 When an incremental query gets registered it takes out a DB value at a given `TxKey`. For now, this is the `TxKey` the node has caught up to indexing, meaning you can currently only register incremental queries at roughly where the indexer is at. It builds, what is called in [DBSP](https://docs.rs/dbsp/latest/dbsp/) terminology, a circuit. This circuit gets bootstrapped by the data from the given `TxKey`, meaning the data that is currently present in the indexes. You can think of this bootstrapping as running the standard query through the circuit. This means the circuit initialization might take quite a while depending on how much data is already in the indexes that is relevant for the given incremental query. I want to give some intuition of why the circuit needs to get bootstrapped with the old data when we are only interested in future deltas. Consider a join of two abstract relations $A \bowtie B$. When something in $A$ changes (written as $\Delta A$) we still might need to join it against the old data, i.e. $\Delta A \bowtie B_{old}$, to know if actually to emit a tuple from the query.
 
+Subscriptions expose two transaction keys. The immutable registration key is available immediately through
+`registration_tx_key()` in Rust, `registrationTxKey()` in Java, or `registration-tx-key` in Clojure.
+The consumed key, exposed through `tx_key()`, `txKey()`, or `tx-key`, starts as `None`, `null`, or `nil`.
+It updates when the subscription returns a delta to the caller, including the initial result delta.
+Background buffering does not advance it, and timeouts, errors, and closure leave it unchanged.
+An empty initial result emits no delta, so the consumed key remains absent until a later delta is consumed.
+This key tracks delivery to the caller, not completion of application processing or the latest server transaction.
+
 ### Views
 
 A view in traditional DBMSs acts like a virtual table. The data is often computed when access is requested or updated periodically. Systems like [Materialize](https://github.com/materializeinc/materialize) update the views incrementally. Once you have incremental queries, it is "easy" to implement views on top. I prefer to rather give the more primitive option of an incremental query and let users decide how they want to maintain their views. If there is a high demand for views maintained on the server, we can reconsider.

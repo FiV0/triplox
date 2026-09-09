@@ -26,7 +26,8 @@ public final class Subscription implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 128;
     private static final short INTERNAL_ERROR = 4000;
 
-    private final TxKey txKey;
+    private final TxKey registrationTxKey;
+    private volatile TxKey txKey;
     private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<QueueEvent> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
@@ -44,7 +45,7 @@ public final class Subscription implements AutoCloseable {
     }
 
     Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker) {
-        this.txKey = txKey;
+        this.registrationTxKey = txKey;
         this.closeable = closeable;
         this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
         this.reader.setDaemon(true);
@@ -53,7 +54,7 @@ public final class Subscription implements AutoCloseable {
 
     /**
      * Wrap a streaming subscription response: read the leading {@code open} frame
-     * for {@link #txKey()}, then start the reader thread.
+     * for {@link #registrationTxKey()}, then start the reader thread.
      */
     static Subscription open(InputStream stream) throws IOException {
         return open(stream, stream);
@@ -73,6 +74,11 @@ public final class Subscription implements AutoCloseable {
     }
 
     /** The registration tx_key. A priming delta can equal it; later deltas are strictly after it. */
+    public TxKey registrationTxKey() {
+        return registrationTxKey;
+    }
+
+    /** The latest consumed delta's transaction key, or null before any delta is returned. */
     public TxKey txKey() {
         return txKey;
     }
@@ -91,6 +97,7 @@ public final class Subscription implements AutoCloseable {
 
     private Delta unwrap(QueueEvent event) {
         if (event instanceof QueueEvent.DeltaEvent(Delta delta1)) {
+            txKey = delta1.txKey();
             return delta1;
         }
         closed = true;

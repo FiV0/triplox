@@ -67,9 +67,11 @@ async fn subscribe_receives_transaction_delta() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
+    assert_eq!(sub.tx_key(), None);
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
     let delta = next_delta(&mut sub).await;
+    assert_eq!(sub.tx_key(), Some(delta.tx_key));
     assert_eq!(
         delta.rows,
         vec![(vec![DataType::String("Alice".to_string())], 1)]
@@ -88,10 +90,12 @@ async fn subscription_returns_existing_rows_as_priming_delta() {
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
-    let registration_basis = sub.tx_key();
+    let registration_basis = sub.registration_tx_key();
+    assert_eq!(sub.tx_key(), None);
     let delta = next_delta(&mut sub).await;
 
     assert_eq!(delta.tx_key, registration_basis);
+    assert_eq!(sub.tx_key(), Some(delta.tx_key));
     assert_eq!(
         delta.rows,
         vec![(vec![DataType::String("Alice".to_string())], 1)]
@@ -116,10 +120,19 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
         client.execute_tx(add_name(n, n)).await.unwrap();
     }
 
+    assert_eq!(sub.tx_key(), None);
+    let registration = sub.registration_tx_key();
+
     // Drain: one delta per transaction, none dropped.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     while seen.len() < names.len() {
+        let previous = sub.tx_key();
         let delta = next_delta(&mut sub).await;
+        assert_eq!(sub.tx_key(), Some(delta.tx_key));
+        assert_eq!(sub.registration_tx_key(), registration);
+        if let Some(previous) = previous {
+            assert!(delta.tx_key.tx_id > previous.tx_id);
+        }
         for (row, weight) in delta.rows {
             assert_eq!(weight, 1, "each name is added once");
             if let [DataType::String(name)] = row.as_slice() {
@@ -218,7 +231,8 @@ async fn dropping_a_subscription_keeps_the_server_serving() {
     // A fresh subscription still works.
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
     let priming_delta = next_delta(&mut sub).await;
-    assert_eq!(priming_delta.tx_key, sub.tx_key());
+    assert_eq!(priming_delta.tx_key, sub.registration_tx_key());
+    assert_eq!(sub.tx_key(), Some(priming_delta.tx_key));
     client.execute_tx(add_name("b", "Bob")).await.unwrap();
     let delta = next_delta(&mut sub).await;
     assert_eq!(

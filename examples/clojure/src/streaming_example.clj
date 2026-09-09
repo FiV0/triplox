@@ -12,11 +12,14 @@
                        '{:find [?e ?name]
                          :where [[?e :name ?name]]}))
 
-(tc/tx-key sub)
+(tc/registration-tx-key sub)
 ;; => {:tx-id 1,
 ;;     :system-time
 ;;     #object[java.time.Instant 0x7c107312 "2026-09-02T12:31:24.534987Z"]}
 
+
+(tc/tx-key sub)
+;; => nil
 
 ;; Transact a name; the subscription receives a delta.
 ;; `take!` blocks for the next delta to arrive.
@@ -24,6 +27,9 @@
   (tc/transact conn [{:name "Ivan"}])
   (tc/take! sub))
 ;; => [[[8796093022208 "Ivan"] 1]]
+
+(tc/tx-key sub)
+;; => The transaction key of the delta returned by take! above.
 
 ;; The 2-arity bounds the wait and returns ::timeout when nothing changed.
 (tc/take! sub 200)

@@ -41,7 +41,8 @@ pub struct Delta {
 /// Implements `Stream<Item = Result<Delta>>`; use `StreamExt::next().await` or
 /// stream combinators. Dropping it cancels the HTTP/2 stream and unsubscribes.
 pub struct Subscription {
-    tx_key: TxKey,
+    registration_tx_key: TxKey,
+    tx_key: Option<TxKey>,
     deltas: mpsc::Receiver<Result<Delta>>,
     reader: JoinHandle<()>,
 }
@@ -69,7 +70,12 @@ async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>
 
 impl Subscription {
     /// The registration tx_key. A priming delta can equal it; later deltas are strictly after it.
-    pub fn tx_key(&self) -> TxKey {
+    pub fn registration_tx_key(&self) -> TxKey {
+        self.registration_tx_key
+    }
+
+    /// The latest consumed delta's transaction key, or `None` before any delta is returned.
+    pub fn tx_key(&self) -> Option<TxKey> {
         self.tx_key
     }
 
@@ -98,7 +104,8 @@ impl Subscription {
         let (sender, deltas) = mpsc::channel(SUBSCRIPTION_QUEUE_CAPACITY);
         let reader = tokio::spawn(read_deltas(frames, sender));
         Ok(Subscription {
-            tx_key,
+            registration_tx_key: tx_key,
+            tx_key: None,
             deltas,
             reader,
         })
@@ -110,7 +117,11 @@ impl Stream for Subscription {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        this.deltas.poll_recv(cx)
+        let result = this.deltas.poll_recv(cx);
+        if let Poll::Ready(Some(Ok(delta))) = &result {
+            this.tx_key = Some(delta.tx_key);
+        }
+        result
     }
 }
 
@@ -264,6 +275,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tx_key_tracks_consumption_of_buffered_deltas() {
+        let later_key = TxKey {
+            tx_id: SAMPLE_TX_KEY.tx_id + 1,
+            system_time: SAMPLE_TX_KEY.system_time + chrono::Duration::seconds(1),
+        };
+        let mut payload = open_bytes();
+        payload.extend(delta_bytes("Alice"));
+        payload.extend(
+            encode_subscription_frame(&SubscriptionFrame::Delta {
+                tx_key: later_key,
+                rows: vec![],
+            })
+            .unwrap(),
+        );
+        let stream = futures::stream::once(async move { Ok(Bytes::from(payload)) });
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        timeout(Duration::from_secs(1), &mut sub.reader)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(sub.tx_key(), None, "buffering must not advance the key");
+        for expected in [*SAMPLE_TX_KEY, later_key] {
+            let delta = sub.next().await.unwrap().unwrap();
+            assert_eq!(delta.tx_key, expected);
+            assert_eq!(sub.tx_key(), Some(expected));
+            assert_eq!(sub.registration_tx_key(), *SAMPLE_TX_KEY);
+        }
+        assert!(sub.next().await.is_none());
+        assert_eq!(sub.tx_key(), Some(later_key));
+    }
+
+    #[tokio::test]
+    async fn pending_read_leaves_tx_key_absent() {
+        let stream = futures::stream::once(async { Ok(Bytes::from(open_bytes())) })
+            .chain(futures::stream::pending());
+        let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
+        assert!(timeout(Duration::from_millis(10), sub.next())
+            .await
+            .is_err());
+        assert_eq!(sub.tx_key(), None);
+        assert_eq!(sub.registration_tx_key(), *SAMPLE_TX_KEY);
+    }
+
+    #[tokio::test]
     async fn subscription_surfaces_unknown_frame_kind_error() {
         let mut payload = Vec::new();
         payload.extend(open_bytes());
@@ -272,13 +328,15 @@ mod tests {
             futures::stream::once(async move { Ok::<Bytes, io::Error>(Bytes::from(payload)) });
 
         let mut sub = Subscription::from_byte_stream(stream).await.unwrap();
-        assert_eq!(sub.tx_key(), *SAMPLE_TX_KEY);
+        assert_eq!(sub.registration_tx_key(), *SAMPLE_TX_KEY);
+        assert_eq!(sub.tx_key(), None);
 
         let err = sub.next().await.expect("an item").unwrap_err();
         assert!(err
             .to_string()
             .contains("unknown subscription frame kind: heartbeat"));
         assert!(sub.next().await.is_none(), "done after error");
+        assert_eq!(sub.tx_key(), None);
     }
 
     #[tokio::test]
@@ -311,9 +369,11 @@ mod tests {
             vec![(vec![DataType::String("Alice".to_string())], 1)]
         );
 
+        assert_eq!(sub.tx_key(), Some(delta.tx_key));
         let err = sub.next().await.expect("second item").unwrap_err();
         assert!(err.to_string().contains("4000"));
         assert!(sub.next().await.is_none(), "done after error");
+        assert_eq!(sub.tx_key(), Some(delta.tx_key));
     }
 
     struct CountingByteStream {
