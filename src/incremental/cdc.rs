@@ -214,7 +214,7 @@ mod tests {
         )));
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
-            tokio::runtime::Handle::current(),
+            crate::incremental::IncrementalServiceConfig::default(),
             CancellationToken::new(),
             slate.object_path.clone(),
             slate.object_store.clone(),

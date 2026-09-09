@@ -14,6 +14,7 @@ use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
+    IncrementalServiceConfig,
 };
 use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
 #[cfg(feature = "kafka")]
@@ -90,7 +91,7 @@ impl<L: TxLog> Node<L> {
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
         let incremental = IncrementalQueryService::new(
             incremental_storage_path,
-            Handle::current(),
+            IncrementalServiceConfig::default(),
             subscription.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
@@ -132,7 +133,7 @@ impl Node<MemoryLog> {
                 "triplox-dbsp-incremental-{}",
                 crate::util::random_string(10)
             )),
-            Handle::current(),
+            IncrementalServiceConfig::default(),
             subscription.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
