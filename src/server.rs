@@ -24,7 +24,6 @@ use axum::routing::post;
 use axum::Router;
 use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -34,7 +33,7 @@ use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
 
 use crate::error::TriploxError;
-use crate::incremental::IncrementalQueryDelta;
+use crate::incremental::subscription::SubscriptionDeltas;
 use crate::log::TxLog;
 use crate::node::{Database, IntoQuery, Node, QueryNode, SubmitNode, TransactionResult};
 use triplox_client::msgpack_codec::{
@@ -339,7 +338,7 @@ async fn subscribe<L: TxLog + 'static>(
 /// Stream state for subscription deltas after the leading `open` frame.
 enum SubscribeBody {
     Streaming {
-        deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+        deltas: SubscriptionDeltas,
         shutdown: CancellationToken,
     },
     Closed,
@@ -362,12 +361,11 @@ fn internal_error_frame(err: &Error) -> Vec<u8> {
 }
 
 /// Build the subscription response body: the `open` frame, then one `delta` frame
-/// per received delta (write-one/recv-one, so HTTP/2 flow control backpressures the
-/// engine instead of buffering unboundedly). The receiver lives in the stream, so a
-/// dropped response drops it and the engine tears the query down.
+/// per received delta. HTTP/2 flow control backpressures only this subscription;
+/// input overflow produces a terminal error. Dropping the body retires the query.
 fn subscription_body(
     open_frame: Vec<u8>,
-    deltas: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+    deltas: SubscriptionDeltas,
     shutdown: CancellationToken,
 ) -> Body {
     let open =
@@ -626,14 +624,101 @@ async fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::incremental::subscription::{SubscriptionLagged, Termination};
+    use crate::incremental::IncrementalQueryDelta;
     use crate::ops::{DataType, QueryArg};
     use futures::StreamExt;
+    use tokio::sync::{mpsc, oneshot};
     use triplox_client::msgpack_codec::{
         decode_subscription_frame, encode_subscribe_request, SubscribeRequest,
     };
 
     fn subscribe_body(query: &str, db: Option<TxKey>) -> Bytes {
         subscribe_body_with_args(query, db, vec![])
+    }
+
+    #[tokio::test]
+    async fn overflow_streams_open_then_terminal_error_despite_full_output() {
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        let open = encode_subscription_frame(&SubscriptionFrame::Open {
+            tx_key,
+            columns: vec![],
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        let (terminal, termination) = oneshot::channel();
+        sender
+            .try_send(Ok(IncrementalQueryDelta {
+                tx_key,
+                rows: vec![],
+            }))
+            .unwrap();
+        let mut stream = subscription_body(
+            open,
+            SubscriptionDeltas::new(receiver, termination),
+            CancellationToken::new(),
+        )
+        .into_data_stream();
+        terminal
+            .send(Termination::Lagged(SubscriptionLagged {
+                tx_key,
+                capacity: 1,
+            }))
+            .unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert!(matches!(
+            decode_subscription_frame(&first).unwrap(),
+            SubscriptionFrame::Open { .. }
+        ));
+        let second = stream.next().await.unwrap().unwrap();
+        match decode_subscription_frame(&second).unwrap() {
+            SubscriptionFrame::Error(error) => {
+                assert_eq!(error.code, ErrorCode::QueryError.as_u16());
+                assert!(error.message.contains("fell behind"));
+            }
+            other => panic!("expected terminal error, got {other:?}"),
+        }
+        assert!(stream.next().await.is_none());
+        assert!(sender.is_closed());
+    }
+
+    #[tokio::test]
+    async fn query_failure_streams_queued_delta_before_error() {
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        let open = encode_subscription_frame(&SubscriptionFrame::Open {
+            tx_key,
+            columns: vec![],
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        let (terminal, termination) = oneshot::channel();
+        sender
+            .try_send(Ok(IncrementalQueryDelta {
+                tx_key,
+                rows: vec![],
+            }))
+            .unwrap();
+        terminal
+            .send(Termination::Failed(anyhow::anyhow!("aggregate failed")))
+            .unwrap();
+        let mut stream = subscription_body(
+            open,
+            SubscriptionDeltas::new(receiver, termination),
+            CancellationToken::new(),
+        )
+        .into_data_stream();
+        stream.next().await.unwrap().unwrap();
+        let delta = stream.next().await.unwrap().unwrap();
+        assert!(matches!(
+            decode_subscription_frame(&delta).unwrap(),
+            SubscriptionFrame::Delta { .. }
+        ));
+        let error = stream.next().await.unwrap().unwrap();
+        assert!(matches!(
+            decode_subscription_frame(&error).unwrap(),
+            SubscriptionFrame::Error(_)
+        ));
+        assert!(stream.next().await.is_none());
     }
 
     fn subscribe_body_with_args(query: &str, db: Option<TxKey>, args: Vec<QueryArg>) -> Bytes {

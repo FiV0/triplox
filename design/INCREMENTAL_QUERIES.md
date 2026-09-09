@@ -263,17 +263,16 @@ triplox-incremental-query thread
     builds one QueryCircuit for the plan
     primes it with the initial triples
     queues the non-empty priming result at the registration basis
-    stores the plan, circuit, basis, WAL cursor, and subscription sender
+    creates a bounded input queue and starts an async worker owning the circuit
+    stores the basis, routing state, and worker controls
     returns an IncrementalQuerySubscription
 ```
 
-Node should stay relative clean and should not know anything about internal circuit maintenance and
-initialization logic. The `IncrementalQueryService` should deal with the lifecycle of incremental
-queries and their state. The dedicated service thread is where things get executed. This is currently
-single threaded which won't scale we add incremental queries to the service and we should pass to some
-executor service in the future. The `IncrementalQueryService`
-sends `IncrementalCommand`s to the one dedicated service thread. That thread owns the registry
-of active queries and every query's DBSP circuit.
+`IncrementalQueryService` owns query registration and lifecycle management. Its
+service thread runs a dispatcher on a service-owned Tokio runtime. The dispatcher
+owns the registry, while each async query worker owns its circuit. Circuit build
+and priming use a blocking job, but the dispatcher still waits for registration
+to finish before accepting the next command.
 
 Live WAL application reaches the dedicated service thread through the same
 command channel, but it enters from the internal side rather than the node side.
@@ -292,32 +291,46 @@ Tokio CDC task
 triplox-incremental-query thread
     loops over registered queries
     skips transactions at or before each query basis
-    steps each relevant QueryCircuit
-    sends non-empty IncrementalQueryDelta values to that query's receiver
+    enqueues a shared transaction batch into each relevant query's input queue
+    acknowledges ApplyTriples after fan-out
+
+async query worker
+    receives transactions in FIFO order
+    acquires a shared execution permit
+    applies one transaction on the runtime's blocking pool
+    releases the permit
+    sends non-empty IncrementalQueryDelta values to its subscription
 ```
 
-There are two channel directions:
+Tokio channels carry commands into the dispatcher, transaction batches into
+workers, and results back to subscribers. Workers report cleanup completion on a
+separate channel so they do not keep the service command channel alive.
 
-- `std::sync::mpsc` carries commands into the service thread. It fits the
-  blocking `receiver.recv()` loop used by the dedicated thread.
-- `tokio::sync::mpsc` carries `Result<IncrementalQueryDelta>` values back to
-  async subscribers. The service thread retries bounded sends, so a slow
-  subscriber applies backpressure instead of losing deltas; node cancellation
-  breaks that wait during shutdown.
+`ApplyTriples` acknowledges routing, not circuit completion. Each query has one
+FIFO consumer and at most one apply in flight; different queries advance
+independently. Registration-basis filtering happens before enqueueing, so WAL
+history already included in a snapshot cannot overflow a new query's inbox.
+Shared `Arc` batches avoid deep copies during fan-out. Each blocking apply makes
+the owned copy required by DBSP. Routed and successfully applied positions are
+tracked separately.
 
-In the future the server should drain these subscribers eagerly server side and send
-the appropriate deltas to the corresponding clients. The clients then need to deal
-with the backpressure themselves, depending on the client implementation.
+A full result channel pauses only that query's worker, after releasing its
+execution permit. If its input queue fills, the dispatcher stops routing to that
+query and terminates it with a lag error. Pending inputs are discarded. An apply
+already running finishes before the circuit is destroyed, but its result is
+suppressed after cancellation.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
-basis; later deltas describe transactions after that basis. An aggregate failure
-is preserved as a typed error through the circuit and service channel. A priming
-failure rejects registration. A live failure removes only the affected query,
-sends one error through its channel, and closes that subscription. The server
-encodes the error as a terminal `QueryError` frame. The command protocol exists
-to serialize mutations to the query registry and DBSP circuits onto the single
-service thread.
+basis; later deltas describe transactions after that basis. A priming failure
+rejects registration. A live failure removes only the affected query. Aggregate
+errors retain their concrete type through the internal subscription interface.
+
+A separate terminal channel prevents a full output queue from hiding an error.
+Ordinary query errors follow previously queued results; lag errors take priority
+over buffered results. Both become terminal `QueryError` frames on the wire. A
+lagged subscription must be registered again to obtain a fresh snapshot; it does
+not silently skip transactions and continue.
 
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
@@ -367,7 +380,7 @@ The node has one CDC loop for all incremental queries. It uses SlateDB
 `WalReader` through Triplox's `CdcStream` helper. The loop decodes WAL entries
 into transaction-sized batches, extracts EAV datoms using the current node
 schema (future optimizations should apply decoding more fine-grained per query),
-and then applies the weighted triple delta to the incremental query
+and then routes the weighted triple delta through the incremental query
 service. It does not wait on the writer indexer before applying a WAL entry;
 in the current writer-node path, a WAL entry observed here has already passed
 through the write/indexing path that produced it. The schema still comes through
@@ -390,10 +403,11 @@ For each transaction:
 2. EAV entries are decoded into datoms.
 3. Transaction metadata is converted into a `TxKey` when possible.
 4. Datoms become a weighted batch of encoded triples.
-5. The incremental service steps each registered query circuit that has not
-   already advanced past this transaction.
-6. Non-empty result deltas are sent on each subscription channel.
-7. The live stream cursor advances as rows are read.
+5. The incremental service enqueues the batch for queries with an earlier
+   registration basis, terminating any query whose input queue overflows.
+6. CDC continues after routing; workers independently apply their queued batches
+   and send non-empty result deltas.
+7. The live stream cursor advances as rows are read, independently of worker progress.
 
 ---
 
@@ -403,31 +417,43 @@ Each registration returns:
 
 - a query handle,
 - the registration `TxKey`, and
-- a bounded Tokio channel of result deltas.
+- a result receiver combining a bounded delta channel with terminal notifications.
 
 DBSP query state is trace-backed and stored in a per-query directory instead of
 being accumulated in ordinary Rust memory. The service deletes that directory
 when registration fails, a query is explicitly unregistered, its receiver is
-dropped, its circuit returns an error, or the service shuts down.
+dropped, its circuit returns an error, its input queue overflows, or the service
+shuts down. Circuit destruction and directory removal run on blocking threads,
+in that order. Unregister waits for cleanup without blocking the dispatcher;
+automatic cleanup failures are logged. Dropped receivers are detected even when
+no further transactions arrive.
+
+Shutdown cancels workers, waits for in-flight applies and cleanup, then releases
+the service runtime. There are no execution timeouts or forced circuit kills.
 
 ---
 
 ## Threading and Tuning Knobs
 
-The current tuning knobs:
+Internal defaults are provided by `IncrementalQueryOptions`; there are no new
+TOML settings:
 
-- `SUBSCRIPTION_CAPACITY` controls each result channel's bounded capacity.
-  Raising it absorbs longer subscriber pauses at the cost of memory and lag;
-  lowering it applies backpressure sooner.
-- `CDC_POLL_INTERVAL` controls how often the CDC stream polls for new WAL
-  transactions when no transaction is immediately available.
-- `CircuitConfig::with_workers(1)` makes each query circuit single-worker
-  today. Increasing DBSP workers would require checking circuit handle
-  ownership, storage layout, and whether one service thread should still drive
-  all query steps.
-- The current service has one command loop for all queries. Future scaling
-  options include sharding registered queries across service threads
-  or introducing a worker pool for circuit stepping.
+- Each input queue holds 256 transactions, plus at most one transaction already
+  taken by its worker. Overflow terminates that subscription.
+- `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
+  backpressure to its own worker.
+- Concurrent live applies are limited to `available_parallelism()`, falling back
+  to one. A semaphore bounds blocking jobs; waiting for output holds no permit.
+- The service runtime has two async worker threads and a shared blocking pool.
+  There is no additional dedicated driver thread per query. DBSP still owns its
+  per-circuit runtime threads; sharing those is separate work.
+- `CDC_POLL_INTERVAL` controls WAL polling as before.
+
+These are count limits, not byte limits. Shared transaction payloads reduce
+copying, but queue references, variable batch sizes, in-flight copies, and result
+buffers still consume memory. Registration remains serialized under the existing
+CDC gate. Special scheduling for expensive circuits and execution timeouts are
+outside this change.
 
 ---
 
