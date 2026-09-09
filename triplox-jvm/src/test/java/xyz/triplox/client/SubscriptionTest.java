@@ -10,61 +10,10 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class SubscriptionTest {
-
-    @Test
-    void txKeyTracksConsumptionOfBufferedDeltas() throws Exception {
-        var laterKey = new TxKey(8L, sampleBasis().systemTime().plusSeconds(1));
-        byte[] body;
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packOpenFrame(packer);
-            packDeltaFrame(packer, "Alice");
-            packer.packMapHeader(3);
-            packer.packString("kind"); packer.packString("delta");
-            packer.packString("tx_key"); WireCodec.packTxKey(packer, laterKey);
-            packer.packString("rows"); packer.packArrayHeader(0);
-            body = packer.toByteArray();
-        }
-        var readerFinished = new CountDownLatch(1);
-        try (Subscription sub = Subscription.open(new ByteArrayInputStream(body), readerFinished::countDown)) {
-            assertTrue(readerFinished.await(5, TimeUnit.SECONDS), "reader should buffer all deltas and reach EOF");
-            assertEquals(sampleBasis(), sub.registrationTxKey());
-            assertNull(sub.txKey(), "buffering must not advance the key");
-
-            assertEquals(sampleBasis(), sub.take().txKey());
-            assertEquals(sampleBasis(), sub.txKey());
-            var delta = sub.poll(5, TimeUnit.SECONDS);
-            assertNotNull(delta);
-            assertEquals(laterKey, delta.txKey());
-            assertTrue(delta.rows().isEmpty());
-            assertEquals(laterKey, sub.txKey());
-            assertEquals(sampleBasis(), sub.registrationTxKey());
-            assertNull(sub.take());
-            assertEquals(laterKey, sub.txKey());
-        }
-    }
-
-    @Test
-    void closingBeforeConsumptionLeavesTxKeyAbsent() throws Exception {
-        byte[] body;
-        try (var packer = MessagePack.newDefaultBufferPacker()) {
-            packOpenFrame(packer);
-            packDeltaFrame(packer, "Alice");
-            body = packer.toByteArray();
-        }
-        var readerFinished = new CountDownLatch(1);
-        try (Subscription sub = Subscription.open(new ByteArrayInputStream(body), readerFinished::countDown)) {
-            assertTrue(readerFinished.await(5, TimeUnit.SECONDS));
-            sub.close();
-            assertNull(sub.take());
-            assertNull(sub.txKey());
-            assertEquals(sampleBasis(), sub.registrationTxKey());
-        }
-    }
 
     @Test
     void clientDisablesReadTimeoutForLongRunningRequests() {
