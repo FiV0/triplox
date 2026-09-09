@@ -40,7 +40,7 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 const QUERY_INBOX_CAPACITY: usize = 256;
 // How many circuits may step at once. Kept well under the runtime's blocking pool.
 const MAX_CONCURRENT_STEPS: usize = 4;
-// How long shutdown waits for workers, and terminal errors wait for delivery.
+// How long shutdown and unregister wait for workers, and terminal errors for delivery.
 const RETIRE_TIMEOUT: Duration = Duration::from_secs(10);
 const RETIRE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const DROP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -341,6 +341,7 @@ struct RegisteredQuery {
 struct PendingUnregister {
     response: oneshot::Sender<ServiceResult<()>>,
     known: bool,
+    deadline: Instant,
 }
 
 /// Sizing for the service. The defaults are the production values; tests shrink them to
@@ -463,6 +464,21 @@ impl IncrementalQueryServiceInner {
         outcome.storage
     }
 
+    fn expire_unregisters(&mut self) {
+        let now = Instant::now();
+        let expired = self
+            .pending_unregister
+            .iter()
+            .filter_map(|(id, pending)| (pending.deadline <= now).then_some(*id))
+            .collect::<Vec<_>>();
+        for id in expired {
+            let pending = self.pending_unregister.remove(&id).unwrap();
+            let _ = pending.response.send(Err(anyhow!(
+                "Incremental query {id} unregister timed out; cleanup is still pending"
+            )));
+        }
+    }
+
     // Applies whatever retirements have already arrived, and retires queries whose subscriber
     // went away. Never blocks.
     fn reap(&mut self) {
@@ -488,6 +504,7 @@ impl IncrementalQueryServiceInner {
         for id in gone {
             self.retire(id, RetireReason::SubscriberGone);
         }
+        self.expire_unregisters();
     }
 
     // Shutdown waits for teardown; ordinary unregister leaves the router running.
@@ -496,18 +513,22 @@ impl IncrementalQueryServiceInner {
         let mut failure: Option<Error> = None;
 
         while !self.retiring.is_empty() {
+            self.expire_unregisters();
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
-            match self.retired.recv_timeout(remaining) {
+            match self
+                .retired
+                .recv_timeout(remaining.min(RETIRE_POLL_INTERVAL))
+            {
                 Ok(outcome) => {
                     if let Err(error) = self.apply_retirement(outcome) {
                         failure.get_or_insert(error);
                     }
                 }
-                // The service holds a sender, so this only fires on timeout.
-                Err(_) => break,
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
@@ -525,6 +546,18 @@ impl IncrementalQueryServiceInner {
             let _ = pending.response.send(Err(anyhow!(
                 "Incremental query {id} did not retire before shutdown timed out"
             )));
+        }
+
+        if !self.retiring.is_empty() {
+            let mut handles = self.retiring.iter().copied().collect::<Vec<_>>();
+            handles.sort_unstable();
+            let message = format!(
+                "Incremental query shutdown timed out; queries still retiring: {handles:?}"
+            );
+            return match failure {
+                Some(error) => Err(error.context(message)),
+                None => Err(anyhow!(message)),
+            };
         }
 
         match failure {
@@ -685,8 +718,14 @@ impl IncrementalQueryServiceInner {
                 .is_some_and(|subscriber| !subscriber.is_closed())
         });
         self.retire(handle, RetireReason::Unregistered);
-        self.pending_unregister
-            .insert(handle, PendingUnregister { response, known });
+        self.pending_unregister.insert(
+            handle,
+            PendingUnregister {
+                response,
+                known,
+                deadline: Instant::now() + self.config.retire_timeout,
+            },
+        );
     }
 
     fn apply_triples(
@@ -1318,6 +1357,132 @@ mod tests {
         drop(commands);
         router.join().unwrap();
         assert!(!dir.path().join("query-2").exists());
+    }
+
+    #[test]
+    fn shutdown_timeout_preserves_live_storage_until_worker_retires() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig {
+                retire_timeout: Duration::from_millis(20),
+                ..IncrementalServiceConfig::default()
+            },
+            CancellationToken::new(),
+        );
+        let subscription = inner
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        let resume = pause_worker(&inner, subscription.handle);
+
+        let error = inner.remove_all_queries().unwrap_err();
+        assert!(error.to_string().contains("shutdown timed out"));
+        assert!(inner.retiring.contains(&subscription.handle));
+        assert!(dir.path().join("query-1").exists());
+
+        resume.send(()).unwrap();
+        let outcome = inner.retired.recv_timeout(Duration::from_secs(5)).unwrap();
+        inner.apply_retirement(outcome).unwrap();
+        assert!(inner.retiring.is_empty());
+        assert!(!dir.path().join("query-1").exists());
+        inner.remove_all_queries().unwrap();
+    }
+
+    #[test]
+    fn unregister_timeout_leaves_worker_tracked_for_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig {
+                retire_timeout: Duration::ZERO,
+                ..IncrementalServiceConfig::default()
+            },
+            CancellationToken::new(),
+        );
+        let subscription = inner
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        let resume = pause_worker(&inner, subscription.handle);
+        let (response, result) = oneshot::channel();
+        inner.unregister(subscription.handle, response);
+        inner.reap();
+        let error = test_runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), result)
+                .await
+                .expect("expired unregister must resolve")
+                .unwrap()
+                .unwrap_err()
+        });
+        assert!(error.to_string().contains("unregister timed out"));
+        assert!(inner.pending_unregister.is_empty());
+        assert!(inner.retiring.contains(&subscription.handle));
+        assert!(dir.path().join("query-1").exists());
+
+        resume.send(()).unwrap();
+        let outcome = inner.retired.recv_timeout(Duration::from_secs(5)).unwrap();
+        inner.apply_retirement(outcome).unwrap();
+        assert!(inner.retiring.is_empty());
+        assert!(!dir.path().join("query-1").exists());
+    }
+
+    #[test]
+    fn unregister_deadline_expires_without_another_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().to_path_buf(),
+            IncrementalServiceConfig {
+                retire_timeout: Duration::from_millis(100),
+                ..IncrementalServiceConfig::default()
+            },
+            CancellationToken::new(),
+        );
+        let mut subscription = inner
+            .register(
+                single_pattern_plan(),
+                test_tx_key_with_tx_id(1),
+                test_cursor(),
+                Vec::new(),
+            )
+            .unwrap();
+        let resume = pause_worker(&inner, subscription.handle);
+        let (commands, receiver) = std_mpsc::channel();
+        let router = thread::spawn(move || inner.run(receiver));
+        let (response, result) = oneshot::channel();
+        commands
+            .send(IncrementalCommand::Unregister {
+                handle: subscription.handle,
+                response,
+            })
+            .unwrap();
+        test_runtime().block_on(async {
+            let error = tokio::time::timeout(Duration::from_secs(5), result)
+                .await
+                .expect("unregister must time out without another command")
+                .unwrap()
+                .unwrap_err();
+            assert!(error.to_string().contains("unregister timed out"));
+            assert!(dir.path().join("query-1").exists());
+            resume.send(()).unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        drop(commands);
+        router.join().unwrap();
+        assert!(!dir.path().join("query-1").exists());
     }
 
     #[test]

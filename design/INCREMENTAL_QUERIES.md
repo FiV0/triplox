@@ -439,13 +439,16 @@ Retirement drops the circuit, joining its DBSP threads, before removing its dire
 Normal teardown runs in `spawn_blocking`. Only then does the worker report retirement
 to the router. Cleanup errors reach a pending unregister caller, or are logged for
 asynchronous retirement; they do not fail unrelated commands. An unregister reply waits
-for that query's teardown while the router continues processing other commands.
+for that query's teardown while the router continues processing other commands. The
+router returns a timeout error if cleanup has not completed within `RETIRE_TIMEOUT`
+of processing the unregister request, and keeps tracking the worker for eventual cleanup.
 
 Receiver closure is detected even without another transaction. The router keeps a weak
 subscriber sender so it can inspect liveness without delaying end-of-stream. Query IDs
 are monotone within a service, so retiring queries cannot remove a newer query's storage.
 
-Shutdown cancels workers and waits up to `RETIRE_TIMEOUT` for retirements. Dropping the
+Shutdown cancels workers and waits up to `RETIRE_TIMEOUT` for retirements. If workers
+remain at the deadline, shutdown returns an error listing their handles. Dropping the
 service uses the shorter `DROP_TIMEOUT`, and runtime shutdown also has a bounded wait.
 A DBSP step or teardown cannot be forcibly interrupted. Workers still running at the
 deadline are logged with their storage paths; their directories are left intact until
@@ -465,8 +468,8 @@ The current tuning knobs:
 - `MAX_CONCURRENT_STEPS` defaults to 4. A FIFO-fair semaphore bounds concurrent
   `spawn_blocking` circuit steps. The service has two async runtime threads and
   a blocking pool sized to the step limit plus four teardown slots.
-- `RETIRE_TIMEOUT` defaults to ten seconds for terminal error delivery and shutdown
-  retirement. `DROP_TIMEOUT` limits best-effort drop cleanup to one second.
+- `RETIRE_TIMEOUT` defaults to ten seconds for terminal error delivery, unregister,
+  and shutdown retirement. `DROP_TIMEOUT` limits best-effort drop cleanup to one second.
 - `IncrementalServiceConfig` supplies these service limits at construction time;
   tests use small capacities. They are not TOML configuration options.
 - `CDC_POLL_INTERVAL` controls how often the CDC stream polls for new WAL
