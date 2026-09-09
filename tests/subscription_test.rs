@@ -100,7 +100,7 @@ async fn subscription_returns_existing_rows_as_priming_delta() {
     token.cancel();
 }
 
-/// A slow consumer (transactions made before the client reads) loses no deltas:
+/// A consumer paused within the subscription backlog limits loses no deltas:
 /// every transaction's change is delivered once the client drains.
 #[tokio::test(flavor = "multi_thread")]
 async fn subscription_loses_no_deltas_under_slow_consumer() {

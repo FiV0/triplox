@@ -25,15 +25,19 @@
 (defn- start-worker [sub view]
   (let [stop (async/chan)
         done (async/chan)]
-    (async/go-loop []
-      (let [[_ channel] (async/alts! [stop (async/timeout 300)])]
-        (if (= channel stop)
-          (async/close! done)
-          (do (loop [delta (api/take! sub 10)]
-                (when (and delta (not= delta ::api/timeout))
-                  (update-view! view delta)
-                  (recur (api/take! sub 10))))
-              (recur)))))
+    (async/go
+      (try
+        (loop []
+          (let [[_ channel] (async/alts! [stop (async/timeout 300)])]
+            (when-not (= channel stop)
+              (let [continue? (loop [delta (api/take! sub 10)]
+                                (cond
+                                  (= delta ::api/timeout) true
+                                  (nil? delta) false
+                                  :else (do (update-view! view delta)
+                                            (recur (api/take! sub 10)))))]
+                (when continue? (recur))))))
+        (finally (async/close! done))))
     {:stop stop :done done}))
 
 (defrecord View [sub view stop-chan done-chan]
