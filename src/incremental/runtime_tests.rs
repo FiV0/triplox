@@ -406,3 +406,45 @@ async fn cleanup_failure_does_not_fail_other_dispatches() {
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn registration_panics_remove_storage_after_unwinding() {
+    let mut fixture = Fixture::new(1, 1);
+    for panic_during_build in [true, false] {
+        let handle = fixture.inner.allocate_query_id();
+        let error = fixture
+            .inner
+            .prepare_query(handle, move |storage| {
+                std::fs::create_dir(storage)?;
+                assert!(!panic_during_build, "injected construction panic");
+                let (started, _) = mpsc::unbounded_channel();
+                let mut probe = Probe {
+                    started,
+                    release: None,
+                    panic: true,
+                    storage: storage.to_path_buf(),
+                };
+                let rows = probe.apply(vec![Tup2(
+                    EncodedTriple {
+                        entity: vec![],
+                        attribute: 1,
+                        value: vec![],
+                    },
+                    1,
+                )])?;
+                Ok((probe, rows))
+            })
+            .await
+            .err()
+            .expect("registration should fail");
+        assert!(error
+            .downcast_ref::<tokio::task::JoinError>()
+            .unwrap()
+            .is_panic());
+        assert!(!fixture.inner.query_storage_path(handle).exists());
+    }
+    let (mut healthy, _) = fixture.query(None, false);
+    let tx_key = fixture.apply(1);
+    assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
+    fixture.finish().await;
+}
