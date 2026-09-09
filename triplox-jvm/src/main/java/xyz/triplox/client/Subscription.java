@@ -27,7 +27,7 @@ public final class Subscription implements AutoCloseable {
     private static final short INTERNAL_ERROR = 4000;
 
     private final TxKey registrationTxKey;
-    private volatile TxKey txKey;
+    private TxKey txKey;
     private final Closeable closeable;
     private final Thread reader;
     private final BlockingQueue<QueueEvent> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
