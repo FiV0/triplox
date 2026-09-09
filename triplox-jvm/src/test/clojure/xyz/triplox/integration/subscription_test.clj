@@ -49,19 +49,38 @@
 
 (def graph-nodes (mapv #(hash-map :db/id % :node/label %) [graph-a graph-b graph-c graph-d graph-e]))
 
+;; TODO remove this when something for #428 lands
 (def first-user-entity-id 8796093022208)
 (def user-entity-ids (range first-user-entity-id (+ first-user-entity-id 100)))
 
-(deftest subscribe-returns-tx-key-and-times-out
+(deftest subscribe-returns-registration-tx-key-and-times-out
   (with-open [sub (api/subscribe *conn* names-query)]
-    (is (some? (:tx-id (api/tx-key sub))))
+    (is (some? (:tx-id (api/registration-tx-key sub))))
+    (is (nil? (api/tx-key sub)))
     ;; No transaction after the subscription -> bounded take! times out.
-    (is (= ::api/timeout (api/take! sub 200)))))
+    (is (= ::api/timeout (api/take! sub 200)))
+    (is (nil? (api/tx-key sub)))))
 
-(deftest subscribe-receives-delta
+(deftest subscription-tx-key-tracks-consumed-deltas
+  (api/transact *conn* [{:name "Alice"}])
   (with-open [sub (api/subscribe *conn* names-query)]
-    (api/transact *conn* [{:name "Ivan"}])
-    (is (= [[["Ivan"] 1]] (take-delta! sub)))))
+    (let [registration (api/registration-tx-key sub)]
+      (is (nil? (api/tx-key sub)))
+      (is (= [[["Alice"] 1]] (api/take! sub)))
+      (is (= registration (api/tx-key sub)))
+      (doseq [name ["Ivan" "Petr"]]
+        (let [previous (api/tx-key sub)
+              tx (-> (api/transact *conn* [{:name name}])
+                     (select-keys [:tx-id :system-time]))]
+          (is (= previous (api/tx-key sub)))
+          (is (= [[[name] 1]] (api/take! sub 1000)))
+          (is (= tx (api/tx-key sub)))))
+      (let [consumed (api/tx-key sub)]
+        (is (= ::api/timeout (api/take! sub 200)))
+        (is (= consumed (api/tx-key sub)))
+        (.close sub)
+        (is (nil? (api/take! sub)))
+        (is (= consumed (api/tx-key sub)))))))
 
 (deftest retract-entity-emits-retraction
   (api/transact *conn* [{:name "Alice" :age 30}])

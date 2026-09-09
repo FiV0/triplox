@@ -37,7 +37,7 @@ public final class StreamingExample {
 
             // Subscribe at the latest indexed basis; closing the subscription unsubscribes.
             try (Subscription sub = node.subscribe("[:find ?name :where [?e :name ?name]]")) {
-                System.out.println("Subscribed at tx_id=" + sub.txKey().txId() + ".");
+                System.out.println("Subscribed at tx_id=" + sub.registrationTxKey().txId() + ".");
 
                 for (var name : new String[] {"alice", "bob", "carol"}) {
                     node.executeTx(list(new TxOp.Put(map(":name", name))));
@@ -50,6 +50,7 @@ public final class StreamingExample {
                         System.out.println("No more deltas.");
                         break;
                     }
+                    System.out.println("Consumed through tx_id=" + sub.txKey().txId() + ".");
                     for (Row row : delta.rows()) {
                         System.out.println("  " + row.values() + "  (weight " + row.weight() + ")");
                     }

@@ -12,11 +12,10 @@
                        '{:find [?e ?name]
                          :where [[?e :name ?name]]}))
 
-(tc/tx-key sub)
+(tc/registration-tx-key sub)
 ;; => {:tx-id 1,
 ;;     :system-time
 ;;     #object[java.time.Instant 0x7c107312 "2026-09-02T12:31:24.534987Z"]}
-
 
 ;; Transact a name; the subscription receives a delta.
 ;; `take!` blocks for the next delta to arrive.

@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     let mut sub = node
         .subscribe("[:find ?name :where [?e :name ?name]]")
         .await?;
-    println!("Subscribed at tx_id={}.", sub.tx_key().tx_id);
+    println!("Subscribed at tx_id={}.", sub.registration_tx_key().tx_id);
 
     // Transact three names; each produces a delta on the subscription.
     for name in ["alice", "bob", "carol"] {
@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
     for _ in 0..3 {
         match sub.next().await {
             Some(Ok(delta)) => {
+                println!("Consumed through {:?}.", sub.tx_key().unwrap());
                 for (row, weight) in delta.rows {
                     println!("  {row:?}  (weight {weight})");
                 }

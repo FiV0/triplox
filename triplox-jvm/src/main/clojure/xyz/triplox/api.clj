@@ -90,10 +90,17 @@
        (.isDone ^Subscription sub) nil
        :else ::timeout))))
 
-(defn tx-key
-  "The registration tx-key of a subscription, as a map."
+(defn registration-tx-key
+  "The immutable registration tx-key of a subscription."
   [^Subscription sub]
-  (let [b (.txKey ^Subscription sub)]
+  (let [b (.registrationTxKey sub)]
+    {:tx-id (.txId b)
+     :system-time (.systemTime b)}))
+
+(defn tx-key
+  "The latest consumed delta's tx-key, or nil before any delta is consumed."
+  [^Subscription sub]
+  (when-let [b (.txKey sub)]
     {:tx-id (.txId b)
      :system-time (.systemTime b)}))
 

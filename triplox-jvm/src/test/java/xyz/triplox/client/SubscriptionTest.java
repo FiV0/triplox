@@ -30,6 +30,7 @@ class SubscriptionTest {
             assertEquals(4000, Short.toUnsignedInt(ex.code()));
             assertTrue(ex.getMessage().contains("subscription stream failed"));
             assertNotNull(ex.getCause());
+            assertNull(sub.txKey());
         }
     }
 
@@ -66,10 +67,12 @@ class SubscriptionTest {
             var delta = sub.poll(5, TimeUnit.SECONDS);
             assertNotNull(delta, "expected queued delta before terminal error");
             assertEquals("Alice", delta.rows().getFirst().values().getFirst());
+            assertEquals(delta.txKey(), sub.txKey());
 
             var ex = assertThrows(TriploxException.class, () -> sub.poll(5, TimeUnit.SECONDS));
             assertEquals(4000, Short.toUnsignedInt(ex.code()));
             assertTrue(ex.getMessage().contains("boom"));
+            assertEquals(delta.txKey(), sub.txKey());
         }
     }
 
@@ -81,6 +84,7 @@ class SubscriptionTest {
 
             assertNull(delta);
             assertTrue(sub.isDone());
+            assertNull(sub.txKey());
         }
     }
 
@@ -102,6 +106,7 @@ class SubscriptionTest {
 
             assertTrue(sub.isDone());
             assertNull(sub.poll(5, TimeUnit.SECONDS));
+            assertEquals(sampleBasis(), sub.txKey());
         }
     }
 
