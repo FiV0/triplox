@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
+use std::time::Duration;
 
 use crate::partition::tx_eid_from_tx_id;
 use anyhow::{anyhow, Context, Error, Result};
@@ -40,6 +41,7 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 struct IncrementalQueryOptions {
     inbox_capacity: NonZeroUsize,
     max_concurrent_steps: NonZeroUsize,
+    retire_timeout: Duration,
 }
 
 impl Default for IncrementalQueryOptions {
@@ -47,6 +49,7 @@ impl Default for IncrementalQueryOptions {
         Self {
             inbox_capacity: NonZeroUsize::new(256).unwrap(),
             max_concurrent_steps: thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+            retire_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -93,6 +96,17 @@ pub(crate) struct IncrementalQueryDelta {
 
 type ServiceResult<T> = Result<T>;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RetirementTimeout {
+    #[error("Incremental query {handle} unregister timed out after {timeout:?}; cleanup continues in the background")]
+    Unregister {
+        handle: IncrementalQueryHandle,
+        timeout: Duration,
+    },
+    #[error("Incremental query shutdown timed out after {timeout:?}; cleanup continues in the background")]
+    Shutdown { timeout: Duration },
+}
+
 enum IncrementalCommand {
     Register {
         plan: Box<IncrementalQueryPlan>,
@@ -122,6 +136,7 @@ pub(crate) struct IncrementalQueryService {
     cancel: CancellationToken,
     cdc_task: Arc<StdMutex<Option<JoinHandle<Result<()>>>>>,
     registration_gate: Arc<Mutex<()>>,
+    retire_timeout: Duration,
 }
 
 // The two result levels in this service have two different meanings.
@@ -179,6 +194,7 @@ impl IncrementalQueryService {
             cancel,
             cdc_task: Arc::new(StdMutex::new(None)),
             registration_gate: Arc::new(Mutex::new(())),
+            retire_timeout: options.retire_timeout,
         }
     }
 
@@ -264,7 +280,13 @@ impl IncrementalQueryService {
         self.commands
             .send(IncrementalCommand::Unregister { handle, response })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")?
+        tokio::time::timeout(self.retire_timeout, result)
+            .await
+            .map_err(|_| RetirementTimeout::Unregister {
+                handle,
+                timeout: self.retire_timeout,
+            })?
+            .context("Incremental query service stopped")?
     }
 
     pub(crate) async fn apply_triples(
@@ -288,16 +310,31 @@ impl IncrementalQueryService {
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + self.retire_timeout;
         self.cancel.cancel();
-        let cdc_result = self.await_cdc_task().await;
+        let cdc_result = tokio::time::timeout_at(deadline, self.await_cdc_task())
+            .await
+            .map_err(|_| {
+                RetirementTimeout::Shutdown {
+                    timeout: self.retire_timeout,
+                }
+                .into()
+            })
+            .and_then(|result| result);
+        // Request cleanup even when waiting for CDC used the entire deadline.
         let (response, result) = oneshot::channel();
         let service_result = match self
             .commands
             .send(IncrementalCommand::Shutdown { response })
         {
-            Ok(()) => match result.await {
-                Ok(result) => result,
-                Err(err) => Err(err).context("Incremental query service stopped"),
+            Ok(()) => match tokio::time::timeout_at(deadline, result).await {
+                Ok(result) => result
+                    .context("Incremental query service stopped")
+                    .and_then(|result| result),
+                Err(_) => Err(RetirementTimeout::Shutdown {
+                    timeout: self.retire_timeout,
+                }
+                .into()),
             },
             Err(_) => Err(anyhow!("Incremental query service stopped")),
         };
@@ -358,7 +395,9 @@ impl IncrementalQueryServiceInner {
     fn retire(&mut self, completion: Completion) -> Result<()> {
         if let Some(query) = self.queries.remove(&completion.handle) {
             if let Some(response) = query.unregister {
-                let _ = response.send(completion.cleanup);
+                if let Err(cleanup) = response.send(completion.cleanup) {
+                    return cleanup;
+                }
                 return Ok(());
             }
         }
@@ -821,6 +860,7 @@ mod tests {
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
                 max_concurrent_steps: NonZeroUsize::MIN,
+                ..IncrementalQueryOptions::default()
             },
         );
         let basis = test_tx_key_with_tx_id(1000);

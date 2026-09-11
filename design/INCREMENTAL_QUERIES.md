@@ -428,8 +428,16 @@ in that order. Unregister waits for cleanup without blocking the dispatcher;
 automatic cleanup failures are logged. Dropped receivers are detected even when
 no further transactions arrive.
 
-Shutdown cancels workers, waits for in-flight applies and cleanup, then releases
-the service runtime. There are no execution timeouts or forced circuit kills.
+Unregister and shutdown wait up to 10 seconds and return an explicit
+`RetirementTimeout` error if retirement has not finished. The deadline includes
+waiting for the dispatcher; shutdown uses one deadline for both CDC and worker
+cleanup and requests cleanup even if CDC exhausts that deadline.
+
+Timeouts only stop the caller's wait. The service runtime and retiring workers
+remain alive until in-flight applies and cleanup finish. Storage stays in place
+until circuit destruction completes, and late cleanup failures are logged.
+There are no execution timeouts or forced circuit kills; a circuit that never
+returns retains its runtime resources and storage.
 
 ---
 
@@ -444,6 +452,7 @@ TOML settings:
   backpressure to its own worker.
 - Concurrent live applies are limited to `available_parallelism()`, falling back
   to one. A semaphore bounds blocking jobs; waiting for output holds no permit.
+- `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
 - The service runtime has two async worker threads and a shared blocking pool.
   There is no additional dedicated driver thread per query. DBSP still owns its
   per-circuit runtime threads; sharing those is separate work.
