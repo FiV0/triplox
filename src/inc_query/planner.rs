@@ -73,8 +73,9 @@ struct PendingDescriptor<'a> {
 
 fn order_descriptors<'a>(
     descriptors: &'a [Descriptor],
-    initial_grounded: &[Variable],
+    incoming_vars: Option<&[Variable]>,
 ) -> Result<Vec<&'a Descriptor>> {
+    let initial_grounded = incoming_vars.unwrap_or_default();
     let mut ordered = Vec::with_capacity(descriptors.len());
     let mut grounded = initial_grounded.iter().cloned().collect::<HashSet<_>>();
     let mut remaining = descriptors
@@ -90,10 +91,13 @@ fn order_descriptors<'a>(
             .iter()
             .enumerate()
             .filter(|(_, descriptor)| {
-                descriptor
-                    .required_variables
-                    .iter()
-                    .all(|variable| grounded.contains(variable))
+                (incoming_vars.is_some()
+                    || !ordered.is_empty()
+                    || !matches!(descriptor.descriptor.kind, DescriptorKind::Not { .. }))
+                    && descriptor
+                        .required_variables
+                        .iter()
+                        .all(|variable| grounded.contains(variable))
             })
             .max_by_key(|(index, descriptor)| {
                 let shared = descriptor
@@ -110,6 +114,13 @@ fn order_descriptors<'a>(
             let descriptor = remaining
                 .first()
                 .expect("non-empty remaining descriptors must have a first descriptor");
+            if descriptor
+                .required_variables
+                .iter()
+                .all(|variable| grounded.contains(variable))
+            {
+                bail!("Cannot plan `not` without a positive relation");
+            }
             let missing = descriptor
                 .required_variables
                 .iter()
@@ -215,7 +226,17 @@ fn plan_difference(
         .cloned()
         .collect::<Vec<_>>();
     let negative = plan_scope(scope, Some(key_vars.clone()))?;
-    debug_assert_eq!(negative.output_vars, key_vars);
+    let negative = if negative.output_vars == key_vars {
+        negative
+    } else {
+        RelPlan {
+            incoming_vars: negative.incoming_vars.clone(),
+            output_vars: key_vars.clone(),
+            kind: RelPlanKind::Chain {
+                children: vec![negative],
+            },
+        }
+    };
 
     Ok(RelPlan {
         incoming_vars: Some(incoming_vars.clone()),
@@ -246,8 +267,7 @@ pub(super) fn plan_scope(
     scope: &ScopeDescriptor,
     incoming_vars: Option<Vec<Variable>>,
 ) -> Result<RelPlan> {
-    let initial_grounded = incoming_vars.as_deref().unwrap_or_default();
-    let ordered = order_descriptors(&scope.descriptors, initial_grounded)?;
+    let ordered = order_descriptors(&scope.descriptors, incoming_vars.as_deref())?;
     if ordered.is_empty() {
         bail!("Incremental queries require at least one triple pattern");
     }
@@ -316,7 +336,7 @@ mod tests {
             }),
         };
 
-        let error = order_descriptors(&[descriptor], &[]).unwrap_err();
+        let error = order_descriptors(&[descriptor], None).unwrap_err();
 
         assert!(error.to_string().contains("?missing"));
         assert!(error.to_string().contains("Insufficient bindings"));

@@ -558,39 +558,205 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_entity_placeholder() {
+    async fn test_query_placeholders_match_explicit_variables() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
-        let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?name :where [_ :name ?name]]")
+        for (entity, name, age) in [(100, "Alice", 30_i64), (101, "Alice", 40), (102, "Bob", 50)] {
+            node.execute_tx(vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(entity),
+                    attribute: kw!(:name),
+                    value: name.into(),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(entity),
+                    attribute: kw!(:age),
+                    value: age.into(),
+                },
+            ])
             .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("entity position"),
-            "unexpected error: {}",
-            err
-        );
+            .unwrap();
+        }
+        let db = node.db().await.unwrap();
+        for (query, explicit) in [
+            (
+                "[:find ?name :where [_ :name ?name]]",
+                "[:find ?name :where [?entity :name ?name]]",
+            ),
+            (
+                "[:find ?e :where [?e :name _]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?e :where [?e :name]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?name :where [_ :name ?name] [_ :age _]]",
+                "[:find ?name :where [?entity :name ?name] [?other :age ?age]]",
+            ),
+            (
+                "[:find (count ?name) :where [_ :name ?name]]",
+                "[:find (count ?name) :where [?entity :name ?name]]",
+            ),
+        ] {
+            let mut actual = db.query(query).await.unwrap();
+            let mut expected = db.query(explicit).await.unwrap();
+            assert!(!expected.is_empty(), "{explicit}");
+            sort_query_rows(&mut actual);
+            sort_query_rows(&mut expected);
+            assert_eq!(actual, expected, "{query}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_value_placeholder() {
+    async fn test_query_placeholder_rewrite_preserves_validation() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
         let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?e :where [?e :name _]]")
-            .await
-            .unwrap_err();
+        for (query, error) in [
+            (
+                "[:find ?e :where (or [?e :name ?name] [?e :age ?age])]",
+                "different free variables",
+            ),
+            (
+                "[:find ?e :where [?e :name ?name] (not [?e :age ?age])]",
+                "in NOT clause is not bound by positive clauses",
+            ),
+            (
+                "[:find ?e :where [?e _ _]]",
+                "Attribute position must be a keyword or entid",
+            ),
+            (
+                "[:find ?e :where [?e :name _ ?tx]]",
+                "Transaction positions are not supported",
+            ),
+            (
+                "[:find ?e :where (or [?e :name ?_internal_99] [?e :age ?age])]",
+                "different free variables",
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or-join [?e] [?e :tags _])]",
+                "do not support explicit or-join",
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not-join [?e] [?e :tags _])]",
+                "do not support explicit not-join",
+            ),
+        ] {
+            let err = db.query(query).await.unwrap_err();
+            assert!(err.to_string().contains(error), "{query}: {err}");
+        }
+    }
 
-        assert!(
-            err.to_string().contains("value position"),
-            "unexpected error: {}",
-            err
-        );
+    async fn node_with_local_placeholder_facts() -> Node<MemoryLog> {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let mut facts = Vec::new();
+        for (entity, name) in [(100, "Alice"), (101, "Bob"), (102, "Carol")] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:name),
+                value: name.into(),
+            });
+        }
+        for (entity, age) in [(100, 30_i64), (101, 40)] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:age),
+                value: age.into(),
+            });
+        }
+        for (entity, tag) in [(100, "red"), (100, "blue"), (101, "red")] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:tags),
+                value: tag.into(),
+            });
+        }
+        execute_and_flush(&node, facts).await;
+        node
+    }
+
+    fn local_placeholder_cases() -> Vec<(&'static str, Vec<Vec<DataType>>)> {
+        let entities = |ids: &[i64]| ids.iter().map(|id| vec![DataType::Long(*id)]).collect();
+        vec![
+            (
+                "[:find ?e :where [?e :name _] (not [?e :tags _])]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where (or [?e :tags _] [?e :age _])]",
+                entities(&[100, 101]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or [?e :tags _] (and [?e :age _] [_ :tags _]))]",
+                entities(&[100, 101]),
+            ),
+            (
+                "[:find ?e :where (not [?e :tags _]) [?e :name _]]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not (or [?e :tags _] [?e :age _]))]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where (or (and [?e :name _] (not [?e :tags _])) [?e :age _])]",
+                entities(&[100, 101, 102]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not [?e :name _] (not [?e :tags _]))]",
+                entities(&[100, 101]),
+            ),
+            (
+                r#"[:find ?e :where (not [_ :tags "missing"]) [?e :name _]]"#,
+                entities(&[100, 101, 102]),
+            ),
+            (
+                "[:find ?e :where (not [_ :tags _]) [?e :name _]]",
+                entities(&[]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or [_ :tags _] [_ :age _])]",
+                entities(&[100, 101, 102]),
+            ),
+            (
+                r#"[:find ?e :where [?e :name "missing"] (or [_ :tags _] [_ :age _])]"#,
+                entities(&[]),
+            ),
+            (
+                r#"[:find ?e :where [?e :name "missing"] (not [_ :tags "missing"])]"#,
+                entities(&[]),
+            ),
+            (
+                "[:find ?tag :where (or [_ :tags ?tag] (and [_ :tags ?tag] [_ :age _]))]",
+                vec![vec!["blue".into()], vec!["red".into()]],
+            ),
+            (
+                "[:find (count ?e) :where (or [?e :tags _] [?e :age _])]",
+                vec![vec![DataType::Long(2)]],
+            ),
+            (
+                "[:find (count ?e) :where [?e :name _] (not [?e :tags _])]",
+                vec![vec![DataType::Long(1)]],
+            ),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_local_placeholders() {
+        let node = node_with_local_placeholder_facts().await;
+        let db = node.db().await.unwrap();
+        for (query, mut expected) in local_placeholder_cases() {
+            let mut actual = db
+                .query(query)
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            sort_query_rows(&mut expected);
+            sort_query_rows(&mut actual);
+            assert_eq!(actual, expected, "{query}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2522,37 +2688,141 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_incremental_query_rejects_entity_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
+    async fn test_incremental_local_placeholder_snapshots() {
+        let node = node_with_local_placeholder_facts().await;
+        let basis = node.db().await.unwrap().tx_key();
+        for (query, mut expected) in local_placeholder_cases() {
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            let mut rows = Vec::new();
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            sort_query_rows(&mut expected);
+            assert_eq!(rows, expected, "{query}");
+        }
+    }
 
-        let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in entity position"),
-            "unexpected error: {}",
-            err
-        );
+    fn local_placeholder_updates() -> Vec<Vec<TxOp>> {
+        let retract = |entity, attribute, value| TxOp::Retract {
+            entity: EntityRef::Id(entity),
+            attribute,
+            value,
+        };
+        let add = |entity, attribute, value| TxOp::Add {
+            entity: EntityRef::Id(entity),
+            attribute,
+            value,
+        };
+        vec![
+            vec![retract(100, kw!(:tags), "blue".into())],
+            vec![retract(101, kw!(:name), "Bob".into())],
+            vec![add(101, kw!(:name), "Robert".into())],
+            vec![retract(101, kw!(:tags), "red".into())],
+            vec![retract(100, kw!(:tags), "red".into())],
+            vec![
+                retract(100, kw!(:age), 30_i64.into()),
+                retract(101, kw!(:age), 40_i64.into()),
+            ],
+            vec![
+                retract(100, kw!(:name), "Alice".into()),
+                retract(101, kw!(:name), "Robert".into()),
+                retract(102, kw!(:name), "Carol".into()),
+            ],
+            vec![add(100, kw!(:tags), "green".into())],
+            vec![add(100, kw!(:name), "Alice".into())],
+            vec![retract(100, kw!(:tags), "green".into())],
+        ]
     }
 
     #[tokio::test]
-    async fn test_register_incremental_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
+    async fn test_incremental_local_placeholder_updates() {
+        for (query, _) in local_placeholder_cases() {
+            let node = node_with_local_placeholder_facts().await;
+            let basis = node.db().await.unwrap().tx_key();
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            let mut rows = Vec::new();
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            for updates in local_placeholder_updates() {
+                let basis = execute_and_flush(&node, updates).await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query)
+                    .await;
+            }
+            assert!(
+                try_recv_incremental_delta(&mut subscription)
+                    .await
+                    .is_none(),
+                "unexpected remaining delta for {query}"
+            );
+        }
+    }
 
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"), &[])
-            .await
-            .unwrap_err();
+    #[tokio::test]
+    async fn test_incremental_placeholders_match_explicit_variables() {
+        for (query, explicit) in [
+            (
+                "[:find ?name :where [_ :name ?name]]",
+                "[:find ?name :where [?entity :name ?name]]",
+            ),
+            (
+                "[:find ?e :where [?e :name _]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?name :where [_ :name ?name] [_ :age _]]",
+                "[:find ?name :where [?entity :name ?name] [?other :age ?age]]",
+            ),
+            (
+                "[:find (count ?name) :where [_ :name ?name]]",
+                "[:find (count ?name) :where [?entity :name ?name]]",
+            ),
+        ] {
+            let node = Node::memory_node().await;
+            define_test_schema(&node).await;
+            flush_wal(&node).await;
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap();
+            let mut rows = Vec::new();
+            let mut additions = Vec::new();
+            for (entity, name, age) in
+                [(100, "Alice", 30_i64), (101, "Alice", 40), (102, "Bob", 50)]
+            {
+                additions.extend([
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:name),
+                        value: name.into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:age),
+                        value: age.into(),
+                    },
+                ]);
+            }
+            let basis = execute_and_flush(&node, additions).await;
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, explicit)
+                .await;
 
-        assert!(
-            err.to_string().contains("Placeholders in value position"),
-            "unexpected error: {}",
-            err
-        );
+            for entity in [100, 101] {
+                let basis = execute_and_flush(
+                    &node,
+                    vec![TxOp::Retract {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:name),
+                        value: "Alice".into(),
+                    }],
+                )
+                .await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, explicit)
+                    .await;
+            }
+        }
     }
 
     #[tokio::test]

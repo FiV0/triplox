@@ -10,7 +10,9 @@ use crate::codec::Encode;
 use crate::expr::{expr_variables, Expr};
 use crate::incremental::EncodedValue;
 use crate::ops::DataType;
-use crate::query::{convert_predicate, convert_where_fn, non_integer_constant_to_datatype};
+use crate::query::{
+    convert_predicate, convert_where_fn, exposed_variables, non_integer_constant_to_datatype,
+};
 use crate::schema::Schema;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,7 +62,7 @@ fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
             PatternSlot::Constant(DataType::Keyword(ident.as_ref().clone()).encode())
         }
         PatternNonValuePlace::Placeholder => {
-            unreachable!("entity placeholders are rejected before planning")
+            unreachable!("entity placeholders are rewritten before planning")
         }
     }
 }
@@ -81,7 +83,7 @@ fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
                 .encode(),
         )),
         PatternValuePlace::Placeholder => {
-            unreachable!("value placeholders are rejected before planning")
+            unreachable!("value placeholders are rewritten before planning")
         }
     }
 }
@@ -162,7 +164,11 @@ fn describe_function(function: &WhereFn) -> Result<Descriptor> {
     })
 }
 
-fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descriptor> {
+fn describe_where_clause(
+    clause: &WhereClause,
+    schema: &Schema,
+    generated_variables: &HashSet<Variable>,
+) -> Result<Descriptor> {
     match clause {
         WhereClause::Pattern(pattern) => {
             let pattern = pattern_descriptor(pattern, schema)?;
@@ -175,50 +181,63 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
         }
         WhereClause::Pred(predicate) => describe_predicate(predicate),
         WhereClause::WhereFn(function) => describe_function(function),
-        WhereClause::NotJoin(not) => describe_not(not, schema),
-        WhereClause::OrJoin(or) => describe_or(or, schema),
+        WhereClause::NotJoin(not) => describe_not(not, schema, generated_variables),
+        WhereClause::OrJoin(or) => describe_or(or, schema, generated_variables),
         WhereClause::TypeAnnotation(_) | WhereClause::RuleExpr => {
             unreachable!("unsupported clauses are rejected before planning")
         }
     }
 }
 
-fn describe_not(not: &NotJoin, schema: &Schema) -> Result<Descriptor> {
-    let scope = describe_where_clauses(&not.clauses, schema)?;
+fn describe_not(
+    not: &NotJoin,
+    schema: &Schema,
+    generated_variables: &HashSet<Variable>,
+) -> Result<Descriptor> {
+    let scope = describe_where_clauses(&not.clauses, schema, generated_variables)?;
     Ok(Descriptor {
-        variables: scope.variables.clone(),
+        variables: exposed_variables(scope.variables.clone(), generated_variables),
         groundable: Vec::new(),
         kind: DescriptorKind::Not { scope },
     })
 }
 
-fn describe_or_branch(branch: &OrWhereClause, schema: &Schema) -> Result<ScopeDescriptor> {
+fn describe_or_branch(
+    branch: &OrWhereClause,
+    schema: &Schema,
+    generated_variables: &HashSet<Variable>,
+) -> Result<ScopeDescriptor> {
     match branch {
         OrWhereClause::Clause(clause) => {
-            describe_where_clauses(std::slice::from_ref(clause), schema)
+            describe_where_clauses(std::slice::from_ref(clause), schema, generated_variables)
         }
-        OrWhereClause::And(clauses) => describe_where_clauses(clauses, schema),
+        OrWhereClause::And(clauses) => describe_where_clauses(clauses, schema, generated_variables),
     }
 }
 
-fn describe_or(or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
+fn describe_or(
+    or: &OrJoin,
+    schema: &Schema,
+    generated_variables: &HashSet<Variable>,
+) -> Result<Descriptor> {
     let branches = or
         .clauses
         .iter()
-        .map(|branch| describe_or_branch(branch, schema))
+        .map(|branch| describe_or_branch(branch, schema, generated_variables))
         .collect::<Result<Vec<_>>>()?;
     let first = branches
         .first()
         .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
-    let variables = first.variables.clone();
+    let variables = exposed_variables(first.variables.clone(), generated_variables);
     let groundable = first
         .groundable
         .iter()
         .filter(|variable| {
-            branches
-                .iter()
-                .skip(1)
-                .all(|branch| branch.groundable.contains(variable))
+            !generated_variables.contains(*variable)
+                && branches
+                    .iter()
+                    .skip(1)
+                    .all(|branch| branch.groundable.contains(variable))
         })
         .cloned()
         .collect();
@@ -233,10 +252,11 @@ fn describe_or(or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
 pub(super) fn describe_where_clauses(
     clauses: &[WhereClause],
     schema: &Schema,
+    generated_variables: &HashSet<Variable>,
 ) -> Result<ScopeDescriptor> {
     let descriptors = clauses
         .iter()
-        .map(|clause| describe_where_clause(clause, schema))
+        .map(|clause| describe_where_clause(clause, schema, generated_variables))
         .collect::<Result<Vec<_>>>()?;
     let variables = ordered_union(
         descriptors
@@ -266,7 +286,8 @@ mod tests {
     #[test]
     fn triple_variables_are_all_groundable_in_encounter_order() {
         let query = parse_query("[:find ?e ?name :where [?e :name ?name]]");
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
 
         assert_eq!(scope.variables, vec!["?e".to_var(), "?name".to_var()]);
         assert_eq!(scope.groundable, scope.variables);
@@ -281,7 +302,8 @@ mod tests {
     #[test]
     fn scope_metadata_is_the_ordered_union_of_its_descriptors() {
         let query = parse_query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
 
         assert_eq!(
             scope.variables,
@@ -293,7 +315,8 @@ mod tests {
     #[test]
     fn or_metadata_uses_first_branch_order_for_groundable_intersection() {
         let query = parse_query("[:find ?e ?v :where (or [?e :name ?v] [?v :follows ?e])]");
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
         let descriptor = &scope.descriptors[0];
 
         assert_eq!(descriptor.variables, vec!["?e".to_var(), "?v".to_var()]);
@@ -308,7 +331,8 @@ mod tests {
     #[test]
     fn not_metadata_mentions_variables_without_grounding_them() {
         let query = parse_query("[:find ?e :where [?e :name ?name] (not [?e :age ?age])]");
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
         let descriptor = &scope.descriptors[1];
 
         assert_eq!(descriptor.variables, vec!["?e".to_var(), "?age".to_var()]);
@@ -323,7 +347,8 @@ mod tests {
     #[test]
     fn predicate_metadata_mentions_variables_without_grounding_them() {
         let query = parse_query("[:find ?age :where [?e :age ?age] [(< ?age 30)]]");
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
         let descriptor = &scope.descriptors[1];
 
         assert_eq!(descriptor.variables, vec!["?age".to_var()]);
@@ -342,7 +367,8 @@ mod tests {
               [(+ ?age 1) ?next]
               [(+ ?next 1) ?next]]",
         );
-        let scope = describe_where_clauses(&query.where_clauses, &test_schema()).unwrap();
+        let scope =
+            describe_where_clauses(&query.where_clauses, &test_schema(), &HashSet::new()).unwrap();
 
         let new_result = &scope.descriptors[0];
         assert_eq!(

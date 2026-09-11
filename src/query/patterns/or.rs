@@ -50,14 +50,11 @@ where
             "OR incoming variables must be OR variables"
         );
 
-        let expected: HashSet<&Variable> = variables.iter().collect();
         for (branch_index, branch_plan) in branch_plans.iter().enumerate() {
             ensure!(
-                branch_plan
-                    .output_variables()
+                variables
                     .iter()
-                    .collect::<HashSet<_>>()
-                    == expected,
+                    .all(|variable| branch_plan.output_variables().contains(variable)),
                 "OR branch {branch_index} does not produce the OR variable set"
             );
             ensure!(
@@ -103,7 +100,7 @@ where
                 })?;
             let branch = GenericJoinEngine::execute(&stages, BindingBag::unit())
                 .with_context(|| format!("OR pattern {} failed in branch {branch_index}", self.id))?
-                .reorder(&self.variables)?;
+                .project(&self.variables)?;
             result = result.distinct_union(&branch)?;
         }
         Ok(result)
