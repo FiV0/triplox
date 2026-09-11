@@ -1,7 +1,5 @@
 //! Incremental-query planning helpers.
 
-use std::collections::HashSet;
-
 use anyhow::{bail, Result};
 use edn::query::{
     Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, Variable, WhereClause,
@@ -33,11 +31,16 @@ impl IncrementalQueryPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    let query = rewrite_query(query).query;
-    reject_unsupported_query_shape(&query)?;
-    validate_query(&query, &[], &HashSet::new())?;
+    let rewritten = rewrite_query(query);
+    let query = &rewritten.query;
+    reject_unsupported_query_shape(query)?;
+    validate_query(query, &[], &rewritten.generated_variables)?;
 
-    let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
+    let descriptors = descriptor::describe_where_clauses(
+        &query.where_clauses,
+        schema,
+        &rewritten.generated_variables,
+    )?;
     let where_plan = planner::plan_scope(&descriptors, None)?;
     let var_index = build_var_index(&where_plan.output_vars);
     let find_plan = compile_find_plan(&query.find_spec, &var_index)?;
@@ -915,13 +918,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_placeholder_variables_in_or_and_not() {
+    fn rejects_ordinary_local_variables_in_or_and_not() {
         assert_plan_err(
-            "[:find ?e :where (or [?e :name _] [?e :age _])]",
+            "[:find ?e :where (or [?e :name ?name] [?e :age ?age])]",
             "different free variables",
         );
         assert_plan_err(
-            "[:find ?e :where [?e :name ?name] (not [?e :age _])]",
+            "[:find ?e :where [?e :name ?name] (not [?e :age ?age])]",
             "in NOT clause is not bound by positive clauses",
         );
     }

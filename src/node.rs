@@ -2688,6 +2688,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_incremental_local_placeholder_snapshots() {
+        let node = node_with_local_placeholder_facts().await;
+        let basis = node.db().await.unwrap().tx_key();
+        for (query, mut expected) in local_placeholder_cases() {
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            let mut rows = Vec::new();
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            sort_query_rows(&mut expected);
+            assert_eq!(rows, expected, "{query}");
+        }
+    }
+
+    fn local_placeholder_updates() -> Vec<Vec<TxOp>> {
+        let retract = |entity, attribute, value| TxOp::Retract {
+            entity: EntityRef::Id(entity),
+            attribute,
+            value,
+        };
+        let add = |entity, attribute, value| TxOp::Add {
+            entity: EntityRef::Id(entity),
+            attribute,
+            value,
+        };
+        vec![
+            vec![retract(100, kw!(:tags), "blue".into())],
+            vec![retract(101, kw!(:name), "Bob".into())],
+            vec![add(101, kw!(:name), "Robert".into())],
+            vec![retract(101, kw!(:tags), "red".into())],
+            vec![retract(100, kw!(:tags), "red".into())],
+            vec![
+                retract(100, kw!(:age), 30_i64.into()),
+                retract(101, kw!(:age), 40_i64.into()),
+            ],
+            vec![
+                retract(100, kw!(:name), "Alice".into()),
+                retract(101, kw!(:name), "Robert".into()),
+                retract(102, kw!(:name), "Carol".into()),
+            ],
+            vec![add(100, kw!(:tags), "green".into())],
+            vec![add(100, kw!(:name), "Alice".into())],
+            vec![retract(100, kw!(:tags), "green".into())],
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_incremental_local_placeholder_updates() {
+        for (query, _) in local_placeholder_cases() {
+            let node = node_with_local_placeholder_facts().await;
+            let basis = node.db().await.unwrap().tx_key();
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            let mut rows = Vec::new();
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            for updates in local_placeholder_updates() {
+                let basis = execute_and_flush(&node, updates).await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query)
+                    .await;
+            }
+            assert!(
+                try_recv_incremental_delta(&mut subscription)
+                    .await
+                    .is_none(),
+                "unexpected remaining delta for {query}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_incremental_placeholders_match_explicit_variables() {
         for (query, explicit) in [
             (

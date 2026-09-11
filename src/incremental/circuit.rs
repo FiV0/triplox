@@ -600,6 +600,60 @@ mod tests {
     }
 
     #[test]
+    fn local_not_placeholders_preserve_multiple_supports_and_outer_changes() {
+        for query in [
+            "[:find ?e :where [?e :name _] (not [?e :age _])]",
+            "[:find ?e :where (not [_ :age _]) [?e :name _]]",
+            "[:find ?e :where [?e :name _] (not (or [?e :age _] [?e :follows _]))]",
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let row = vec![DataType::Long(100)];
+            let alice = triple(100, NAME, "Alice".into());
+            let bob = triple(100, NAME, "Bob".into());
+            let age30 = triple(100, AGE, DataType::Long(30));
+            let age40 = triple(100, AGE, DataType::Long(40));
+            for (batch, expected) in [
+                (vec![Tup2(alice.clone(), 1)], vec![(row.clone(), 1)]),
+                (
+                    vec![Tup2(age30.clone(), 1), Tup2(age40.clone(), 1)],
+                    vec![(row.clone(), -1)],
+                ),
+                (vec![Tup2(age30, -1)], vec![]),
+                (vec![Tup2(alice, -1)], vec![]),
+                (vec![Tup2(bob.clone(), 1)], vec![]),
+                (vec![Tup2(age40, -1)], vec![(row.clone(), 1)]),
+                (vec![Tup2(bob, -1)], vec![(row, -1)]),
+            ] {
+                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+            }
+        }
+    }
+
+    #[test]
+    fn local_or_placeholders_retract_only_after_the_last_match() {
+        let storage = tempfile::tempdir().unwrap();
+        let query = "[:find ?e :where (or [?e :age _] [?e :follows _])]";
+        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let row = vec![DataType::Long(100)];
+        let age30 = triple(100, AGE, DataType::Long(30));
+        let age40 = triple(100, AGE, DataType::Long(40));
+        let follows = triple(100, FOLLOWS, DataType::Long(200));
+        for (batch, expected) in [
+            (vec![Tup2(age30.clone(), 1)], vec![(row.clone(), 1)]),
+            (
+                vec![Tup2(age40.clone(), 1), Tup2(follows.clone(), 1)],
+                vec![],
+            ),
+            (vec![Tup2(age30, -1)], vec![]),
+            (vec![Tup2(age40, -1)], vec![]),
+            (vec![Tup2(follows, -1)], vec![(row, -1)]),
+        ] {
+            assert_eq!(circuit.apply(batch).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn query_circuit_uses_file_backed_storage_root() {
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("query-1");
