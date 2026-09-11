@@ -46,6 +46,7 @@ impl Fixture {
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
                 max_concurrent_steps: NonZeroUsize::new(steps).unwrap(),
+                ..IncrementalQueryOptions::default()
             },
         );
         Self {
@@ -116,6 +117,21 @@ impl Fixture {
         while !self.inner.queries.is_empty() {
             self.retire().await;
         }
+    }
+
+    fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let service = IncrementalQueryService {
+            commands,
+            cdc_object_path: "/test_retirement".into(),
+            cdc_object_store: Arc::new(slatedb::object_store::memory::InMemory::new()),
+            cancel: self.inner.cancel.clone(),
+            cdc_task: Arc::new(StdMutex::new(None)),
+            registration_gate: Arc::new(Mutex::new(())),
+            retire_timeout: Duration::from_millis(50),
+        };
+        let dispatcher = tokio::spawn(self.inner.run(receiver));
+        (service, dispatcher, self._storage)
     }
 }
 
@@ -386,6 +402,118 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     dispatcher.await.unwrap();
     assert!(query.deltas.recv().await.is_none());
     assert!(!storage_path.exists());
+}
+
+#[tokio::test]
+async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing() {
+    let mut fixture = Fixture::new(4, 2);
+    let (release, gate) = sync_mpsc::channel();
+    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    let (mut healthy, _) = fixture.query(None, false);
+    fixture.apply(1);
+    started(&mut steps).await;
+    next(&mut healthy).await.unwrap();
+    let storage_path = fixture.inner.query_storage_path(query.handle);
+    let control = fixture.inner.queries[&query.handle].control.clone();
+    let (service, dispatcher, _storage) = fixture.start();
+
+    let error = tokio::time::timeout(Duration::from_secs(5), service.unregister(query.handle))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error.downcast_ref::<RetirementTimeout>(),
+        Some(RetirementTimeout::Unregister { handle, .. }) if *handle == query.handle));
+    assert!(control.stop.is_cancelled());
+    assert!(storage_path.exists());
+    let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    tx_key.tx_id += 2;
+    service
+        .apply_triples(
+            tx_key,
+            2,
+            vec![Tup2(
+                EncodedTriple {
+                    entity: vec![],
+                    attribute: 2,
+                    value: vec![],
+                },
+                1,
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
+
+    release.send(()).unwrap();
+    drop(service);
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!storage_path.exists());
+    assert!(query.deltas.recv().await.is_none());
+    assert!(steps.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
+    let mut fixture = Fixture::new(4, 1);
+    let (release, gate) = sync_mpsc::channel();
+    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    fixture.apply(1);
+    started(&mut steps).await;
+    let storage_path = fixture.inner.query_storage_path(query.handle);
+    let (service, dispatcher, _storage) = fixture.start();
+
+    let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<RetirementTimeout>(),
+        Some(RetirementTimeout::Shutdown { .. })
+    ));
+    assert!(!dispatcher.is_finished());
+    assert!(storage_path.exists());
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!storage_path.exists());
+    assert!(query.deltas.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
+    let mut fixture = Fixture::new(4, 1);
+    let (query, _) = fixture.query(None, false);
+    let storage_path = fixture.inner.query_storage_path(query.handle);
+    let (service, dispatcher, _storage) = fixture.start();
+    let (release, gate) = oneshot::channel();
+    let (finished, completion) = oneshot::channel();
+    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
+        let _ = gate.await;
+        let _ = finished.send(());
+        Ok(())
+    }));
+
+    let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<RetirementTimeout>(),
+        Some(RetirementTimeout::Shutdown { .. })
+    ));
+    // The dispatcher must finish even though CDC has not returned.
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!storage_path.exists());
+    release.send(()).unwrap();
+    completion.await.unwrap();
 }
 
 #[tokio::test]
