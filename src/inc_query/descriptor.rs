@@ -60,7 +60,7 @@ fn non_value_slot(place: &PatternNonValuePlace) -> PatternSlot {
             PatternSlot::Constant(DataType::Keyword(ident.as_ref().clone()).encode())
         }
         PatternNonValuePlace::Placeholder => {
-            unreachable!("entity placeholders are rejected before planning")
+            unreachable!("entity placeholders are rewritten before planning")
         }
     }
 }
@@ -81,7 +81,7 @@ fn value_slot(place: &PatternValuePlace) -> Result<PatternSlot> {
                 .encode(),
         )),
         PatternValuePlace::Placeholder => {
-            unreachable!("value placeholders are rejected before planning")
+            unreachable!("value placeholders are rewritten before planning")
         }
     }
 }

@@ -33,6 +33,7 @@ use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
+use crate::rewrite::rewrite_query;
 use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -739,8 +740,9 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    validate_query(query, args)?;
-    let logical_plan = build_logical_plan(query, args)?;
+    let query = rewrite_query(query);
+    validate_query(&query, args)?;
+    let logical_plan = build_logical_plan(&query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();
     let stages = logical_plan.materialize(db, None)?;
     let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;

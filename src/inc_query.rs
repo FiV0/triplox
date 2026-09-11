@@ -7,6 +7,7 @@ use edn::query::{
 
 use crate::query::{build_var_index, compile_find_plan, FindPlan};
 use crate::query_validation::validate_query;
+use crate::rewrite::rewrite_query;
 use crate::schema::Schema;
 
 mod descriptor;
@@ -30,8 +31,9 @@ impl IncrementalQueryPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    reject_unsupported_query_shape(query)?;
-    validate_query(query, &[])?;
+    let query = rewrite_query(query);
+    reject_unsupported_query_shape(&query)?;
+    validate_query(&query, &[])?;
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
     let where_plan = planner::plan_scope(&descriptors, None)?;
@@ -898,18 +900,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_entity_placeholder() {
-        assert_plan_err(
-            "[:find ?name :where [_ :name ?name]]",
-            "Placeholders in entity position",
+    fn plans_placeholders_as_independent_variables() {
+        let schema = test_schema();
+        let query = parse_query("[:find ?name :where [_ :name ?name] [_ :age _]]");
+        let explicit = parse_query(
+            "[:find ?name :where [?_internal_0 :name ?name] [?_internal_1 :age ?_internal_2]]",
+        );
+        assert_eq!(
+            plan_query(&query, &schema).unwrap(),
+            plan_query(&explicit, &schema).unwrap()
         );
     }
 
     #[test]
-    fn rejects_value_placeholder() {
+    fn rejects_placeholder_variables_in_or_and_not() {
         assert_plan_err(
-            "[:find ?e :where [?e :name _]]",
-            "Placeholders in value position",
+            "[:find ?e :where (or [?e :name _] [?e :age _])]",
+            "different free variables",
+        );
+        assert_plan_err(
+            "[:find ?e :where [?e :name ?name] (not [?e :age _])]",
+            "in NOT clause is not bound by positive clauses",
         );
     }
 

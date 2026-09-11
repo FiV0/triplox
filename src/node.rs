@@ -558,39 +558,83 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_entity_placeholder() {
+    async fn test_query_placeholders_match_explicit_variables() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
-        let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?name :where [_ :name ?name]]")
+        for (entity, name, age) in [(100, "Alice", 30_i64), (101, "Alice", 40), (102, "Bob", 50)] {
+            node.execute_tx(vec![
+                TxOp::Add {
+                    entity: EntityRef::Id(entity),
+                    attribute: kw!(:name),
+                    value: name.into(),
+                },
+                TxOp::Add {
+                    entity: EntityRef::Id(entity),
+                    attribute: kw!(:age),
+                    value: age.into(),
+                },
+            ])
             .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("entity position"),
-            "unexpected error: {}",
-            err
-        );
+            .unwrap();
+        }
+        let db = node.db().await.unwrap();
+        for (query, explicit) in [
+            (
+                "[:find ?name :where [_ :name ?name]]",
+                "[:find ?name :where [?entity :name ?name]]",
+            ),
+            (
+                "[:find ?e :where [?e :name _]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?e :where [?e :name]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?name :where [_ :name ?name] [_ :age _]]",
+                "[:find ?name :where [?entity :name ?name] [?other :age ?age]]",
+            ),
+            (
+                "[:find (count ?name) :where [_ :name ?name]]",
+                "[:find (count ?name) :where [?entity :name ?name]]",
+            ),
+        ] {
+            let mut actual = db.query(query).await.unwrap();
+            let mut expected = db.query(explicit).await.unwrap();
+            assert!(!expected.is_empty(), "{explicit}");
+            sort_query_rows(&mut actual);
+            sort_query_rows(&mut expected);
+            assert_eq!(actual, expected, "{query}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_value_placeholder() {
+    async fn test_query_placeholder_rewrite_preserves_validation() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
         let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?e :where [?e :name _]]")
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("value position"),
-            "unexpected error: {}",
-            err
-        );
+        for (query, error) in [
+            (
+                "[:find ?e :where (or [?e :name _] [?e :age _])]",
+                "different free variables",
+            ),
+            (
+                "[:find ?e :where [?e :name ?name] (not [?e :age _])]",
+                "in NOT clause is not bound by positive clauses",
+            ),
+            (
+                "[:find ?e :where [?e _ _]]",
+                "Attribute position must be a keyword or entid",
+            ),
+            (
+                "[:find ?e :where [?e :name _ ?tx]]",
+                "Transaction positions are not supported",
+            ),
+        ] {
+            let err = db.query(query).await.unwrap_err();
+            assert!(err.to_string().contains(error), "{query}: {err}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2522,37 +2566,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_incremental_query_rejects_entity_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
+    async fn test_incremental_placeholders_match_explicit_variables() {
+        for (query, explicit) in [
+            (
+                "[:find ?name :where [_ :name ?name]]",
+                "[:find ?name :where [?entity :name ?name]]",
+            ),
+            (
+                "[:find ?e :where [?e :name _]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?name :where [_ :name ?name] [_ :age _]]",
+                "[:find ?name :where [?entity :name ?name] [?other :age ?age]]",
+            ),
+            (
+                "[:find (count ?name) :where [_ :name ?name]]",
+                "[:find (count ?name) :where [?entity :name ?name]]",
+            ),
+        ] {
+            let node = Node::memory_node().await;
+            define_test_schema(&node).await;
+            flush_wal(&node).await;
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap();
+            let mut rows = Vec::new();
+            let mut additions = Vec::new();
+            for (entity, name, age) in
+                [(100, "Alice", 30_i64), (101, "Alice", 40), (102, "Bob", 50)]
+            {
+                additions.extend([
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:name),
+                        value: name.into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:age),
+                        value: age.into(),
+                    },
+                ]);
+            }
+            let basis = execute_and_flush(&node, additions).await;
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, explicit)
+                .await;
 
-        let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in value position"),
-            "unexpected error: {}",
-            err
-        );
+            for entity in [100, 101] {
+                let basis = execute_and_flush(
+                    &node,
+                    vec![TxOp::Retract {
+                        entity: EntityRef::Id(entity),
+                        attribute: kw!(:name),
+                        value: "Alice".into(),
+                    }],
+                )
+                .await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, explicit)
+                    .await;
+            }
+        }
     }
 
     #[tokio::test]
