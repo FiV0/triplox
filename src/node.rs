@@ -616,11 +616,11 @@ mod tests {
         let db = node.db().await.unwrap();
         for (query, error) in [
             (
-                "[:find ?e :where (or [?e :name _] [?e :age _])]",
+                "[:find ?e :where (or [?e :name ?name] [?e :age ?age])]",
                 "different free variables",
             ),
             (
-                "[:find ?e :where [?e :name ?name] (not [?e :age _])]",
+                "[:find ?e :where [?e :name ?name] (not [?e :age ?age])]",
                 "in NOT clause is not bound by positive clauses",
             ),
             (
@@ -631,9 +631,131 @@ mod tests {
                 "[:find ?e :where [?e :name _ ?tx]]",
                 "Transaction positions are not supported",
             ),
+            (
+                "[:find ?e :where (or [?e :name ?_internal_99] [?e :age ?age])]",
+                "different free variables",
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or-join [?e] [?e :tags _])]",
+                "do not support explicit or-join",
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not-join [?e] [?e :tags _])]",
+                "do not support explicit not-join",
+            ),
         ] {
             let err = db.query(query).await.unwrap_err();
             assert!(err.to_string().contains(error), "{query}: {err}");
+        }
+    }
+
+    async fn node_with_local_placeholder_facts() -> Node<MemoryLog> {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let mut facts = Vec::new();
+        for (entity, name) in [(100, "Alice"), (101, "Bob"), (102, "Carol")] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:name),
+                value: name.into(),
+            });
+        }
+        for (entity, age) in [(100, 30_i64), (101, 40)] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:age),
+                value: age.into(),
+            });
+        }
+        for (entity, tag) in [(100, "red"), (100, "blue"), (101, "red")] {
+            facts.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:tags),
+                value: tag.into(),
+            });
+        }
+        execute_and_flush(&node, facts).await;
+        node
+    }
+
+    fn local_placeholder_cases() -> Vec<(&'static str, Vec<Vec<DataType>>)> {
+        let entities = |ids: &[i64]| ids.iter().map(|id| vec![DataType::Long(*id)]).collect();
+        vec![
+            (
+                "[:find ?e :where [?e :name _] (not [?e :tags _])]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where (or [?e :tags _] [?e :age _])]",
+                entities(&[100, 101]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or [?e :tags _] (and [?e :age _] [_ :tags _]))]",
+                entities(&[100, 101]),
+            ),
+            (
+                "[:find ?e :where (not [?e :tags _]) [?e :name _]]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not (or [?e :tags _] [?e :age _]))]",
+                entities(&[102]),
+            ),
+            (
+                "[:find ?e :where (or (and [?e :name _] (not [?e :tags _])) [?e :age _])]",
+                entities(&[100, 101, 102]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (not [?e :name _] (not [?e :tags _]))]",
+                entities(&[100, 101]),
+            ),
+            (
+                r#"[:find ?e :where (not [_ :tags "missing"]) [?e :name _]]"#,
+                entities(&[100, 101, 102]),
+            ),
+            (
+                "[:find ?e :where (not [_ :tags _]) [?e :name _]]",
+                entities(&[]),
+            ),
+            (
+                "[:find ?e :where [?e :name _] (or [_ :tags _] [_ :age _])]",
+                entities(&[100, 101, 102]),
+            ),
+            (
+                r#"[:find ?e :where [?e :name "missing"] (or [_ :tags _] [_ :age _])]"#,
+                entities(&[]),
+            ),
+            (
+                r#"[:find ?e :where [?e :name "missing"] (not [_ :tags "missing"])]"#,
+                entities(&[]),
+            ),
+            (
+                "[:find ?tag :where (or [_ :tags ?tag] (and [_ :tags ?tag] [_ :age _]))]",
+                vec![vec!["blue".into()], vec!["red".into()]],
+            ),
+            (
+                "[:find (count ?e) :where (or [?e :tags _] [?e :age _])]",
+                vec![vec![DataType::Long(2)]],
+            ),
+            (
+                "[:find (count ?e) :where [?e :name _] (not [?e :tags _])]",
+                vec![vec![DataType::Long(1)]],
+            ),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_local_placeholders() {
+        let node = node_with_local_placeholder_facts().await;
+        let db = node.db().await.unwrap();
+        for (query, mut expected) in local_placeholder_cases() {
+            let mut actual = db
+                .query(query)
+                .await
+                .unwrap_or_else(|error| panic!("{query}: {error:#}"));
+            sort_query_rows(&mut expected);
+            sort_query_rows(&mut actual);
+            assert_eq!(actual, expected, "{query}");
         }
     }
 

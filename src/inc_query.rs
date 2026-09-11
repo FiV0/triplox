@@ -1,5 +1,7 @@
 //! Incremental-query planning helpers.
 
+use std::collections::HashSet;
+
 use anyhow::{bail, Result};
 use edn::query::{
     Limit, OrJoin, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace, Variable, WhereClause,
@@ -31,9 +33,9 @@ impl IncrementalQueryPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    let query = rewrite_query(query);
+    let query = rewrite_query(query).query;
     reject_unsupported_query_shape(&query)?;
-    validate_query(&query, &[])?;
+    validate_query(&query, &[], &HashSet::new())?;
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
     let where_plan = planner::plan_scope(&descriptors, None)?;

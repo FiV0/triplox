@@ -1,17 +1,26 @@
+use std::collections::HashSet;
+
 use edn::query::{
     OrJoin, OrWhereClause, ParsedQuery, PatternNonValuePlace, PatternValuePlace, Variable,
     WhereClause,
 };
 
+#[derive(Debug)]
+pub(crate) struct RewrittenQuery {
+    pub query: ParsedQuery,
+    pub generated_variables: HashSet<Variable>,
+}
+
 #[derive(Default)]
 struct Rewriter {
-    next_variable: usize,
+    generated_variables: HashSet<Variable>,
 }
 
 impl Rewriter {
     fn fresh_variable(&mut self) -> Variable {
-        let variable = Variable::from_valid_name(&format!("?_internal_{}", self.next_variable));
-        self.next_variable += 1;
+        let variable =
+            Variable::from_valid_name(&format!("?_internal_{}", self.generated_variables.len()));
+        self.generated_variables.insert(variable.clone());
         variable
     }
 
@@ -50,10 +59,14 @@ impl Rewriter {
     }
 }
 
-pub(crate) fn rewrite_query(query: &ParsedQuery) -> ParsedQuery {
+pub(crate) fn rewrite_query(query: &ParsedQuery) -> RewrittenQuery {
     let mut query = query.clone();
-    Rewriter::default().rewrite_clauses(&mut query.where_clauses);
-    query
+    let mut rewriter = Rewriter::default();
+    rewriter.rewrite_clauses(&mut query.where_clauses);
+    RewrittenQuery {
+        query,
+        generated_variables: rewriter.generated_variables,
+    }
 }
 
 #[cfg(test)]
@@ -72,10 +85,12 @@ mod tests {
             "[:find ?name :where [?_internal_0 :name ?name] [?_internal_1 :age ?_internal_2]]",
         );
 
-        assert_eq!(rewrite_query(&query), expected);
-        assert_eq!(rewrite_query(&query), expected);
-        assert_eq!(rewrite_query(&expected), expected);
+        assert_eq!(rewrite_query(&query).query, expected);
+        assert_eq!(rewrite_query(&query).query, expected);
+        assert_eq!(rewrite_query(&expected).query, expected);
         assert_eq!(query, original);
+        assert_eq!(rewrite_query(&query).generated_variables.len(), 3);
+        assert!(rewrite_query(&expected).generated_variables.is_empty());
     }
 
     #[test]
@@ -89,7 +104,7 @@ mod tests {
         };
         assert_eq!(or.mentioned_variables().len(), 1);
 
-        let mut rewritten = rewrite_query(&query);
+        let mut rewritten = rewrite_query(&query).query;
         let expected = parse_query(
             "[:find ?e :where (or [?e :name ?_internal_0]
                 (and [?_internal_1 :age ?_internal_2]
@@ -110,14 +125,14 @@ mod tests {
                 [?e _ ?value _] [(+ ?value 1) [?result _]]
                 :order [?e :asc] :limit 10]",
         );
-        assert_eq!(rewrite_query(&query), query);
+        assert_eq!(rewrite_query(&query).query, query);
     }
 
     #[test]
     fn does_not_avoid_user_variable_names() {
         let query = parse_query("[:find ?_internal_0 :where [_ :name ?_internal_0]]");
         assert_eq!(
-            rewrite_query(&query),
+            rewrite_query(&query).query,
             parse_query("[:find ?_internal_0 :where [?_internal_0 :name ?_internal_0]]")
         );
     }
