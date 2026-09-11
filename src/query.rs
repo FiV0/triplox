@@ -188,6 +188,7 @@ fn convert_binary_op(name: &str) -> Result<BinaryOp, Error> {
 
 fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
     match name {
+        "identity" => Ok(UnaryOp::Identity),
         "not" => Ok(UnaryOp::Not),
         "abs" => Ok(UnaryOp::Abs),
         "upper" => Ok(UnaryOp::Upper),
@@ -201,6 +202,13 @@ fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
 }
 
 fn convert_sexpr(op_name: &str, args: &[edn::query::FnArg]) -> Result<Expr, Error> {
+    if op_name == "identity" && args.len() != 1 {
+        return Err(anyhow::anyhow!(
+            "'identity' expects 1 arg, got {}",
+            args.len()
+        ));
+    }
+
     if op_name == "regexp_like" {
         return build_regexp_like(args);
     }
@@ -1006,6 +1014,35 @@ mod tests {
         let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
         // ?name from :in should come first, then ?e from WHERE
         assert_eq!(order, vec!["?name".to_var(), "?e".to_var(),]);
+    }
+
+    #[test]
+    fn test_identity_valid_query() {
+        let parsed =
+            parse_query("[:find ?name ?same :where [?e :name ?name] [(identity ?name) ?same]]");
+        let WhereClause::WhereFn(where_fn) = &parsed.where_clauses[1] else {
+            panic!("expected identity binding function");
+        };
+        let converted = convert_where_fn(where_fn).unwrap();
+        assert!(matches!(
+            converted.expr,
+            Expr::UnaryExpr(UnaryExpr {
+                op: UnaryOp::Identity,
+                ..
+            })
+        ));
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_ok(), "expected ok, got {result:?}");
+    }
+
+    #[test]
+    fn test_identity_wrong_arity_rejected() {
+        let parsed = parse_query(
+            "[:find ?name ?same :where [?e :name ?name] [(identity ?name ?name) ?same]]",
+        );
+        let result = validate_query(&parsed, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expects 1 arg"));
     }
 
     // --- regexp_like query conversion tests ---
