@@ -355,6 +355,8 @@ struct RegisteredQuery {
     control: Arc<Control>,
     basis: TxKey,
     routed: Position,
+    // A caller wants to unregister the query. The dispatcher tells the worker to stop.
+    // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
     unregister: Option<oneshot::Sender<ServiceResult<()>>>,
 }
 
