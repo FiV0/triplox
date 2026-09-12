@@ -1,0 +1,15 @@
+[storage]
+type = "remote"
+endpoint = "http://minio:9000"
+bucket = "job"
+access_key = "triplox"
+secret_key = "triplox123"
+cache_path = "/var/lib/triplox/cache"
+
+[log]
+type = "file"
+path = "/var/lib/triplox/log/log"
+
+[server]
+host = "0.0.0.0"
+port = 5490
