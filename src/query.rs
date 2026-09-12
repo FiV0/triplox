@@ -551,6 +551,17 @@ fn execute_aggregation(results: Vec<BindingRow>, plan: &FindPlan) -> Result<Quer
         })
         .collect();
 
+    if results.is_empty()
+        && agg_funcs.iter().any(|func| {
+            matches!(
+                func,
+                AggregateFunc::Min | AggregateFunc::Max | AggregateFunc::Avg
+            )
+        })
+    {
+        return Ok(Vec::new());
+    }
+
     // When there are no group-by variables (all-aggregate query), all rows
     // collapse into a single group. Seed it so that empty input still
     // produces one output row.
@@ -870,6 +881,21 @@ mod tests {
         let output = execute_aggregation(results, &plan).unwrap();
         assert_eq!(output.len(), 1);
         assert_eq!(output[0], vec![DataType::Long(0)]);
+    }
+
+    #[test]
+    fn undefined_global_aggregates_have_no_row_on_empty_input() {
+        for aggregate in [AggregateFunc::Min, AggregateFunc::Max, AggregateFunc::Avg] {
+            let plan = FindPlan {
+                group_key_indices: vec![],
+                projections: vec![
+                    Projection::Aggregate(aggregate, 0),
+                    Projection::Aggregate(AggregateFunc::Count, 0),
+                ],
+                has_aggregates: true,
+            };
+            assert!(execute_aggregation(vec![], &plan).unwrap().is_empty());
+        }
     }
 
     #[test]

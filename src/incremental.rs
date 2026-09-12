@@ -373,14 +373,12 @@ impl IncrementalQueryServiceInner {
             }
         };
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(Ok(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                }))
-                .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
-        }
+        sender
+            .try_send(Ok(IncrementalQueryDelta {
+                tx_key,
+                rows: priming_rows,
+            }))
+            .map_err(|err| anyhow!("Failed to enqueue priming result set: {}", err))?;
 
         self.queries.insert(
             handle,
@@ -429,10 +427,6 @@ impl IncrementalQueryServiceInner {
                     continue;
                 }
             };
-            if rows.is_empty() {
-                query.wal_cursor.last_seq = wal_seq;
-                continue;
-            }
             let delta = Ok(IncrementalQueryDelta { tx_key, rows });
             match send_delta(&self.runtime, &query.sender, delta, &cancel) {
                 DeltaDelivery::Delivered => query.wal_cursor.last_seq = wal_seq,
@@ -741,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn register_skips_empty_priming_result() {
+    fn empty_results_report_registration_and_transaction_progress() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = test_runtime();
         let mut service = IncrementalQueryServiceInner::new(
@@ -758,10 +752,15 @@ mod tests {
             )
             .unwrap();
 
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
+        let priming = expect_delta(subscription.deltas.try_recv().unwrap());
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key.tx_id, 1);
+        service
+            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
+            .unwrap();
+        let progress = expect_delta(subscription.deltas.try_recv().unwrap());
+        assert!(progress.rows.is_empty());
+        assert_eq!(progress.tx_key.tx_id, 2);
     }
 
     #[test]
@@ -820,10 +819,14 @@ mod tests {
             )
             .unwrap();
         aggregate_subscription.deltas.try_recv().unwrap();
+        names_subscription.deltas.try_recv().unwrap();
 
         service
             .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
             .unwrap();
+        assert!(expect_delta(names_subscription.deltas.try_recv().unwrap())
+            .rows
+            .is_empty());
         service
             .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Alice")])
             .unwrap();
@@ -934,7 +937,7 @@ mod tests {
             )
             .unwrap();
 
-        for seq in 1..=SUBSCRIPTION_CAPACITY {
+        for seq in 1..SUBSCRIPTION_CAPACITY {
             let name = format!("Alice {seq}");
             service
                 .apply_triples(
@@ -1089,6 +1092,9 @@ mod tests {
                 .await
         });
         tokio::task::yield_now().await;
+        assert!(expect_delta(first_subscription.deltas.try_recv().unwrap())
+            .rows
+            .is_empty());
         assert!(first_subscription.deltas.try_recv().is_err());
 
         let mut second_subscription = service
@@ -1100,6 +1106,9 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(expect_delta(second_subscription.deltas.try_recv().unwrap())
+            .rows
+            .is_empty());
         assert!(second_subscription.deltas.try_recv().is_err());
 
         drop(registration_guard);

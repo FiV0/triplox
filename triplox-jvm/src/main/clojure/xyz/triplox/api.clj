@@ -63,8 +63,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn subscribe
-  "Register an incremental query and stream its result deltas. A non-empty
-  initial result is the first delta. Returns a Subscription (Closeable); use
+  "Register an incremental query and stream its result deltas. The initial
+  result is the first delta, including when empty. Empty deltas report progress.
+  Returns a Subscription (Closeable); use
   with `with-open`. Closing unsubscribes."
   ^Subscription [conn query & args]
   (if (seq args)
