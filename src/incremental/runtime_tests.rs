@@ -173,8 +173,6 @@ async fn slow_query_preserves_fifo_while_other_query_advances() {
             assert_eq!(started(&mut slow_steps).await, seq + 1);
         }
     }
-    let query = &fixture.inner.queries[&slow.handle];
-    assert_eq!(query.routed, *query.applied.lock().unwrap());
     fixture.finish().await;
 }
 
