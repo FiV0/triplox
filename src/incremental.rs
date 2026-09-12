@@ -355,7 +355,6 @@ struct RegisteredQuery {
     control: Arc<Control>,
     basis: TxKey,
     routed: Position,
-    applied: Arc<StdMutex<Position>>,
     unregister: Option<oneshot::Sender<ServiceResult<()>>>,
 }
 
@@ -502,7 +501,6 @@ impl IncrementalQueryServiceInner {
             tx_key,
             wal_seq: wal_cursor.last_seq,
         };
-        let applied = Arc::new(StdMutex::new(position));
         let worker = Worker {
             circuit,
             storage_path: self.query_storage_path(handle),
@@ -510,7 +508,6 @@ impl IncrementalQueryServiceInner {
             sender: sender.clone(),
             control: control.clone(),
             steps: self.steps.clone(),
-            applied: applied.clone(),
         };
         let completed = self.completed.clone();
         self.runtime.spawn(async move {
@@ -525,7 +522,6 @@ impl IncrementalQueryServiceInner {
                 control,
                 basis: tx_key,
                 routed: position,
-                applied,
                 unregister: None,
             },
         );

@@ -311,8 +311,7 @@ FIFO consumer and at most one apply in flight; different queries advance
 independently. Registration-basis filtering happens before enqueueing, so WAL
 history already included in a snapshot cannot overflow a new query's inbox.
 Shared `Arc` batches avoid deep copies during fan-out. Each blocking apply makes
-the owned copy required by DBSP. Routed and successfully applied positions are
-tracked separately.
+the owned copy required by DBSP.
 
 A full result channel pauses only that query's worker, after releasing its
 execution permit. If its input queue fills, the dispatcher stops routing to that

@@ -75,7 +75,6 @@ pub(super) struct Worker<C> {
     pub sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
     pub control: Arc<Control>,
     pub steps: Arc<Semaphore>,
-    pub applied: Arc<Mutex<Position>>,
 }
 
 impl<C: Circuit> Worker<C> {
@@ -87,7 +86,6 @@ impl<C: Circuit> Worker<C> {
             sender,
             control,
             steps,
-            applied,
         } = self;
         // Only blocking jobs touch the circuit, including destruction after a panic.
         let circuit = Arc::new(Mutex::new(Some(circuit)));
@@ -105,10 +103,7 @@ impl<C: Circuit> Worker<C> {
                     _ = sender.closed() => break,
                     permit = steps.clone().acquire_owned() => permit?,
                 };
-                let position = Position {
-                    tx_key: batch.tx_key,
-                    wal_seq: batch.wal_seq,
-                };
+                let tx_key = batch.tx_key;
                 let job_circuit = circuit.clone();
                 let stop = control.stop.clone();
                 let rows = tokio::task::spawn_blocking(move || {
@@ -127,7 +122,6 @@ impl<C: Circuit> Worker<C> {
                 .await
                 .context("Incremental query apply task panicked")??;
                 let Some(rows) = rows else { break };
-                *applied.lock().unwrap() = position;
                 if control.stop.is_cancelled() {
                     break;
                 }
@@ -137,7 +131,7 @@ impl<C: Circuit> Worker<C> {
                 tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,
-                    result = sender.send(Ok(IncrementalQueryDelta { tx_key: position.tx_key, rows })) => {
+                    result = sender.send(Ok(IncrementalQueryDelta { tx_key, rows })) => {
                         if result.is_err() { break; }
                     }
                 }
