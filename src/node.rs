@@ -1893,10 +1893,17 @@ mod tests {
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
-            .await
-            .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open");
+        let delta = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let delta = subscription.deltas.recv().await?;
+                if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                    return Some(delta);
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for incremental delta")
+        .expect("subscription should be open");
         incremental_delta(delta)
     }
 
@@ -1911,11 +1918,18 @@ mod tests {
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
-            .await
-            .ok()
-            .flatten()
-            .map(incremental_delta)
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let delta = subscription.deltas.recv().await?;
+                if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                    return Some(delta);
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+        .map(incremental_delta)
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -1998,10 +2012,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.tx_key, expected_basis);
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
+        let priming = incremental_delta(subscription.deltas.try_recv().unwrap());
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, expected_basis);
     }
 
     #[tokio::test]
@@ -2864,6 +2877,9 @@ mod tests {
 
         node.unregister_incremental_query(handle).await.unwrap();
 
+        assert!(incremental_delta(subscription.deltas.recv().await.unwrap())
+            .rows
+            .is_empty());
         assert!(subscription.deltas.recv().await.is_none());
     }
 
