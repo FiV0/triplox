@@ -118,9 +118,6 @@ impl<C: Circuit> Worker<C> {
                 if control.stop.is_cancelled() {
                     break;
                 }
-                if rows.is_empty() {
-                    continue;
-                }
                 tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,

@@ -32,7 +32,12 @@
 
 (defn take-delta!
   ([sub] (take-delta! sub default-delta-timeout-ms))
-  ([sub timeout] (api/take! sub timeout)))
+  ([sub timeout]
+   (let [deadline (+ (System/nanoTime) (* timeout 1000000))]
+     (loop []
+       (let [remaining (max 0 (quot (- deadline (System/nanoTime)) 1000000))
+             delta (api/take! sub remaining)]
+         (if (= [] delta) (recur) delta))))))
 
 (defn take-priming! [sub]
   (let [delta (take-delta! sub)]
@@ -60,9 +65,10 @@
   (with-open [sub (api/subscribe *conn* names-query)]
     (is (some? (:tx-id (api/registration-tx-key sub))))
     (is (nil? (api/tx-key sub)))
-    ;; No transaction after the subscription -> bounded take! times out.
+    (is (= [] (api/take! sub 1000)))
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))
     (is (= ::api/timeout (api/take! sub 200)))
-    (is (nil? (api/tx-key sub)))))
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))))
 
 (deftest subscription-tx-key-tracks-consumed-deltas
   (api/transact *conn* [{:name "Alice"}])
@@ -145,7 +151,7 @@
                                                     [?e :last-name "Ivanov-does-not-match"]]})]
       (api/transact *conn* [{:name "Ivan" :last-name "Ivanov"}
                             {:name "Petr" :last-name "Petrov"}])
-      (is (= ::api/timeout (api/take! sub 300))))))
+      (is (= ::api/timeout (take-delta! sub 300))))))
 
 (deftest test-not-addition+retraction
   (with-open [sub (api/subscribe *conn* '{:find [?name]
@@ -183,7 +189,7 @@
       (is (= [[["Alice"] -1]] (take-delta! sub)))
 
       (api/transact *conn* [[:db/retract alice :g/to one]])
-      (is (= ::api/timeout (api/take! sub 200)))
+      (is (= ::api/timeout (take-delta! sub 200)))
 
       (api/transact *conn* [[:db/retract alice :g/to two]])
       (is (= [[["Alice"] 1]] (take-delta! sub)))
@@ -477,7 +483,7 @@
 
       (api/transact *conn* [[:db/retract alice :age 30]
                             [:db/retract (first followers) :follows alice]])
-      (is (= ::api/timeout (api/take! sub 200)))
+      (is (= ::api/timeout (take-delta! sub 200)))
 
       (api/transact *conn* [[:db/retract (second followers) :follows alice]])
       (is (= [[["Alice"] -1]] (take-delta! sub)))
@@ -695,7 +701,7 @@
                                                   [?c :t/to ?a]]})]
     (api/transact *conn* (into graph-nodes
                                [[:db/add graph-b :s/to graph-c]]))
-    (is (= ::api/timeout (api/take! sub 300)))))
+    (is (= ::api/timeout (take-delta! sub 300)))))
 
 (deftest residence-example
   (api/transact *conn* residence-schema)
