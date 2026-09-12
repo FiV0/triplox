@@ -32,7 +32,8 @@ const SUBSCRIPTION_QUEUE_CAPACITY: usize = 128;
 pub struct Delta {
     /// The registration basis for a priming delta, or the transaction that produced a later delta.
     pub tx_key: TxKey,
-    /// `(values, weight)` rows; `weight` is the raw signed multiplicity.
+    /// `(values, weight)` rows; empty rows still report transaction progress.
+    /// `weight` is the raw signed multiplicity.
     pub rows: Vec<(Vec<DataType>, i64)>,
 }
 

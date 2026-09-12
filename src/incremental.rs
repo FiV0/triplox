@@ -479,14 +479,12 @@ impl IncrementalQueryServiceInner {
         priming_rows: worker::Rows,
     ) -> IncrementalQuerySubscription {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                })
-                .expect("new subscription queue has room for priming");
-        }
+        sender
+            .try_send(IncrementalQueryDelta {
+                tx_key,
+                rows: priming_rows,
+            })
+            .expect("new subscription queue has room for priming");
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
@@ -735,7 +733,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
+    async fn priming_precedes_live_deltas_including_empty_results() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
         let mut primed = register(
@@ -745,7 +743,9 @@ mod tests {
         )
         .await;
         let mut empty = register(&service, single_pattern_plan(), vec![]).await;
-        assert!(empty.deltas.try_recv().is_err());
+        let priming = delta(&mut empty).await.unwrap();
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, empty.tx_key);
         let tx_key = test_tx_key_with_tx_id(2);
         service
             .apply_triples(tx_key, vec![name_triple(43, "Bob")])
@@ -757,6 +757,25 @@ mod tests {
         );
         assert_eq!(delta(&mut primed).await.unwrap().tx_key, tx_key);
         assert_eq!(delta(&mut empty).await.unwrap().tx_key, tx_key);
+        service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn empty_results_report_registration_and_transaction_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_at(dir.path());
+        let mut subscription = register(&service, single_pattern_plan(), vec![]).await;
+        let priming = delta(&mut subscription).await.unwrap();
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, subscription.tx_key);
+        let tx_key = test_tx_key_with_tx_id(2);
+        service
+            .apply_triples(tx_key, vec![age_triple(42, 10)])
+            .await
+            .unwrap();
+        let progress = delta(&mut subscription).await.unwrap();
+        assert!(progress.rows.is_empty());
+        assert_eq!(progress.tx_key, tx_key);
         service.shutdown().await.unwrap();
     }
 
@@ -789,10 +808,12 @@ mod tests {
         .await;
         let mut names = register(&service, single_pattern_plan(), vec![]).await;
         delta(&mut aggregate).await.unwrap();
+        delta(&mut names).await.unwrap();
         service
             .apply_triples(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)])
             .await
             .unwrap();
+        assert!(delta(&mut names).await.unwrap().rows.is_empty());
         service
             .apply_triples(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")])
             .await
@@ -838,6 +859,7 @@ mod tests {
             .register_prepared_query(single_pattern_plan(), basis, vec![])
             .await
             .unwrap();
+        assert_eq!(delta(&mut query).await.unwrap().tx_key, basis);
         for seq in 1..=1000 {
             service
                 .apply_triples(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")])
@@ -858,6 +880,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
         let mut query = register(&service, single_pattern_plan(), vec![]).await;
+        delta(&mut query).await.unwrap();
         drop(service);
         assert!(
             tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())
@@ -1004,12 +1027,22 @@ mod tests {
                 .await
         });
         tokio::task::yield_now().await;
+        assert!(delta(&mut first_subscription)
+            .await
+            .unwrap()
+            .rows
+            .is_empty());
         assert!(first_subscription.deltas.try_recv().is_err());
 
         let mut second_subscription = service
             .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
             .await
             .unwrap();
+        assert!(delta(&mut second_subscription)
+            .await
+            .unwrap()
+            .rows
+            .is_empty());
         assert!(second_subscription.deltas.try_recv().is_err());
 
         drop(registration_guard);
