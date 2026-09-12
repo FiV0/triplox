@@ -48,7 +48,7 @@ impl Default for IncrementalQueryOptions {
     fn default() -> Self {
         Self {
             inbox_capacity: NonZeroUsize::new(256).unwrap(),
-            max_concurrent_steps: thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
+            max_concurrent_steps: thread::available_parallelism().unwrap_or(NonZeroUsize::MIN).div_ceil(NonZeroUsize::new(2).unwrap()),
             retire_timeout: Duration::from_secs(10),
         }
     }
