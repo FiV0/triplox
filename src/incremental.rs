@@ -367,8 +367,11 @@ struct IncrementalQueryServiceInner {
     runtime: Handle,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
+    // This is held to give to newly created workers.
     steps: Arc<Semaphore>,
+    // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
+    // Receiving end of worker retirement notifications. The service reads this.
     completions: mpsc::UnboundedReceiver<Completion>,
 }
 
