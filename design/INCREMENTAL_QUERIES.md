@@ -255,7 +255,6 @@ IncrementalQueryService::register_query
     captures the latest indexed TxKey and schema from the indexer
     plans the query
     scans the initial triples
-    captures the WAL cursor
     sends Register to the dedicated service thread
     starts the CDC loop after Register returns, if not already running
 
@@ -315,21 +314,16 @@ the owned copy required by DBSP.
 
 A full result channel pauses only that query's worker, after releasing its
 execution permit. If its input queue fills, the dispatcher stops routing to that
-query and terminates it with a lag error. Pending inputs are discarded. An apply
-already running finishes before the circuit is destroyed, but its result is
-suppressed after cancellation.
+query and terminates it with a lag error. Pending inputs are discarded.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
 basis; later deltas describe transactions after that basis. A priming failure
-rejects registration. A live failure removes only the affected query. Aggregate
-errors retain their concrete type through the internal subscription interface.
+rejects registration. A live failure removes only the affected query.
 
 A separate terminal channel prevents a full output queue from hiding an error.
 Ordinary query errors follow previously queued results; lag errors take priority
-over buffered results. Both become terminal `QueryError` frames on the wire. A
-lagged subscription must be registered again to obtain a fresh snapshot; it does
-not silently skip transactions and continue.
+over buffered results. Both become terminal `QueryError` frames on the wire.
 
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
@@ -339,9 +333,7 @@ snapshot/register cutover atomic with respect to CDC application: a transaction
 after the registration basis cannot be consumed by the global CDC loop before the
 new query is present in the service registry. The cutover boundary itself is the
 registration `TxKey` — the global CDC loop reads the WAL from the beginning and
-each query skips transactions at or before its own `tx_id`. I think in the future
-this serialization across WAL application, basis capture and circuit initialization
-is too restrictive and we need to built something more multi-threaded.
+each query skips transactions at or before its own `tx_id`.
 
 ---
 
