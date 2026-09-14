@@ -339,7 +339,7 @@ impl IncrementalQueryService {
 
 struct RegisteredQuery {
     inbox: mpsc::Sender<Arc<Batch>>,
-    sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
+    sender: mpsc::Sender<IncrementalQueryDelta>,
     control: Arc<Control>,
     basis: TxKey,
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
@@ -479,10 +479,10 @@ impl IncrementalQueryServiceInner {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
         if !priming_rows.is_empty() {
             sender
-                .try_send(Ok(IncrementalQueryDelta {
+                .try_send(IncrementalQueryDelta {
                     tx_key,
                     rows: priming_rows,
-                }))
+                })
                 .expect("new subscription queue has room for priming");
         }
         let (terminal, termination) = oneshot::channel();

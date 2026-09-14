@@ -648,10 +648,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         let (terminal, termination) = oneshot::channel();
         sender
-            .try_send(Ok(IncrementalQueryDelta {
+            .try_send(IncrementalQueryDelta {
                 tx_key,
                 rows: vec![],
-            }))
+            })
             .unwrap();
         let mut stream = subscription_body(
             open,
@@ -693,10 +693,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         let (terminal, termination) = oneshot::channel();
         sender
-            .try_send(Ok(IncrementalQueryDelta {
+            .try_send(IncrementalQueryDelta {
                 tx_key,
                 rows: vec![],
-            }))
+            })
             .unwrap();
         terminal
             .send(Termination::Failed(anyhow::anyhow!("aggregate failed")))

@@ -65,7 +65,7 @@ pub(super) struct Worker<C> {
     pub circuit: C,
     pub storage_path: PathBuf,
     pub inbox: mpsc::Receiver<Arc<Batch>>,
-    pub sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
+    pub sender: mpsc::Sender<IncrementalQueryDelta>,
     pub control: Arc<Control>,
     pub steps: Arc<Semaphore>,
 }
@@ -124,7 +124,7 @@ impl<C: Circuit> Worker<C> {
                 tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,
-                    result = sender.send(Ok(IncrementalQueryDelta { tx_key, rows })) => {
+                    result = sender.send(IncrementalQueryDelta { tx_key, rows }) => {
                         if result.is_err() { break; }
                     }
                 }

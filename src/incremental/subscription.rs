@@ -26,7 +26,7 @@ pub(crate) enum Termination {
 /// Lag discards queued deltas; query failures follow them. Both end the stream.
 #[derive(Debug)]
 pub(crate) struct SubscriptionDeltas {
-    receiver: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+    receiver: mpsc::Receiver<IncrementalQueryDelta>,
     termination: Option<oneshot::Receiver<Termination>>,
     error: Option<Error>,
     finished: bool,
@@ -34,7 +34,7 @@ pub(crate) struct SubscriptionDeltas {
 
 impl SubscriptionDeltas {
     pub(crate) fn new(
-        receiver: mpsc::Receiver<Result<IncrementalQueryDelta>>,
+        receiver: mpsc::Receiver<IncrementalQueryDelta>,
         termination: oneshot::Receiver<Termination>,
     ) -> Self {
         Self {
@@ -67,8 +67,7 @@ impl SubscriptionDeltas {
             }
         }
         match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(Err(error))) => self.finish(error),
-            Poll::Ready(Some(delta)) => Poll::Ready(Some(delta)),
+            Poll::Ready(Some(delta)) => Poll::Ready(Some(Ok(delta))),
             other => {
                 if let Some(error) = self.error.take() {
                     return self.finish(error);
@@ -110,10 +109,10 @@ mod tests {
         let (terminal, termination) = oneshot::channel();
         let mut deltas = SubscriptionDeltas::new(receiver, termination);
         sender
-            .send(Ok(IncrementalQueryDelta {
+            .send(IncrementalQueryDelta {
                 tx_key: *BOOTSTRAP_TX_KEY,
                 rows: vec![],
-            }))
+            })
             .await
             .unwrap();
         terminal
@@ -134,10 +133,10 @@ mod tests {
         let (terminal, termination) = oneshot::channel();
         let mut deltas = SubscriptionDeltas::new(receiver, termination);
         sender
-            .send(Ok(IncrementalQueryDelta {
+            .send(IncrementalQueryDelta {
                 tx_key: *BOOTSTRAP_TX_KEY,
                 rows: vec![],
-            }))
+            })
             .await
             .unwrap();
         terminal
