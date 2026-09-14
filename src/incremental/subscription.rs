@@ -62,6 +62,7 @@ impl SubscriptionDeltas {
                 match result {
                     Ok(Termination::Lagged(error)) => return self.finish(error.into()),
                     Ok(Termination::Failed(error)) => self.error = Some(error),
+                    // Termination sender dropped; drain deltas until worker exit and retirement drop all delta senders, yielding EOF.
                     Err(_) => {}
                 }
             }
