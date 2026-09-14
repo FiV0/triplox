@@ -21,7 +21,9 @@ pub(crate) enum Termination {
     Failed(Error),
 }
 
-/// Keeps terminal errors deliverable even when the result queue is full.
+/// Combines queued deltas and a separate termination channel into one receiver.
+/// Terminal errors remain deliverable even when the result queue is full.
+/// Lag discards queued deltas; query failures follow them. Both end the stream.
 #[derive(Debug)]
 pub(crate) struct SubscriptionDeltas {
     receiver: mpsc::Receiver<Result<IncrementalQueryDelta>>,
