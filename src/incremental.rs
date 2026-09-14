@@ -144,26 +144,31 @@ impl IncrementalQueryService {
         indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
         let _registration_guard = self.registration_gate.lock().await;
-        let (tx_key, schema) = {
+        let (tx_key, schema, wal_cursor) = {
             let indexer = indexer.read().await;
-            (indexer.latest_tx_key(), indexer.metadata().schema.clone())
+            // Capture the replay boundary before writes can advance beyond the priming basis.
+            let manifest = db.manifest();
+            let wal_cursor = CdcCursor {
+                wal_id: manifest.replay_after_wal_id() + 1,
+                last_seq: manifest.last_l0_seq(),
+            };
+            (
+                indexer.latest_tx_key(),
+                indexer.metadata().schema.clone(),
+                wal_cursor,
+            )
         };
         let plan = plan_query(&query, &schema)?;
         let initial_triples =
             scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
-        let wal_cursor = CdcCursor {
-            // TODO: This should likely be initialized to manifest.replay_after_wal_id + 1. See #337
-            wal_id: 0,
-            last_seq: db.status().durable_seq,
-        };
         let subscription = self
-            .register_prepared_query(plan, tx_key, wal_cursor, initial_triples)
+            .register_prepared_query(plan, tx_key, wal_cursor.clone(), initial_triples)
             .await?;
-        self.start_cdc_once(indexer);
+        self.start_cdc_once(indexer, wal_cursor);
         Ok(subscription)
     }
 
-    fn start_cdc_once<N>(&self, node: Arc<N>)
+    fn start_cdc_once<N>(&self, node: Arc<N>, cursor: CdcCursor)
     where
         N: crate::node::SchemaProvider,
     {
@@ -175,6 +180,7 @@ impl IncrementalQueryService {
         let handle = spawn_cdc_loop(
             self.cdc_object_path.clone(),
             self.cdc_object_store.clone(),
+            cursor,
             node,
             self.clone(),
             self.registration_gate.clone(),

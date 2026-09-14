@@ -2095,6 +2095,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_incremental_registration_after_l0_flush_preserves_live_queries() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let mut subscriptions = Vec::new();
+        let mut expected_names = Vec::new();
+
+        for (entity, name) in [(100, "Alice"), (101, "Bob"), (102, "Carol")] {
+            let basis = match node
+                .execute_tx(vec![TxOp::Add {
+                    entity: EntityRef::Id(entity),
+                    attribute: kw!(:name),
+                    value: DataType::String(name.to_string()),
+                }])
+                .await
+                .unwrap()
+            {
+                TransactionResult::TxCommitted(basis) => basis,
+                TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+            };
+            flush_wal(&node).await;
+            let previous_boundary = node.slate.db.manifest().replay_after_wal_id();
+            node.slate
+                .db
+                .flush_with_options(FlushOptions {
+                    flush_type: FlushType::MemTable,
+                })
+                .await
+                .unwrap();
+            assert!(node.slate.db.manifest().replay_after_wal_id() > previous_boundary);
+
+            let row = (vec![DataType::String(name.to_string())], 1);
+            for subscription in &mut subscriptions {
+                let delta = recv_incremental_delta(subscription).await;
+                assert_eq!(delta.tx_key, basis);
+                assert_eq!(delta.rows, vec![row.clone()]);
+            }
+            expected_names.push(row);
+
+            if subscriptions.len() < 2 {
+                let mut subscription = node
+                    .register_incremental_query(
+                        parse_query("[:find ?name :where [?e :name ?name]]"),
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(subscription.tx_key, basis);
+                let priming = recv_incremental_delta(&mut subscription).await;
+                assert_eq!(priming.tx_key, basis);
+                assert_eq!(priming.rows, expected_names);
+                subscriptions.push(subscription);
+            }
+        }
+
+        for subscription in &mut subscriptions {
+            assert!(try_recv_incremental_delta(subscription).await.is_none());
+        }
+        node.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_primed_incremental_query_uses_existing_rows_for_future_delta() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
