@@ -1,13 +1,11 @@
 (ns xyz.triplox.view
   "EXPERIMENTAL: Client-side materialized views backed by incremental query
   subscriptions. This namespace may change or be removed without notice."
-  (:require
-   [clojure.core.async :as async]
-   [clojure.tools.logging :as log]
-   [xyz.triplox.api :as api])
-  (:import
-   [java.io Closeable]
-   [java.lang AutoCloseable]))
+  (:require [clojure.core.async :as async]
+            [clojure.tools.logging :as log]
+            [xyz.triplox.api :as api])
+  (:import [java.io Closeable]
+           [java.lang AutoCloseable]))
 
 (defn- update-view
   [view-map delta]
@@ -62,3 +60,9 @@
   "Return the current rows in a materialized view."
   [{:keys [view]}]
   (vec (keys @view)))
+
+(defn done?
+  "Returns true if the current view got closed or errored."
+  [{:keys [done-chan]}]
+  (let [[_ ch] (async/alts!! [done-chan] :default ::running)]
+    (= ch done-chan)))
