@@ -307,10 +307,26 @@ async fn cancellation_while_waiting_for_permit_does_not_apply() {
     let permit = fixture.inner.steps.clone().acquire_owned().await.unwrap();
     let (query, mut steps) = fixture.query(None, false);
     fixture.apply(1);
+    let registered = &fixture.inner.queries[&query.handle];
+    // Wait for the worker to consume the batch while the only permit is held.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while registered.inbox.capacity() != registered.inbox.max_capacity() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker should consume the batch and wait for a permit");
+    assert!(matches!(
+        steps.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
     fixture.inner.queries[&query.handle].control.terminate(None);
-    drop(permit);
     assert_eq!(fixture.retire().await, query.handle);
-    assert!(steps.try_recv().is_err());
+    assert!(matches!(
+        steps.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
+    drop(permit);
     fixture.finish().await;
 }
 
