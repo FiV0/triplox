@@ -108,6 +108,7 @@ pub(crate) enum RetirementTimeout {
 
 enum IncrementalCommand {
     Register {
+        // The box here is purely an optimization to keep the enum stack size small.
         plan: Box<IncrementalQueryPlan>,
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
