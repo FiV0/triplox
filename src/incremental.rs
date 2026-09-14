@@ -119,7 +119,7 @@ enum IncrementalCommand {
     },
     ApplyTriples {
         batch: Arc<Batch>,
-        response: oneshot::Sender<Result<()>>,
+        response: oneshot::Sender<()>,
     },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
@@ -292,7 +292,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")?
+        result.await.context("Incremental query service stopped")
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -426,7 +426,7 @@ impl IncrementalQueryServiceInner {
                     }
                     Some(IncrementalCommand::ApplyTriples { batch, response }) => {
                         self.apply_triples(batch);
-                        let _ = response.send(Ok(()));
+                        let _ = response.send(());
                     }
                     Some(IncrementalCommand::Shutdown { response }) => { shutdown = Some(response); break; }
                     None => break,

@@ -359,7 +359,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
             response,
         })
         .unwrap();
-    applied.await.unwrap().unwrap();
+    applied.await.unwrap();
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
     release.send(()).unwrap();
     result.await.unwrap().unwrap();
