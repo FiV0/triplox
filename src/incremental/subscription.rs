@@ -9,7 +9,7 @@ use triplox_client::transaction::TxKey;
 use super::IncrementalQueryDelta;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Incremental query fell behind at transaction {tx_key:?}: input capacity {capacity} exceeded; subscribe again")]
+#[error("Incremental query fell behind at transaction {tx_key:?}: input capacity {capacity} exceeded. Make sure the subscription drains fast enough.")]
 pub(crate) struct SubscriptionLagged {
     pub tx_key: TxKey,
     pub capacity: usize,
