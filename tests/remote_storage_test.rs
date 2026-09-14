@@ -17,7 +17,7 @@ async fn test_remote_node_with_s3_storage() {
     triplox::logging::init();
 
     // Start MinIO container
-    let container = GenericImage::new("minio/minio", "RELEASE.2025-09-07T16-13-09Z")
+    let container = GenericImage::new("quay.io/minio/minio", "RELEASE.2025-09-07T16-13-09Z")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
             HttpWaitStrategy::new("/minio/health/live").with_expected_status_code(200u16),
