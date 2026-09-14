@@ -8,6 +8,7 @@ struct Probe {
     release: Option<sync_mpsc::Receiver<()>>,
     panic: bool,
     storage: PathBuf,
+    dropped: sync_mpsc::Sender<bool>,
 }
 
 impl Circuit for Probe {
@@ -24,8 +25,16 @@ impl Circuit for Probe {
 
 impl Drop for Probe {
     fn drop(&mut self) {
+        let _ = self.dropped.send(self.storage.exists());
+    }
+}
+
+fn assert_dropped(drops: Vec<sync_mpsc::Receiver<bool>>) {
+    for dropped in drops {
         assert!(
-            self.storage.exists(),
+            dropped
+                .try_recv()
+                .expect("circuit should have been dropped"),
             "storage removed before circuit destruction"
         );
     }
@@ -33,6 +42,7 @@ impl Drop for Probe {
 
 struct Fixture {
     inner: IncrementalQueryServiceInner,
+    drops: Vec<sync_mpsc::Receiver<bool>>,
     _storage: TempDir,
 }
 
@@ -51,6 +61,7 @@ impl Fixture {
         );
         Self {
             inner,
+            drops: vec![],
             _storage: storage,
         }
     }
@@ -64,11 +75,14 @@ impl Fixture {
         let storage = self.inner.query_storage_path(handle);
         std::fs::create_dir(&storage).unwrap();
         let (started, events) = mpsc::unbounded_channel();
+        let (dropped, observed) = sync_mpsc::channel();
+        self.drops.push(observed);
         let probe = Probe {
             started,
             release,
             panic,
             storage,
+            dropped,
         };
         let subscription =
             self.inner
@@ -112,6 +126,7 @@ impl Fixture {
         while !self.inner.queries.is_empty() {
             self.retire().await;
         }
+        assert_dropped(self.drops);
     }
 
     fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
@@ -125,7 +140,10 @@ impl Fixture {
             registration_gate: Arc::new(Mutex::new(())),
             retire_timeout: Duration::from_millis(50),
         };
-        let dispatcher = tokio::spawn(self.inner.run(receiver));
+        let dispatcher = tokio::spawn(async move {
+            self.inner.run(receiver).await;
+            assert_dropped(self.drops);
+        });
         (service, dispatcher, self._storage)
     }
 }
@@ -382,6 +400,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     assert!(!storage_path.exists());
     drop(commands);
     dispatcher.await.unwrap();
+    assert_dropped(fixture.drops);
 }
 
 #[tokio::test]
@@ -408,6 +427,7 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     release.send(()).unwrap();
     result.await.unwrap().unwrap();
     dispatcher.await.unwrap();
+    assert_dropped(fixture.drops);
     assert!(query.deltas.recv().await.is_none());
     assert!(!storage_path.exists());
 }
@@ -524,22 +544,52 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
 }
 
 #[tokio::test]
-async fn cleanup_failure_does_not_fail_other_dispatches() {
+async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     let mut fixture = Fixture::new(4, 1);
-    let (query, _) = fixture.query(None, false);
+    let (mut query, _) = fixture.query(None, false);
     let (mut healthy, _) = fixture.query(None, false);
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
-    drop(query);
-    let completion = tokio::time::timeout(Duration::from_secs(5), fixture.inner.completions.recv())
+    let (mut service, dispatcher, _storage) = fixture.start();
+    service.retire_timeout = Duration::from_secs(5);
+    let error = service.unregister(query.handle).await.unwrap_err();
+    assert!(error.downcast_ref::<std::io::Error>().is_some());
+    assert!(error
+        .to_string()
+        .contains("Failed to remove incremental query storage"));
+    // EOF requires retirement to remove the registry's remaining output sender.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    tx_key.tx_id += 1;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        service.apply_triples(
+            tx_key,
+            vec![Tup2(
+                EncodedTriple {
+                    entity: vec![],
+                    attribute: 1,
+                    value: vec![],
+                },
+                1,
+            )],
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
+    service.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
         .unwrap()
         .unwrap();
-    assert!(fixture.inner.retire(completion).is_err());
-    let tx_key = fixture.apply(1);
-    assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
-    fixture.finish().await;
 }
 
 #[tokio::test]
@@ -547,6 +597,7 @@ async fn registration_panics_remove_storage_after_unwinding() {
     let mut fixture = Fixture::new(1, 1);
     for panic_during_build in [true, false] {
         let handle = fixture.inner.allocate_query_id();
+        let (dropped, observed) = sync_mpsc::channel();
         let error = fixture
             .inner
             .prepare_query(handle, move |storage| {
@@ -558,6 +609,7 @@ async fn registration_panics_remove_storage_after_unwinding() {
                     release: None,
                     panic: true,
                     storage: storage.to_path_buf(),
+                    dropped,
                 };
                 let rows = probe.apply(vec![Tup2(
                     EncodedTriple {
@@ -576,6 +628,9 @@ async fn registration_panics_remove_storage_after_unwinding() {
             .downcast_ref::<tokio::task::JoinError>()
             .unwrap()
             .is_panic());
+        if !panic_during_build {
+            assert_dropped(vec![observed]);
+        }
         assert!(!fixture.inner.query_storage_path(handle).exists());
     }
     let (mut healthy, _) = fixture.query(None, false);
