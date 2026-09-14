@@ -449,12 +449,20 @@ TOML settings:
   taken by its worker. Overflow terminates that subscription.
 - `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
   backpressure to its own worker.
-- Concurrent live applies are limited to `available_parallelism()`, falling back
-  to one. A semaphore bounds blocking jobs; waiting for output holds no permit.
+- `max_concurrent_steps` defaults to half of `available_parallelism()`, rounded
+  up, with a minimum of one. A shared semaphore bounds outstanding live apply
+  jobs; waiting for output holds no permit.
 - `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
-- The service runtime has two async worker threads and a shared blocking pool.
-  There is no additional dedicated driver thread per query. DBSP still owns its
-  per-circuit runtime threads; sharing those is separate work.
+- The service-owned Tokio runtime has two separate pools: `worker_threads(2)`
+  configures the async pool, while `spawn_blocking` uses the blocking pool.
+  Async query workers acquire a semaphore permit, submit a synchronous apply job,
+  and await its completion. Awaiting frees the async thread to poll other workers;
+  the blocking job retains the permit until it finishes. Two async threads can
+  therefore coordinate more than two simultaneous applies: `max_concurrent_steps`,
+  not `worker_threads(2)`, sets the application-level limit.
+  There is no additional dedicated driver thread per query. DBSP still owns one
+  runtime worker per circuit, separate from Tokio's pools; the semaphore does not
+  limit the total number of threads in the process.
 - `CDC_POLL_INTERVAL` controls WAL polling as before.
 
 These are count limits, not byte limits. Shared transaction payloads reduce
