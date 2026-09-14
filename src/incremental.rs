@@ -95,8 +95,6 @@ pub(crate) struct IncrementalQueryDelta {
     pub rows: Vec<(Vec<DataType>, isize)>,
 }
 
-type ServiceResult<T> = Result<T>;
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RetirementTimeout {
     #[error("Incremental query {handle} unregister timed out after {timeout:?}; cleanup continues in the background")]
@@ -113,18 +111,18 @@ enum IncrementalCommand {
         plan: Box<IncrementalQueryPlan>,
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-        response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
+        response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
     },
     Unregister {
         handle: IncrementalQueryHandle,
-        response: oneshot::Sender<ServiceResult<()>>,
+        response: oneshot::Sender<Result<()>>,
     },
     ApplyTriples {
         batch: Arc<Batch>,
-        response: oneshot::Sender<ServiceResult<()>>,
+        response: oneshot::Sender<Result<()>>,
     },
     Shutdown {
-        response: oneshot::Sender<ServiceResult<()>>,
+        response: oneshot::Sender<Result<()>>,
     },
 }
 
@@ -344,7 +342,7 @@ struct RegisteredQuery {
     basis: TxKey,
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
     // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
-    unregister: Option<oneshot::Sender<ServiceResult<()>>>,
+    unregister: Option<oneshot::Sender<Result<()>>>,
 }
 
 struct IncrementalQueryServiceInner {
@@ -559,7 +557,7 @@ impl IncrementalQueryServiceInner {
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> ServiceResult<IncrementalQuerySubscription> {
+    ) -> Result<IncrementalQuerySubscription> {
         let handle = self.allocate_query_id();
         // Registration remains serialized, but DBSP construction and destruction stay off async threads.
         let (circuit, rows) = self
