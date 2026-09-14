@@ -570,8 +570,8 @@ impl IncrementalQueryServiceInner {
         Ok(self.install(handle, circuit, tx_key, rows))
     }
 
-    fn apply_triples(&mut self, batch: Arc<Batch>) {
-        for query in self.queries.values_mut() {
+    fn apply_triples(&self, batch: Arc<Batch>) {
+        for query in self.queries.values() {
             if query.control.stop.is_cancelled() {
                 continue;
             }
