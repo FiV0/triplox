@@ -29,14 +29,7 @@ impl Circuit for QueryCircuit {
 
 pub(super) struct Batch {
     pub tx_key: TxKey,
-    pub wal_seq: u64,
     pub triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Position {
-    pub tx_key: TxKey,
-    pub wal_seq: u64,
 }
 
 pub(super) struct Control {

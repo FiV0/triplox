@@ -92,7 +92,6 @@ where
         CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
-        let seq = tx.seq;
         let schema = node.schema().await;
         let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
         if datoms.is_empty() {
@@ -101,7 +100,7 @@ where
         let tx_key = tx_key_from_datoms(&datoms)?;
         let tuples = datoms_to_tuples(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
-        service.apply_triples(tx_key, seq, tuples).await?;
+        service.apply_triples(tx_key, tuples).await?;
         // The registration gate is released before polling the next WAL transaction.
     }
 

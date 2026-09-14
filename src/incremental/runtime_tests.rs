@@ -70,13 +70,9 @@ impl Fixture {
             panic,
             storage,
         };
-        let subscription = self.inner.install(
-            handle,
-            probe,
-            *crate::bootstrap::BOOTSTRAP_TX_KEY,
-            CdcCursor::default(),
-            vec![],
-        );
+        let subscription =
+            self.inner
+                .install(handle, probe, *crate::bootstrap::BOOTSTRAP_TX_KEY, vec![]);
         (subscription, events)
     }
 
@@ -85,7 +81,6 @@ impl Fixture {
         tx_key.tx_id += seq;
         self.inner.apply_triples(Arc::new(Batch {
             tx_key,
-            wal_seq: seq as u64,
             triples: vec![Tup2(
                 EncodedTriple {
                     entity: vec![],
@@ -352,7 +347,6 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
         .send(IncrementalCommand::ApplyTriples {
             batch: Arc::new(Batch {
                 tx_key,
-                wal_seq: 2,
                 triples: vec![Tup2(
                     EncodedTriple {
                         entity: vec![],
@@ -428,7 +422,6 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     service
         .apply_triples(
             tx_key,
-            2,
             vec![Tup2(
                 EncodedTriple {
                     entity: vec![],

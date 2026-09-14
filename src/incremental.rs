@@ -24,7 +24,6 @@ use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::indexer::Indexer;
 use crate::ops::DataType;
-use crate::slate::cdc::CdcCursor;
 use edn::query::ParsedQuery;
 
 pub(crate) mod cdc;
@@ -32,7 +31,7 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Circuit, Completion, Control, Position, Worker};
+use worker::{Batch, Circuit, Completion, Control, Worker};
 mod worker;
 
 const SUBSCRIPTION_CAPACITY: usize = 128;
@@ -113,7 +112,6 @@ enum IncrementalCommand {
     Register {
         plan: Box<IncrementalQueryPlan>,
         tx_key: TxKey,
-        wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<ServiceResult<IncrementalQuerySubscription>>,
     },
@@ -214,13 +212,8 @@ impl IncrementalQueryService {
         let plan = plan_query(&query, &schema)?;
         let initial_triples =
             scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
-        let wal_cursor = CdcCursor {
-            // TODO: This should likely be initialized to manifest.replay_after_wal_id + 1. See #337
-            wal_id: 0,
-            last_seq: db.status().durable_seq,
-        };
         let subscription = self
-            .register_prepared_query(plan, tx_key, wal_cursor, initial_triples)
+            .register_prepared_query(plan, tx_key, initial_triples)
             .await?;
         self.start_cdc_once(indexer);
         Ok(subscription)
@@ -261,7 +254,6 @@ impl IncrementalQueryService {
         &self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
         let (response, result) = oneshot::channel();
@@ -269,7 +261,6 @@ impl IncrementalQueryService {
             .send(IncrementalCommand::Register {
                 plan: Box::new(plan),
                 tx_key,
-                wal_cursor,
                 initial_triples,
                 response,
             })
@@ -294,17 +285,12 @@ impl IncrementalQueryService {
     pub(crate) async fn apply_triples(
         &self,
         tx_key: TxKey,
-        wal_seq: u64,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::ApplyTriples {
-                batch: Arc::new(Batch {
-                    tx_key,
-                    wal_seq,
-                    triples,
-                }),
+                batch: Arc::new(Batch { tx_key, triples }),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -356,7 +342,6 @@ struct RegisteredQuery {
     sender: mpsc::Sender<Result<IncrementalQueryDelta>>,
     control: Arc<Control>,
     basis: TxKey,
-    routed: Position,
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
     // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
     unregister: Option<oneshot::Sender<ServiceResult<()>>>,
@@ -420,11 +405,11 @@ impl IncrementalQueryServiceInner {
                     }
                 }
                 command = receiver.recv() => match command {
-                    Some(IncrementalCommand::Register { plan, tx_key, wal_cursor, initial_triples, response }) => {
+                    Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
                         let result = if self.cancel.is_cancelled() {
                             Err(anyhow!("Incremental query service stopped"))
                         } else {
-                            self.register(*plan, tx_key, wal_cursor, initial_triples).await
+                            self.register(*plan, tx_key, initial_triples).await
                         };
                         if let Err(Ok(subscription)) = response.send(result) {
                             if let Some(query) = self.queries.get(&subscription.handle) {
@@ -489,7 +474,6 @@ impl IncrementalQueryServiceInner {
         handle: IncrementalQueryHandle,
         circuit: C,
         tx_key: TxKey,
-        wal_cursor: CdcCursor,
         priming_rows: worker::Rows,
     ) -> IncrementalQuerySubscription {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
@@ -504,10 +488,6 @@ impl IncrementalQueryServiceInner {
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
-        let position = Position {
-            tx_key,
-            wal_seq: wal_cursor.last_seq,
-        };
         let worker = Worker {
             circuit,
             storage_path: self.query_storage_path(handle),
@@ -528,7 +508,6 @@ impl IncrementalQueryServiceInner {
                 sender,
                 control,
                 basis: tx_key,
-                routed: position,
                 unregister: None,
             },
         );
@@ -579,7 +558,6 @@ impl IncrementalQueryServiceInner {
         &mut self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        wal_cursor: CdcCursor,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> ServiceResult<IncrementalQuerySubscription> {
         let handle = self.allocate_query_id();
@@ -591,7 +569,7 @@ impl IncrementalQueryServiceInner {
                 Ok((circuit, rows))
             })
             .await?;
-        Ok(self.install(handle, circuit, tx_key, wal_cursor, rows))
+        Ok(self.install(handle, circuit, tx_key, rows))
     }
 
     fn apply_triples(&mut self, batch: Arc<Batch>) {
@@ -607,12 +585,7 @@ impl IncrementalQueryServiceInner {
                 continue;
             }
             match query.inbox.try_send(batch.clone()) {
-                Ok(()) => {
-                    query.routed = Position {
-                        tx_key: batch.tx_key,
-                        wal_seq: batch.wal_seq,
-                    }
-                }
+                Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     query
                         .control
@@ -704,13 +677,6 @@ mod tests {
         }
     }
 
-    fn test_cursor() -> CdcCursor {
-        CdcCursor {
-            wal_id: 0,
-            last_seq: 0,
-        }
-    }
-
     fn path_has_entries(path: &Path) -> bool {
         std::fs::read_dir(path)
             .unwrap()
@@ -735,7 +701,7 @@ mod tests {
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> IncrementalQuerySubscription {
         service
-            .register_prepared_query(plan, test_tx_key_with_tx_id(1), test_cursor(), triples)
+            .register_prepared_query(plan, test_tx_key_with_tx_id(1), triples)
             .await
             .unwrap()
     }
@@ -780,7 +746,7 @@ mod tests {
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
         service
-            .apply_triples(tx_key, 2, vec![name_triple(43, "Bob")])
+            .apply_triples(tx_key, vec![name_triple(43, "Bob")])
             .await
             .unwrap();
         assert_eq!(
@@ -800,7 +766,6 @@ mod tests {
             .register_prepared_query(
                 aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
                 test_tx_key_with_tx_id(1),
-                test_cursor(),
                 vec![name_triple(42, "Alice")],
             )
             .await
@@ -823,11 +788,11 @@ mod tests {
         let mut names = register(&service, single_pattern_plan(), vec![]).await;
         delta(&mut aggregate).await.unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![age_triple(42, 10)])
+            .apply_triples(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)])
             .await
             .unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(3), 3, vec![name_triple(43, "Alice")])
+            .apply_triples(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")])
             .await
             .unwrap();
         assert!(delta(&mut aggregate)
@@ -844,7 +809,7 @@ mod tests {
         delta(&mut names).await.unwrap();
         let tx_key = test_tx_key_with_tx_id(4);
         service
-            .apply_triples(tx_key, 4, vec![name_triple(44, "Bob")])
+            .apply_triples(tx_key, vec![name_triple(44, "Bob")])
             .await
             .unwrap();
         assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
@@ -868,23 +833,19 @@ mod tests {
         );
         let basis = test_tx_key_with_tx_id(1000);
         let mut query = service
-            .register_prepared_query(single_pattern_plan(), basis, test_cursor(), vec![])
+            .register_prepared_query(single_pattern_plan(), basis, vec![])
             .await
             .unwrap();
         for seq in 1..=1000 {
             service
-                .apply_triples(
-                    test_tx_key_with_tx_id(seq),
-                    seq as u64,
-                    vec![name_triple(seq, "old")],
-                )
+                .apply_triples(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")])
                 .await
                 .unwrap();
         }
         assert!(query.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(1001);
         service
-            .apply_triples(tx_key, 1001, vec![name_triple(1001, "new")])
+            .apply_triples(tx_key, vec![name_triple(1001, "new")])
             .await
             .unwrap();
         assert_eq!(delta(&mut query).await.unwrap().tx_key, tx_key);
@@ -916,13 +877,12 @@ mod tests {
             .send(IncrementalCommand::Register {
                 plan: Box::new(single_pattern_plan()),
                 tx_key: test_tx_key_with_tx_id(1),
-                wal_cursor: test_cursor(),
                 initial_triples: vec![],
                 response,
             })
             .unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(2), 2, vec![])
+            .apply_triples(test_tx_key_with_tx_id(2), vec![])
             .await
             .unwrap();
         service.shutdown().await.unwrap();
@@ -985,7 +945,6 @@ mod tests {
             .register_prepared_query(
                 single_pattern_plan(),
                 test_tx_key_with_tx_id(1),
-                test_cursor(),
                 vec![name_triple(42, "Alice")],
             )
             .await
@@ -1030,12 +989,7 @@ mod tests {
         let query_tx_key = test_tx_key_with_tx_id(1);
         let apply_tx_key = test_tx_key_with_tx_id(2);
         let mut first_subscription = service
-            .register_prepared_query(
-                single_pattern_plan(),
-                query_tx_key,
-                test_cursor(),
-                Vec::new(),
-            )
+            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
             .await
             .unwrap();
 
@@ -1044,19 +998,14 @@ mod tests {
         let apply = tokio::spawn(async move {
             let _registration_guard = applying_service.registration_gate.lock().await;
             applying_service
-                .apply_triples(apply_tx_key, 2, vec![name_triple(43, "Bob")])
+                .apply_triples(apply_tx_key, vec![name_triple(43, "Bob")])
                 .await
         });
         tokio::task::yield_now().await;
         assert!(first_subscription.deltas.try_recv().is_err());
 
         let mut second_subscription = service
-            .register_prepared_query(
-                single_pattern_plan(),
-                query_tx_key,
-                test_cursor(),
-                Vec::new(),
-            )
+            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
             .await
             .unwrap();
         assert!(second_subscription.deltas.try_recv().is_err());
