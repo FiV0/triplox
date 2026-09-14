@@ -58,6 +58,7 @@ pub(crate) fn datoms_to_tuples(
 pub(crate) fn spawn_cdc_loop<N>(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
+    cursor: CdcCursor,
     node: Arc<N>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
@@ -69,6 +70,7 @@ where
     tokio::spawn(run_cdc_loop(
         object_path,
         object_store,
+        cursor,
         node,
         service,
         registration_gate,
@@ -79,6 +81,7 @@ where
 async fn run_cdc_loop<N>(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
+    cursor: CdcCursor,
     node: Arc<N>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
@@ -88,8 +91,7 @@ where
     N: SchemaProvider,
 {
     let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
+    let mut stream = CdcStream::new(wal_reader, cursor, CDC_POLL_INTERVAL, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
         let seq = tx.seq;
@@ -225,6 +227,7 @@ mod tests {
         let result = run_cdc_loop(
             slate.object_path,
             slate.object_store,
+            CdcCursor::default(),
             indexer,
             service,
             Arc::new(Mutex::new(())),
