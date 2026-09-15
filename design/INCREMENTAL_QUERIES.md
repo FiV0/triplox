@@ -454,11 +454,12 @@ TOML settings:
     jobs queue when all 512 threads are busy.
 
   **Apply scheduling:** the shared semaphore provides `max_concurrent_steps`
-  permits. Each worker waits for a permit before submitting an apply job. The
-  job holds that permit through queueing and execution, then releases it so
-  another worker can proceed. Each query applies transactions in order, one
-  at a time; different queries can apply concurrently. The two async threads
-  can therefore coordinate more than two simultaneous applies.
+  permits. Each worker acquires a permit, then calls `spawn_blocking` to submit
+  an apply job to the blocking pool. The following `.await` suspends the query
+  worker if the job is still pending, freeing its current async thread to run
+  other tasks. When the job finishes, Tokio schedules the query worker to resume
+  on either async thread. The job holds its permit through queueing and execution,
+  then releases it so another worker can proceed.
 
   DBSP also owns one runtime worker thread per circuit. The semaphore limits
   outstanding apply jobs, not the total thread count.
