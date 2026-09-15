@@ -33,6 +33,7 @@ use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
+use crate::rewrite::rewrite_query;
 use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -330,11 +331,28 @@ pub(crate) fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
 // Variable collection from clauses
 // ---------------------------------------------------------------------------
 
+/// Remove generated variables when crossing an OR or NOT boundary.
+pub(crate) fn exposed_variables(
+    variables: impl IntoIterator<Item = Variable>,
+    generated_variables: &HashSet<Variable>,
+) -> Vec<Variable> {
+    variables
+        .into_iter()
+        .filter(|variable| !generated_variables.contains(variable))
+        .collect()
+}
+
 /// Extract variables bound by an OrWhereClause.
-pub(crate) fn or_branch_bound_variables(branch: &OrWhereClause) -> Vec<Variable> {
+pub(crate) fn or_branch_bound_variables(
+    branch: &OrWhereClause,
+    generated_variables: &HashSet<Variable>,
+) -> Vec<Variable> {
     match branch {
-        OrWhereClause::Clause(clause) => clause_bound_variables(clause),
-        OrWhereClause::And(children) => children.iter().flat_map(clause_bound_variables).collect(),
+        OrWhereClause::Clause(clause) => clause_bound_variables(clause, generated_variables),
+        OrWhereClause::And(children) => children
+            .iter()
+            .flat_map(|clause| clause_bound_variables(clause, generated_variables))
+            .collect(),
     }
 }
 
@@ -346,7 +364,10 @@ pub(crate) fn or_branch_mentioned_variables(branch: &OrWhereClause) -> Vec<Varia
 /// Recursively extract variables bound by a single WhereClause.
 /// Only positive (Pattern/OrJoin/WhereFn) clauses contribute variables. NotJoin and Pred
 /// clauses do not introduce new variables.
-pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
+pub(crate) fn clause_bound_variables(
+    clause: &WhereClause,
+    generated_variables: &HashSet<Variable>,
+) -> Vec<Variable> {
     match clause {
         WhereClause::Pattern(pattern) => pattern_variables(pattern),
         WhereClause::OrJoin(oj) => {
@@ -354,7 +375,12 @@ pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
             // Extract from the first branch only.
             oj.clauses
                 .first()
-                .map(or_branch_bound_variables)
+                .map(|branch| {
+                    exposed_variables(
+                        or_branch_bound_variables(branch, generated_variables),
+                        generated_variables,
+                    )
+                })
                 .unwrap_or_default()
         }
         WhereClause::WhereFn(wf) => {
@@ -385,6 +411,7 @@ pub(crate) fn clause_mentioned_variables(clause: &WhereClause) -> Vec<Variable> 
 pub fn query_variable_order(
     in_bindings: &[Binding],
     where_clauses: &[WhereClause],
+    generated_variables: &HashSet<Variable>,
 ) -> Vec<Variable> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
@@ -410,7 +437,7 @@ pub fn query_variable_order(
         .collect();
 
     for clause in reordered {
-        for var in clause_bound_variables(clause) {
+        for var in clause_bound_variables(clause, generated_variables) {
             if seen.insert(var.clone()) {
                 order.push(var);
             }
@@ -660,7 +687,7 @@ fn apply_order_and_limit(
     find_spec: &FindSpec,
 ) -> Result<QueryResult, Error> {
     if let Some(orders) = order {
-        // Also resolved in validate_query(); duplicated here to keep the API simple.
+        // Also resolved in validate_query(&HashSet::new()); duplicated here to keep the API simple.
         let sort_keys = resolve_order_columns(orders, find_spec)?;
         // TODO: replace with Vec::try_sort_by once stabilized (rust-lang/rust#130044)
         // TODO: For large result sets, consider on-disk sorting to avoid OOM.
@@ -739,8 +766,10 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    validate_query(query, args)?;
-    let logical_plan = build_logical_plan(query, args)?;
+    let rewritten = rewrite_query(query);
+    let query = &rewritten.query;
+    validate_query(query, args, &rewritten.generated_variables)?;
+    let logical_plan = build_logical_plan(query, args, &rewritten.generated_variables)?;
     let output_variables = logical_plan.output_variables().to_vec();
     let stages = logical_plan.materialize(db, None)?;
     let bindings = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
@@ -780,14 +809,16 @@ mod tests {
     #[test]
     fn test_query_variable_order_single_pattern() {
         let parsed = parse_query("[:find ?e ?name :where [?e :name ?name]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(order, vec!["?e".to_var(), "?name".to_var()]);
     }
 
     #[test]
     fn test_query_variable_order_multiple_patterns() {
         let parsed = parse_query("[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(
             order,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
@@ -797,14 +828,16 @@ mod tests {
     #[test]
     fn test_query_variable_order_with_constants() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"]]"#);
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(order, vec!["?e".to_var()]);
     }
 
     #[test]
     fn test_query_variable_order_with_or_clause() {
         let parsed = parse_query("[:find ?e :where (or [?e _ 10] [?e _ 15])]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(order, vec!["?e".to_var()]);
     }
 
@@ -813,14 +846,16 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e ?age :where (or [?e :name "alice"] [?e :name "bob"]) [?e :age ?age]]"#,
         );
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(order, vec!["?e".to_var(), "?age".to_var(),]);
     }
 
     #[test]
     fn test_query_variable_order_ignores_predicates() {
         let parsed = parse_query("[:find ?e ?age :where [?e :age ?age] [(< ?age 30)]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(order, vec!["?e".to_var(), "?age".to_var(),]);
     }
 
@@ -828,7 +863,8 @@ mod tests {
     fn test_query_variable_order_with_fn_expr() {
         let parsed =
             parse_query("[:find ?e ?next_age :where [?e :age ?age] [(+ ?age 1) ?next_age]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(
             order,
             vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
@@ -840,7 +876,8 @@ mod tests {
         // FnExpr appears first, but its output should still come after Triple vars
         let parsed =
             parse_query("[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(
             order,
             vec!["?e".to_var(), "?age".to_var(), "?next_age".to_var(),]
@@ -851,7 +888,8 @@ mod tests {
     fn test_query_variable_order_with_and_inside_or() {
         let parsed =
             parse_query("[:find ?e ?name ?age :where (or (and [?e :name ?name] [?e :age ?age]))]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(
             order,
             vec!["?e".to_var(), "?name".to_var(), "?age".to_var(),]
@@ -1003,7 +1041,8 @@ mod tests {
     #[test]
     fn test_query_variable_order_with_in_vars() {
         let parsed = parse_query("[:find ?e ?name :in ?name :where [?e :person/name ?name]]");
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         // ?name from :in should come first, then ?e from WHERE
         assert_eq!(order, vec!["?name".to_var(), "?e".to_var(),]);
     }
@@ -1014,7 +1053,7 @@ mod tests {
     fn test_regexp_like_valid_query() {
         let parsed =
             parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "^B")]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_ok(), "expected ok, got {:?}", result);
     }
 
@@ -1022,7 +1061,7 @@ mod tests {
     fn test_regexp_like_invalid_pattern_rejected_at_plan_time() {
         let parsed =
             parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name "[")]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1038,7 +1077,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name :where [?e :name ?name] [?e :pat ?pat] [(regexp_like ?name ?pat)]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("string literal"), "unexpected error: {}", msg);
@@ -1047,7 +1086,7 @@ mod tests {
     #[test]
     fn test_regexp_like_wrong_arity_rejected() {
         let parsed = parse_query(r#"[:find ?name :where [?e :name ?name] [(regexp_like ?name)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expects 2 args"));
     }
@@ -1058,7 +1097,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name ?hit :where [?e :name ?name] [(regexp_like ?name "^B") ?hit]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -1073,7 +1112,8 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name ?flag :where [?e :name ?name] [?e :age ?age] [(if (> ?age 30) 1 0) ?flag]]"#,
         );
-        let order = query_variable_order(&parsed.in_bindings, &parsed.where_clauses);
+        let order =
+            query_variable_order(&parsed.in_bindings, &parsed.where_clauses, &HashSet::new());
         assert_eq!(
             order,
             vec![
@@ -1090,7 +1130,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?name ?flag :where [?e :name ?name] [?e :age ?age] [(if (> ?age 30) ?age 0) ?flag]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_ok());
     }
 
@@ -1099,7 +1139,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e ?flag :where [?e :name "Alice"] [(if (> ?unbound 30) 1 0) ?flag]]"#,
         );
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
