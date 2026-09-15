@@ -34,6 +34,7 @@ pub enum BinaryOp {
 /// Operators for unary expressions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
+    Identity,
     Not,
     // Math
     Abs,
@@ -252,6 +253,7 @@ fn eval_arithmetic(left: &DataType, op: &BinaryOp, right: &DataType) -> Option<D
 
 fn eval_unary_op(op: &UnaryOp, val: &DataType) -> Option<DataType> {
     match op {
+        UnaryOp::Identity => Some(val.clone()),
         UnaryOp::Not => match val {
             DataType::Boolean(b) => Some(DataType::Boolean(!b)),
             _ => None,
@@ -622,6 +624,18 @@ mod tests {
     }
 
     // --- Unary operator tests ---
+
+    #[test]
+    fn test_identity() {
+        let expr = unary(UnaryOp::Identity, var("?value"));
+        let ctx_bindings =
+            HashMap::from([("?value".to_var(), DataType::String("same".to_string()))]);
+        let ctx = EvalContext::new(&ctx_bindings);
+        assert_eq!(
+            eval(&expr, &ctx),
+            Some(DataType::String("same".to_string()))
+        );
+    }
 
     #[test]
     fn test_abs_positive_long() {

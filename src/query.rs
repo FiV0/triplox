@@ -188,6 +188,7 @@ fn convert_binary_op(name: &str) -> Result<BinaryOp, Error> {
 
 fn convert_unary_op(name: &str) -> Result<UnaryOp, Error> {
     match name {
+        "identity" => Ok(UnaryOp::Identity),
         "not" => Ok(UnaryOp::Not),
         "abs" => Ok(UnaryOp::Abs),
         "upper" => Ok(UnaryOp::Upper),
