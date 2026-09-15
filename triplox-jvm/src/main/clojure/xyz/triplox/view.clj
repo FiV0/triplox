@@ -34,6 +34,7 @@
                   (when-not (= delta ::api/timeout)
                     (update-view! view delta))
                   (recur))))))
+        (catch InterruptedException _ie)
         (catch Exception error
           (log/error error "Materialized view subscription failed"))
         (finally (async/close! done))))
