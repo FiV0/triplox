@@ -23,7 +23,6 @@ pub(crate) static BOOTSTRAP_RECORD: LazyLock<Record> = LazyLock::new(|| Record {
     record: Vec::new(),
 });
 
-#[allow(async_fn_in_trait)]
 pub(crate) trait Subscriber: Send + Sync {
     fn accept(&mut self, record: Record) -> impl Future<Output = ()> + Send;
 }
