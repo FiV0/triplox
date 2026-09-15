@@ -444,12 +444,9 @@ impl IncrementalQueryServiceInner {
             if let Some(completion) = self.completions.recv().await {
                 if let Err(error) = self.retire(completion) {
                     warn!("{error:#}");
-                    cleanup = match cleanup {
-                        Ok(()) => Err(error),
-                        Err(previous) => Err(error.context(format!(
-                            "An additional incremental query cleanup failed: {previous:#}"
-                        ))),
-                    };
+                    if cleanup.is_ok() {
+                        cleanup = Err(error);
+                    }
                 }
             }
         }
