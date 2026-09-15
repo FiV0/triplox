@@ -445,16 +445,23 @@ TOML settings:
   up, with a minimum of one. A shared semaphore bounds outstanding live apply
   jobs; waiting for output holds no permit.
 - `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
-- The service-owned Tokio runtime has two separate pools: `worker_threads(2)`
-  configures the async pool, while `spawn_blocking` uses the blocking pool.
-  Async query workers acquire a semaphore permit, submit a synchronous apply job,
-  and await its completion. Awaiting frees the async thread to poll other workers;
-  the blocking job retains the permit until it finishes. Two async threads can
-  therefore coordinate more than two simultaneous applies: `max_concurrent_steps`,
-  not `worker_threads(2)`, sets the application-level limit.
-  There is no additional dedicated driver thread per query. DBSP still owns one
-  runtime worker per circuit, separate from Tokio's pools; the semaphore does not
-  limit the total number of threads in the process.
+- The service-owned Tokio runtime has two pools:
+  - **Async pool: 2 threads** (`worker_threads(2)`), shared by all query workers.
+    Waiting for input, a permit, or an apply result frees the thread to run other
+    workers.
+  - **Blocking (sync) pool: up to 512 threads**, Tokio's default limit. Threads
+    are created on demand to run synchronous jobs submitted via `spawn_blocking`;
+    jobs queue when all 512 threads are busy.
+
+  **Apply scheduling:** the shared semaphore provides `max_concurrent_steps`
+  permits. Each worker waits for a permit before submitting an apply job. The
+  job holds that permit through queueing and execution, then releases it so
+  another worker can proceed. Each query applies transactions in order, one
+  at a time; different queries can apply concurrently. The two async threads
+  can therefore coordinate more than two simultaneous applies.
+
+  DBSP also owns one runtime worker thread per circuit. The semaphore limits
+  outstanding apply jobs, not the total thread count.
 - `CDC_POLL_INTERVAL` controls WAL polling as before.
 
 These are count limits, not byte limits. Shared transaction payloads reduce
