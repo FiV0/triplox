@@ -396,11 +396,18 @@ impl IncrementalQueryServiceInner {
 
     async fn run(mut self, mut receiver: mpsc::UnboundedReceiver<IncrementalCommand>) {
         let mut shutdown = None;
+        let mut cleanup = Ok(());
         loop {
             tokio::select! {
                 completion = self.completions.recv(), if !self.queries.is_empty() => {
                     if let Some(completion) = completion {
-                        if let Err(error) = self.retire(completion) { warn!("{error:#}"); }
+                        if let Err(error) = self.retire(completion) {
+                            warn!("{error:#}");
+                            // Shutdown cancels workers before waiting for CDC and sending its command.
+                            if self.cancel.is_cancelled() && cleanup.is_ok() {
+                                cleanup = Err(error);
+                            }
+                        }
                     }
                 }
                 command = receiver.recv() => match command {
@@ -439,7 +446,6 @@ impl IncrementalQueryServiceInner {
         for query in self.queries.values() {
             query.control.terminate(None);
         }
-        let mut cleanup = Ok(());
         while !self.queries.is_empty() {
             if let Some(completion) = self.completions.recv().await {
                 if let Err(error) = self.retire(completion) {

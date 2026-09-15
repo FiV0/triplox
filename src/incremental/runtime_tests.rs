@@ -544,6 +544,32 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
 }
 
 #[tokio::test]
+async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
+    let mut fixture = Fixture::new(4, 1);
+    let (mut query, _) = fixture.query(None, false);
+    let storage_path = fixture.inner.query_storage_path(query.handle);
+    std::fs::remove_dir(&storage_path).unwrap();
+    std::fs::write(&storage_path, "not a directory").unwrap();
+    let (mut service, dispatcher, _storage) = fixture.start();
+    service.retire_timeout = Duration::from_secs(5);
+    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
+        // Hold shutdown in the CDC wait until the dispatcher has retired the query.
+        assert!(query.deltas.recv().await.is_none());
+        Ok(())
+    }));
+
+    let error = service.shutdown().await.unwrap_err();
+    assert!(error.downcast_ref::<std::io::Error>().is_some());
+    assert!(error
+        .to_string()
+        .contains("Failed to remove incremental query storage"));
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     let mut fixture = Fixture::new(4, 1);
     let (mut query, _) = fixture.query(None, false);
