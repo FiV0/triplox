@@ -1,3 +1,4 @@
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -12,6 +13,21 @@ pub struct Config {
     pub log: Option<LogConfig>,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub incremental: IncrementalConfig,
+}
+
+/// DBSP resources for incremental queries; storage and CDC settings are independent.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(tag = "runtime", rename_all = "lowercase", deny_unknown_fields)]
+pub enum IncrementalConfig {
+    #[default]
+    Dedicated,
+    Pooled {
+        threads: NonZeroUsize,
+        merger_threads: NonZeroU16,
+        cache_mib: NonZeroUsize,
+    },
 }
 
 #[cfg(feature = "kafka")]
@@ -188,6 +204,27 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_pool_requires_positive_resource_budgets() {
+        let config: IncrementalConfig =
+            toml::from_str("runtime = 'pooled'\nthreads = 2\nmerger_threads = 1\ncache_mib = 4096")
+                .unwrap();
+        assert!(
+            matches!(config, IncrementalConfig::Pooled { cache_mib, .. } if cache_mib.get() == 4096)
+        );
+        for field in ["threads", "merger_threads", "cache_mib"] {
+            let valid = "runtime = 'pooled'\nthreads = 1\nmerger_threads = 1\ncache_mib = 1";
+            assert!(toml::from_str::<IncrementalConfig>(
+                &valid.replace(&format!("{field} = 1"), &format!("{field} = 0"))
+            )
+            .is_err());
+        }
+        assert!(toml::from_str::<IncrementalConfig>(
+            "runtime = 'pooled'\nthreads = 1\nmerger_threads = 65536\ncache_mib = 4096"
+        )
+        .is_err());
+    }
 
     #[test]
     fn resolves_memory() {

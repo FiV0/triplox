@@ -1,3 +1,6 @@
+[build]
+rustc-wrapper = "sccache"
+
 [alias]
 dev = "watch -x 'run -- config/triplox.toml'"
 

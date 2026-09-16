@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use triplox::config::{Config, NodeConfig};
+use triplox::config::{Config, IncrementalConfig, NodeConfig};
 use triplox::node::Node;
 use triplox::server::{DevServer, Server};
 
@@ -19,7 +19,11 @@ fn load_config() -> Result<Config> {
     Ok(config)
 }
 
-async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
+async fn run_server(
+    bind_addr: String,
+    resolved: NodeConfig,
+    incremental: IncrementalConfig,
+) -> Result<()> {
     let token = CancellationToken::new();
     let shutdown_token = token.clone();
 
@@ -48,11 +52,11 @@ async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
 
     match resolved {
         NodeConfig::Dev => {
-            let server = DevServer::new();
+            let server = DevServer::with_incremental(incremental);
             server.listen(&bind_addr, token).await
         }
         NodeConfig::Memory => {
-            let node = Arc::new(Node::memory_node().await);
+            let node = Arc::new(Node::memory_node_with_incremental(incremental).await);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -60,18 +64,23 @@ async fn run_server(bind_addr: String, resolved: NodeConfig) -> Result<()> {
             storage_path,
             log_path,
         } => {
-            let node = Arc::new(Node::local_node(&storage_path, &log_path).await?);
+            let node = Arc::new(
+                Node::local_node_with_incremental(&storage_path, &log_path, incremental).await?,
+            );
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         NodeConfig::Remote { storage, log_path } => {
-            let node = Arc::new(Node::remote_node(&storage, &log_path).await?);
+            let node = Arc::new(
+                Node::remote_node_with_incremental(&storage, &log_path, incremental).await?,
+            );
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
         #[cfg(feature = "kafka")]
         NodeConfig::Kafka { storage, log } => {
-            let node = Arc::new(Node::kafka_node(&storage, &log).await?);
+            let node =
+                Arc::new(Node::kafka_node_with_incremental(&storage, &log, incremental).await?);
             let server = Server::new(node);
             server.listen(&bind_addr, token).await
         }
@@ -84,8 +93,10 @@ async fn main() -> Result<()> {
 
     let config = load_config()?;
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+    let incremental = config.incremental;
     let node_config = config.resolve()?;
     info!("Starting triplox in {} mode", node_config.mode());
 
-    run_server(bind_addr, node_config).await
+    info!(?incremental, "Incremental query runtime configuration");
+    run_server(bind_addr, node_config, incremental).await
 }
