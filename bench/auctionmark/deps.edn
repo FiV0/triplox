@@ -1,6 +1,7 @@
 {:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         org.clojure/tools.cli {:mvn/version "1.4.256"}
+        org.clojure/data.json {:mvn/version "2.5.1"}
 
         org.clojure/tools.logging {:mvn/version "1.3.0"}
         ch.qos.logback/logback-classic {:mvn/version "1.4.5"}
@@ -9,6 +10,7 @@
 
         xyz.triplox/triplox {:mvn/version "0.1.0-incremental-auctionmark-SNAPSHOT"}}
  :aliases {:run {:main-opts ["-m" "auctionmark.main"]}
+           :sync {:main-opts ["-m" "auctionmark.sync"]}
 
            ;; Tests run against a Triplox dev node (per-connection ephemeral
            ;; in-memory database). Start one first, e.g.:
