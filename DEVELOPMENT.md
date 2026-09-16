@@ -1,5 +1,29 @@
 # Development
 
+## Rust build cache
+
+Optionally install sccache to reuse compiled dependencies across worktrees:
+
+```bash
+cargo install sccache --locked
+```
+
+Add this setting to your user Cargo configuration, `~/.cargo/config.toml`
+(merge it into an existing `[build]` section if present):
+
+```toml
+[build]
+rustc-wrapper = "sccache"
+```
+
+This applies to all your Cargo projects, including existing and new worktrees.
+Each worktree keeps its own `target/` directory, and workspace crates retain
+Cargo's default incremental compilation settings. The cache warms as you
+build; inspect it with `sccache --show-stats`.
+
+To bypass your wrapper setting for a build, use `RUSTC_WRAPPER= cargo build`.
+Sccache is not required to build the repository.
+
 ## Current versions
 
 | Crate / artifact | Version | Source |
