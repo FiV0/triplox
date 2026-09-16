@@ -2,6 +2,7 @@
 
 # --- Stage 1: Chef base ---
 FROM rust:1.95.0-bookworm AS chef
+ENV RUSTC_WRAPPER=""
 ARG BUILD_PACKAGES=""
 RUN cargo install cargo-chef
 RUN if [ -n "$BUILD_PACKAGES" ]; then \
