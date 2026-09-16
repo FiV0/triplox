@@ -440,7 +440,7 @@
               bid-id (next-id (:bid-counter state))
               bid-tempid (str "bid-" bid-id)
               now (now-instant)]
-          (tc/transact conn
+          (*transact* conn
                        [{:db/id bid-tempid
                          :item-bid/id bid-id
                          :item-bid/item-id [:item/id item-id]
@@ -496,7 +496,7 @@
                   :item/start-date now
                   :item/end-date (millis->instant end-ms)
                   :item/status :open}]
-    (tc/transact conn (into [item-doc] image-docs))
+    (*transact* conn (into [item-doc] image-docs))
     ;; apply seller fee — read current balance then decrement
     (let [balance (or (ffirst (tc/q (tc/db conn)
                                     '{:find [?b]
@@ -505,7 +505,7 @@
                                               [?e :user/balance ?b]]}
                                     seller-id))
                       0.0)]
-      (tc/transact conn
+      (*transact* conn
                    [{:db/id [:user/id seller-id]
                      :user/balance (- (double balance) 1.0)}]))
     (pool-add! (:items-open state) (->ItemSample item-id seller-id end-ms))))
@@ -536,7 +536,7 @@
   [conn ^Random rng state]
   (let [uid (next-id (:user-counter state))
         region-ids @(:regions state)]
-    (tc/transact conn
+    (*transact* conn
                  [{:user/id uid
                    :user/region-id [:region/id (random/uniform-nth rng region-ids)]
                    :user/rating 0
@@ -581,7 +581,7 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-closed rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (tc/transact conn
+      (*transact* conn
         [{:item-feedback/id (next-id (:feedback-counter state))
           :item-feedback/item-id [:item/id (:item-id item)]
           :item-feedback/user-id [:user/id (:seller-id item)]
@@ -610,7 +610,7 @@
                        :limit 1}
                      item-id)
           winning-bid-id (ffirst bids)]
-      (tc/transact conn
+      (*transact* conn
                    [(merge
                      {:item-purchase/id (next-id (:purchase-counter state))
                       :item-purchase/item-id [:item/id item-id]
@@ -631,7 +631,7 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (tc/transact conn
+      (*transact* conn
                    [{:item-comment/id (next-id (:comment-counter state))
                      :item-comment/item-id [:item/id (:item-id item)]
                      :item-comment/user-id [:user/id (:seller-id item)]
@@ -649,7 +649,7 @@
   "Update item description."
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
-    (tc/transact conn
+    (*transact* conn
       [{:db/id [:item/id (:item-id item)]
         :item/description (str "Updated description " (.nextInt rng 100000))}])))
 
@@ -717,7 +717,7 @@
                             {:db/id [:item/id item-id]
                              :item/status :waiting-for-purchase})
                           expired)]
-        (tc/transact conn tx-data)
+        (*transact* conn tx-data)
         ;; move items from open to waiting
         (doseq [[item-id seller-id end] expired]
           (let [sample (->ItemSample item-id seller-id (instant->millis end))]
