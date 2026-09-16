@@ -1589,9 +1589,8 @@ dependencies = [
 
 [[package]]
 name = "dbsp"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09c0655fcdd8c3f7b31837ce5fb462a1ce507373fe26de0a16265d7fa4de85f"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1606,11 +1605,11 @@ dependencies = [
  "derive_more 1.0.0",
  "dyn-clone",
  "enum-map",
- "fastbloom",
  "fdlimit",
  "feldera-buffer-cache",
  "feldera-ir",
  "feldera-macros",
+ "feldera-modular-bloom",
  "feldera-samply",
  "feldera-size-of",
  "feldera-storage",
@@ -1956,18 +1955,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastbloom"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7f34442dbe69c60fe8eaf58a8cafff81a1f278816d8ab4db255b3bef4ac3c4"
-dependencies = [
- "getrandom 0.3.4",
- "libm",
- "rand 0.9.5",
- "siphasher",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1985,9 +1972,8 @@ dependencies = [
 
 [[package]]
 name = "feldera-buffer-cache"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97c5f55f65f244aef2160852129816b5a84f60ab0fead7ae7a1c20dc454fcc5a"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "enum-map",
  "feldera-types",
@@ -1998,9 +1984,8 @@ dependencies = [
 
 [[package]]
 name = "feldera-ir"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02587674d5579bc1453090122ba30698c0054714e7d56f30f1e4b02c38d6af81"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "serde",
  "serde_json",
@@ -2010,9 +1995,8 @@ dependencies = [
 
 [[package]]
 name = "feldera-macros"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e783ec2be9e54a502486b6836b594568a4713e1adca44ee19a4c8e631978004a"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -2021,10 +2005,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "feldera-modular-bloom"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "feldera-samply"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b0c52ca3103fe3e0b2b188ece46bbf1d7a78e3e263d49149f9bac758ec264a"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "crossbeam",
  "feldera-size-of",
@@ -2057,9 +2048,8 @@ dependencies = [
 
 [[package]]
 name = "feldera-storage"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753ef88e72e82de309fc62bd2bbe5f29fc21a924a2b98779ff0de3c3f4e2161c"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -2082,9 +2072,8 @@ dependencies = [
 
 [[package]]
 name = "feldera-types"
-version = "0.337.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d541601630d8fd5eba2aa47b887b86dd82878d8b4c9a69b72d079694b2bf1502"
+version = "0.348.0"
+source = "git+https://github.com/FiV0/feldera?rev=ded0d390b64bdfe82a9afac9084404ad3809547e#ded0d390b64bdfe82a9afac9084404ad3809547e"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -3231,12 +3220,6 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "libm"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libz-sys"
