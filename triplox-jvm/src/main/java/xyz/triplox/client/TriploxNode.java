@@ -2,6 +2,8 @@ package xyz.triplox.client;
 
 import java.io.*;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.MediaType;
@@ -21,13 +23,15 @@ import okhttp3.Response;
 public class TriploxNode implements AutoCloseable {
     private final OkHttpClient httpClient;
     private final String baseUrl;
+    private final ThreadFactory subscriptionReaderFactory;
 
     private static final String CONTENT_TYPE = "application/vnd.triplox+msgpack";
     private static final MediaType CONTENT_MEDIA_TYPE = MediaType.get(CONTENT_TYPE);
 
-    private TriploxNode(OkHttpClient httpClient, String baseUrl) {
+    private TriploxNode(OkHttpClient httpClient, String baseUrl, ThreadFactory subscriptionReaderFactory) {
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
+        this.subscriptionReaderFactory = Objects.requireNonNull(subscriptionReaderFactory);
     }
 
     static OkHttpClient createHttpClient() {
@@ -41,7 +45,12 @@ public class TriploxNode implements AutoCloseable {
      * Connect to a Triplox HTTP server.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        return new TriploxNode(createHttpClient(), "http://" + host + ":" + port);
+        return connect(host, port, Subscription.DEFAULT_READER_FACTORY);
+    }
+
+    /** Connect with a factory for subscription readers, such as Thread.ofVirtual().factory(). */
+    public static TriploxNode connect(String host, int port, ThreadFactory subscriptionReaderFactory) throws IOException {
+        return new TriploxNode(createHttpClient(), "http://" + host + ":" + port, subscriptionReaderFactory);
     }
 
     /**
@@ -152,7 +161,7 @@ public class TriploxNode implements AutoCloseable {
         }
 
         try {
-            return Subscription.open(response.body().byteStream(), response);
+            return Subscription.open(response.body().byteStream(), response, subscriptionReaderFactory);
         } catch (IOException | RuntimeException e) {
             response.close();
             throw e;

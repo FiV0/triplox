@@ -10,10 +10,62 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class SubscriptionTest {
+
+    @Test
+    void virtualReaderDeliversRowsBeforeTerminalError() throws Exception {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            packOpenFrame(packer);
+            packDeltaFrame(packer, "Alice");
+            packErrorFrame(packer);
+            body = packer.toByteArray();
+        }
+        var reader = new AtomicReference<Thread>();
+        var stream = new ByteArrayInputStream(body);
+        try (var sub = Subscription.open(stream, stream, task -> {
+            var thread = Thread.ofVirtual().unstarted(task);
+            reader.set(thread);
+            return thread;
+        })) {
+            assertTrue(reader.get().isVirtual());
+            var delta = sub.poll(5, TimeUnit.SECONDS);
+            assertNotNull(delta);
+            assertEquals("Alice", delta.rows().getFirst().values().getFirst());
+            assertEquals(delta.txKey(), sub.txKey());
+            assertThrows(TriploxException.class, () -> sub.poll(5, TimeUnit.SECONDS));
+        }
+        reader.get().join(2000);
+        assertFalse(reader.get().isAlive());
+    }
+
+    @Test
+    void closeStopsVirtualReader() throws Exception {
+        byte[] body;
+        try (var packer = MessagePack.newDefaultBufferPacker()) {
+            for (int i = 0; i < 256; i++) {
+                packDeltaFrame(packer, "Alice " + i);
+            }
+            body = packer.toByteArray();
+        }
+        var reader = new AtomicReference<Thread>();
+        var unpacker = MessagePack.newDefaultUnpacker(new ByteArrayInputStream(body));
+        try (var sub = new Subscription(sampleBasis(), () -> {}, unpacker, task -> {
+            var thread = Thread.ofVirtual().unstarted(task);
+            reader.set(thread);
+            return thread;
+        })) {
+            assertNotNull(sub.poll(5, TimeUnit.SECONDS));
+            sub.close();
+            assertNull(sub.poll(5, TimeUnit.SECONDS));
+        }
+        reader.get().join(2000);
+        assertFalse(reader.get().isAlive());
+    }
 
     @Test
     void clientDisablesReadTimeoutForLongRunningRequests() {
