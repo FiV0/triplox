@@ -4,13 +4,18 @@
    [xyz.triplox.tx :as tx]
    [xyz.triplox.types :as types])
   (:import
-   [java.util.concurrent TimeUnit]
+   [java.util.concurrent ThreadFactory TimeUnit]
    [xyz.triplox.client Db QueryArg$Collection QueryArg$Scalar Subscription TriploxNode TxKey TxResult]))
 
 (defn connect
-  "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable)."
-  ^TriploxNode [host port]
-  (TriploxNode/connect host (int port)))
+  "Connect to a Triplox server. Returns a TriploxNode (AutoCloseable).
+  Optional :subscription-thread-factory controls subscription reader threads."
+  (^TriploxNode [host port]
+   (TriploxNode/connect host (int port)))
+  (^TriploxNode [host port {:keys [subscription-thread-factory]}]
+   (if subscription-thread-factory
+     (TriploxNode/connect host (int port) ^ThreadFactory subscription-thread-factory)
+     (connect host port))))
 
 (defn db
   "Open a DB value. Returns a Db."
