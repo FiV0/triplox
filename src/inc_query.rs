@@ -45,6 +45,9 @@ pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<Increme
 }
 
 fn reject_unsupported_or_join(or: &OrJoin) -> Result<()> {
+    if matches!(or.unify_vars, edn::query::UnifyVars::Explicit(_)) {
+        bail!("Incremental queries do not support explicit or-join");
+    }
     for branch in &or.clauses {
         reject_unsupported_or_branch(branch)?;
     }
@@ -902,6 +905,14 @@ mod tests {
         assert_plan_err(
             "[:find ?name :where [_ :name ?name]]",
             "Placeholders in entity position",
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_or_join_until_incremental_planning_supports_locals() {
+        assert_plan_err(
+            "[:find ?e :where (or-join [?e] [?e :name ?local])]",
+            "Incremental queries do not support explicit or-join",
         );
     }
 
