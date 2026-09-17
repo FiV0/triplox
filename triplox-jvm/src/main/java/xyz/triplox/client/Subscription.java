@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadFactory;
 
 import org.msgpack.core.MessagePack;
 import org.msgpack.core.MessageUnpacker;
@@ -23,6 +24,10 @@ import org.msgpack.core.MessageUnpacker;
  * <p>Thread-safety: consume a single subscription from one thread.</p>
  */
 public final class Subscription implements AutoCloseable {
+    static final ThreadFactory DEFAULT_SUBSCRIPTION_FACTORY = Runtime.version().feature() >= 24
+            ? Thread.ofVirtual().name("triplox-subscription-reader").factory()
+            : Thread.ofPlatform().daemon(true).name("triplox-subscription-reader").factory();
+
     private static final int QUEUE_CAPACITY = 128;
     private static final short INTERNAL_ERROR = 4000;
 
@@ -45,10 +50,13 @@ public final class Subscription implements AutoCloseable {
     }
 
     Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker) {
+        this(txKey, closeable, unpacker, DEFAULT_SUBSCRIPTION_FACTORY);
+    }
+
+    Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker, ThreadFactory readerFactory) {
         this.registrationTxKey = txKey;
         this.closeable = closeable;
-        this.reader = new Thread(() -> readLoop(unpacker), "triplox-subscription-reader");
-        this.reader.setDaemon(true);
+        this.reader = readerFactory.newThread(() -> readLoop(unpacker));
         this.reader.start();
     }
 
@@ -61,10 +69,14 @@ public final class Subscription implements AutoCloseable {
     }
 
     static Subscription open(InputStream stream, Closeable closeable) throws IOException, TriploxException {
+        return open(stream, closeable, DEFAULT_SUBSCRIPTION_FACTORY);
+    }
+
+    static Subscription open(InputStream stream, Closeable closeable, ThreadFactory readerFactory) throws IOException, TriploxException {
         MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(stream);
         SubscriptionFrame first = WireCodec.decodeSubscriptionFrame(unpacker);
         if (first instanceof SubscriptionFrame.Open open) {
-            return new Subscription(open.txKey(), closeable, unpacker);
+            return new Subscription(open.txKey(), closeable, unpacker, readerFactory);
         }
         closeable.close();
         if (first instanceof SubscriptionFrame.Error(BackendMessage.ErrorResponse error1)) {
