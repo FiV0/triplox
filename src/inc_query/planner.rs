@@ -33,6 +33,7 @@ pub(crate) enum RelPlanKind {
         negative: Box<RelPlan>,
     },
     Union {
+        variables: Vec<Variable>,
         branches: Vec<RelPlan>,
     },
 }
@@ -71,6 +72,23 @@ struct PendingDescriptor<'a> {
     required_variables: Vec<Variable>,
 }
 
+fn branches_are_ready(descriptor: &Descriptor, grounded: &HashSet<Variable>) -> bool {
+    match &descriptor.kind {
+        DescriptorKind::Or { branches } => {
+            let incoming = descriptor
+                .variables
+                .iter()
+                .filter(|variable| grounded.contains(*variable))
+                .cloned()
+                .collect::<Vec<_>>();
+            branches
+                .iter()
+                .all(|branch| order_descriptors(&branch.descriptors, &incoming).is_ok())
+        }
+        _ => true,
+    }
+}
+
 fn order_descriptors<'a>(
     descriptors: &'a [Descriptor],
     initial_grounded: &[Variable],
@@ -94,6 +112,7 @@ fn order_descriptors<'a>(
                     .required_variables
                     .iter()
                     .all(|variable| grounded.contains(variable))
+                    && branches_are_ready(descriptor.descriptor, &grounded)
             })
             .max_by_key(|(index, descriptor)| {
                 let shared = descriptor
@@ -110,11 +129,13 @@ fn order_descriptors<'a>(
             let descriptor = remaining
                 .first()
                 .expect("non-empty remaining descriptors must have a first descriptor");
-            let missing = descriptor
+            let Some(missing) = descriptor
                 .required_variables
                 .iter()
                 .find(|variable| !grounded.contains(variable))
-                .expect("a non-introducible descriptor must have a missing variable");
+            else {
+                bail!("Insufficient bindings for incremental OR branches");
+            };
             return Err(anyhow!(
                 "Insufficient bindings for incremental query variable {}",
                 missing
@@ -190,15 +211,25 @@ fn plan_union(
         .as_ref()
         .map(|incoming| append_new_variables(incoming, &descriptor.variables))
         .unwrap_or_else(|| descriptor.variables.clone());
+    let branch_incoming = incoming_vars.as_ref().map(|incoming| {
+        incoming
+            .iter()
+            .filter(|variable| descriptor.variables.contains(variable))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     let branches = branches
         .iter()
-        .map(|branch| plan_scope(branch, incoming_vars.clone()))
+        .map(|branch| plan_scope(branch, branch_incoming.clone()))
         .collect::<Result<Vec<_>>>()?;
 
     Ok(RelPlan {
         incoming_vars,
         output_vars,
-        kind: RelPlanKind::Union { branches },
+        kind: RelPlanKind::Union {
+            variables: descriptor.variables.clone(),
+            branches,
+        },
     })
 }
 
@@ -289,7 +320,7 @@ pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'
         RelPlanKind::Difference { negative, .. } => {
             collect_leaf_patterns(negative, patterns);
         }
-        RelPlanKind::Union { branches } => {
+        RelPlanKind::Union { branches, .. } => {
             for branch in branches {
                 collect_leaf_patterns(branch, patterns);
             }

@@ -2092,6 +2092,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_incremental_explicit_or_join_snapshots_and_updates() {
+        for (query, mut expected) in or_join_cases() {
+            let node = node_with_or_join_facts().await;
+            flush_wal(&node).await;
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|err| panic!("{query}: {err:#}"));
+            let mut rows = Vec::new();
+            let basis = subscription.tx_key;
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            sort_query_rows(&mut expected);
+            assert_eq!(rows, expected, "{query}");
+            for ops in [
+                vec![TxOp::Retract {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:tags),
+                    value: "a".into(),
+                }],
+                vec![TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: 25_i64.into(),
+                }],
+                vec![
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:follows),
+                        value: 102_i64.into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(102),
+                        attribute: kw!(:name),
+                        value: "Caroline".into(),
+                    },
+                ],
+                vec![
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:tags),
+                        value: "b".into(),
+                    },
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:age),
+                        value: 30_i64.into(),
+                    },
+                ],
+            ] {
+                let basis = execute_and_flush(&node, ops).await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query)
+                    .await;
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_register_incremental_query_installs_subscription() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
