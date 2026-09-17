@@ -475,4 +475,4 @@ to an outer binding.
 
 Join lists must be nonempty and contain unique variables. Required-variable
 syntax, explicit `not-join`, and entity/value placeholders remain unsupported.
-Incremental queries currently reject explicit `or-join`.
+Incremental queries support the same explicit OR interface and local-variable rules.
