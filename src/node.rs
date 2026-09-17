@@ -591,6 +591,94 @@ mod tests {
         );
     }
 
+    async fn node_with_or_join_facts() -> Node<MemoryLog> {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let mut ops = Vec::new();
+        for (entity, name, age) in [(100, "Alice", 30), (101, "Bob", 17), (102, "Cara", 40)] {
+            ops.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:name),
+                value: name.into(),
+            });
+            ops.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:age),
+                value: DataType::Long(age),
+            });
+        }
+        for (entity, friend) in [(100, 102), (102, 101)] {
+            ops.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:follows),
+                value: DataType::Long(friend),
+            });
+        }
+        for (entity, tag) in [(100, "a"), (100, "b"), (102, "a")] {
+            ops.push(TxOp::Add {
+                entity: EntityRef::Id(entity),
+                attribute: kw!(:tags),
+                value: tag.into(),
+            });
+        }
+        node.execute_tx(ops).await.unwrap();
+        node
+    }
+
+    fn or_join_cases() -> Vec<(&'static str, Vec<Vec<DataType>>)> {
+        let rows = |ids: &[i64]| {
+            ids.iter()
+                .map(|id| vec![DataType::Long(*id)])
+                .collect::<Vec<_>>()
+        };
+        vec![
+            ("[:find ?e :where (or-join [?e] [?e :name ?name] [?e :age ?age])]", rows(&[100, 101, 102])),
+            ("[:find ?e :where (or-join [?e] (and [?e :age ?age] [(>= ?age 18)]) [?e :email ?email])]", rows(&[100, 102])),
+            ("[:find ?e :where [?e :name ?age] (or-join [?e] (and [?e :age ?age] [(>= ?age 18)]))]", rows(&[100, 102])),
+            ("[:find ?e :where (or-join [?e] (and [?e :age ?age] [(>= ?age 18)])) [?e :name ?age]]", rows(&[100, 102])),
+            ("[:find ?e :where (or-join [?e] (and [?e :age ?age] [(+ ?age 1) ?next] [(> ?next 30)]))]", rows(&[100, 102])),
+            ("[:find ?next :where (or-join [?next] (and [?e :age ?age] [(+ ?age 1) ?next]))]", rows(&[18, 31, 41])),
+            ("[:find ?e :where (or-join [?e] (and [?e :follows ?friend] (not [?friend :age 17])))]", rows(&[100])),
+            ("[:find ?e :where (or-join [?e] (or-join [?e] [?e :follows ?local]) (and [?e :age ?local] [(> ?local 30)]))]", rows(&[100, 102])),
+            ("[:find ?e :where (or (or-join [?e] [?e :follows ?local]) [?e :age 17])]", rows(&[100, 101, 102])),
+            ("[:find ?e :where [?e :name ?name] (not (or-join [?e] [?e :follows ?friend]))]", rows(&[101])),
+            ("[:find ?e :where (or-join [?e] [?e :age 99] [?e :email ?email])]", rows(&[])),
+            ("[:find (count ?e) :where (or-join [?e] [?e :tags ?tag] [?e :age 30])]", rows(&[2])),
+            ("[:find ?e ?age :where [?e :age ?age] (or-join [?e] [?e :follows ?age])]", vec![vec![100_i64.into(), 30_i64.into()], vec![102_i64.into(), 40_i64.into()]]),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_query_explicit_or_join() {
+        let node = node_with_or_join_facts().await;
+        let db = node.db().await.unwrap();
+        for (query, mut expected) in or_join_cases() {
+            let mut actual = db
+                .query(query)
+                .await
+                .unwrap_or_else(|err| panic!("{query}: {err:#}"));
+            actual.sort_by_key(|row| format!("{row:?}"));
+            expected.sort_by_key(|row| format!("{row:?}"));
+            assert_eq!(actual, expected, "{query}");
+        }
+        let query = "[:find ?e :in ?age :where (or-join [?e ?age] (and [?e :name ?name] [(= ?age 30)]) [?e :age ?age])]";
+        let result = db
+            .query_with_args(&parse_query(query), &[QueryArg::Scalar(30_i64.into())])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        let error = db
+            .query("[:find ?local :where (or-join [?e] [?e :age ?local])]")
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Find variable ?local not in where clauses"),
+            "{error:#}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_query_two_patterns_join() {
         let node = Node::memory_node().await;
@@ -2001,6 +2089,63 @@ mod tests {
         }
 
         assert_eq!(&expected, rows);
+    }
+
+    #[tokio::test]
+    async fn test_incremental_explicit_or_join_snapshots_and_updates() {
+        for (query, mut expected) in or_join_cases() {
+            let node = node_with_or_join_facts().await;
+            flush_wal(&node).await;
+            let mut subscription = node
+                .register_incremental_query(parse_query(query), &[])
+                .await
+                .unwrap_or_else(|err| panic!("{query}: {err:#}"));
+            let mut rows = Vec::new();
+            let basis = subscription.tx_key;
+            assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query).await;
+            sort_query_rows(&mut expected);
+            assert_eq!(rows, expected, "{query}");
+            for ops in [
+                vec![TxOp::Retract {
+                    entity: EntityRef::Id(100),
+                    attribute: kw!(:tags),
+                    value: "a".into(),
+                }],
+                vec![TxOp::Add {
+                    entity: EntityRef::Id(101),
+                    attribute: kw!(:age),
+                    value: 25_i64.into(),
+                }],
+                vec![
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:follows),
+                        value: 102_i64.into(),
+                    },
+                    TxOp::Add {
+                        entity: EntityRef::Id(102),
+                        attribute: kw!(:name),
+                        value: "Caroline".into(),
+                    },
+                ],
+                vec![
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:tags),
+                        value: "b".into(),
+                    },
+                    TxOp::Retract {
+                        entity: EntityRef::Id(100),
+                        attribute: kw!(:age),
+                        value: 30_i64.into(),
+                    },
+                ],
+            ] {
+                let basis = execute_and_flush(&node, ops).await;
+                assert_incremental_matches_db(&node, &mut subscription, &mut rows, basis, query)
+                    .await;
+            }
+        }
     }
 
     #[tokio::test]

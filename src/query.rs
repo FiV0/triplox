@@ -17,9 +17,9 @@ use slatedb::{DbMetadataOps, DbReadOps};
 use crate::schema::IdentMap;
 
 use edn::query::{
-    Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant,
+    Binding, ContainsVariables, Direction, Element, FindSpec, Limit, NonIntegerConstant, OrJoin,
     OrWhereClause, Order, ParsedQuery, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate,
-    ToVariable, Variable, WhereClause, WhereFn,
+    ToVariable, UnifyVars, Variable, WhereClause, WhereFn,
 };
 
 use crate::aggregate::{make_accumulator, Accumulator};
@@ -33,6 +33,7 @@ use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
+use itertools::Itertools;
 use regex::Regex;
 
 /// Each inner Vec is a projected row of decoded DataType values.
@@ -341,7 +342,14 @@ pub(crate) fn or_branch_bound_variables(branch: &OrWhereClause) -> Vec<Variable>
 
 /// Extract all variables mentioned by an OrWhereClause.
 pub(crate) fn or_branch_mentioned_variables(branch: &OrWhereClause) -> Vec<Variable> {
-    branch.collect_mentioned_variables().into_iter().collect()
+    match branch {
+        OrWhereClause::Clause(clause) => clause_mentioned_variables(clause),
+        OrWhereClause::And(clauses) => clauses
+            .iter()
+            .flat_map(clause_mentioned_variables)
+            .unique()
+            .collect(),
+    }
 }
 
 /// Recursively extract variables bound by a single WhereClause.
@@ -350,6 +358,16 @@ pub(crate) fn or_branch_mentioned_variables(branch: &OrWhereClause) -> Vec<Varia
 pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::Pattern(pattern) => pattern_variables(pattern),
+        WhereClause::OrJoin(oj) if matches!(oj.unify_vars, UnifyVars::Explicit(_)) => {
+            or_join_variables(oj)
+                .into_iter()
+                .filter(|variable| {
+                    oj.clauses
+                        .iter()
+                        .all(|branch| or_branch_bound_variables(branch).contains(variable))
+                })
+                .collect()
+        }
         WhereClause::OrJoin(oj) => {
             // All branches must bind the same variables; validate_query enforces this.
             // Extract from the first branch only.
@@ -370,9 +388,31 @@ pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
     }
 }
 
-/// Extract all variables syntactically mentioned by a single WhereClause.
+/// Variables visible outside an OR, excluding locals of nested explicit joins.
+pub(crate) fn or_join_variables(or: &OrJoin) -> Vec<Variable> {
+    match &or.unify_vars {
+        UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+        UnifyVars::Implicit => or
+            .clauses
+            .iter()
+            .flat_map(or_branch_mentioned_variables)
+            .unique()
+            .collect(),
+    }
+}
+
+/// Variables mentioned at a clause's boundary.
 pub(crate) fn clause_mentioned_variables(clause: &WhereClause) -> Vec<Variable> {
-    clause.collect_mentioned_variables().into_iter().collect()
+    match clause {
+        WhereClause::OrJoin(or) => or_join_variables(or),
+        WhereClause::NotJoin(not) => not
+            .clauses
+            .iter()
+            .flat_map(clause_mentioned_variables)
+            .unique()
+            .collect(),
+        _ => clause.collect_mentioned_variables().into_iter().collect(),
+    }
 }
 
 /// Extract variables from where clauses in first-appearance order (E-A-V within each pattern).

@@ -89,11 +89,9 @@
      [(identity "Ivan") ?n]]
     #{2 6}))
 
-;; TODO or-join
-#_
 (deftest test-or-join
   (d/transact *conn* test-data)
-  (are [clauses res] (= (q (concat '[:find ?e :where] (quote clauses)))
+  (are [clauses res] (= (q (vec (concat '[:find ?e :where] (quote clauses))))
                         (into #{} (map vector) res))
     [(or-join [?e]
               [?e :name ?n]
@@ -114,10 +112,11 @@
                    [?e :name ?n])
               (and [?e :age 20]
                    [?e :name ?n]))
-     [(ground "Ivan") ?n]]
+     [(identity "Ivan") ?n]]
     #{2 6})
 
-  ;; issue-348
+  ;; TODO implicit OR branches must mention the same variables.
+  #_
   (is (= #{[1] [3] [4] [5]}
          (q '[:find ?e
               :in ?a
@@ -126,7 +125,8 @@
                       [?e :name "Oleg"])]
             10)))
 
-  ;; issue-348
+  ;; TODO explicit OR branches must mention every join variable.
+  #_
   (is (= #{[1] [3] [4] [5]}
          (q '[:find ?e
               :in ?a
@@ -135,7 +135,8 @@
                               [?e :name "Oleg"])]
             10)))
 
-  ;; issue-348
+  ;; TODO required-variable syntax.
+  #_
   (is (= #{[1] [3] [4] [5]}
          (q '[:find ?e
               :in ?a
@@ -144,6 +145,8 @@
                               [?e :name "Oleg"])]
             10)))
 
+  ;; TODO multiple sources
+  #_
   (is (= #{[:a1 :b1 :c1]
            [:a2 :b2 :c2]}
          (d/q '[:find ?a ?b ?c
@@ -158,6 +161,8 @@
                [:a2 :b2* :d2] ;; same ?a, different ?b. Should still be joined
                [:a4 :b4 :c4]]))) ;; different ?a, should be dropped
 
+  ;; TODO multiple sources
+  #_
   (is (= #{[:a1 :c1] [:a2 :c2]}
          (d/q '[:find ?a ?c
                 :in $xs $ys

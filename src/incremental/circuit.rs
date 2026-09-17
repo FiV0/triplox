@@ -354,16 +354,42 @@ fn rel_stream(
             let negative = rel_stream(fact_input, negative, Some(negative_seed));
             difference_stream(positive, negative, key_vars)
         }
-        RelPlanKind::Union { branches } => {
-            let mut branches = branches
+        RelPlanKind::Union {
+            variables,
+            branches,
+        } => {
+            let seed = incoming.as_ref().map(|incoming| {
+                let vars = incoming
+                    .vars
+                    .iter()
+                    .filter(|variable| variables.contains(variable))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                PlannedWhereStream {
+                    stream: project_stream(incoming.stream.clone(), &incoming.vars, &vars)
+                        .distinct(),
+                    vars,
+                }
+            });
+            let mut branch_streams = branches
                 .iter()
                 .map(|branch| {
-                    let branch = rel_stream(fact_input, branch, incoming.clone());
-                    project_stream(branch.stream, &branch.vars, &plan.output_vars)
+                    let branch = rel_stream(fact_input, branch, seed.clone());
+                    project_stream(branch.stream, &branch.vars, variables)
                 })
                 .collect::<Vec<_>>();
-            let first = branches.remove(0);
-            first.sum(branches.iter()).distinct()
+            let first = branch_streams.remove(0);
+            let union = first.sum(branch_streams.iter()).distinct();
+            match incoming {
+                Some(incoming) => join_pattern_streams(
+                    incoming.stream,
+                    &incoming.vars,
+                    union,
+                    variables,
+                    &plan.output_vars,
+                ),
+                None => project_stream(union, variables, &plan.output_vars),
+            }
         }
     };
 
@@ -597,6 +623,69 @@ mod tests {
     fn query_plan(query: &str) -> IncrementalQueryPlan {
         let query = parse_query(query);
         plan_query(&query, &test_schema()).expect("query should plan")
+    }
+
+    #[test]
+    fn explicit_or_join_retracts_only_after_last_local_support() {
+        for query in [
+            "[:find ?e :where (or-join [?e] [?local :follows ?e] [?e :age ?age])]",
+            "[:find ?e :where [?e :name ?local] (or-join [?e] [?local :follows ?e] [?e :age ?age])]",
+            "[:find ?e :where [?e :name ?local] (or-join [?e] (or-join [?e] [?local :follows ?e]) [?e :age ?age])]",
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let row = vec![DataType::Long(100)];
+            let name = triple(100, NAME, "Alice".into());
+            let first = triple(101, FOLLOWS, 100_i64.into());
+            let second = triple(102, FOLLOWS, 100_i64.into());
+            let age = triple(100, AGE, 30_i64.into());
+            for (batch, expected) in [
+                (vec![Tup2(name, 1), Tup2(first.clone(), 1)], vec![(row.clone(), 1)]),
+                (vec![Tup2(second.clone(), 1), Tup2(age.clone(), 1)], vec![]),
+                (vec![Tup2(first, -1)], vec![]),
+                (vec![Tup2(age, -1)], vec![]),
+                (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
+                (vec![Tup2(second, 1)], vec![(row, 1)]),
+            ] {
+                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_or_join_preserves_outer_rows_sharing_a_key() {
+        let storage = tempfile::tempdir().unwrap();
+        let query = "[:find ?owner :where [?owner :follows ?e] (or-join [?e] [?e :age ?owner] [?e :name ?owner])]";
+        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let first = triple(101, FOLLOWS, 100_i64.into());
+        let second = triple(102, FOLLOWS, 100_i64.into());
+        let age = triple(100, AGE, 30_i64.into());
+        let name = triple(100, NAME, "Alice".into());
+        let a = vec![DataType::Long(101)];
+        let b = vec![DataType::Long(102)];
+        for (batch, expected) in [
+            (
+                vec![
+                    Tup2(first.clone(), 1),
+                    Tup2(second.clone(), 1),
+                    Tup2(age.clone(), 1),
+                    Tup2(name.clone(), 1),
+                ],
+                vec![(a.clone(), 1), (b.clone(), 1)],
+            ),
+            (vec![Tup2(age.clone(), -1)], vec![]),
+            (vec![Tup2(first.clone(), -1)], vec![(a.clone(), -1)]),
+            (
+                vec![Tup2(first.clone(), 1), Tup2(name, -1)],
+                vec![(b.clone(), -1)],
+            ),
+            (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
+            (vec![Tup2(first, -1)], vec![(a, -1)]),
+        ] {
+            let mut actual = circuit.apply(batch).unwrap();
+            actual.sort_by_key(|row| format!("{row:?}"));
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
