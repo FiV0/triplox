@@ -11,7 +11,7 @@ use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
     build_var_index, clause_mentioned_variables, convert_predicate, convert_where_fn,
-    or_branch_bound_variables, or_branch_mentioned_variables, pattern_variables,
+    exposed_variables, or_branch_bound_variables, or_branch_mentioned_variables, pattern_variables,
     query_variable_order, resolve_order_columns,
 };
 
@@ -87,10 +87,11 @@ fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(),
 fn validate_not_clauses(
     where_clauses: &[WhereClause],
     var_index: &HashMap<&Variable, usize>,
+    generated_variables: &HashSet<Variable>,
 ) -> Result<(), Error> {
     validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
         if let WhereClause::NotJoin(nj) = clause {
-            for var in not_clause_variables(&nj.clauses) {
+            for var in exposed_variables(not_clause_variables(&nj.clauses), generated_variables) {
                 if !var_index.contains_key(&var) {
                     return Err(anyhow::anyhow!(
                         "Variable {} in NOT clause is not bound by positive clauses",
@@ -249,29 +250,45 @@ fn validate_aggregate_clauses(
     Ok(())
 }
 
-fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
+fn validate_or_clauses(
+    clauses: &[WhereClause],
+    generated_variables: &HashSet<Variable>,
+) -> Result<(), Error> {
     validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
-        WhereClause::OrJoin(oj) => validate_or_branch_variables(&oj.clauses),
+        WhereClause::OrJoin(oj) => validate_or_branch_variables(&oj.clauses, generated_variables),
         _ => Ok(()),
     })
 }
 
 /// Validate that all OR branches have the same free variables.
-fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error> {
+fn validate_or_branch_variables(
+    branches: &[OrWhereClause],
+    generated_variables: &HashSet<Variable>,
+) -> Result<(), Error> {
     if branches.is_empty() {
         return Err(anyhow::anyhow!("OR clause must have at least one branch"));
     }
 
-    let first_bound_vars: HashSet<Variable> = or_branch_bound_variables(&branches[0])
-        .into_iter()
-        .collect();
-    let first_mentioned_vars: HashSet<Variable> = or_branch_mentioned_variables(&branches[0])
-        .into_iter()
-        .collect();
+    let first_bound_vars: HashSet<Variable> = exposed_variables(
+        or_branch_bound_variables(&branches[0], generated_variables),
+        generated_variables,
+    )
+    .into_iter()
+    .collect();
+    let first_mentioned_vars: HashSet<Variable> = exposed_variables(
+        or_branch_mentioned_variables(&branches[0]),
+        generated_variables,
+    )
+    .into_iter()
+    .collect();
 
     for (i, branch) in branches.iter().enumerate().skip(1) {
-        let branch_bound_vars: HashSet<Variable> =
-            or_branch_bound_variables(branch).into_iter().collect();
+        let branch_bound_vars: HashSet<Variable> = exposed_variables(
+            or_branch_bound_variables(branch, generated_variables),
+            generated_variables,
+        )
+        .into_iter()
+        .collect();
         if branch_bound_vars != first_bound_vars {
             return Err(anyhow::anyhow!(
                 "OR branch {} has different free variables {{{}}} than branch 1 {{{}}}",
@@ -282,7 +299,9 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
         }
 
         let branch_mentioned_vars: HashSet<Variable> =
-            or_branch_mentioned_variables(branch).into_iter().collect();
+            exposed_variables(or_branch_mentioned_variables(branch), generated_variables)
+                .into_iter()
+                .collect();
         if branch_mentioned_vars != first_mentioned_vars {
             return Err(anyhow::anyhow!(
                 "OR branch {} mentions different variables {{{}}} than branch 1 {{{}}}",
@@ -340,18 +359,26 @@ fn validate_in_bindings(in_bindings: &[Binding], args: &[QueryArg]) -> Result<()
 /// Validate a query before execution.
 // TODO: Move query validation into the edn parsing crate so that invalid
 // queries are rejected at parse time rather than at execution time.
-pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(), Error> {
+pub(crate) fn validate_query(
+    query: &ParsedQuery,
+    args: &[QueryArg],
+    generated_variables: &HashSet<Variable>,
+) -> Result<(), Error> {
     validate_in_bindings(&query.in_bindings, args)?;
     validate_supported_where_clauses(&query.where_clauses)?;
     validate_patterns(&query.where_clauses)?;
 
-    let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
+    let join_order = query_variable_order(
+        &query.in_bindings,
+        &query.where_clauses,
+        generated_variables,
+    );
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no groundable variables!"));
     }
     let var_index = build_var_index(&join_order);
-    validate_or_clauses(&query.where_clauses)?;
-    validate_not_clauses(&query.where_clauses, &var_index)?;
+    validate_or_clauses(&query.where_clauses, generated_variables)?;
+    validate_not_clauses(&query.where_clauses, &var_index, generated_variables)?;
     validate_predicate_clauses(&query.where_clauses, &var_index)?;
     validate_fn_clauses(&query.where_clauses, &var_index)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
@@ -404,7 +431,7 @@ mod tests {
     #[test]
     fn test_validate_predicate_unbound_variable() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< ?unbound 30)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
@@ -412,7 +439,7 @@ mod tests {
     #[test]
     fn test_validate_predicate_no_variables() {
         let parsed = parse_query(r#"[:find ?e :where [?e :name "Alice"] [(< 1 2)]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -423,7 +450,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_repeated_variable_in_single_pattern() {
         let parsed = parse_query("{:find [?x] :where [[?x :g/to ?x]]}");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Repeated variable ?x in a single pattern is not supported"),
@@ -435,7 +462,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_source_variables_in_patterns() {
         let parsed = parse_query("[:find ?e :where [$other ?e :name ?name]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Query source variables are not supported by triple patterns"),
@@ -447,7 +474,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_transaction_positions() {
         let parsed = parse_query("[:find ?tx :where [1 :name \"Alice\" ?tx]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Transaction positions are not supported by triple patterns"),
@@ -463,7 +490,7 @@ mod tests {
             "[:find ?e :where [?e _ ?name]]",
         ] {
             let parsed = parse_query(query);
-            let err = validate_query(&parsed, &[]).unwrap_err();
+            let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
             assert!(
                 err.to_string()
                     .contains("Attribute position must be a keyword or entid"),
@@ -477,7 +504,7 @@ mod tests {
     fn test_validate_rejects_explicit_or_join() {
         let parsed =
             parse_query(r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#);
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string().contains("explicit or-join"),
             "unexpected error: {}",
@@ -489,7 +516,7 @@ mod tests {
     fn test_validate_rejects_explicit_not_join() {
         let parsed =
             parse_query(r#"[:find ?e :where [?e :name "Alice"] (not-join [?e] [?e :age 30])]"#);
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string().contains("explicit not-join"),
             "unexpected error: {}",
@@ -500,7 +527,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_not_without_positive_variables() {
         let parsed = parse_query("[:find ?e :where (not [?e :age 30])]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Query has no groundable variables"),
@@ -513,7 +540,7 @@ mod tests {
     fn test_validate_rejects_unbound_not_variable() {
         let parsed =
             parse_query(r#"[:find ?name :where [?person :name ?name] (not [?e :age 30])]"#);
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Variable ?e in NOT clause is not bound by positive clauses"),
@@ -527,7 +554,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (or [?e :name "B"] [?v :name "C"]))]"#,
         );
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert_eq!(
             err.to_string(),
             "OR branch 2 mentions different variables {?e, ?v} than branch 1 {?e}"
@@ -539,7 +566,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e :where [?e :name "A"] (not (or [?e :name "B"] [?v :name "C"]))]"#,
         );
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert_eq!(
             err.to_string(),
             "OR branch 2 has different free variables {?v} than branch 1 {?e}"
@@ -551,7 +578,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (and [?e :name "B"] (not [?v :age 30])))]"#,
         );
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("OR branch 2 mentions different variables"),
@@ -565,7 +592,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e :where (or [?e :name "A"] (and [?e :name "B"] [(< ?unbound 30)]))]"#,
         );
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("OR branch 2 mentions different variables"),
@@ -579,7 +606,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e ?age :where [?e :age ?age] (or (and [?e :name "A"] [(< ?age 30)]) (and [?e :name "B"] [(< ?age 40)]))]"#,
         );
-        assert!(validate_query(&parsed, &[]).is_ok());
+        assert!(validate_query(&parsed, &[], &HashSet::new()).is_ok());
     }
 
     #[test]
@@ -587,7 +614,7 @@ mod tests {
         let parsed = parse_query(
             r#"[:find ?e :where [?e :age ?age] (or (and [?e :name "A"] [(+ ?age 1) ?next]) (and [?e :name "B"] [(+ ?unbound 1) ?next]))]"#,
         );
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("OR branch 2 mentions different variables"),
@@ -600,7 +627,7 @@ mod tests {
     fn test_validate_fn_unbound_input() {
         let parsed =
             parse_query(r#"[:find ?e :where [?e :name "Alice"] [(+ ?unbound 1) ?result]]"#);
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("?unbound"));
     }
@@ -608,7 +635,7 @@ mod tests {
     #[test]
     fn test_validate_fn_accepts_already_bound_output() {
         let parsed = parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]");
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_ok());
     }
 
@@ -618,14 +645,14 @@ mod tests {
         // because query_variable_order reorders FnExpr clauses after Triples
         let parsed =
             parse_query("[:find ?e ?next_age :where [(+ ?age 1) ?next_age] [?e :age ?age]]");
-        let result = validate_query(&parsed, &[]);
+        let result = validate_query(&parsed, &[], &HashSet::new());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_order_var_not_in_find() {
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :order [?name :asc]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string().contains("ORDER BY variable"),
             "unexpected error: {}",
@@ -637,7 +664,7 @@ mod tests {
     fn test_validate_limit_variable_requires_in_binding() {
         // Variable limit without :in binding should fail
         let parsed = parse_query("[:find ?e :where [?e :name ?name] :limit ?limit]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("not bound as a scalar in :in clause"),
@@ -650,15 +677,24 @@ mod tests {
     fn test_validate_limit_variable_with_in_binding() {
         let parsed = parse_query("[:find ?e :in ?limit :where [?e :name ?name] :limit ?limit]");
         // Providing a scalar Long arg should pass validation
-        assert!(validate_query(&parsed, &[QueryArg::Scalar(DataType::Long(10))]).is_ok());
+        assert!(validate_query(
+            &parsed,
+            &[QueryArg::Scalar(DataType::Long(10))],
+            &HashSet::new()
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_validate_limit_variable_rejects_collection_binding() {
         let parsed =
             parse_query("[:find ?e :in [?limit ...] :where [?e :name ?name] :limit ?limit]");
-        let err =
-            validate_query(&parsed, &[QueryArg::Collection(vec![DataType::Long(10)])]).unwrap_err();
+        let err = validate_query(
+            &parsed,
+            &[QueryArg::Collection(vec![DataType::Long(10)])],
+            &HashSet::new(),
+        )
+        .unwrap_err();
         assert!(
             err.to_string()
                 .contains("not bound as a scalar in :in clause"),
@@ -670,7 +706,7 @@ mod tests {
     #[test]
     fn test_validate_rejects_sexpr_in_aggregate() {
         let parsed = parse_query("[:find ?e (count (+ ?age 1)) :where [?e :age ?age]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("Nested expressions are not supported"),
@@ -682,7 +718,7 @@ mod tests {
     #[test]
     fn test_validate_in_arg_count_mismatch() {
         let parsed = parse_query("[:find ?e :in ?x :where [?e :name ?x]]");
-        let err = validate_query(&parsed, &[]).unwrap_err();
+        let err = validate_query(&parsed, &[], &HashSet::new()).unwrap_err();
         assert!(
             err.to_string().contains("1 binding(s) but 0 argument(s)"),
             "unexpected error: {}",

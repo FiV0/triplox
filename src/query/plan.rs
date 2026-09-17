@@ -14,8 +14,9 @@ use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    convert_predicate, convert_where_fn, non_value_place_to_datatype, pattern_variables,
-    query_variable_order, resolve_attribute_from_pattern, value_place_to_datatype,
+    convert_predicate, convert_where_fn, exposed_variables, non_value_place_to_datatype,
+    pattern_variables, query_variable_order, resolve_attribute_from_pattern,
+    value_place_to_datatype,
 };
 
 use super::binding_bag::BindingBag;
@@ -154,13 +155,17 @@ enum DescriptorKind {
     },
 }
 
-struct DescriptorBuilder {
+struct DescriptorBuilder<'a> {
     next_id: PatternId,
+    generated_variables: &'a HashSet<Variable>,
 }
 
-impl DescriptorBuilder {
-    fn new() -> Self {
-        Self { next_id: 0 }
+impl<'a> DescriptorBuilder<'a> {
+    fn new(generated_variables: &'a HashSet<Variable>) -> Self {
+        Self {
+            next_id: 0,
+            generated_variables,
+        }
     }
 
     fn allocate_id(&mut self) -> PatternId {
@@ -242,8 +247,8 @@ impl DescriptorBuilder {
                 let variables = branches[0]
                     .iter()
                     .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                    .unique()
-                    .collect();
+                    .unique();
+                let variables = exposed_variables(variables, self.generated_variables);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -256,8 +261,8 @@ impl DescriptorBuilder {
                 let variables = children
                     .iter()
                     .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                    .unique()
-                    .collect();
+                    .unique();
+                let variables = exposed_variables(variables, self.generated_variables);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -812,6 +817,7 @@ fn plan_descriptor(
     descriptor: Descriptor,
     incoming_variables: Option<Vec<Variable>>,
     variable_order: &[Variable],
+    generated_variables: &HashSet<Variable>,
 ) -> Result<LogicalDescriptor> {
     let kind = match descriptor.kind {
         DescriptorKind::Triple(pattern) => LogicalDescriptorKind::Triple(pattern),
@@ -832,13 +838,18 @@ fn plan_descriptor(
                 .into_iter()
                 .enumerate()
                 .map(|(branch_index, branch)| {
-                    plan_scope(branch, variable_order, Some(incoming_variables.clone()))
-                        .with_context(|| {
-                            format!(
-                                "Failed to plan OR descriptor {} branch {branch_index}",
-                                descriptor.id
-                            )
-                        })
+                    plan_scope(
+                        branch,
+                        variable_order,
+                        Some(incoming_variables.clone()),
+                        generated_variables,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Failed to plan OR descriptor {} branch {branch_index}",
+                            descriptor.id
+                        )
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
             LogicalDescriptorKind::Or { branches }
@@ -852,8 +863,13 @@ fn plan_descriptor(
                 descriptor.id
             );
             LogicalDescriptorKind::Not {
-                children: plan_scope(children, variable_order, Some(incoming_variables))
-                    .with_context(|| format!("Failed to plan NOT descriptor {}", descriptor.id))?,
+                children: plan_scope(
+                    children,
+                    variable_order,
+                    Some(incoming_variables),
+                    generated_variables,
+                )
+                .with_context(|| format!("Failed to plan NOT descriptor {}", descriptor.id))?,
             }
         }
     };
@@ -868,6 +884,7 @@ fn plan_scope(
     descriptors: Vec<Descriptor>,
     variable_order: &[Variable],
     incoming_variables: Option<Vec<Variable>>,
+    generated_variables: &HashSet<Variable>,
 ) -> Result<LogicalPlan> {
     let relevant: HashSet<&Variable> = descriptors
         .iter()
@@ -881,6 +898,17 @@ fn plan_scope(
             .filter(|variable| relevant.contains(variable))
             .collect::<Vec<_>>()
     });
+    // Preserve the parent order, then append variables introduced only in this scope.
+    let mut scope_order = variable_order.to_vec();
+    for variable in descriptors
+        .iter()
+        .flat_map(|descriptor| &descriptor.variables)
+    {
+        if generated_variables.contains(variable) && !scope_order.contains(variable) {
+            scope_order.push(variable.clone());
+        }
+    }
+    let variable_order = scope_order.as_slice();
     let stages = plan_stages(&descriptors, variable_order, incoming_variables.as_deref())?;
     let mut descriptor_input_layouts = HashMap::new();
     let mut previous_target: &[Variable] = &[];
@@ -925,7 +953,12 @@ fn plan_scope(
                 }
                 _ => None,
             };
-            plan_descriptor(descriptor, descriptor_input_layout, variable_order)
+            plan_descriptor(
+                descriptor,
+                descriptor_input_layout,
+                variable_order,
+                generated_variables,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(LogicalPlan {
@@ -938,9 +971,14 @@ fn plan_scope(
 pub(crate) fn build_logical_plan(
     query: &edn::query::ParsedQuery,
     arguments: &[QueryArg],
+    generated_variables: &HashSet<Variable>,
 ) -> Result<LogicalPlan> {
-    let variable_order = query_variable_order(&query.in_bindings, &query.where_clauses);
-    let mut builder = DescriptorBuilder::new();
+    let variable_order = query_variable_order(
+        &query.in_bindings,
+        &query.where_clauses,
+        generated_variables,
+    );
+    let mut builder = DescriptorBuilder::new(generated_variables);
     let mut descriptors: Vec<Descriptor> = query
         .in_bindings
         .iter()
@@ -949,7 +987,7 @@ pub(crate) fn build_logical_plan(
         .collect();
     descriptors.extend(builder.where_clauses(&query.where_clauses)?);
 
-    plan_scope(descriptors, &variable_order, None)
+    plan_scope(descriptors, &variable_order, None, generated_variables)
 }
 
 #[cfg(test)]
@@ -1034,9 +1072,9 @@ mod tests {
             QueryArg::Scalar(DataType::String("Alice".into())),
             QueryArg::Collection(vec![DataType::Long(20), DataType::Long(40)]),
         ];
-        validate_query(&query, &arguments).unwrap();
+        validate_query(&query, &arguments, &HashSet::new()).unwrap();
 
-        let plan = build_logical_plan(&query, &arguments).unwrap();
+        let plan = build_logical_plan(&query, &arguments, &HashSet::new()).unwrap();
 
         assert_eq!(
             plan.output_variables(),
@@ -1074,9 +1112,9 @@ mod tests {
     fn plans_function_with_already_bound_output() {
         let query =
             edn::parse::parse_query("[:find ?e :where [?e :age ?age] [(+ ?age 1) ?e]]").unwrap();
-        validate_query(&query, &[]).unwrap();
+        validate_query(&query, &[], &HashSet::new()).unwrap();
 
-        build_logical_plan(&query, &[]).unwrap();
+        build_logical_plan(&query, &[], &HashSet::new()).unwrap();
     }
 
     #[test]
@@ -1089,7 +1127,8 @@ mod tests {
             (not [?e :blocked-by ?x] [?x :active ?e])]"#,
         )
         .unwrap();
-        let mut builder = DescriptorBuilder::new();
+        let generated_variables = HashSet::new();
+        let mut builder = DescriptorBuilder::new(&generated_variables);
 
         let descriptors = builder.where_clauses(&query.where_clauses).unwrap();
 
@@ -1351,7 +1390,7 @@ mod tests {
     fn projects_incoming_layout_before_selecting_proposers() {
         let descriptors = vec![relation(0, &["?x"])];
         let incoming = vec![var("?outer"), var("?x")];
-        let plan = plan_scope(descriptors, &[var("?x")], Some(incoming)).unwrap();
+        let plan = plan_scope(descriptors, &[var("?x")], Some(incoming), &HashSet::new()).unwrap();
 
         assert_eq!(plan.incoming_variables(), Some(&[var("?x")][..]));
         assert_eq!(
@@ -1366,8 +1405,13 @@ mod tests {
     #[test]
     fn plans_projected_zero_column_incoming_as_validation_only_participant() {
         let descriptors = vec![relation(0, &["?x"])];
-        let plan =
-            plan_scope(descriptors.clone(), &[var("?x")], Some(vec![var("?outer")])).unwrap();
+        let plan = plan_scope(
+            descriptors.clone(),
+            &[var("?x")],
+            Some(vec![var("?outer")]),
+            &HashSet::new(),
+        )
+        .unwrap();
 
         assert_eq!(plan.incoming_variables(), Some(&[][..]));
         assert_eq!(
@@ -1388,7 +1432,7 @@ mod tests {
             ]
         );
 
-        let root = plan_scope(descriptors, &[var("?x")], None).unwrap();
+        let root = plan_scope(descriptors, &[var("?x")], None, &HashSet::new()).unwrap();
         assert_eq!(root.incoming_variables(), None);
         assert_eq!(root.stages.as_slice(), &plan.stages[1..]);
     }
@@ -1432,7 +1476,7 @@ mod tests {
         .unwrap();
         let arguments = [QueryArg::Collection(vec![DataType::Long(1)])];
 
-        let plan = build_logical_plan(&query, &arguments).unwrap();
+        let plan = build_logical_plan(&query, &arguments, &HashSet::new()).unwrap();
         let LogicalDescriptorKind::Not { children } = &plan.descriptors[1].kind else {
             panic!("expected NOT descriptor");
         };
@@ -1453,7 +1497,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e ?v :where [?e :name ?v]]").unwrap();
-        let logical = build_logical_plan(&query, &[])?;
+        let logical = build_logical_plan(&query, &[], &HashSet::new())?;
         let db = db_at_tx_id(
             &components,
             runtime.handle(),
@@ -1481,7 +1525,7 @@ mod tests {
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?x :in [?x ...] :where [(>= ?x 0)]]").unwrap();
         let arguments = [QueryArg::Collection(vec![DataType::Long(1)])];
-        let logical = build_logical_plan(&query, &arguments)?;
+        let logical = build_logical_plan(&query, &arguments, &HashSet::new())?;
         let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
@@ -1512,7 +1556,7 @@ mod tests {
             DataType::Long(1),
             DataType::Long(2),
         ])];
-        let logical = build_logical_plan(&query, &arguments)?;
+        let logical = build_logical_plan(&query, &arguments, &HashSet::new())?;
         let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
@@ -1546,7 +1590,7 @@ mod tests {
             ]),
             QueryArg::Collection(vec![DataType::Long(10)]),
         ];
-        let logical = build_logical_plan(&query, &arguments)?;
+        let logical = build_logical_plan(&query, &arguments, &HashSet::new())?;
         let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let or_pattern = logical.descriptors[2].materialize(db)?;
@@ -1615,7 +1659,7 @@ mod tests {
             DataType::Long(3),
             DataType::Long(4),
         ])];
-        let logical = build_logical_plan(&query, &arguments)?;
+        let logical = build_logical_plan(&query, &arguments, &HashSet::new())?;
         let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let stages = logical.materialize(db, None)?;
@@ -1636,7 +1680,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let components = runtime.block_on(in_memory_slate());
         let query = edn::parse::parse_query("[:find ?e :where [?e :missing \"value\"]]").unwrap();
-        let logical = build_logical_plan(&query, &[])?;
+        let logical = build_logical_plan(&query, &[], &HashSet::new())?;
         let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
 
         let error = logical
@@ -1656,7 +1700,7 @@ mod tests {
             edn::parse::parse_query("[:find ?x :in [?x ...] :where (or [(= ?x 1)] [(= ?x 2)])]")
                 .unwrap();
         let arguments = [QueryArg::Collection(vec![DataType::Long(1)])];
-        let root = build_logical_plan(&query, &arguments)?;
+        let root = build_logical_plan(&query, &arguments, &HashSet::new())?;
         let LogicalDescriptorKind::Or { branches } = &root.descriptors[1].kind else {
             panic!("expected OR descriptor");
         };
