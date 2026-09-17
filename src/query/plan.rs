@@ -864,6 +864,69 @@ fn plan_descriptor(
     })
 }
 
+fn lower_descriptors(
+    descriptors: Vec<Descriptor>,
+    stages: &[LogicalStage],
+    variable_order: &[Variable],
+) -> Result<Vec<LogicalDescriptor>> {
+    let mut descriptor_order = Vec::with_capacity(descriptors.len());
+    let mut pending = HashMap::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let id = descriptor.id;
+        descriptor_order.push(id);
+        ensure!(
+            pending.insert(id, descriptor).is_none(),
+            "Duplicate descriptor id {id} in one scope"
+        );
+    }
+    let mut lowered = HashMap::with_capacity(pending.len());
+    let mut previous_target: &[Variable] = &[];
+    // OR/NOT participate once with an unambiguous input layout; leaves can participate repeatedly.
+    for stage in stages {
+        for participant in &stage.participants {
+            let ParticipantRef::Pattern(id) = participant else {
+                continue;
+            };
+            if lowered.contains_key(id) {
+                continue;
+            }
+            let descriptor = pending
+                .remove(id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown logical stage pattern id {id}"))?;
+            let incoming_variables = match &descriptor.kind {
+                DescriptorKind::Or { .. } | DescriptorKind::Not { .. } => {
+                    let input_layout = if stage.proposers.contains(participant) {
+                        previous_target
+                    } else {
+                        &stage.target_variables
+                    };
+                    Some(
+                        input_layout
+                            .iter()
+                            .filter(|variable| descriptor.variables.contains(*variable))
+                            .cloned()
+                            .collect(),
+                    )
+                }
+                _ => None,
+            };
+            lowered.insert(
+                *id,
+                plan_descriptor(descriptor, incoming_variables, variable_order)?,
+            );
+        }
+        previous_target = &stage.target_variables;
+    }
+    descriptor_order
+        .into_iter()
+        .map(|id| {
+            lowered.remove(&id).ok_or_else(|| {
+                anyhow::anyhow!("Descriptor {id} is not placed in any logical stage")
+            })
+        })
+        .collect()
+}
+
 fn plan_scope(
     descriptors: Vec<Descriptor>,
     variable_order: &[Variable],
@@ -882,52 +945,7 @@ fn plan_scope(
             .collect::<Vec<_>>()
     });
     let stages = plan_stages(&descriptors, variable_order, incoming_variables.as_deref())?;
-    let mut descriptor_input_layouts = HashMap::new();
-    let mut previous_target: &[Variable] = &[];
-    // TODO: This descriptor_input_layouts magic looks smelly. This should be one fold/walk over
-    // LogicalDescriptor's and LogicalPlan's. The only descriptors that really need the input
-    // are NOT and OR and they only participate in one stage anyway.
-    for stage in &stages {
-        for participant in &stage.participants {
-            let ParticipantRef::Pattern(id) = participant else {
-                continue;
-            };
-            let input_layout = if stage.proposers.contains(participant) {
-                previous_target
-            } else {
-                &stage.target_variables
-            };
-            descriptor_input_layouts.entry(*id).or_insert(input_layout);
-        }
-        previous_target = &stage.target_variables;
-    }
-    let descriptors = descriptors
-        .into_iter()
-        .map(|descriptor| {
-            let descriptor_input_layout = match &descriptor.kind {
-                DescriptorKind::Or { .. } | DescriptorKind::Not { .. } => {
-                    let input_layout =
-                        descriptor_input_layouts
-                            .get(&descriptor.id)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Descriptor {} is not placed in any logical stage",
-                                    descriptor.id
-                                )
-                            })?;
-                    Some(
-                        input_layout
-                            .iter()
-                            .filter(|variable| descriptor.variables.contains(*variable))
-                            .cloned()
-                            .collect(),
-                    )
-                }
-                _ => None,
-            };
-            plan_descriptor(descriptor, descriptor_input_layout, variable_order)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let descriptors = lower_descriptors(descriptors, &stages, variable_order)?;
     Ok(LogicalPlan {
         incoming_variables,
         descriptors,
