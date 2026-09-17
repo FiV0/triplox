@@ -422,6 +422,27 @@
       (api/transact *conn* [[:db/retract alice-id :name "Alice"]])
       (is (= [[["Alice"] -1]] (take-delta! sub 300))))))
 
+(deftest test-explicit-or-join-local-support-retractions
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                       {:db/id "one" :g/to "alice"}
+                       {:db/id "two" :g/to "alice"}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        owners (mapv first (q [:find '?owner :where ['?owner :g/to alice]]))
+        query '[:find ?name :where [?e :name ?name]
+                (or-join [?e] [?name :g/to ?e] [?e :age ?local])]]
+    (is (= #{["Alice"]} (q query)))
+    (with-open [sub (api/subscribe *conn* query)]
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+      (api/transact *conn* [[:db/retract alice :age 30]
+                           [:db/retract (first owners) :g/to alice]])
+      (is (= ::api/timeout (api/take! sub 200)))
+      (api/transact *conn* [[:db/retract (second owners) :g/to alice]])
+      (is (= [[["Alice"] -1]] (take-delta! sub)))
+      (is (= #{} (q query)))
+      (api/transact *conn* [[:db/add (first owners) :g/to alice]])
+      (is (= [[["Alice"] 1]] (take-delta! sub))))))
+
 (deftest test-or-joined-with-outer-pattern-retraction
   (api/transact *conn* [{:name "Alice" :city "Berlin"}
                         {:name "Bob" :city "Berlin"}
