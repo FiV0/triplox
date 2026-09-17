@@ -11,7 +11,7 @@ use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
     build_var_index, clause_mentioned_variables, convert_predicate, convert_where_fn,
-    or_branch_bound_variables, or_branch_mentioned_variables, pattern_variables,
+    or_branch_bound_variables, or_branch_mentioned_variables, or_join_variables, pattern_variables,
     query_variable_order, resolve_order_columns,
 };
 
@@ -38,9 +38,6 @@ where
     validate_clause(clause)?;
     match clause {
         WhereClause::OrJoin(oj) => {
-            if !matches!(&oj.unify_vars, UnifyVars::Implicit) {
-                bail!("Queries (currently) do not support explicit or-join");
-            }
             for branch in &oj.clauses {
                 validate_or_branch_recursively(branch, validate_clause)?;
             }
@@ -83,24 +80,53 @@ fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(),
     })
 }
 
-/// Validate that all variables in NOT clauses are bound by positive clauses.
-fn validate_not_clauses(
-    where_clauses: &[WhereClause],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<(), Error> {
-    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
-        if let WhereClause::NotJoin(nj) = clause {
-            for var in not_clause_variables(&nj.clauses) {
-                if !var_index.contains_key(&var) {
-                    return Err(anyhow::anyhow!(
-                        "Variable {} in NOT clause is not bound by positive clauses",
-                        var
-                    ));
+/// Validate references against the positive bindings visible in each scope.
+fn validate_scope(clauses: &[WhereClause], available: &[Variable]) -> Result<(), Error> {
+    let var_index = build_var_index(available);
+    for clause in clauses {
+        match clause {
+            WhereClause::OrJoin(or) => {
+                let interface = or_join_variables(or);
+                for branch in &or.clauses {
+                    let mut branch_available = available
+                        .iter()
+                        .filter(|variable| interface.contains(variable))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for variable in or_branch_bound_variables(branch) {
+                        if !branch_available.contains(&variable) {
+                            branch_available.push(variable);
+                        }
+                    }
+                    let clauses = match branch {
+                        OrWhereClause::Clause(clause) => std::slice::from_ref(clause),
+                        OrWhereClause::And(clauses) => clauses,
+                    };
+                    validate_scope(clauses, &branch_available)?;
                 }
             }
+            WhereClause::NotJoin(not) => {
+                let variables = not_clause_variables(&not.clauses);
+                for variable in &variables {
+                    if !var_index.contains_key(variable) {
+                        bail!(
+                            "Variable {} in NOT clause is not bound by positive clauses",
+                            variable
+                        );
+                    }
+                }
+                validate_scope(&not.clauses, &variables)?;
+            }
+            WhereClause::Pred(_) => {
+                validate_predicate_clauses(std::slice::from_ref(clause), &var_index)?
+            }
+            WhereClause::WhereFn(_) => {
+                validate_fn_clauses(std::slice::from_ref(clause), &var_index)?
+            }
+            _ => {}
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Collect all variables referenced by inner clauses of a NOT.
@@ -251,7 +277,32 @@ fn validate_aggregate_clauses(
 
 fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
-        WhereClause::OrJoin(oj) => validate_or_branch_variables(&oj.clauses),
+        WhereClause::OrJoin(oj) => match &oj.unify_vars {
+            UnifyVars::Implicit => validate_or_branch_variables(&oj.clauses),
+            UnifyVars::Explicit(variables) => {
+                if variables.is_empty() {
+                    bail!("OR-JOIN requires at least one join variable");
+                }
+                if oj.clauses.is_empty() {
+                    bail!("OR clause must have at least one branch");
+                }
+                for (index, branch) in oj.clauses.iter().enumerate() {
+                    let mentioned = or_branch_mentioned_variables(branch);
+                    let missing = variables
+                        .iter()
+                        .filter(|variable| !mentioned.contains(variable))
+                        .collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        bail!(
+                            "OR-JOIN branch {} does not mention join variables {{{}}}",
+                            index + 1,
+                            missing.iter().format(", ")
+                        );
+                    }
+                }
+                Ok(())
+            }
+        },
         _ => Ok(()),
     })
 }
@@ -344,16 +395,14 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
     validate_in_bindings(&query.in_bindings, args)?;
     validate_supported_where_clauses(&query.where_clauses)?;
     validate_patterns(&query.where_clauses)?;
+    validate_or_clauses(&query.where_clauses)?;
 
     let join_order = query_variable_order(&query.in_bindings, &query.where_clauses);
     if join_order.is_empty() {
         return Err(anyhow::anyhow!("Query has no groundable variables!"));
     }
     let var_index = build_var_index(&join_order);
-    validate_or_clauses(&query.where_clauses)?;
-    validate_not_clauses(&query.where_clauses, &var_index)?;
-    validate_predicate_clauses(&query.where_clauses, &var_index)?;
-    validate_fn_clauses(&query.where_clauses, &var_index)?;
+    validate_scope(&query.where_clauses, &join_order)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
 
     // Validate ORDER BY variables are in the find spec.
@@ -474,15 +523,39 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_explicit_or_join() {
+    fn test_validate_accepts_explicit_or_join() {
         let parsed =
             parse_query(r#"[:find ?e :where (or-join [?e] [?e :name "Alice"] [?e :name "Bob"])]"#);
-        let err = validate_query(&parsed, &[]).unwrap_err();
-        assert!(
-            err.to_string().contains("explicit or-join"),
-            "unexpected error: {}",
-            err
-        );
+        validate_query(&parsed, &[]).unwrap();
+    }
+
+    #[test]
+    fn explicit_or_join_validates_local_scopes() {
+        for query in [
+            "[:find ?e :where (or-join [?e] [?e :name ?name] (and [?e :age ?age] [(>= ?age 18)]))]",
+            "[:find ?e :where (or-join [?e] (and [?e :age ?age] [(+ ?age 1) ?next] [(> ?next 18)] (not [?e :age ?next])))]",
+            "[:find ?e :where (or (or-join [?e] [?e :name ?local]) [?e :age 18])]",
+            "[:find ?e :where [?e :age ?age] (or-join [?e] (and [?e :name ?age] [(identity ?age) ?copy]))]",
+        ] {
+            validate_query(&parse_query(query), &[]).unwrap_or_else(|err| panic!("{query}: {err}"));
+        }
+    }
+
+    #[test]
+    fn explicit_or_join_rejects_missing_and_escaping_variables() {
+        for (query, message) in [
+            ("[:find ?e :where (or-join [?e] [?e :name ?n] [?other :age ?age])]", "OR-JOIN branch 2 does not mention join variables {?e}"),
+            ("[:find ?e :where [?e :age ?age] (or-join [?e ?age] [?e :name ?n])]", "OR-JOIN branch 1 does not mention join variables {?age}"),
+            ("[:find ?e :where (or-join [?e ?local] (or-join [?e] [?e :age ?local]))]", "does not mention join variables {?local}"),
+            ("[:find ?e :where [?e :age ?age] (or-join [?e] (and [?e :name ?name] [(> ?age 18)]))]", "Predicate variable ?age is not bound"),
+            ("[:find ?e :where (or-join [?e] (and [?e :age ?age] [(+ ?missing 1) ?next]))]", "Function input variable ?missing not in join order"),
+            ("[:find ?e :where (or-join [?e] [?e :age ?local]) [(> ?local 18)]]", "Predicate variable ?local is not bound"),
+            ("[:find (count ?local) :where (or-join [?e] [?e :age ?local])]", "Aggregate variable ?local"),
+            ("[:find ?e :where (or-join [?e] (and [?e :name ?name] (not [?e :age ?local])))]", "Variable ?local in NOT clause is not bound"),
+        ] {
+            let error = validate_query(&parse_query(query), &[]).unwrap_err().to_string();
+            assert!(error.contains(message), "{query}: {error}");
+        }
     }
 
     #[test]

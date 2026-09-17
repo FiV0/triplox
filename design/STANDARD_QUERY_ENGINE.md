@@ -12,7 +12,7 @@ incremental query engine described in
 The engine is row-oriented. It plans a query without opening storage,
 materializes that recursive plan for one database basis, and executes a
 sequence of scopes with stages over a growing `BindingBag`. Nested scopes
-exist for `or` and `not` evaluation.
+exist for `or`, `or-join`, and `not` evaluation.
 
 ```text
 ParsedQuery + QueryArg values + database basis
@@ -103,7 +103,7 @@ Deduplication is explicit at boundaries that require set semantics:
 
 - `RelationPattern` stores distinct relation rows;
 - each triple pattern produces distinct candidate extensions per input row;
-- `OrPattern` distinct-unions complete branch rows.
+- `OrPattern` projects branches to their exposed variables before distinct union.
 
 This distinction is important. Duplicate witnesses in a conjunction remain
 observable, while the same complete result produced by two OR branches appears
@@ -446,3 +446,33 @@ filters that row.
 | `src/query/stage.rs` | Concrete executable stages. |
 | `src/query/engine.rs` | `GenericJoinEngine` the main execution loop over `dyn ExecPattern` |
 | `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |
+
+## Explicit OR joins
+
+Standard queries support `(or-join [?e ...] branch ...)`. The declared variables
+form the interface with the enclosing query. Every branch must mention every
+declared variable, even when that variable is already bound outside. Branches
+may introduce declared variables; they need not all be supplied by the caller.
+
+Variables omitted from the interface are local to each branch, including when
+the same name occurs outside. Locals can bind triple patterns, predicates,
+functions, and nested implicit NOT clauses, but cannot escape into the enclosing
+query's results or aggregates. Nested explicit joins expose only their own
+interfaces. Branch results are projected to the interface before distinct union
+and correlation with the original incoming rows.
+
+```clojure
+[:find ?e
+ :where (or-join [?e]
+          [?e :name ?name]
+          (and [?e :age ?age] [(>= ?age 18)]))]
+```
+
+Each scope retains the inherited order of its interface variables and appends
+its local variables. Incoming layouts and binding analysis contain only the
+variables allowed across the boundary; variable ordering does not grant access
+to an outer binding.
+
+Join lists must be nonempty and contain unique variables. Required-variable
+syntax, explicit `not-join`, and entity/value placeholders remain unsupported.
+Incremental queries currently reject explicit `or-join`.
