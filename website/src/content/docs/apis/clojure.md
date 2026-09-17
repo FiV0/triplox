@@ -20,6 +20,15 @@ Or, with Leiningen, in your `project.clj`:
 [xyz.triplox/triplox "0.1.0-alpha.8"]
 ```
 
+The client requires Java 21 or later.
+
+:::note[Recommended JDK]
+We recommend JDK 24 or later, where subscriptions use virtual threads by default.
+On earlier JDKs, each subscription uses a platform thread, occupying an OS thread even while waiting for updates.
+A large numbers of concurrent subscriptions can exhaust native threads and prevent new subscriptions from starting.
+By default this is 256 platform threads and it can be configured with the `jdk.virtualThreadScheduler.maxPoolSize` system property.
+:::
+
 ## Example
 
 The following REPL session defines a small schema, inserts two entities, and runs a Datalog query against a db value.
