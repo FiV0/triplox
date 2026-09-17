@@ -17,6 +17,15 @@ import static org.junit.jupiter.api.Assertions.*;
 class SubscriptionTest {
 
     @Test
+    void defaultSubscriptionFactoryMatchesRuntime() {
+        var reader = Subscription.DEFAULT_SUBSCRIPTION_FACTORY.newThread(() -> {});
+
+        assertEquals(Runtime.version().feature() >= 24, reader.isVirtual());
+        assertTrue(reader.isDaemon());
+        assertEquals("triplox-subscription-reader", reader.getName());
+    }
+
+    @Test
     void virtualReaderDeliversRowsBeforeTerminalError() throws Exception {
         byte[] body;
         try (var packer = MessagePack.newDefaultBufferPacker()) {

@@ -43,9 +43,10 @@ public class TriploxNode implements AutoCloseable {
 
     /**
      * Connect to a Triplox HTTP server.
+     * Subscription readers use virtual threads on Java 24+ and platform threads on earlier runtimes.
      */
     public static TriploxNode connect(String host, int port) throws IOException {
-        return connect(host, port, Subscription.DEFAULT_READER_FACTORY);
+        return connect(host, port, Subscription.DEFAULT_SUBSCRIPTION_FACTORY);
     }
 
     /** Connect with a factory for subscription readers, such as Thread.ofVirtual().factory(). */

@@ -24,8 +24,9 @@ import org.msgpack.core.MessageUnpacker;
  * <p>Thread-safety: consume a single subscription from one thread.</p>
  */
 public final class Subscription implements AutoCloseable {
-    static final ThreadFactory DEFAULT_READER_FACTORY = Thread.ofPlatform()
-            .daemon(true).name("triplox-subscription-reader").factory();
+    static final ThreadFactory DEFAULT_SUBSCRIPTION_FACTORY = Runtime.version().feature() >= 24
+            ? Thread.ofVirtual().name("triplox-subscription-reader").factory()
+            : Thread.ofPlatform().daemon(true).name("triplox-subscription-reader").factory();
 
     private static final int QUEUE_CAPACITY = 128;
     private static final short INTERNAL_ERROR = 4000;
@@ -49,7 +50,7 @@ public final class Subscription implements AutoCloseable {
     }
 
     Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker) {
-        this(txKey, closeable, unpacker, DEFAULT_READER_FACTORY);
+        this(txKey, closeable, unpacker, DEFAULT_SUBSCRIPTION_FACTORY);
     }
 
     Subscription(TxKey txKey, Closeable closeable, MessageUnpacker unpacker, ThreadFactory readerFactory) {
@@ -68,7 +69,7 @@ public final class Subscription implements AutoCloseable {
     }
 
     static Subscription open(InputStream stream, Closeable closeable) throws IOException, TriploxException {
-        return open(stream, closeable, DEFAULT_READER_FACTORY);
+        return open(stream, closeable, DEFAULT_SUBSCRIPTION_FACTORY);
     }
 
     static Subscription open(InputStream stream, Closeable closeable, ThreadFactory readerFactory) throws IOException, TriploxException {
