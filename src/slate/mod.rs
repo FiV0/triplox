@@ -126,6 +126,7 @@ pub async fn remote_slate(
     secret_key: &str,
     region: &str,
     cache_path: &Path,
+    wal_flush_interval: Duration,
 ) -> Result<SlateComponents, anyhow::Error> {
     let s3 = AmazonS3Builder::new()
         .with_endpoint(endpoint)
@@ -140,7 +141,7 @@ pub async fn remote_slate(
     let object_store: Arc<dyn ObjectStore> = Arc::new(s3);
     std::fs::create_dir_all(cache_path)?;
     let settings = Settings {
-        flush_interval: Some(Duration::new(0, 100000)),
+        flush_interval: Some(wal_flush_interval),
         max_unflushed_bytes: 2 * 1024 * 1024 * 1024,
         l0_max_ssts: 16,
         wal_enabled: true,

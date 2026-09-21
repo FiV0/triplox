@@ -5,6 +5,8 @@ bucket = "triplox"
 access_key = "triplox"
 secret_key = "triplox123"
 cache_path = "/tmp/triplox-disk"
+# Optional writer WAL flush interval in microseconds (default: 100; must be positive).
+# wal_flush_interval_us = 25000
 
 [log]
 type = "file"

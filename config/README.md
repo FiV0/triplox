@@ -32,6 +32,23 @@ combination is rejected at startup.
 | `triplox-local.toml`  | local  | Persistent local FS at `./data/`.                 |
 | `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
 
+## Writer WAL flush interval
+
+For remote storage, set `wal_flush_interval_us` in `[storage]` to control how
+often the writer flushes SlateDB's WAL to object storage. The value is a positive
+integer in microseconds and defaults to `100`, preserving the existing interval.
+It applies with both file and Kafka transaction logs.
+
+```toml
+# Add to the existing [storage] section with type = "remote":
+wal_flush_interval_us = 25000 # 25 milliseconds
+```
+
+Longer intervals allow more writes to accumulate between flushes, but can delay
+visibility to readers and incremental queries. This setting controls SlateDB's
+WAL, not the transaction log configured in `[log]`. Local and memory storage
+continue to use SlateDB's default interval.
+
 ## Running locally against MinIO in Docker
 
 Useful when you want to exercise the remote-storage code path while iterating

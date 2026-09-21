@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -21,6 +22,10 @@ fn default_kafka_topic() -> String {
 
 fn default_region() -> String {
     "eu-central-1".to_string()
+}
+
+fn default_wal_flush_interval_us() -> NonZeroU64 {
+    NonZeroU64::new(100).unwrap()
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +52,9 @@ pub struct RemoteStorageConfig {
     /// On-disk root for the SlateDB object-store cache and the dbsp scratch
     /// directory (`{cache_path}/cache`, `{cache_path}/dbsp`).
     pub cache_path: PathBuf,
+    /// Writer WAL flush interval in microseconds; must be positive.
+    #[serde(default = "default_wal_flush_interval_us")]
+    pub wal_flush_interval_us: NonZeroU64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,6 +260,7 @@ mod tests {
             panic!("expected remote node");
         };
         assert_eq!(storage.region, "eu-central-1");
+        assert_eq!(storage.wal_flush_interval_us.get(), 100);
         assert_eq!(storage.cache_path, PathBuf::from("/tmp/triplox-disk"));
         assert_eq!(
             storage.cache_path.join("cache"),
@@ -262,6 +271,33 @@ mod tests {
             PathBuf::from("/tmp/triplox-disk/dbsp")
         );
         assert_eq!(log_path, PathBuf::from("/tmp/triplox-log/log"));
+    }
+
+    #[test]
+    fn resolves_custom_wal_flush_interval() {
+        let input = include_str!("../config/triplox-remote.toml").replacen(
+            "[storage]",
+            "[storage]\nwal_flush_interval_us = 25000",
+            1,
+        );
+        let config: Config = toml::from_str(&input).unwrap();
+        let NodeConfig::Remote { storage, .. } = config.resolve().unwrap() else {
+            panic!("expected remote node");
+        };
+        assert_eq!(storage.wal_flush_interval_us.get(), 25_000);
+    }
+
+    #[test]
+    fn rejects_invalid_wal_flush_intervals() {
+        for value in ["0", "-1", "1.5", "\"100\""] {
+            let input = include_str!("../config/triplox-remote.toml").replacen(
+                "[storage]",
+                &format!("[storage]\nwal_flush_interval_us = {value}"),
+                1,
+            );
+            let err = toml::from_str::<Config>(&input).unwrap_err().to_string();
+            assert!(err.contains("nonzero u64"), "got: {err}");
+        }
     }
 
     #[cfg(feature = "kafka")]
