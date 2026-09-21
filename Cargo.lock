@@ -5893,6 +5893,7 @@ dependencies = [
  "serde",
  "slatedb",
  "slatedb-estimates",
+ "sysinfo",
  "tempfile",
  "testcontainers",
  "thiserror 2.0.20",

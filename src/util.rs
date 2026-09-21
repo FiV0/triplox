@@ -3,6 +3,12 @@ use rand::RngExt;
 
 use crate::{codec, index::IndexType};
 
+pub(crate) fn rss_budget(total_memory: u64, cgroup_memory: Option<u64>) -> Option<u64> {
+    let memory = cgroup_memory.map_or(total_memory, |limit| limit.min(total_memory));
+    let budget = memory / 4 * 3;
+    (budget > 0).then_some(budget)
+}
+
 pub fn random_string(length: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::rng();

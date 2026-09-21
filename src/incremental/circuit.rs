@@ -3,6 +3,7 @@ mod aggregates;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
 use dbsp::circuit::{
@@ -23,6 +24,7 @@ use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, 
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 use crate::query::{FindPlan, Projection};
+use crate::util::rss_budget;
 
 // Standard row -> weight
 pub(crate) type RowZSet = OrdZSet<EncodedRow>;
@@ -431,6 +433,25 @@ fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>>
         .collect()
 }
 
+// All circuits use the same process RSS budget, based on capacity rather than free memory.
+static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total_memory = system.total_memory();
+    let cgroup_memory = if total_memory > 0 {
+        system.cgroup_limits().map(|limits| limits.total_memory)
+    } else {
+        None
+    };
+    let budget = rss_budget(total_memory, cgroup_memory);
+    if let Some(bytes) = budget {
+        tracing::info!(bytes, "DBSP process RSS budget");
+    } else {
+        tracing::warn!("Could not detect memory capacity; DBSP RSS budget is unset");
+    }
+    budget
+});
+
 // Builds the file-backed DBSP runtime configuration for a single query circuit.
 fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     if storage_path.exists() {
@@ -449,7 +470,9 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     )
     .map_err(anyhow::Error::from)?;
 
-    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
+    Ok(CircuitConfig::with_workers(1)
+        .with_max_rss_bytes(*MAX_RSS_BYTES)
+        .with_storage(Some(storage)))
 }
 
 pub(super) struct QueryCircuit {

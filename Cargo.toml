@@ -47,6 +47,7 @@ regex = "1.12.3"
 rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"], default-features = false }
 serde = { workspace = true, features = ["derive"] }
 size-of = { version = "0.1.7", package = "feldera-size-of" }
+sysinfo = { version = "0.35.2", default-features = false, features = ["system"] }
 slatedb = { git = "https://github.com/slatedb/slatedb", rev = "8aa2c10eb9ff3db3519f75f75d10e5487df29805", features = ["aws", "wal_disable"] }
 slatedb-estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "e1a7273d47eeeaca7a96341330d939c71a91843f" }
 thiserror = { workspace = true }
