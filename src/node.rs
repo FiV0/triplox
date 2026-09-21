@@ -189,6 +189,7 @@ impl Node<FileLog> {
             &storage.secret_key,
             &storage.region,
             &cache_path,
+            Duration::from_micros(storage.wal_flush_interval_us.get()),
         )
         .await?;
         Self::from_slate_and_log(slate, log_path, storage.cache_path.join("dbsp")).await
@@ -210,6 +211,7 @@ impl Node<KafkaLog> {
             &storage.secret_key,
             &storage.region,
             &cache_path,
+            Duration::from_micros(storage.wal_flush_interval_us.get()),
         )
         .await?;
         let log = Arc::new(KafkaLog::new(&log.bootstrap_servers, log.topic.clone()).await?);
