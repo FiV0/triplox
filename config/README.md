@@ -46,8 +46,8 @@ wal_flush_interval_us = 25000 # 25 milliseconds
 
 Longer intervals allow more writes to accumulate between flushes, but can delay
 visibility to readers and incremental queries. This setting controls SlateDB's
-WAL, not the transaction log configured in `[log]`. Local and memory storage
-continue to use SlateDB's default interval.
+WAL, not the transaction log configured in `[log]`. Local and in-memory storage
+use a 10 millisecond WAL flush interval.
 
 ## Running locally against MinIO in Docker
 

@@ -20,6 +20,7 @@ use crate::util::random_string;
 pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_META_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_RANGE_STATS_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_LOCAL_WAL_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
 
 pub fn default_db_cache() -> Arc<dyn DbCache> {
     let block_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
@@ -70,6 +71,10 @@ pub async fn in_memory_slate() -> SlateComponents {
     let path = format!("tmp/triplox-{}", random_string(10));
     let db = Arc::new(
         Db::builder(path.clone(), object_store.clone())
+            .with_settings(Settings {
+                flush_interval: Some(DEFAULT_LOCAL_WAL_FLUSH_INTERVAL),
+                ..Settings::default()
+            })
             .with_db_cache(default_db_cache())
             .build()
             .await
@@ -99,6 +104,10 @@ pub async fn local_slate(root_path: &Path) -> SlateComponents {
     let slate_path = "triplox".to_string();
     let db = Arc::new(
         Db::builder(slate_path.clone(), object_store.clone())
+            .with_settings(Settings {
+                flush_interval: Some(DEFAULT_LOCAL_WAL_FLUSH_INTERVAL),
+                ..Settings::default()
+            })
             .with_db_cache(default_db_cache())
             .build()
             .await
