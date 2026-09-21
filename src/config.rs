@@ -25,7 +25,7 @@ fn default_region() -> String {
 }
 
 fn default_wal_flush_interval_us() -> NonZeroU64 {
-    NonZeroU64::new(100).unwrap()
+    NonZeroU64::new(200_000).unwrap()
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,7 +260,7 @@ mod tests {
             panic!("expected remote node");
         };
         assert_eq!(storage.region, "eu-central-1");
-        assert_eq!(storage.wal_flush_interval_us.get(), 100);
+        assert_eq!(storage.wal_flush_interval_us.get(), 200_000);
         assert_eq!(storage.cache_path, PathBuf::from("/tmp/triplox-disk"));
         assert_eq!(
             storage.cache_path.join("cache"),

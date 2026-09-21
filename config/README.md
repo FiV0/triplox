@@ -36,7 +36,7 @@ combination is rejected at startup.
 
 For remote storage, set `wal_flush_interval_us` in `[storage]` to control how
 often the writer flushes SlateDB's WAL to object storage. The value is a positive
-integer in microseconds and defaults to `100`, preserving the existing interval.
+integer in microseconds and defaults to `200000` (200 milliseconds).
 It applies with both file and Kafka transaction logs.
 
 ```toml
