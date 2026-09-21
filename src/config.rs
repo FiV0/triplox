@@ -40,7 +40,7 @@ pub enum StorageConfig {
     Remote(RemoteStorageConfig),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteStorageConfig {
     pub endpoint: String,
@@ -55,6 +55,12 @@ pub struct RemoteStorageConfig {
     /// Writer WAL flush interval in microseconds; must be positive.
     #[serde(default = "default_wal_flush_interval_us")]
     pub wal_flush_interval_us: NonZeroU64,
+}
+
+impl std::fmt::Debug for RemoteStorageConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteStorageConfig([REDACTED])")
+    }
 }
 
 #[derive(Debug, Deserialize)]
