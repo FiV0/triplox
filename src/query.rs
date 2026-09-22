@@ -332,24 +332,29 @@ pub(crate) fn convert_where_fn(wf: &WhereFn) -> Result<FnExpr, Error> {
 // Variable collection from clauses
 // ---------------------------------------------------------------------------
 
-/// Extract variables bound by an OrWhereClause.
-pub(crate) fn or_branch_bound_variables(branch: &OrWhereClause) -> Vec<Variable> {
+/// Borrow the clauses of either a single-clause or AND branch.
+pub(crate) fn or_branch_clauses(branch: &OrWhereClause) -> &[WhereClause] {
     match branch {
-        OrWhereClause::Clause(clause) => clause_bound_variables(clause),
-        OrWhereClause::And(children) => children.iter().flat_map(clause_bound_variables).collect(),
+        OrWhereClause::Clause(clause) => std::slice::from_ref(clause),
+        OrWhereClause::And(clauses) => clauses,
     }
 }
 
-/// Extract all variables mentioned by an OrWhereClause.
+/// Extract variables bound by an OrWhereClause.
+pub(crate) fn or_branch_bound_variables(branch: &OrWhereClause) -> Vec<Variable> {
+    or_branch_clauses(branch)
+        .iter()
+        .flat_map(clause_bound_variables)
+        .collect()
+}
+
+/// Extract variables mentioned at an OR branch's boundary.
 pub(crate) fn or_branch_mentioned_variables(branch: &OrWhereClause) -> Vec<Variable> {
-    match branch {
-        OrWhereClause::Clause(clause) => clause_mentioned_variables(clause),
-        OrWhereClause::And(clauses) => clauses
-            .iter()
-            .flat_map(clause_mentioned_variables)
-            .unique()
-            .collect(),
-    }
+    or_branch_clauses(branch)
+        .iter()
+        .flat_map(clause_mentioned_variables)
+        .unique()
+        .collect()
 }
 
 /// Recursively extract variables bound by a single WhereClause.

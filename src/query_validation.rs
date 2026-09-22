@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Error};
 use edn::query::{
     Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, UnifyVars, Variable, WhereClause,
+    PatternValuePlace, Predicate, UnifyVars, Variable, WhereClause, WhereFn,
 };
 use itertools::Itertools;
 
@@ -11,8 +11,8 @@ use crate::expr::expr_variables;
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
     build_var_index, clause_mentioned_variables, convert_predicate, convert_where_fn,
-    or_branch_bound_variables, or_branch_mentioned_variables, or_join_variables, pattern_variables,
-    query_variable_order, resolve_order_columns,
+    or_branch_bound_variables, or_branch_clauses, or_branch_mentioned_variables, or_join_variables,
+    pattern_variables, query_variable_order, resolve_order_columns,
 };
 
 fn validate_where_clauses_recursively<F>(
@@ -39,7 +39,7 @@ where
     match clause {
         WhereClause::OrJoin(oj) => {
             for branch in &oj.clauses {
-                validate_or_branch_recursively(branch, validate_clause)?;
+                validate_where_clauses_recursively(or_branch_clauses(branch), validate_clause)?;
             }
             Ok(())
         }
@@ -53,21 +53,6 @@ where
     }
 }
 
-fn validate_or_branch_recursively<F>(
-    branch: &OrWhereClause,
-    validate_clause: &mut F,
-) -> Result<(), Error>
-where
-    F: FnMut(&WhereClause) -> Result<(), Error>,
-{
-    match branch {
-        OrWhereClause::Clause(clause) => validate_where_clause_recursively(clause, validate_clause),
-        OrWhereClause::And(children) => {
-            validate_where_clauses_recursively(children, validate_clause)
-        }
-    }
-}
-
 fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(where_clauses, &mut |clause| match clause {
         WhereClause::TypeAnnotation(_) => bail!("Queries do not support type annotations"),
@@ -78,6 +63,46 @@ fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(),
         | WhereClause::NotJoin(_)
         | WhereClause::OrJoin(_) => Ok(()),
     })
+}
+
+/// Validate that a predicate references at least one variable and all are available.
+fn validate_predicate(
+    pred: &Predicate,
+    var_index: &HashMap<&Variable, usize>,
+) -> Result<(), Error> {
+    let expr = convert_predicate(pred)?;
+    let vars = expr_variables(&expr);
+    if vars.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Predicate expression must reference at least one variable"
+        ));
+    }
+    for var in &vars {
+        if !var_index.contains_key(var) {
+            return Err(anyhow::anyhow!(
+                "Predicate variable {} is not bound by positive clauses",
+                var
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate that a function's input and output variables are available.
+fn validate_fn(wf: &WhereFn, var_index: &HashMap<&Variable, usize>) -> Result<(), Error> {
+    let fn_expr = convert_where_fn(wf)?;
+    var_index.get(&fn_expr.output).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Function output variable {} not in join order",
+            fn_expr.output
+        )
+    })?;
+    for var in fn_expr.input_variables() {
+        var_index
+            .get(&var)
+            .ok_or_else(|| anyhow::anyhow!("Function input variable {} not in join order", var))?;
+    }
+    Ok(())
 }
 
 /// Validate references against the positive bindings visible in each scope.
@@ -98,15 +123,11 @@ fn validate_scope(clauses: &[WhereClause], available: &[Variable]) -> Result<(),
                             branch_available.push(variable);
                         }
                     }
-                    let clauses = match branch {
-                        OrWhereClause::Clause(clause) => std::slice::from_ref(clause),
-                        OrWhereClause::And(clauses) => clauses,
-                    };
-                    validate_scope(clauses, &branch_available)?;
+                    validate_scope(or_branch_clauses(branch), &branch_available)?;
                 }
             }
             WhereClause::NotJoin(not) => {
-                let variables = not_clause_variables(&not.clauses);
+                let variables = clause_mentioned_variables(clause);
                 for variable in &variables {
                     if !var_index.contains_key(variable) {
                         bail!(
@@ -115,32 +136,15 @@ fn validate_scope(clauses: &[WhereClause], available: &[Variable]) -> Result<(),
                         );
                     }
                 }
+                // `variables` can be used here as the above check ensures only those are present in the NOT scope by construction.
                 validate_scope(&not.clauses, &variables)?;
             }
-            WhereClause::Pred(_) => {
-                validate_predicate_clauses(std::slice::from_ref(clause), &var_index)?
-            }
-            WhereClause::WhereFn(_) => {
-                validate_fn_clauses(std::slice::from_ref(clause), &var_index)?
-            }
+            WhereClause::Pred(pred) => validate_predicate(pred, &var_index)?,
+            WhereClause::WhereFn(wf) => validate_fn(wf, &var_index)?,
             _ => {}
         }
     }
     Ok(())
-}
-
-/// Collect all variables referenced by inner clauses of a NOT.
-fn not_clause_variables(inner_clauses: &[WhereClause]) -> Vec<Variable> {
-    let mut vars = Vec::new();
-    let mut seen = HashSet::new();
-    for clause in inner_clauses {
-        for var in clause_mentioned_variables(clause) {
-            if seen.insert(var.clone()) {
-                vars.push(var);
-            }
-        }
-    }
-    vars
 }
 
 fn validate_patterns(where_clauses: &[WhereClause]) -> Result<(), Error> {
@@ -186,58 +190,6 @@ fn validate_pattern(pattern: &Pattern) -> Result<(), Error> {
     Ok(())
 }
 
-/// Validate that all variables in Predicate clauses are bound by positive clauses,
-/// and that each predicate has at least one variable.
-fn validate_predicate_clauses(
-    where_clauses: &[WhereClause],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<(), Error> {
-    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
-        if let WhereClause::Pred(pred) = clause {
-            let expr = convert_predicate(pred)?;
-            let vars = expr_variables(&expr);
-            if vars.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "Predicate expression must reference at least one variable"
-                ));
-            }
-            for var in &vars {
-                if !var_index.contains_key(var) {
-                    return Err(anyhow::anyhow!(
-                        "Predicate variable {} is not bound by positive clauses",
-                        var
-                    ));
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
-/// Validate that all WhereFn variables occur in the join order.
-fn validate_fn_clauses(
-    where_clauses: &[WhereClause],
-    var_index: &HashMap<&Variable, usize>,
-) -> Result<(), Error> {
-    validate_where_clauses_recursively(where_clauses, &mut |clause: &WhereClause| {
-        if let WhereClause::WhereFn(wf) = clause {
-            let fn_expr = convert_where_fn(wf)?;
-            var_index.get(&fn_expr.output).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Function output variable {} not in join order",
-                    fn_expr.output
-                )
-            })?;
-            for var in fn_expr.input_variables() {
-                var_index.get(&var).ok_or_else(|| {
-                    anyhow::anyhow!("Function input variable {} not in join order", var)
-                })?;
-            }
-        }
-        Ok(())
-    })
-}
-
 /// Validate that all aggregate variables are bound by where clauses.
 fn validate_aggregate_clauses(
     find: &FindSpec,
@@ -273,38 +225,6 @@ fn validate_aggregate_clauses(
         }
     }
     Ok(())
-}
-
-fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
-    validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
-        WhereClause::OrJoin(oj) => match &oj.unify_vars {
-            UnifyVars::Implicit => validate_or_branch_variables(&oj.clauses),
-            UnifyVars::Explicit(variables) => {
-                if variables.is_empty() {
-                    bail!("OR-JOIN requires at least one join variable");
-                }
-                if oj.clauses.is_empty() {
-                    bail!("OR clause must have at least one branch");
-                }
-                for (index, branch) in oj.clauses.iter().enumerate() {
-                    let mentioned = or_branch_mentioned_variables(branch);
-                    let missing = variables
-                        .iter()
-                        .filter(|variable| !mentioned.contains(variable))
-                        .collect::<Vec<_>>();
-                    if !missing.is_empty() {
-                        bail!(
-                            "OR-JOIN branch {} does not mention join variables {{{}}}",
-                            index + 1,
-                            missing.iter().format(", ")
-                        );
-                    }
-                }
-                Ok(())
-            }
-        },
-        _ => Ok(()),
-    })
 }
 
 /// Validate that all OR branches have the same free variables.
@@ -344,6 +264,38 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
         }
     }
     Ok(())
+}
+
+fn validate_or_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
+    validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
+        WhereClause::OrJoin(oj) => match &oj.unify_vars {
+            UnifyVars::Implicit => validate_or_branch_variables(&oj.clauses),
+            UnifyVars::Explicit(variables) => {
+                if variables.is_empty() {
+                    bail!("OR-JOIN requires at least one join variable");
+                }
+                if oj.clauses.is_empty() {
+                    bail!("OR clause must have at least one branch");
+                }
+                for (index, branch) in oj.clauses.iter().enumerate() {
+                    let mentioned = or_branch_mentioned_variables(branch);
+                    let missing = variables
+                        .iter()
+                        .filter(|variable| !mentioned.contains(variable))
+                        .collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        bail!(
+                            "OR-JOIN branch {} does not mention join variables {{{}}}",
+                            index + 1,
+                            missing.iter().format(", ")
+                        );
+                    }
+                }
+                Ok(())
+            }
+        },
+        _ => Ok(()),
+    })
 }
 
 /// Validate that :in bindings match the provided arguments in count and type.
