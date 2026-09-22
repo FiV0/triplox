@@ -221,6 +221,103 @@
                       (or (and [?e :sex :female]
                                [?e :name "Ivan"]))]}))))
 
+(deftest test-query-explicit-or-join
+  (tc/transact *conn* [{:db/ident :email
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}
+                       {:db/ident :follows
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/many}
+                       {:db/ident :tags
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/many}])
+  (let [result (tc/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                                   {:db/id "bob" :name "Bob" :age 17}
+                                   {:db/id "cara" :name "Cara" :age 40}
+                                   [:db/add "alice" :follows "cara"]
+                                   [:db/add "cara" :follows "bob"]
+                                   [:db/add "alice" :tags "a"]
+                                   [:db/add "alice" :tags "b"]
+                                   [:db/add "cara" :tags "a"]])]
+    (is (:committed? result) (pr-str result)))
+  (let [ids (into {} (q '[:find ?name ?e :where [?e :name ?name]]))
+        alice (ids "Alice")
+        bob (ids "Bob")
+        cara (ids "Cara")
+        db (tc/db *conn*)]
+    (doseq [[label query expected]
+            [["Branches expose only their declared variables"
+              '[:find ?e :where (or-join [?e] [?e :name ?name] [?e :age ?age])]
+              [[alice] [bob] [cara]]]
+             ["Branch-local predicates"
+              '[:find ?e :where (or-join [?e]
+                                 (and [?e :age ?age] [(>= ?age 18)])
+                                 [?e :email ?email])]
+              [[alice] [cara]]]
+             ["Local variables do not capture preceding outer variables"
+              '[:find ?e :where [?e :name ?age]
+                (or-join [?e] (and [?e :age ?age] [(>= ?age 18)]))]
+              [[alice] [cara]]]
+             ["Local variables do not escape into following clauses"
+              '[:find ?e :where
+                (or-join [?e] (and [?e :age ?age] [(>= ?age 18)]))
+                [?e :name ?age]]
+              [[alice] [cara]]]
+             ["Branch-local function outputs"
+              '[:find ?e :where (or-join [?e]
+                                 (and [?e :age ?age]
+                                      [(+ ?age 1) ?next]
+                                      [(> ?next 30)]))]
+              [[alice] [cara]]]
+             ["Function outputs can bind join variables"
+              '[:find ?next :where (or-join [?next]
+                                    (and [?e :age ?age] [(+ ?age 1) ?next]))]
+              [[18] [31] [41]]]
+             ["Negation inside or-join"
+              '[:find ?e :where (or-join [?e]
+                                 (and [?e :follows ?friend]
+                                      (not [?friend :age 17])))]
+              [[alice]]]
+             ["Nested or-join keeps branch variables local"
+              '[:find ?e :where (or-join [?e]
+                                 (or-join [?e] [?e :follows ?local])
+                                 (and [?e :age ?local] [(> ?local 30)]))]
+              [[alice] [cara]]]
+             ["Or-join inside or"
+              '[:find ?e :where (or (or-join [?e] [?e :follows ?local])
+                                   [?e :age 17])]
+              [[alice] [bob] [cara]]]
+             ["Or-join inside not"
+              '[:find ?e :where [?e :name ?name]
+                (not (or-join [?e] [?e :follows ?friend]))]
+              [[bob]]]
+             ["No matching branches"
+              '[:find ?e :where (or-join [?e] [?e :age 99] [?e :email ?email])]
+              []]
+             ["Duplicate witnesses and overlapping branches count once"
+              '[:find (count ?e) :where
+                (or-join [?e] [?e :tags ?tag] [?e :age 30])]
+              [[2]]]
+             ["Outer values survive a same-name branch-local variable"
+              '[:find ?e ?age :where [?e :age ?age]
+                (or-join [?e] [?e :follows ?age])]
+              [[alice 30] [cara 40]]]]]
+      (testing label
+        (is (= (frequencies expected) (frequencies (tc/q db query)))
+            (pr-str query))))
+    (testing "Input variables are available in every branch"
+      (is (= (frequencies [[alice] [bob] [cara]])
+             (frequencies
+              (tc/q db '[:find ?e :in ?age :where
+                         (or-join [?e ?age]
+                           (and [?e :name ?name] [(= ?age 30)])
+                           [?e :age ?age])]
+                    30)))))
+    (testing "Find cannot expose branch-local variables"
+      (is (thrown-with-msg? TriploxException #"Find variable \?local not in where clauses"
+                           (tc/q db '[:find ?local :where
+                                      (or-join [?e] [?e :age ?local])]))))))
+
 (deftest test-ors-must-use-same-vars
   (is (thrown? TriploxException
                (q '{:find [?e]
