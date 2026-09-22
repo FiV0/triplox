@@ -79,8 +79,6 @@
     #{1 5 4}
 
     ;; One branch of or short-circuits resolution
-    #_#_
-    ;; TODO identity function
     [(or
       (and [?e :age 30]                 ; no matches in db
            [?e :name ?n])
@@ -223,7 +221,7 @@
                                         [?e :age ?a])])))
 
   #_
-  ;; TODO or-join
+  ;; TODO required variables
   (is (thrown-msg? "Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :name \"Ivan\"])"
                    (q '[:find ?e
                         :where (or-join [[?e]]
