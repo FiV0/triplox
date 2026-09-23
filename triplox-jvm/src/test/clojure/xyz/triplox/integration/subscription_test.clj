@@ -430,35 +430,44 @@
 
   (let [alice (single-value '{:find [?e] :where [[?e :name "Alice"]]})
         owners (mapv first (q {:find '[?owner]
-                              :where [['?owner :g/to alice]]}))
+                               :where [['?owner :g/to alice]]}))
         query '{:find [?name]
                 :where [[?e :name ?name]
                         (or-join [?e]
                                  [?name :g/to ?e]
                                  [?e :age ?local])]}]
+
     (is (= #{["Alice"]} (q query)))
+
     (with-open [sub (api/subscribe *conn* query)]
+
       (is (= [[["Alice"] 1]] (take-delta! sub)))
+
       (api/transact *conn* [[:db/retract alice :age 30]
                             [:db/retract (first owners) :g/to alice]])
       (is (= ::api/timeout (api/take! sub 200)))
+
       (api/transact *conn* [[:db/retract (second owners) :g/to alice]])
       (is (= [[["Alice"] -1]] (take-delta! sub)))
       (is (= #{} (q query)))
+
       (api/transact *conn* [[:db/add (first owners) :g/to alice]])
       (is (= [[["Alice"] 1]] (take-delta! sub))))))
 
 (deftest explicit-or-join-local-expressions-track-updates
   (api/transact *conn* [{:name "Alice" :age 30}
-                       {:name "Bob" :age 17}])
+                        {:name "Bob" :age 17}])
+
   (let [alice (single-value '{:find [?e] :where [[?e :name "Alice"]]})
         bob (single-value '{:find [?e] :where [[?e :name "Bob"]]})]
+
     (with-open [sub (api/subscribe *conn* '{:find [?age ?next]
-                                          :where [(or-join [?e ?next]
-                                                          (and [?e :age ?age]
-                                                               [(+ ?age 1) ?next]
-                                                               [(> ?next 18)]))
-                                                  [?e :name ?age]]})]
+                                            :where [(or-join [?e ?next]
+                                                             (and [?e :age ?age]
+                                                                  [(+ ?age 1) ?next]
+                                                                  [(> ?next 18)]))
+                                                    [?e :name ?age]]})]
+
       (is (= [[["Alice" 31] 1]] (take-priming! sub)))
 
       (api/transact *conn* [[:db/add bob :age 25]])
@@ -478,13 +487,14 @@
 (deftest negation-inside-explicit-or-join-tracks-local-updates
   (api/transact *conn* edge-schema)
   (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
-                       {:db/id "bob" :name "Bob" :age 25}])
+                        {:db/id "bob" :name "Bob" :age 25}])
+
   (let [bob (single-value '{:find [?e] :where [[?e :name "Bob"]]})]
     (with-open [sub (api/subscribe *conn* '{:find [?name]
-                                          :where [[?e :name ?name]
-                                                  (or-join [?e]
-                                                           (and [?e :g/to ?friend]
-                                                                (not [?friend :age 17])))]})]
+                                            :where [[?e :name ?name]
+                                                    (or-join [?e]
+                                                             (and [?e :g/to ?friend]
+                                                                  (not [?friend :age 17])))]})]
       (is (= [[["Alice"] 1]] (take-priming! sub)))
 
       (api/transact *conn* [[:db/add bob :age 17]])
