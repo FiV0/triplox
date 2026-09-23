@@ -443,6 +443,169 @@
       (api/transact *conn* [[:db/add (first owners) :g/to alice]])
       (is (= [[["Alice"] 1]] (take-delta! sub))))))
 
+(deftest explicit-or-join-local-expressions-track-updates
+  (api/transact *conn* [{:name "Alice" :age 30}
+                       {:name "Bob" :age 17}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        bob (single-value '[:find ?e :where [?e :name "Bob"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?age]
+                                          :where [(or-join [?e]
+                                                          (and [?e :age ?age]
+                                                               [(+ ?age 1) ?next]
+                                                               [(> ?next 18)]))
+                                                  [?e :name ?age]]})]
+      (is (= [[["Alice"] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/add bob :age 25]])
+      (is (= [[["Bob"] 1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add alice :age 10]])
+      (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add bob :name "Robert"]])
+      (is (= #{[["Bob"] -1] [["Robert"] 1]}
+             (set (take-delta! sub)))))))
+
+(deftest explicit-or-join-function-output-tracks-replacements
+  (api/transact *conn* [{:name "Alice" :age 30}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?next]
+                                          :where [(or-join [?next]
+                                                          (and [?e :age ?age]
+                                                               [(+ ?age 1) ?next]))]})]
+      (is (= [[[31] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/add alice :age 40]])
+      (is (= #{[[31] -1] [[41] 1]} (set (take-delta! sub))))
+
+      (api/transact *conn* [[:db/retract alice :age 40]])
+      (is (= [[[41] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add alice :age 20]])
+      (is (= [[[21] 1]] (take-delta! sub))))))
+
+(deftest negation-inside-explicit-or-join-tracks-local-updates
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
+                       {:db/id "bob" :name "Bob" :age 25}])
+  (let [bob (single-value '[:find ?e :where [?e :name "Bob"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (or-join [?e]
+                                                           (and [?e :g/to ?friend]
+                                                                (not [?friend :age 17])))]})]
+      (is (= [[["Alice"] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/add bob :age 17]])
+      (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add bob :age 25]])
+      (is (= [[["Alice"] 1]] (take-delta! sub))))))
+
+(deftest explicit-or-join-inside-negation-tracks-local-updates
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
+                       {:db/id "bob" :name "Bob"}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        bob (single-value '[:find ?e :where [?e :name "Bob"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (not (or-join [?e]
+                                                                [?e :g/to ?name]))]})]
+      (is (= [[["Bob"] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/retract alice :g/to bob]])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add alice :g/to bob]])
+      (is (= [[["Alice"] -1]] (take-delta! sub))))))
+
+(deftest nested-explicit-or-joins-track-overlapping-branches
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
+                       {:db/id "bob" :name "Bob" :age 17}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        bob (single-value '[:find ?e :where [?e :name "Bob"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                          :where [[?e :name ?name]
+                                                  (or (or-join [?e]
+                                                               (or-join [?e] [?e :g/to ?local])
+                                                               (and [?e :age ?local]
+                                                                    [(> ?local 30)]))
+                                                      [?e :age 17])]})]
+      (is (= [[["Alice"] 1] [["Bob"] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/add alice :age 40]])
+      (is (= ::api/timeout (take-delta! sub 300)))
+
+      (api/transact *conn* [[:db/retract alice :g/to bob]])
+      (is (= ::api/timeout (take-delta! sub 300)))
+
+      (api/transact *conn* [[:db/retract alice :age 40]])
+      (is (= [[["Alice"] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add bob :age 25]])
+      (is (= [[["Bob"] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add bob :age 17]])
+      (is (= [[["Bob"] 1]] (take-delta! sub))))))
+
+(deftest explicit-or-join-count-tracks-distinct-support
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                       {:db/id "bob" :name "Bob"}
+                       {:db/id "cara" :name "Cara"}
+                       [:db/add "alice" :g/to "bob"]
+                       [:db/add "alice" :g/to "cara"]])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        bob (single-value '[:find ?e :where [?e :name "Bob"]])
+        cara (single-value '[:find ?e :where [?e :name "Cara"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [(count ?e)]
+                                          :where [(or-join [?e]
+                                                          [?e :g/to ?local]
+                                                          [?e :age 30])]})]
+      (is (= [[[1] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/retract alice :g/to bob]])
+      (is (= ::api/timeout (take-delta! sub 300)))
+
+      (api/transact *conn* [[:db/add bob :age 30]])
+      (is (= #{[[1] -1] [[2] 1]} (set (take-delta! sub))))
+
+      (api/transact *conn* [[:db/retract alice :g/to cara]
+                           [:db/retract alice :age 30]])
+      (is (= #{[[2] -1] [[1] 1]} (set (take-delta! sub))))
+
+      (api/transact *conn* [[:db/retract bob :age 30]])
+      (is (= #{[[1] -1] [[0] 1]} (set (take-delta! sub)))))))
+
+(deftest explicit-or-join-preserves-outer-rows-sharing-a-key
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                       {:db/id "one" :name "One" :g/to "alice"}
+                       {:db/id "two" :name "Two" :g/to "alice"}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        one (single-value '[:find ?e :where [?e :name "One"]])]
+    (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                          :where [[?owner :name ?name]
+                                                  [?owner :g/to ?e]
+                                                  (or-join [?e]
+                                                           [?e :age ?name]
+                                                           [?e :name ?name])]})]
+      (is (= [[["One"] 1] [["Two"] 1]] (take-priming! sub)))
+
+      (api/transact *conn* [[:db/retract alice :age 30]])
+      (is (= ::api/timeout (take-delta! sub 300)))
+
+      (api/transact *conn* [[:db/add one :name "First"]])
+      (is (= #{[["One"] -1] [["First"] 1]} (set (take-delta! sub))))
+
+      (api/transact *conn* [[:db/retract alice :name "Alice"]])
+      (is (= [[["First"] -1] [["Two"] -1]] (take-delta! sub)))
+
+      (api/transact *conn* [[:db/add alice :age 30]])
+      (is (= [[["First"] 1] [["Two"] 1]] (take-delta! sub))))))
+
 (deftest test-or-joined-with-outer-pattern-retraction
   (api/transact *conn* [{:name "Alice" :city "Berlin"}
                         {:name "Bob" :city "Berlin"}
