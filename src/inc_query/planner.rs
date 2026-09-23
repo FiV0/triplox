@@ -33,6 +33,7 @@ pub(crate) enum RelPlanKind {
         negative: Box<RelPlan>,
     },
     Union {
+        join_variables: Vec<Variable>,
         branches: Vec<RelPlan>,
     },
 }
@@ -190,15 +191,25 @@ fn plan_union(
         .as_ref()
         .map(|incoming| append_new_variables(incoming, &descriptor.variables))
         .unwrap_or_else(|| descriptor.variables.clone());
+    let branch_incoming = incoming_vars.as_ref().map(|incoming| {
+        incoming
+            .iter()
+            .filter(|variable| descriptor.variables.contains(variable))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     let branches = branches
         .iter()
-        .map(|branch| plan_scope(branch, incoming_vars.clone()))
+        .map(|branch| plan_scope(branch, branch_incoming.clone()))
         .collect::<Result<Vec<_>>>()?;
 
     Ok(RelPlan {
         incoming_vars,
         output_vars,
-        kind: RelPlanKind::Union { branches },
+        kind: RelPlanKind::Union {
+            join_variables: descriptor.variables.clone(),
+            branches,
+        },
     })
 }
 
@@ -289,7 +300,7 @@ pub(super) fn collect_leaf_patterns<'a>(plan: &'a RelPlan, patterns: &mut Vec<&'
         RelPlanKind::Difference { negative, .. } => {
             collect_leaf_patterns(negative, patterns);
         }
-        RelPlanKind::Union { branches } => {
+        RelPlanKind::Union { branches, .. } => {
             for branch in branches {
                 collect_leaf_patterns(branch, patterns);
             }

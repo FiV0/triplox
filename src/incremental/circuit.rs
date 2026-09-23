@@ -356,16 +356,44 @@ fn rel_stream(
             let negative = rel_stream(fact_input, negative, Some(negative_seed));
             difference_stream(positive, negative, key_vars)
         }
-        RelPlanKind::Union { branches } => {
-            let mut branches = branches
+        RelPlanKind::Union {
+            join_variables,
+            branches,
+        } => {
+            // We project to the join variables to avoid having name clashes with the outer scope.
+            let seed = incoming.as_ref().map(|incoming| {
+                let vars = incoming
+                    .vars
+                    .iter()
+                    .filter(|variable| join_variables.contains(variable))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                PlannedWhereStream {
+                    stream: project_stream(incoming.stream.clone(), &incoming.vars, &vars),
+                    vars,
+                }
+            });
+            // We create a circuit for each branch seeded with incoming and projected back to join variables to discard locals.
+            let mut branch_streams = branches
                 .iter()
                 .map(|branch| {
-                    let branch = rel_stream(fact_input, branch, incoming.clone());
-                    project_stream(branch.stream, &branch.vars, &plan.output_vars)
+                    let branch = rel_stream(fact_input, branch, seed.clone());
+                    project_stream(branch.stream, &branch.vars, join_variables)
                 })
                 .collect::<Vec<_>>();
-            let first = branches.remove(0);
-            first.sum(branches.iter()).distinct()
+            // We union the resulting streams and join back to the incoming stream.
+            let first = branch_streams.remove(0);
+            let union = first.sum(branch_streams.iter()).distinct();
+            match incoming {
+                Some(incoming) => join_pattern_streams(
+                    incoming.stream,
+                    &incoming.vars,
+                    union,
+                    join_variables,
+                    &plan.output_vars,
+                ),
+                None => project_stream(union, join_variables, &plan.output_vars),
+            }
         }
     };
 
@@ -623,12 +651,98 @@ mod tests {
     }
 
     #[test]
+    fn explicit_or_join_retracts_only_after_last_local_support() {
+        for query in [
+            "[:find ?e
+              :where (or-join [?e]
+                       [?local :follows ?e]
+                       [?e :age ?age])]",
+            "[:find ?e
+              :where [?e :name ?local]
+                     (or-join [?e]
+                       [?local :follows ?e]
+                       [?e :age ?age])]",
+            "[:find ?e
+              :where [?e :name ?local]
+                     (or-join [?e]
+                       (or-join [?e]
+                         [?local :follows ?e])
+                       [?e :age ?age])]",
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let row = vec![DataType::Long(100)];
+            let name = triple(100, NAME, "Alice".into());
+            let first = triple(101, FOLLOWS, 100_i64.into());
+            let second = triple(102, FOLLOWS, 100_i64.into());
+            let age = triple(100, AGE, 30_i64.into());
+            for (batch, expected) in [
+                (
+                    vec![Tup2(name, 1), Tup2(first.clone(), 1)],
+                    vec![(row.clone(), 1)],
+                ),
+                (vec![Tup2(second.clone(), 1), Tup2(age.clone(), 1)], vec![]),
+                (vec![Tup2(first, -1)], vec![]),
+                (vec![Tup2(age, -1)], vec![]),
+                (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
+                (vec![Tup2(second, 1)], vec![(row, 1)]),
+            ] {
+                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_or_join_preserves_outer_rows_sharing_a_key() {
+        let storage = tempfile::tempdir().unwrap();
+        let query = "[:find ?owner
+                      :where [?owner :follows ?e]
+                             (or-join [?e]
+                               [?e :age ?owner]
+                               [?e :name ?owner])]";
+        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let first = triple(101, FOLLOWS, 100_i64.into());
+        let second = triple(102, FOLLOWS, 100_i64.into());
+        let age = triple(100, AGE, 30_i64.into());
+        let name = triple(100, NAME, "Alice".into());
+        let a = vec![DataType::Long(101)];
+        let b = vec![DataType::Long(102)];
+        for (batch, expected) in [
+            (
+                vec![
+                    Tup2(first.clone(), 1),
+                    Tup2(second.clone(), 1),
+                    Tup2(age.clone(), 1),
+                    Tup2(name.clone(), 1),
+                ],
+                vec![(a.clone(), 1), (b.clone(), 1)],
+            ),
+            (vec![Tup2(age.clone(), -1)], vec![]),
+            (vec![Tup2(first.clone(), -1)], vec![(a.clone(), -1)]),
+            (
+                vec![Tup2(first.clone(), 1), Tup2(name, -1)],
+                vec![(b.clone(), -1)],
+            ),
+            (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
+            (vec![Tup2(first, -1)], vec![(a, -1)]),
+        ] {
+            let mut actual = circuit.apply(batch).unwrap();
+            actual.sort_by_key(|row| format!("{row:?}"));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn query_circuit_uses_file_backed_storage_root() {
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("query-1");
         std::fs::create_dir_all(&storage_path).unwrap();
         std::fs::write(storage_path.join("stale"), b"stale").unwrap();
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+        let plan = query_plan(
+            "[:find ?name ?age
+              :where [?e :name ?name]
+                     [?e :age ?age]]",
+        );
 
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         let priming_rows = circuit
@@ -726,7 +840,11 @@ mod tests {
 
     #[test]
     fn joins_two_patterns_on_entity() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+        let plan = query_plan(
+            "[:find ?name ?age
+              :where [?e :name ?name]
+                     [?e :age ?age]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
 
@@ -819,7 +937,11 @@ mod tests {
 
     #[test]
     fn predicate_stream_filters_rows_and_preserves_retractions() {
-        let plan = query_plan("[:find ?age :where [?e :age ?age] [(< ?age 50)]]");
+        let plan = query_plan(
+            "[:find ?age
+              :where [?e :age ?age]
+                     [(< ?age 50)]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -846,7 +968,11 @@ mod tests {
 
     #[test]
     fn function_stream_appends_results_and_preserves_retractions() {
-        let plan = query_plan("[:find ?half :where [?e :age ?age] [(quot ?age 2) ?half]]");
+        let plan = query_plan(
+            "[:find ?half
+              :where [?e :age ?age]
+                     [(quot ?age 2) ?half]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -913,7 +1039,11 @@ mod tests {
 
     #[test]
     fn function_stream_drops_rows_when_evaluation_fails() {
-        let plan = query_plan("[:find ?result :where [?e :age ?age] [(quot ?age 0) ?result]]");
+        let plan = query_plan(
+            "[:find ?result
+              :where [?e :age ?age]
+                     [(quot ?age 0) ?result]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -1052,7 +1182,11 @@ mod tests {
 
     #[test]
     fn or_stream_normalizes_branch_row_order() {
-        let plan = query_plan("[:find ?e ?v :where (or [?e :name ?v] [?v :follows ?e])]");
+        let plan = query_plan(
+            "[:find ?e ?v
+              :where (or [?e :name ?v]
+                         [?v :follows ?e])]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -1117,7 +1251,11 @@ mod tests {
 
     #[test]
     fn not_stream_uses_negative_key_presence() {
-        let plan = query_plan("[:find ?name :where [?e :name ?name] (not [?e :age 30])]");
+        let plan = query_plan(
+            "[:find ?name
+              :where [?e :name ?name]
+                     (not [?e :age 30])]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -1149,7 +1287,11 @@ mod tests {
 
     #[test]
     fn double_not_stream_tracks_nested_presence() {
-        let plan = query_plan("[:find ?name :where [?e :name ?name] (not (not [?e :age 30]))]");
+        let plan = query_plan(
+            "[:find ?name
+              :where [?e :name ?name]
+                     (not (not [?e :age 30]))]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
 
@@ -1180,7 +1322,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "running relation layout does not match planned incoming layout")]
     fn assembly_rejects_incoming_layout_mismatch() {
-        let plan = query_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]");
+        let plan = query_plan(
+            "[:find ?name ?age
+              :where [?e :name ?name]
+                     [?e :age ?age]]",
+        );
         let RelPlanKind::Chain { children } = plan.where_plan.kind else {
             panic!("expected chain plan");
         };
@@ -1354,7 +1500,8 @@ mod tests {
     fn grouped_aggregates_reassemble_arbitrary_find_order() {
         let plan = query_plan(
             "[:find (sum ?age) ?type (count ?e) (max ?age)
-              :where [?e :type ?type] [?e :age ?age]]",
+              :where [?e :type ?type]
+                     [?e :age ?age]]",
         );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
@@ -1467,7 +1614,10 @@ mod tests {
 
     #[test]
     fn aggregate_row_is_removed_when_a_value_becomes_undefined() {
-        let plan = query_plan("[:find (count ?age) (avg ?age) :where [?e :age ?age]]");
+        let plan = query_plan(
+            "[:find (count ?age) (avg ?age)
+              :where [?e :age ?age]]",
+        );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));
         let age = triple(1, AGE, DataType::Long(10));
@@ -1523,7 +1673,8 @@ mod tests {
     fn min_rejects_incompatible_type_families() {
         let plan = query_plan(
             "[:find (min ?value)
-              :where (or [?e :age ?value] [?e :name ?value])]",
+              :where (or [?e :age ?value]
+                         [?e :name ?value])]",
         );
         let (mut circuit, (handle, output), _storage) =
             build_test_circuit(move |circuit| build_find_circuit(circuit, plan.clone()));

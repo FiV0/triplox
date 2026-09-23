@@ -210,14 +210,15 @@ fn describe_or(or: &OrJoin, schema: &Schema) -> Result<Descriptor> {
     let first = branches
         .first()
         .ok_or_else(|| anyhow!("OR clause must have at least one branch"))?;
-    let variables = first.variables.clone();
-    let groundable = first
-        .groundable
+    let variables: Vec<Variable> = match &or.unify_vars {
+        edn::query::UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+        edn::query::UnifyVars::Implicit => first.variables.clone(),
+    };
+    let groundable = variables
         .iter()
         .filter(|variable| {
             branches
                 .iter()
-                .skip(1)
                 .all(|branch| branch.groundable.contains(variable))
         })
         .cloned()
