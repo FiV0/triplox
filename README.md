@@ -1,9 +1,8 @@
 <p align="center">
-  <!-- <img src="img/logo_thin.png" alt="Triplox logo" width="600"> -->
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="img/triplox_wordmark_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="img/triplox_wordmark_light.svg">
-    <img src="img/triplox_wordmark_light.svg" alt="Triplox logo" width="600">
+    <source media="(prefers-color-scheme: dark)" srcset="img/logo_wordmark_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="img/logo_wordmark_light.svg">
+    <img src="img/logo_wordmark_light.svg" alt="Triplox logo" width="600">
   </picture>
   <br>
   <br>

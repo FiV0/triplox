@@ -25,8 +25,8 @@ export default defineConfig({
         },
       },
       logo: {
-        light: './src/assets/blocks_logo.svg',
-        dark: './src/assets/blocks_logo_dark.svg',
+        light: './src/assets/logo_light.svg',
+        dark: './src/assets/logo_dark.svg',
         replacesTitle: false,
       },
       customCss: ['./src/styles/colors.css', 'katex/dist/katex.min.css'],
