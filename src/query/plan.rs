@@ -15,7 +15,7 @@ use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
     clause_mentioned_variables, convert_predicate, convert_where_fn, non_value_place_to_datatype,
-    or_join_variables, pattern_variables, query_variable_order, resolve_attribute_from_pattern,
+    pattern_variables, query_variable_order, resolve_attribute_from_pattern,
     value_place_to_datatype,
 };
 
@@ -245,7 +245,7 @@ impl DescriptorBuilder {
                     .iter()
                     .map(|branch| self.branch(branch))
                     .collect::<Result<Vec<_>>>()?;
-                let variables = or_join_variables(or);
+                let variables = clause_mentioned_variables(clause);
                 Ok(Descriptor {
                     id,
                     variables,

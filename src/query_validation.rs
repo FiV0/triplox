@@ -12,7 +12,7 @@ use crate::ops::{DataType, QueryArg};
 use crate::query::{
     build_var_index, clause_bound_variables, clause_mentioned_variables, convert_predicate,
     convert_where_fn, or_branch_bound_variables, or_branch_clauses, or_branch_mentioned_variables,
-    or_join_variables, pattern_variables, query_variable_order, resolve_order_columns,
+    pattern_variables, query_variable_order, resolve_order_columns,
 };
 
 fn validate_where_clauses_recursively<F>(
@@ -114,7 +114,7 @@ fn validate_scope(clauses: &[WhereClause], incoming: &[Variable]) -> Result<(), 
     for clause in clauses {
         match clause {
             WhereClause::OrJoin(or) => {
-                let interface = or_join_variables(or);
+                let interface = clause_mentioned_variables(clause);
                 let branch_incoming = available
                     .iter()
                     .filter(|variable| interface.contains(variable))
