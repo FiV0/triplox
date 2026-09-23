@@ -15,6 +15,9 @@
 (def edge-schema
   [{:db/ident :g/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
 
+(def follows-schema
+  [{:db/ident :follows :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])
+
 (def triangle-relation-schema
   [{:db/ident :node/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
    {:db/ident :r/to :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
@@ -423,18 +426,18 @@
       (is (= [[["Alice"] -1]] (take-delta! sub 300))))))
 
 (deftest test-explicit-or-join-local-support-retractions
-  (api/transact *conn* edge-schema)
+  (api/transact *conn* follows-schema)
   (api/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
-                        {:db/id "one" :g/to "alice"}
-                        {:db/id "two" :g/to "alice"}])
+                        {:db/id "bob" :name "Bob" :follows "alice"}
+                        {:db/id "cara" :name "Cara" :follows "alice"}])
 
   (let [alice (single-value '{:find [?e] :where [[?e :name "Alice"]]})
-        owners (mapv first (q {:find '[?owner]
-                               :where [['?owner :g/to alice]]}))
+        followers (mapv first (q {:find '[?follower]
+                                  :where [['?follower :follows alice]]}))
         query '{:find [?name]
                 :where [[?e :name ?name]
                         (or-join [?e]
-                                 [?name :g/to ?e]
+                                 [?name :follows ?e]
                                  [?e :age ?local])]}]
 
     (is (= #{["Alice"]} (q query)))
@@ -444,14 +447,14 @@
       (is (= [[["Alice"] 1]] (take-delta! sub)))
 
       (api/transact *conn* [[:db/retract alice :age 30]
-                            [:db/retract (first owners) :g/to alice]])
+                            [:db/retract (first followers) :follows alice]])
       (is (= ::api/timeout (api/take! sub 200)))
 
-      (api/transact *conn* [[:db/retract (second owners) :g/to alice]])
+      (api/transact *conn* [[:db/retract (second followers) :follows alice]])
       (is (= [[["Alice"] -1]] (take-delta! sub)))
       (is (= #{} (q query)))
 
-      (api/transact *conn* [[:db/add (first owners) :g/to alice]])
+      (api/transact *conn* [[:db/add (first followers) :follows alice]])
       (is (= [[["Alice"] 1]] (take-delta! sub))))))
 
 (deftest explicit-or-join-local-expressions-track-updates
@@ -485,15 +488,15 @@
              (set (take-delta! sub)))))))
 
 (deftest negation-inside-explicit-or-join-tracks-local-updates
-  (api/transact *conn* edge-schema)
-  (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
+  (api/transact *conn* follows-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :follows "bob"}
                         {:db/id "bob" :name "Bob" :age 25}])
 
   (let [bob (single-value '{:find [?e] :where [[?e :name "Bob"]]})]
     (with-open [sub (api/subscribe *conn* '{:find [?name]
                                             :where [[?e :name ?name]
                                                     (or-join [?e]
-                                                             (and [?e :g/to ?friend]
+                                                             (and [?e :follows ?friend]
                                                                   (not [?friend :age 17])))]})]
       (is (= [[["Alice"] 1]] (take-priming! sub)))
 
@@ -504,62 +507,68 @@
       (is (= [[["Alice"] 1]] (take-delta! sub))))))
 
 (deftest explicit-or-join-inside-negation-tracks-local-updates
-  (api/transact *conn* edge-schema)
-  (api/transact *conn* [{:db/id "alice" :name "Alice" :g/to "bob"}
-                       {:db/id "bob" :name "Bob"}])
+  (api/transact *conn* follows-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :follows "bob"}
+                        {:db/id "bob" :name "Bob"}])
+
   (let [alice (single-value '{:find [?e] :where [[?e :name "Alice"]]})
         bob (single-value '{:find [?e] :where [[?e :name "Bob"]]})]
+
     (with-open [sub (api/subscribe *conn* '{:find [?name]
-                                          :where [[?e :name ?name]
-                                                  (not (or-join [?e]
-                                                                [?e :g/to ?name]))]})]
+                                            :where [[?e :name ?name]
+                                                    (not (or-join [?e]
+                                                                  [?e :follows ?name]))]})]
       (is (= [[["Bob"] 1]] (take-priming! sub)))
 
-      (api/transact *conn* [[:db/retract alice :g/to bob]])
+      (api/transact *conn* [[:db/retract alice :follows bob]])
       (is (= [[["Alice"] 1]] (take-delta! sub)))
 
-      (api/transact *conn* [[:db/add alice :g/to bob]])
+      (api/transact *conn* [[:db/add alice :follows bob]])
       (is (= [[["Alice"] -1]] (take-delta! sub))))))
 
 (deftest explicit-or-join-preserves-outer-rows-sharing-a-key
-  (api/transact *conn* edge-schema)
+  (api/transact *conn* follows-schema)
   (api/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
-                       {:db/id "one" :name "One" :g/to "alice"}
-                       {:db/id "two" :name "Two" :g/to "alice"}])
+                        {:db/id "bob" :name "Bob" :follows "alice"}
+                        {:db/id "cara" :name "Cara" :follows "alice"}])
+
   (let [alice (single-value '{:find [?e] :where [[?e :name "Alice"]]})
-        one (single-value '{:find [?e] :where [[?e :name "One"]]})]
+        bob (single-value '{:find [?e] :where [[?e :name "Bob"]]})]
+
     (with-open [sub (api/subscribe *conn* '{:find [?name]
-                                          :where [[?owner :name ?name]
-                                                  [?owner :g/to ?e]
-                                                  (or-join [?e]
-                                                           [?e :age ?name]
-                                                           [?e :name ?name])]})]
-      (is (= [[["One"] 1] [["Two"] 1]] (take-priming! sub)))
+                                            :where [[?follower :name ?name]
+                                                    [?follower :follows ?e]
+                                                    (or-join [?e]
+                                                             [?e :age ?name]
+                                                             [?e :name ?name])]})]
+      (is (= [[["Bob"] 1] [["Cara"] 1]] (take-priming! sub)))
 
       (api/transact *conn* [[:db/retract alice :age 30]])
       (is (= ::api/timeout (take-delta! sub 300)))
 
-      (api/transact *conn* [[:db/add one :name "First"]])
-      (is (= #{[["One"] -1] [["First"] 1]} (set (take-delta! sub))))
+      (api/transact *conn* [[:db/add bob :name "Robert"]])
+      (is (= #{[["Bob"] -1] [["Robert"] 1]} (set (take-delta! sub))))
 
       (api/transact *conn* [[:db/retract alice :name "Alice"]])
-      (is (= [[["First"] -1] [["Two"] -1]] (take-delta! sub)))
+      (is (= #{[["Robert"] -1] [["Cara"] -1]} (set (take-delta! sub))))
 
       (api/transact *conn* [[:db/add alice :age 30]])
-      (is (= [[["First"] 1] [["Two"] 1]] (take-delta! sub))))))
+      (is (= #{[["Robert"] 1] [["Cara"] 1]} (set (take-delta! sub)))))))
 
 (deftest test-or-joined-with-outer-pattern-retraction
   (api/transact *conn* [{:name "Alice" :city "Berlin"}
                         {:name "Bob" :city "Berlin"}
                         {:name "Carol" :city "Rome"}])
-  (let [bob-id (single-value '{:find [?e]
-                               :where [[?e :name "Bob"]]})]
+
+  (let [bob (single-value '{:find [?e]
+                            :where [[?e :name "Bob"]]})]
+
     (with-open [sub (api/subscribe *conn* '{:find [?city]
                                             :where [(or [?e :name "Alice"]
                                                         [?e :name "Bob"])
                                                     [?e :city ?city]]})]
       (take-priming! sub)
-      (api/transact *conn* [[:db/retract bob-id :name "Bob"]])
+      (api/transact *conn* [[:db/retract bob :name "Bob"]])
       (is (= [[["Berlin"] -1]]
              (take-delta! sub))))))
 
