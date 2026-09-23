@@ -495,7 +495,13 @@ mod tests {
 
     #[test]
     fn explicit_or_join_projects_inputs_and_keeps_locals_inside_branches() {
-        let query = parse_query("[:find ?e ?name :where [?e :name ?name] (or-join [?e] [?e :age ?name] [?e :follows ?friend])]");
+        let query = parse_query(
+            "[:find ?e ?name
+              :where [?e :name ?name]
+                     (or-join [?e]
+                       [?e :age ?name]
+                       [?e :follows ?friend])]",
+        );
         let plan = plan_query(&query, &test_schema()).unwrap();
         let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain");
@@ -527,8 +533,14 @@ mod tests {
 
     #[test]
     fn explicit_or_join_waits_for_branch_function_inputs() {
-        let body = "(or-join [?e ?x] (and [?e :age ?age] [(+ ?x 1) ?y] [(- ?y 1) ?x]))";
-        let query = parse_query(&format!("[:find ?e ?x :where {body} [?person :age ?x]]"));
+        let query = parse_query(
+            "[:find ?e ?x
+              :where (or-join [?e ?x]
+                       (and [?e :age ?age]
+                            [(+ ?x 1) ?y]
+                            [(- ?y 1) ?x]))
+                     [?person :age ?x]]",
+        );
         let plan = plan_query(&query, &test_schema()).unwrap();
         let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
             panic!("expected chain");
@@ -536,7 +548,11 @@ mod tests {
         assert!(matches!(children[0].kind, RelPlanKind::Pattern(_)));
         assert!(matches!(children[1].kind, RelPlanKind::Union { .. }));
         assert_plan_err(
-            &format!("[:find ?e ?x :where {body}]"),
+            "[:find ?e ?x
+              :where (or-join [?e ?x]
+                       (and [?e :age ?age]
+                            [(+ ?x 1) ?y]
+                            [(- ?y 1) ?x]))]",
             "Insufficient bindings for incremental OR branches",
         );
     }
