@@ -952,12 +952,6 @@ impl NotJoin {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TypeAnnotation {
-    pub value_type: Keyword,
-    pub variable: Variable,
-}
-
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WhereClause {
@@ -967,7 +961,6 @@ pub enum WhereClause {
     WhereFn(WhereFn),
     RuleExpr,
     Pattern(Pattern),
-    TypeAnnotation(TypeAnnotation),
 }
 
 #[allow(dead_code)]
@@ -1119,7 +1112,6 @@ impl ContainsVariables for WhereClause {
             Pattern(p) => p.accumulate_mentioned_variables(acc),
             NotJoin(n) => n.accumulate_mentioned_variables(acc),
             WhereFn(f) => f.accumulate_mentioned_variables(acc),
-            TypeAnnotation(a) => a.accumulate_mentioned_variables(acc),
             &RuleExpr => (),
         }
     }
@@ -1193,12 +1185,6 @@ fn accumulate_fn_arg_variables(arg: &FnArg, acc: &mut BTreeSet<Variable>) {
 impl ContainsVariables for Predicate {
     fn accumulate_mentioned_variables(&self, acc: &mut BTreeSet<Variable>) {
         accumulate_fn_arg_variables(&self.expr, acc);
-    }
-}
-
-impl ContainsVariables for TypeAnnotation {
-    fn accumulate_mentioned_variables(&self, acc: &mut BTreeSet<Variable>) {
-        acc_ref(acc, &self.variable);
     }
 }
 
@@ -1383,9 +1369,6 @@ impl std::fmt::Display for WhereClause {
             WhereClause::WhereFn(ref wf) => write!(f, "{}", wf),
             WhereClause::NotJoin(ref nj) => write!(f, "{}", nj),
             WhereClause::OrJoin(ref oj) => write!(f, "{}", oj),
-            WhereClause::TypeAnnotation(ref ta) => {
-                write!(f, "[(type {} {})]", ta.variable, ta.value_type)
-            }
             WhereClause::RuleExpr => write!(f, "(rule-expr)"),
         }
     }

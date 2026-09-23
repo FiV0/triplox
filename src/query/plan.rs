@@ -266,7 +266,7 @@ impl DescriptorBuilder {
                     kind: DescriptorKind::Not { children },
                 })
             }
-            WhereClause::RuleExpr | WhereClause::TypeAnnotation(_) => {
+            WhereClause::RuleExpr => {
                 unreachable!("query validation rejects unsupported where clauses")
             }
         }

@@ -91,7 +91,7 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         }
         WhereClause::OrJoin(or) => reject_unsupported_or_join(or),
         // Rejected by `validate_query` before planning, not supported here.
-        WhereClause::TypeAnnotation(_) | WhereClause::RuleExpr => Ok(()),
+        WhereClause::RuleExpr => Ok(()),
     }
 }
 

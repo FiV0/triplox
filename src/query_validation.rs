@@ -55,7 +55,6 @@ where
 
 fn validate_supported_where_clauses(where_clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(where_clauses, &mut |clause| match clause {
-        WhereClause::TypeAnnotation(_) => bail!("Queries do not support type annotations"),
         WhereClause::RuleExpr => bail!("Queries do not support rule expressions"),
         WhereClause::Pattern(_)
         | WhereClause::Pred(_)

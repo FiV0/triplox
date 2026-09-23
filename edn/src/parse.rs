@@ -407,15 +407,6 @@ peg::parser! {
                  query::WhereClause::NotJoin(query::NotJoin::new(query::UnifyVars::Explicit(vars), clauses))
             }
 
-        rule type_annotation() -> query::WhereClause
-            = __() "[" __() "(" __() "type" var:variable() __() ty:raw_keyword() __() ")" __() "]" __() {
-                query::WhereClause::TypeAnnotation(
-                    query::TypeAnnotation {
-                        value_type: ty,
-                        variable: var,
-                    })
-            }
-
         rule pred() -> query::WhereClause
             = __() "[" __() expr:sexpr() __() "]" __() {
                 query::WhereClause::Pred(
@@ -440,7 +431,6 @@ peg::parser! {
             / or_clause()
             / not_join_clause()
             / not_clause()
-            / type_annotation()
             / pred()
             / where_fn()
 
