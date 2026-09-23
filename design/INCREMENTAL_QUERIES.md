@@ -118,8 +118,8 @@ branches are scopes. An `and` branch is represented by a scope containing its
 child descriptors and has no descriptor representation of its own. An implicit
 `not` is a descriptor whose body is another scope.
 
-`variables` lists the variables visible at a descriptor boundary in stable
-semantic order. `groundable` lists the variables that the descriptor can produce
+`variables` lists the variables visible at a descriptor boundary.
+`groundable` lists the variables that the descriptor can produce
 without receiving them from an incoming relation. A pattern can ground all of
 its variables. A function grounds its result variable unless the expression
 also reads that variable. An `or` can ground the intersection of variables
@@ -133,20 +133,6 @@ are present in the running layout. OR branches must also be executable using
 only their permitted incoming bindings. Among eligible descriptors, the planner
 prefers the descriptor sharing the most variables with the running relation
 and uses scope order as the deterministic tie-breaker.
-
-### Explicit OR joins
-
-`(or-join [?e ...] branch ...)` exposes only its declared variables. Every branch
-must mention every declared variable; other variables are local to that branch,
-even if the same name appears outside. Locals can be used in predicates,
-functions, and nested clauses. Branch readiness is checked with only the
-permitted incoming bindings, so a local name cannot capture an outer binding.
-
-Duplicate local matches and overlapping branches support one interface row.
-Retraction removes that row only after its last support disappears. Outer rows
-sharing the same interface bindings retain their own columns and multiplicity.
-Join lists remain nonempty and unique; explicit `not-join`, required-variable
-syntax, and entity/value placeholders remain unsupported.
 
 ### Physical relation plans
 
@@ -176,9 +162,10 @@ zero-column relation.
 - `Difference` preserves the incoming relation and removes rows whose selected
   key occurs in its negative subplan. The negative scope is seeded by projecting
   the incoming relation to that key.
-- `Union` declares an OR interface separately from its full output layout.
-  Branches receive only the incoming interface columns; local output columns
-  are projected away before union. Both `or` and `or-join` use this operator.
+- `Union` records its join variables separately from its full output layout.
+  Branches receive only incoming columns for those variables; local output
+  columns are projected away before union. Both `or` and `or-join` use this
+  operator.
 
 `Chain` is a physical plan shape rather than a DBSP operator. Circuit assembly
 uses the existing `flat_map`, filter, join, projection, antijoin, sum, and
@@ -188,18 +175,18 @@ distinct operators.
 
 A standalone pattern outputs its pattern variable order. A node receiving an
 incoming relation preserves that layout and appends only newly produced
-variables in semantic order. Join keys are the variables shared by both sides,
-in incoming-layout order. A join without shared variables is a Cartesian
-product over the empty key.
+variables in descriptor variable order. Join keys are the variables shared by
+both sides, in incoming-layout order. A join without shared variables is a
+Cartesian product over the empty key.
 
 A chain's output layout is its last child's output layout. A standalone union
 uses its descriptor variable order. A union with an incoming relation preserves
 the incoming layout and appends its remaining descriptor variables; descriptor
 ordering guarantees that variables the union cannot ground are already part of
 the incoming layout. Because branches may naturally produce their columns in
-different orders, every branch is projected to the OR interface before the
-branches are summed. Explicit `or-join` branches can also have local columns
-that disappear at this projection.
+different orders, every branch is projected to the union's join variables
+before the branches are summed. Explicit `or-join` branches can also have local
+columns that disappear at this projection.
 
 The circuit verifies that the running relation layout matches each plan node's
 declared incoming layout. It does not derive a different variable order during
@@ -221,11 +208,12 @@ and the optional incoming relation:
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming
   rows against the resulting keys.
-- a union projects and deduplicates its incoming interface rows, evaluates each
-  branch with that seed, projects results to the interface, and applies
-  `distinct` to their sum. It then joins back to the original incoming stream
-  to retain outer columns and weights. With no incoming relation it returns
-  the interface union directly.
+- a union projects incoming rows to the join variables that are already bound
+  and deduplicates them. It evaluates each branch with those rows, projects
+  results to all join variables, and applies `distinct` to their sum. It then
+  joins back to the original incoming stream on the shared variables to retain
+  outer columns and weights. With no incoming relation it returns the distinct
+  union directly.
 
 The negative seed is not made distinct before evaluation. Its weights remain
 correlated with the positive input, while DBSP antijoin treats the resulting
