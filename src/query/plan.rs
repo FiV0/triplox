@@ -14,8 +14,9 @@ use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    convert_predicate, convert_where_fn, non_value_place_to_datatype, pattern_variables,
-    query_variable_order, resolve_attribute_from_pattern, value_place_to_datatype,
+    convert_predicate, convert_where_fn, non_value_place_to_datatype, or_join_variables,
+    pattern_variables, query_variable_order, resolve_attribute_from_pattern,
+    value_place_to_datatype,
 };
 
 use super::binding_bag::BindingBag;
@@ -114,10 +115,15 @@ impl Descriptor {
                     .filter(|variable| !bound.contains(*variable))
                     .cloned()
                     .collect();
+                let incoming = bound
+                    .iter()
+                    .filter(|variable| self.variables.contains(variable))
+                    .cloned()
+                    .collect();
                 if missing.is_empty()
                     || !branches
                         .iter()
-                        .all(|branch| branch_derives(branch, bound, &missing))
+                        .all(|branch| branch_derives(branch, &incoming, &missing))
                 {
                     Vec::new()
                 } else {
@@ -239,11 +245,7 @@ impl DescriptorBuilder {
                     .iter()
                     .map(|branch| self.branch(branch))
                     .collect::<Result<Vec<_>>>()?;
-                let variables = branches[0]
-                    .iter()
-                    .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                    .unique()
-                    .collect();
+                let variables = or_join_variables(or);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -742,7 +744,7 @@ fn plan_stages(
         .collect();
     ensure!(
         order.len() == relevant.len(),
-        "Scope contains variables missing from the global variable order"
+        "Scope contains variables missing from its variable order"
     );
     let incoming_variables = incoming_variables.map(|variables| {
         variables
@@ -828,11 +830,16 @@ fn plan_descriptor(
         },
         DescriptorKind::Or { branches } => {
             let incoming_variables = incoming_variables.expect("OR has an incoming layout");
+            let variable_order = variable_order
+                .iter()
+                .filter(|variable| descriptor.variables.contains(variable))
+                .cloned()
+                .collect::<Vec<_>>();
             let branches = branches
                 .into_iter()
                 .enumerate()
                 .map(|(branch_index, branch)| {
-                    plan_scope(branch, variable_order, Some(incoming_variables.clone()))
+                    plan_scope(branch, &variable_order, Some(incoming_variables.clone()))
                         .with_context(|| {
                             format!(
                                 "Failed to plan OR descriptor {} branch {branch_index}",
@@ -881,6 +888,21 @@ fn plan_scope(
             .filter(|variable| relevant.contains(variable))
             .collect::<Vec<_>>()
     });
+    // We filter the outer variable order to the relevant variables of the nested scope.
+    let mut scope_order = variable_order
+        .iter()
+        .filter(|variable| relevant.contains(variable))
+        .cloned()
+        .collect::<Vec<_>>();
+    // Keep the inherited order, then append local variables in descriptor order.
+    for descriptor in &descriptors {
+        for variable in &descriptor.variables {
+            if !scope_order.contains(variable) {
+                scope_order.push(variable.clone());
+            }
+        }
+    }
+    let variable_order = scope_order.as_slice();
     let stages = plan_stages(&descriptors, variable_order, incoming_variables.as_deref())?;
     let mut descriptor_input_layouts = HashMap::new();
     let mut previous_target: &[Variable] = &[];
@@ -1413,12 +1435,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_scope_variables_missing_from_global_order() {
+    fn plans_explicit_or_join_with_local_variable_orders() {
+        let query = edn::parse::parse_query(
+            "[:find ?e :where [?e :name ?name] (or-join [?e] [?e :age ?age] [?e :email ?email])]",
+        )
+        .unwrap();
+        let plan = build_logical_plan(&query, &[]).unwrap();
+        assert_eq!(plan.output_variables(), &[var("?e"), var("?name")]);
+        let LogicalDescriptorKind::Or { branches } = &plan.descriptors[1].kind else {
+            panic!("expected OR");
+        };
+        assert_eq!(plan.descriptors[1].variables, vec![var("?e")]);
+        for (branch, local) in branches.iter().zip(["?age", "?email"]) {
+            assert_eq!(branch.incoming_variables(), Some([var("?e")].as_slice()));
+            assert_eq!(branch.output_variables(), &[var("?e"), var(local)]);
+        }
+    }
+
+    #[test]
+    fn rejects_scope_variables_missing_from_scope_order() {
         let descriptors = vec![relation(0, &["?x"])];
 
         let error = plan_stages(&descriptors, &[], None).unwrap_err();
 
-        assert!(error.to_string().contains("global variable order"));
+        assert!(error.to_string().contains("its variable order"));
     }
 
     #[test]

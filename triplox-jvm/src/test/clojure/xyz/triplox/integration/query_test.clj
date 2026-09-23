@@ -221,6 +221,145 @@
                       (or (and [?e :sex :female]
                                [?e :name "Ivan"]))]}))))
 
+(deftest test-or-join-query
+  (tc/transact *conn* [{:db/ident :email
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}
+                       {:db/ident :follows
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/many}
+                       {:db/ident :tags
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/many}])
+  (let [result (tc/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                                    {:db/id "bob" :name "Bob" :age 17}
+                                    {:db/id "cara" :name "Cara" :age 40}
+                                    [:db/add "alice" :follows "cara"]
+                                    [:db/add "cara" :follows "bob"]
+                                    [:db/add "alice" :tags "a"]
+                                    [:db/add "alice" :tags "b"]
+                                    [:db/add "cara" :tags "a"]])]
+    (is (:committed? result)
+        (pr-str result)))
+
+  (let [ids (into {} (q '[:find ?name ?e :where [?e :name ?name]]))
+        alice (ids "Alice")
+        bob (ids "Bob")
+        cara (ids "Cara")]
+
+    (testing "Branches expose only their declared variables"
+      (is (= #{[alice] [bob] [cara]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   [?e :name ?name]
+                                   [?e :age ?age])]}))))
+
+    (testing "Branch-local predicates"
+      (is (= #{[alice] [cara]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (and [?e :age ?age]
+                                        [(>= ?age 18)])
+                                   [?e :email ?email])]}))))
+
+    (testing "Local variables do not capture preceding outer variables"
+      (is (= #{[alice] [cara]}
+             (q '{:find [?e]
+                  :where [[?e :name ?age]
+                          (or-join [?e]
+                                   (and [?e :age ?age]
+                                        [(>= ?age 18)]))]}))))
+
+    (testing "Local variables do not escape into following clauses"
+      (is (= #{[alice] [cara]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (and [?e :age ?age]
+                                        [(>= ?age 18)]))
+                          [?e :name ?age]]}))))
+
+    (testing "Branch-local function outputs"
+      (is (= #{[alice] [cara]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (and [?e :age ?age]
+                                        [(+ ?age 1) ?next]
+                                        [(> ?next 30)]))]}))))
+
+    (testing "Function outputs can bind join variables"
+      (is (= #{[18] [31] [41]}
+             (q '{:find [?next]
+                  :where [(or-join [?next]
+                                   (and [?e :age ?age]
+                                        [(+ ?age 1) ?next]))]}))))
+
+    (testing "Negation inside or-join"
+      (is (= #{[alice]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (and [?e :follows ?friend]
+                                        (not [?friend :age 17])))]}))))
+
+    (testing "Nested or-join keeps branch variables local"
+      (is (= #{[alice] [cara]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (or-join [?e]
+                                            [?e :follows ?local])
+                                   (and [?e :age ?local]
+                                        [(> ?local 30)]))]}))))
+
+    (testing "Or-join inside or"
+      (is (= #{[alice] [bob] [cara]}
+             (q '{:find [?e]
+                  :where [(or (or-join [?e]
+                                       [?e :follows ?local])
+                              [?e :age 17])]}))))
+
+    (testing "Or-join inside not"
+      (is (= #{[bob]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not (or-join [?e]
+                                        [?e :follows ?friend]))]}))))
+
+    (testing "No matching branches"
+      (is (= #{}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   [?e :age 99]
+                                   [?e :email ?email])]}))))
+
+    (testing "Duplicate witnesses and overlapping branches count once"
+      (is (= #{[2]}
+             (q '{:find [(count ?e)]
+                  :where [(or-join [?e]
+                                   [?e :tags ?tag]
+                                   [?e :age 30])]}))))
+
+    (testing "Outer values survive a same-name branch-local variable"
+      (is (= #{[alice 30] [cara 40]}
+             (q '{:find [?e ?age]
+                  :where [[?e :age ?age]
+                          (or-join [?e]
+                                   [?e :follows ?age])]}))))
+
+    (testing "Input variables are available in every branch"
+      (is (= #{[alice] [bob] [cara]}
+             (q '{:find [?e]
+                  :in [?age]
+                  :where [(or-join [?e ?age]
+                                   (and [?e :name ?name]
+                                        [(= ?age 30)])
+                                   [?e :age ?age])]}
+                30))))
+
+    (testing "Find cannot expose branch-local variables"
+      (is (thrown-with-msg? TriploxException #"Find variable \?local not in where clauses"
+                            (q '{:find [?local]
+                                 :where [(or-join [?e]
+                                                  [?e :age ?local])]}))))))
+
 (deftest test-ors-must-use-same-vars
   (is (thrown? TriploxException
                (q '{:find [?e]

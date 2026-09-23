@@ -12,7 +12,7 @@ incremental query engine described in
 The engine is row-oriented. It plans a query without opening storage,
 materializes that recursive plan for one database basis, and executes a
 sequence of scopes with stages over a growing `BindingBag`. Nested scopes
-exist for `or` and `not` evaluation.
+exist for `or`, `or-join`, and `not` evaluation.
 
 ```text
 ParsedQuery + QueryArg values + database basis
@@ -103,7 +103,7 @@ Deduplication is explicit at boundaries that require set semantics:
 
 - `RelationPattern` stores distinct relation rows;
 - each triple pattern produces distinct candidate extensions per input row;
-- `OrPattern` distinct-unions complete branch rows.
+- `OrPattern` projects branches to their exposed variables before distinct union.
 
 This distinction is important. Duplicate witnesses in a conjunction remain
 observable, while the same complete result produced by two OR branches appears
