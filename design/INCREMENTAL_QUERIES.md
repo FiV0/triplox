@@ -129,10 +129,13 @@ relation.
 
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
-are present in the running layout. OR branches must also be executable using
-only their permitted incoming bindings. Among eligible descriptors, the planner
+are present in the running layout. Among eligible descriptors, the planner
 prefers the descriptor sharing the most variables with the running relation
 and uses scope order as the deterministic tie-breaker.
+
+This check does not resolve dependencies inside OR branches before selecting
+the OR. It can select an OR with circular function dependencies before an
+outside clause that would supply a needed binding, rejecting an executable query.
 
 ### Physical relation plans
 

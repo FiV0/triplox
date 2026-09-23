@@ -532,28 +532,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_or_join_waits_for_branch_function_inputs() {
-        let query = parse_query(
-            "[:find ?e ?x
-              :where (or-join [?e ?x]
-                       (and [?e :age ?age]
-                            [(+ ?x 1) ?y]
-                            [(- ?y 1) ?x]))
-                     [?person :age ?x]]",
-        );
-        let plan = plan_query(&query, &test_schema()).unwrap();
-        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
-            panic!("expected chain");
-        };
-        assert!(matches!(children[0].kind, RelPlanKind::Pattern(_)));
-        assert!(matches!(children[1].kind, RelPlanKind::Union { .. }));
+    fn explicit_or_join_rejects_circular_function_dependencies() {
         assert_plan_err(
             "[:find ?e ?x
               :where (or-join [?e ?x]
                        (and [?e :age ?age]
                             [(+ ?x 1) ?y]
                             [(- ?y 1) ?x]))]",
-            "Insufficient bindings for incremental OR branches",
+            "Insufficient bindings for incremental query variable ?x",
         );
     }
 

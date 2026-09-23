@@ -72,23 +72,6 @@ struct PendingDescriptor<'a> {
     required_variables: Vec<Variable>,
 }
 
-fn branches_are_ready(descriptor: &Descriptor, grounded: &HashSet<Variable>) -> bool {
-    match &descriptor.kind {
-        DescriptorKind::Or { branches } => {
-            let incoming = descriptor
-                .variables
-                .iter()
-                .filter(|variable| grounded.contains(*variable))
-                .cloned()
-                .collect::<Vec<_>>();
-            branches
-                .iter()
-                .all(|branch| order_descriptors(&branch.descriptors, &incoming).is_ok())
-        }
-        _ => true,
-    }
-}
-
 fn order_descriptors<'a>(
     descriptors: &'a [Descriptor],
     initial_grounded: &[Variable],
@@ -112,7 +95,6 @@ fn order_descriptors<'a>(
                     .required_variables
                     .iter()
                     .all(|variable| grounded.contains(variable))
-                    && branches_are_ready(descriptor.descriptor, &grounded)
             })
             .max_by_key(|(index, descriptor)| {
                 let shared = descriptor
@@ -129,13 +111,11 @@ fn order_descriptors<'a>(
             let descriptor = remaining
                 .first()
                 .expect("non-empty remaining descriptors must have a first descriptor");
-            let Some(missing) = descriptor
+            let missing = descriptor
                 .required_variables
                 .iter()
                 .find(|variable| !grounded.contains(variable))
-            else {
-                bail!("Insufficient bindings for incremental OR branches");
-            };
+                .expect("a non-introducible descriptor must have a missing variable");
             return Err(anyhow!(
                 "Insufficient bindings for incremental query variable {}",
                 missing
