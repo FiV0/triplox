@@ -368,8 +368,7 @@ fn rel_stream(
                     .cloned()
                     .collect::<Vec<_>>();
                 PlannedWhereStream {
-                    stream: project_stream(incoming.stream.clone(), &incoming.vars, &vars)
-                        .distinct(),
+                    stream: project_stream(incoming.stream.clone(), &incoming.vars, &vars),
                     vars,
                 }
             });

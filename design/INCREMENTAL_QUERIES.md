@@ -212,8 +212,8 @@ and the optional incoming relation:
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming
   rows against the resulting keys.
-- a union projects incoming rows to the join variables that are already bound
-  and deduplicates them. It evaluates each branch with those rows, projects
+- a union projects incoming rows to the join variables that are already bound,
+  preserving their weights. It evaluates each branch with those rows, projects
   results to all join variables, and applies `distinct` to their sum. It then
   joins back to the original incoming stream on the shared variables to retain
   outer columns and weights. With no incoming relation it returns the distinct
