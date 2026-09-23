@@ -167,9 +167,10 @@ zero-column relation.
   columns are projected away before union. Both `or` and `or-join` use this
   operator.
 
-`Chain` is a physical plan shape rather than a DBSP operator. Circuit assembly
-uses the existing `flat_map`, filter, join, projection, antijoin, sum, and
-distinct operators.
+`Chain` records the evaluation order of its child plans. Circuit construction
+connects each child's output stream to the next child's input. It uses the
+existing `flat_map`, filter, join, projection, antijoin, sum, and distinct
+operators.
 
 ### Row layouts
 
