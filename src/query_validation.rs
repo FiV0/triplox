@@ -102,25 +102,26 @@ fn validate_fn(wf: &WhereFn, var_index: &HashMap<&Variable, usize>) -> Result<()
     Ok(())
 }
 
-/// Validate references against the positive bindings visible in each scope.
-fn validate_scope(clauses: &[WhereClause], available: &[Variable]) -> Result<(), Error> {
-    let var_index = build_var_index(available);
+/// Validate references against the incoming variables plus those bound by the scope itself.
+fn validate_scope(clauses: &[WhereClause], incoming: &[Variable]) -> Result<(), Error> {
+    let available = incoming
+        .iter()
+        .cloned()
+        .chain(clauses.iter().flat_map(clause_bound_variables))
+        .unique()
+        .collect::<Vec<_>>();
+    let var_index = build_var_index(&available);
     for clause in clauses {
         match clause {
             WhereClause::OrJoin(or) => {
                 let interface = or_join_variables(or);
+                let branch_incoming = available
+                    .iter()
+                    .filter(|variable| interface.contains(variable))
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for branch in &or.clauses {
-                    let mut branch_available = available
-                        .iter()
-                        .filter(|variable| interface.contains(variable))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    for variable in or_branch_bound_variables(branch) {
-                        if !branch_available.contains(&variable) {
-                            branch_available.push(variable);
-                        }
-                    }
-                    validate_scope(or_branch_clauses(branch), &branch_available)?;
+                    validate_scope(or_branch_clauses(branch), &branch_incoming)?;
                 }
             }
             WhereClause::NotJoin(not) => {
@@ -133,13 +134,7 @@ fn validate_scope(clauses: &[WhereClause], available: &[Variable]) -> Result<(),
                         );
                     }
                 }
-                // Only the declared (or implicitly mentioned) variables enter the NOT scope.
-                let body_available = variables
-                    .into_iter()
-                    .chain(not.clauses.iter().flat_map(clause_bound_variables))
-                    .unique()
-                    .collect::<Vec<_>>();
-                validate_scope(&not.clauses, &body_available)?;
+                validate_scope(&not.clauses, &variables)?;
             }
             WhereClause::Pred(pred) => validate_predicate(pred, &var_index)?,
             WhereClause::WhereFn(wf) => validate_fn(wf, &var_index)?,
@@ -380,7 +375,12 @@ pub(crate) fn validate_query(query: &ParsedQuery, args: &[QueryArg]) -> Result<(
         return Err(anyhow::anyhow!("Query has no groundable variables!"));
     }
     let var_index = build_var_index(&join_order);
-    validate_scope(&query.where_clauses, &join_order)?;
+    let in_variables = query
+        .in_bindings
+        .iter()
+        .flat_map(|binding| binding.variables().into_iter().flatten())
+        .collect::<Vec<_>>();
+    validate_scope(&query.where_clauses, &in_variables)?;
     validate_aggregate_clauses(&query.find_spec, &var_index)?;
 
     // Validate ORDER BY variables are in the find spec.
