@@ -894,16 +894,8 @@ fn plan_scope(
         .filter(|variable| relevant.contains(variable))
         .cloned()
         .collect::<Vec<_>>();
-    // Keep the inherited order, then append local variables with function outputs last.
-    for descriptor in descriptors
-        .iter()
-        .filter(|descriptor| !matches!(descriptor.kind, DescriptorKind::Function { .. }))
-        .chain(
-            descriptors
-                .iter()
-                .filter(|descriptor| matches!(descriptor.kind, DescriptorKind::Function { .. })),
-        )
-    {
+    // Keep the inherited order, then append local variables in descriptor order.
+    for descriptor in &descriptors {
         for variable in &descriptor.variables {
             if !scope_order.contains(variable) {
                 scope_order.push(variable.clone());
