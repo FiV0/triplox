@@ -82,12 +82,10 @@
           [?e :age 10])]
     #{2 4 6}))
 
-;; TODO not-join
-#_
 (deftest test-not-join
   (d/transact *conn* test-data)
-  (are [clauses res] (= res (q (vec (concat '[:find ?e ?a :where] (quote clauses)))))
-    [[?e :name _]
+  (are [clauses res] (= res (q (vec (concat '[:find ?id ?a :where [?e :id ?id]] (quote clauses)))))
+    [[?e :name ?placeholder]
      [?e :age  ?a]
      (not-join [?e]
                [?e :name "Oleg"]

@@ -410,12 +410,15 @@ pub(crate) fn or_join_variables(or: &OrJoin) -> Vec<Variable> {
 pub(crate) fn clause_mentioned_variables(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::OrJoin(or) => or_join_variables(or),
-        WhereClause::NotJoin(not) => not
-            .clauses
-            .iter()
-            .flat_map(clause_mentioned_variables)
-            .unique()
-            .collect(),
+        WhereClause::NotJoin(not) => match &not.unify_vars {
+            UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+            UnifyVars::Implicit => not
+                .clauses
+                .iter()
+                .flat_map(clause_mentioned_variables)
+                .unique()
+                .collect(),
+        },
         _ => clause.collect_mentioned_variables().into_iter().collect(),
     }
 }

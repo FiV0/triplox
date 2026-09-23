@@ -14,8 +14,8 @@ use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    convert_predicate, convert_where_fn, non_value_place_to_datatype, or_join_variables,
-    pattern_variables, query_variable_order, resolve_attribute_from_pattern,
+    clause_mentioned_variables, convert_predicate, convert_where_fn, non_value_place_to_datatype,
+    or_join_variables, pattern_variables, query_variable_order, resolve_attribute_from_pattern,
     value_place_to_datatype,
 };
 
@@ -255,11 +255,7 @@ impl DescriptorBuilder {
             WhereClause::NotJoin(not) => {
                 let id = self.allocate_id();
                 let children = self.where_clauses(&not.clauses)?;
-                let variables = children
-                    .iter()
-                    .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                    .unique()
-                    .collect();
+                let variables = clause_mentioned_variables(clause);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -1453,6 +1449,25 @@ mod tests {
     }
 
     #[test]
+    fn plans_explicit_not_join_with_local_variables() {
+        let query = edn::parse::parse_query(
+            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :follows ?name] [?name :age ?age])]",
+        )
+        .unwrap();
+        let plan = build_logical_plan(&query, &[]).unwrap();
+        assert_eq!(plan.output_variables(), &[var("?e"), var("?name")]);
+        let LogicalDescriptorKind::Not { children } = &plan.descriptors[1].kind else {
+            panic!("expected NOT");
+        };
+        assert_eq!(plan.descriptors[1].variables, vec![var("?e")]);
+        assert_eq!(children.incoming_variables(), Some([var("?e")].as_slice()));
+        assert_eq!(
+            children.output_variables(),
+            &[var("?e"), var("?name"), var("?age")]
+        );
+    }
+
+    #[test]
     fn rejects_scope_variables_missing_from_scope_order() {
         let descriptors = vec![relation(0, &["?x"])];
 
@@ -1668,6 +1683,51 @@ mod tests {
         values.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
 
         assert_eq!(values, vec![DataType::Long(1), DataType::Long(4)]);
+        Ok(())
+    }
+
+    #[test]
+    fn executes_explicit_not_join_without_capturing_outer_variables() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        let query = edn::parse::parse_query(
+            "[:find ?x ?y
+          :in [?x ...] [?y ...]
+          :where
+          (not-join [?x] [(+ ?x 1) ?y] [(= ?y 3)])]",
+        )
+        .unwrap();
+        let arguments = [
+            QueryArg::Collection(vec![
+                DataType::Long(1),
+                DataType::Long(2),
+                DataType::Long(3),
+            ]),
+            QueryArg::Collection(vec![DataType::Long(10)]),
+        ];
+        let logical = build_logical_plan(&query, &arguments)?;
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
+
+        let stages = logical.materialize(db, None)?;
+        let result = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
+        let mut rows = result
+            .rows
+            .iter()
+            .map(|row| -> Result<Vec<DataType>> {
+                row.iter()
+                    .map(|value| Ok(DataType::decode(value)?))
+                    .collect()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::Long(1), DataType::Long(10)],
+                vec![DataType::Long(3), DataType::Long(10)],
+            ]
+        );
         Ok(())
     }
 
