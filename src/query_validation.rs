@@ -510,10 +510,30 @@ mod tests {
     #[test]
     fn explicit_or_join_validates_local_scopes() {
         for query in [
-            "[:find ?e :where (or-join [?e] [?e :name ?name] (and [?e :age ?age] [(>= ?age 18)]))]",
-            "[:find ?e :where (or-join [?e] (and [?e :age ?age] [(+ ?age 1) ?next] [(> ?next 18)] (not [?e :age ?next])))]",
-            "[:find ?e :where (or (or-join [?e] [?e :name ?local]) [?e :age 18])]",
-            "[:find ?e :where [?e :age ?age] (or-join [?e] (and [?e :name ?age] [(identity ?age) ?copy]))]",
+            r#"[:find ?e
+                :where
+                (or-join [?e]
+                  [?e :name ?name]
+                  (and [?e :age ?age]
+                       [(>= ?age 18)]))]"#,
+            r#"[:find ?e
+                :where
+                (or-join [?e]
+                  (and [?e :age ?age]
+                       [(+ ?age 1) ?next]
+                       [(> ?next 18)]
+                       (not [?e :age ?next])))]"#,
+            r#"[:find ?e
+                :where
+                (or (or-join [?e]
+                      [?e :name ?local])
+                    [?e :age 18])]"#,
+            r#"[:find ?e
+                :where
+                [?e :age ?age]
+                (or-join [?e]
+                  (and [?e :name ?age]
+                       [(identity ?age) ?copy]))]"#,
         ] {
             validate_query(&parse_query(query), &[]).unwrap_or_else(|err| panic!("{query}: {err}"));
         }
@@ -522,16 +542,74 @@ mod tests {
     #[test]
     fn explicit_or_join_rejects_missing_and_escaping_variables() {
         for (query, message) in [
-            ("[:find ?e :where (or-join [?e] [?e :name ?n] [?other :age ?age])]", "OR-JOIN branch 2 does not mention join variables {?e}"),
-            ("[:find ?e :where [?e :age ?age] (or-join [?e ?age] [?e :name ?n])]", "OR-JOIN branch 1 does not mention join variables {?age}"),
-            ("[:find ?e :where (or-join [?e ?local] (or-join [?e] [?e :age ?local]))]", "does not mention join variables {?local}"),
-            ("[:find ?e :where [?e :age ?age] (or-join [?e] (and [?e :name ?name] [(> ?age 18)]))]", "Predicate variable ?age is not bound"),
-            ("[:find ?e :where (or-join [?e] (and [?e :age ?age] [(+ ?missing 1) ?next]))]", "Function input variable ?missing not in join order"),
-            ("[:find ?e :where (or-join [?e] [?e :age ?local]) [(> ?local 18)]]", "Predicate variable ?local is not bound"),
-            ("[:find (count ?local) :where (or-join [?e] [?e :age ?local])]", "Aggregate variable ?local"),
-            ("[:find ?e :where (or-join [?e] (and [?e :name ?name] (not [?e :age ?local])))]", "Variable ?local in NOT clause is not bound"),
+            (
+                r#"[:find ?e
+                    :where
+                    (or-join [?e]
+                      [?e :name ?n]
+                      [?other :age ?age])]"#,
+                "OR-JOIN branch 2 does not mention join variables {?e}",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :age ?age]
+                    (or-join [?e ?age]
+                      [?e :name ?n])]"#,
+                "OR-JOIN branch 1 does not mention join variables {?age}",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    (or-join [?e ?local]
+                      (or-join [?e]
+                        [?e :age ?local]))]"#,
+                "does not mention join variables {?local}",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :age ?age]
+                    (or-join [?e]
+                      (and [?e :name ?name]
+                           [(> ?age 18)]))]"#,
+                "Predicate variable ?age is not bound",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    (or-join [?e]
+                      (and [?e :age ?age]
+                           [(+ ?missing 1) ?next]))]"#,
+                "Function input variable ?missing not in join order",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    (or-join [?e]
+                      [?e :age ?local])
+                    [(> ?local 18)]]"#,
+                "Predicate variable ?local is not bound",
+            ),
+            (
+                r#"[:find (count ?local)
+                    :where
+                    (or-join [?e]
+                      [?e :age ?local])]"#,
+                "Aggregate variable ?local",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    (or-join [?e]
+                      (and [?e :name ?name]
+                           (not [?e :age ?local])))]"#,
+                "Variable ?local in NOT clause is not bound",
+            ),
         ] {
-            let error = validate_query(&parse_query(query), &[]).unwrap_err().to_string();
+            let error = validate_query(&parse_query(query), &[])
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(message), "{query}: {error}");
         }
     }
@@ -539,13 +617,48 @@ mod tests {
     #[test]
     fn explicit_not_join_validates_local_scopes() {
         for query in [
-            r#"[:find ?e :where [?e :name "Alice"] (not-join [?e] [?e :age 30])]"#,
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :age ?age] [(>= ?age 18)])]",
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :age ?age] [(+ ?age 1) ?next] [(> ?next 18)])]",
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :follows ?f] (not [?f :age 17]))]",
-            "[:find ?e :where [?e :age ?age] (not-join [?e] [?e :follows ?age])]",
-            "[:find ?e :where [?e :name ?name] (or-join [?e] (and [?e :age ?age] (not-join [?e] [?e :follows ?local])))]",
-            "[:find ?e :where [?e :name ?name] (not-join [?e] (or-join [?e] [?e :follows ?local]))]",
+            r#"[:find ?e
+                :where
+                [?e :name "Alice"]
+                (not-join [?e]
+                  [?e :age 30])]"#,
+            r#"[:find ?e
+                :where
+                [?e :name ?name]
+                (not-join [?e]
+                  [?e :age ?age]
+                  [(>= ?age 18)])]"#,
+            r#"[:find ?e
+                :where
+                [?e :name ?name]
+                (not-join [?e]
+                  [?e :age ?age]
+                  [(+ ?age 1) ?next]
+                  [(> ?next 18)])]"#,
+            r#"[:find ?e
+                :where
+                [?e :name ?name]
+                (not-join [?e]
+                  [?e :follows ?f]
+                  (not [?f :age 17]))]"#,
+            r#"[:find ?e
+                :where
+                [?e :age ?age]
+                (not-join [?e]
+                  [?e :follows ?age])]"#,
+            r#"[:find ?e
+                :where
+                [?e :name ?name]
+                (or-join [?e]
+                  (and [?e :age ?age]
+                       (not-join [?e]
+                         [?e :follows ?local])))]"#,
+            r#"[:find ?e
+                :where
+                [?e :name ?name]
+                (not-join [?e]
+                  (or-join [?e]
+                    [?e :follows ?local]))]"#,
         ] {
             validate_query(&parse_query(query), &[]).unwrap_or_else(|err| panic!("{query}: {err}"));
         }
@@ -554,14 +667,62 @@ mod tests {
     #[test]
     fn explicit_not_join_rejects_unbound_missing_and_escaping_variables() {
         for (query, message) in [
-            ("[:find ?e :where [?e :name ?name] (not-join [?e ?x] [?e :age 30])]", "NOT-JOIN does not mention join variables {?x}"),
-            ("[:find ?e :where [?e :name ?name] (not-join [?x] [?x :age 30])]", "Variable ?x in NOT clause is not bound"),
-            ("[:find ?e :where [?e :name ?name] (not-join [?e] (not-join [?e] [?e :age ?local]) [(> ?local 18)])]", "Predicate variable ?local is not bound"),
-            ("[:find ?e :where [?e :age ?age] (not-join [?e] [?e :name ?name] [(> ?age 18)])]", "Predicate variable ?age is not bound"),
-            ("[:find ?e :where [?e :name ?name] (not-join [?e] [?e :age ?local]) [(> ?local 18)]]", "Predicate variable ?local is not bound"),
-            ("[:find (count ?local) :where [?e :name ?name] (not-join [?e] [?e :age ?local])]", "Aggregate variable ?local"),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :name ?name]
+                    (not-join [?e ?x]
+                      [?e :age 30])]"#,
+                "NOT-JOIN does not mention join variables {?x}",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :name ?name]
+                    (not-join [?x]
+                      [?x :age 30])]"#,
+                "Variable ?x in NOT clause is not bound",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :name ?name]
+                    (not-join [?e]
+                      (not-join [?e]
+                        [?e :age ?local])
+                      [(> ?local 18)])]"#,
+                "Predicate variable ?local is not bound",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :age ?age]
+                    (not-join [?e]
+                      [?e :name ?name]
+                      [(> ?age 18)])]"#,
+                "Predicate variable ?age is not bound",
+            ),
+            (
+                r#"[:find ?e
+                    :where
+                    [?e :name ?name]
+                    (not-join [?e]
+                      [?e :age ?local])
+                    [(> ?local 18)]]"#,
+                "Predicate variable ?local is not bound",
+            ),
+            (
+                r#"[:find (count ?local)
+                    :where
+                    [?e :name ?name]
+                    (not-join [?e]
+                      [?e :age ?local])]"#,
+                "Aggregate variable ?local",
+            ),
         ] {
-            let error = validate_query(&parse_query(query), &[]).unwrap_err().to_string();
+            let error = validate_query(&parse_query(query), &[])
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(message), "{query}: {error}");
         }
     }
