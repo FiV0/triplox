@@ -84,9 +84,6 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
         WhereClause::Pred(_) | WhereClause::WhereFn(_) => Ok(()),
         WhereClause::NotJoin(not) => {
-            if matches!(not.unify_vars, edn::query::UnifyVars::Explicit(_)) {
-                bail!("Incremental queries do not support explicit not-join");
-            }
             for clause in &not.clauses {
                 reject_unsupported_where_clause(clause)?;
             }
@@ -693,6 +690,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_not_join_seeds_only_join_variables() {
+        let plan = plan_query(
+            &parse_query(
+                "[:find ?e ?name :where [?e :name ?name] (not-join [?e] [?e :follows ?name] [?name :age ?age])]",
+            ),
+            &test_schema(),
+        )
+        .unwrap();
+
+        let RelPlanKind::Chain { children } = &plan.where_plan.kind else {
+            panic!("expected chain plan");
+        };
+        let difference = &children[1];
+        assert_eq!(
+            difference.output_vars,
+            vec!["?e".to_var(), "?name".to_var()]
+        );
+        let RelPlanKind::Difference { key_vars, negative } = &difference.kind else {
+            panic!("expected difference plan");
+        };
+        assert_eq!(key_vars, &vec!["?e".to_var()]);
+        assert_eq!(negative.incoming_vars, Some(vec!["?e".to_var()]));
+        assert_eq!(
+            negative.output_vars,
+            vec!["?e".to_var(), "?name".to_var(), "?age".to_var()]
+        );
+    }
+
+    #[test]
     fn plans_not_with_a_non_leading_key() {
         let schema = test_schema();
         let plan = plan_query(
@@ -944,14 +970,6 @@ mod tests {
         assert_plan_err(
             "[:find ?name :where [_ :name ?name]]",
             "Placeholders in entity position",
-        );
-    }
-
-    #[test]
-    fn rejects_explicit_not_join_until_incremental_planning_supports_locals() {
-        assert_plan_err(
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :age ?local])]",
-            "Incremental queries do not support explicit not-join",
         );
     }
 

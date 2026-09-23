@@ -162,6 +162,28 @@
       (api/transact *conn* [[:db/retract alice-id :age 30]])
       (is (= [[["Alice"] 1]] (take-delta! sub))))))
 
+(deftest test-explicit-not-join-local-support-retractions
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:name "Alice"} {:age 1} {:age 2}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        one (single-value '[:find ?e :where [?e :age 1]])
+        two (single-value '[:find ?e :where [?e :age 2]])
+        ;; The body-local ?name must not capture the outer ?name.
+        query '[:find ?name :where [?e :name ?name]
+                (not-join [?e] [?e :g/to ?name])]]
+    (with-open [sub (api/subscribe *conn* query)]
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+      (api/transact *conn* [[:db/add alice :g/to one]
+                            [:db/add alice :g/to two]])
+      (is (= [[["Alice"] -1]] (take-delta! sub)))
+      (api/transact *conn* [[:db/retract alice :g/to one]])
+      (is (= ::api/timeout (api/take! sub 200)))
+      (api/transact *conn* [[:db/retract alice :g/to two]])
+      (is (= [[["Alice"] 1]] (take-delta! sub)))
+      (is (= #{["Alice"]} (q query)))
+      (api/transact *conn* [[:db/add alice :g/to one]])
+      (is (= [[["Alice"] -1]] (take-delta! sub))))))
+
 (deftest not-suppresses-positive-side-addition+retraction
   (api/transact *conn* [{:db/ident :alias
                          :db/valueType :db.type/string

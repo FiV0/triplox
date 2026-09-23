@@ -115,8 +115,8 @@ Descriptor {
 
 The top-level `:where` clauses form a scope. Each `or` is a descriptor whose
 branches are scopes. An `and` branch is represented by a scope containing its
-child descriptors and has no descriptor representation of its own. An implicit
-`not` is a descriptor whose body is another scope.
+child descriptors and has no descriptor representation of its own. A `not` or
+`not-join` is a descriptor whose body is another scope.
 
 `variables` lists the variables visible at a descriptor boundary.
 `groundable` lists the variables that the descriptor can produce
@@ -136,6 +136,15 @@ and uses scope order as the deterministic tie-breaker.
 This check does not resolve dependencies inside OR branches before selecting
 the OR. It can select an OR with circular function dependencies before an
 outside clause that would supply a needed binding, rejecting an executable query.
+
+### Explicit NOT joins
+
+`(not-join [?e ...] clause ...)` exposes only its declared variables, which
+must be bound before it runs and mentioned by its body. Other body variables are
+local, even if the same name appears outside. The negative scope is seeded with
+only the declared variables; locals may follow them in its output layout and are
+ignored by the antijoin. A row reappears only after the last local match
+supporting its key is retracted.
 
 ### Physical relation plans
 
@@ -211,7 +220,8 @@ and the optional incoming relation:
 - a chain folds the running relation through its children.
 - a difference projects the incoming rows to the negative key, evaluates the
   negative scope from that raw projection, and antijoins the original incoming
-  rows against the resulting keys.
+  rows against the resulting keys. Local `not-join` columns are not part of the
+  key.
 - a union projects incoming rows to the join variables that are already bound,
   preserving their weights. It evaluates each branch with those rows, projects
   results to all join variables, and applies `distinct` to their sum. It then
