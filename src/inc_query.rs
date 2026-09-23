@@ -501,13 +501,13 @@ mod tests {
             panic!("expected chain");
         };
         let RelPlanKind::Union {
-            variables,
+            join_variables,
             branches,
         } = &children[1].kind
         else {
             panic!("expected union");
         };
-        assert_eq!(variables, &["?e".to_var()]);
+        assert_eq!(join_variables, &["?e".to_var()]);
         assert_eq!(
             children[1].output_vars,
             vec!["?e".to_var(), "?name".to_var()]

@@ -357,14 +357,14 @@ fn rel_stream(
             difference_stream(positive, negative, key_vars)
         }
         RelPlanKind::Union {
-            variables,
+            join_variables,
             branches,
         } => {
             let seed = incoming.as_ref().map(|incoming| {
                 let vars = incoming
                     .vars
                     .iter()
-                    .filter(|variable| variables.contains(variable))
+                    .filter(|variable| join_variables.contains(variable))
                     .cloned()
                     .collect::<Vec<_>>();
                 PlannedWhereStream {
@@ -377,7 +377,7 @@ fn rel_stream(
                 .iter()
                 .map(|branch| {
                     let branch = rel_stream(fact_input, branch, seed.clone());
-                    project_stream(branch.stream, &branch.vars, variables)
+                    project_stream(branch.stream, &branch.vars, join_variables)
                 })
                 .collect::<Vec<_>>();
             let first = branch_streams.remove(0);
@@ -387,10 +387,10 @@ fn rel_stream(
                     incoming.stream,
                     &incoming.vars,
                     union,
-                    variables,
+                    join_variables,
                     &plan.output_vars,
                 ),
-                None => project_stream(union, variables, &plan.output_vars),
+                None => project_stream(union, join_variables, &plan.output_vars),
             }
         }
     };

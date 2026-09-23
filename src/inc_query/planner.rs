@@ -33,7 +33,7 @@ pub(crate) enum RelPlanKind {
         negative: Box<RelPlan>,
     },
     Union {
-        variables: Vec<Variable>,
+        join_variables: Vec<Variable>,
         branches: Vec<RelPlan>,
     },
 }
@@ -227,7 +227,7 @@ fn plan_union(
         incoming_vars,
         output_vars,
         kind: RelPlanKind::Union {
-            variables: descriptor.variables.clone(),
+            join_variables: descriptor.variables.clone(),
             branches,
         },
     })
