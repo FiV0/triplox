@@ -888,6 +888,7 @@ fn plan_scope(
             .filter(|variable| relevant.contains(variable))
             .collect::<Vec<_>>()
     });
+    // We filter the outer variable order to the relevant variables of the nested scope.
     let mut scope_order = variable_order
         .iter()
         .filter(|variable| relevant.contains(variable))
