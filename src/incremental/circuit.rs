@@ -360,6 +360,7 @@ fn rel_stream(
             join_variables,
             branches,
         } => {
+            // We project to the join variables to avoid having name clashes with the outer scope.
             let seed = incoming.as_ref().map(|incoming| {
                 let vars = incoming
                     .vars
@@ -372,6 +373,7 @@ fn rel_stream(
                     vars,
                 }
             });
+            // We create a circuit for each branch seeded with incoming and projected back to join variables to discard locals.
             let mut branch_streams = branches
                 .iter()
                 .map(|branch| {
@@ -379,6 +381,7 @@ fn rel_stream(
                     project_stream(branch.stream, &branch.vars, join_variables)
                 })
                 .collect::<Vec<_>>();
+            // We union the resulting streams and join back to the incoming stream. 
             let first = branch_streams.remove(0);
             let union = first.sum(branch_streams.iter()).distinct();
             match incoming {
