@@ -16,16 +16,16 @@ use triplox::TransactionResult;
 async fn test_remote_node_with_s3_storage() {
     triplox::logging::init();
 
-    // Start MinIO container
-    let container = GenericImage::new("quay.io/minio/minio", "RELEASE.2025-09-07T16-13-09Z")
+    // Start RustFS container
+    let container = GenericImage::new("rustfs/rustfs", "1.0.0")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/minio/health/live").with_expected_status_code(200u16),
+            HttpWaitStrategy::new("/health/ready").with_expected_status_code(200u16),
         ))
-        .with_env_var("MINIO_ROOT_USER", "minioadmin")
-        .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-        .with_cmd(vec!["server", "/data"])
-        .with_startup_timeout(std::time::Duration::from_secs(30))
+        .with_env_var("RUSTFS_ACCESS_KEY", "rustfsadmin")
+        .with_env_var("RUSTFS_SECRET_KEY", "rustfsadmin")
+        .with_cmd(vec!["/data"])
+        .with_startup_timeout(std::time::Duration::from_secs(60))
         .start()
         .await
         .unwrap();
@@ -39,8 +39,8 @@ async fn test_remote_node_with_s3_storage() {
         .endpoint_url(&endpoint)
         .region(aws_sdk_s3::config::Region::new("us-east-1"))
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            "minioadmin",
-            "minioadmin",
+            "rustfsadmin",
+            "rustfsadmin",
             None,
             None,
             "test",
@@ -62,8 +62,8 @@ async fn test_remote_node_with_s3_storage() {
     let remote_config = RemoteStorageConfig {
         endpoint,
         bucket: "triplox".to_string(),
-        access_key: "minioadmin".to_string(),
-        secret_key: "minioadmin".to_string(),
+        access_key: "rustfsadmin".to_string(),
+        secret_key: "rustfsadmin".to_string(),
         region: "us-east-1".to_string(),
         cache_path: disk_dir.path().to_path_buf(),
         wal_flush_interval_us: std::num::NonZeroU64::new(25_000).unwrap(),
@@ -97,7 +97,11 @@ async fn test_remote_node_with_s3_storage() {
     // Query
     let db = node.db().await.unwrap();
     let result = db
-        .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+        .query(
+            "{:find [?name ?age]
+              :where [[?e :name ?name]
+                      [?e :age ?age]]}",
+        )
         .await
         .unwrap();
 

@@ -54,23 +54,11 @@ docker run -p 5490:5490 \
   triplox:latest
 ```
 
-### Remote mode (S3-compatible with MinIO)
+### Remote mode (S3-compatible with RustFS)
 
-#### First-time setup
-
-MinIO data lives on a loopback ext4 image on disk (MinIO's sanity check treats
-btrfs as corrupt, so a plain bind mount to a btrfs host FS won't work). Create
-and mount the image once, then re-run after each reboot:
-
-```bash
-./docker/scripts/setup-minio-disk.sh
-```
-
-This creates a 50G sparse image at `docker/data/minio.img`, formats it ext4,
-and mounts it at `docker/data/minio/`. Override the size with
-`MINIO_IMG_SIZE=100G ./docker/scripts/setup-minio-disk.sh`.
-
-To unmount later: `sudo umount docker/data/minio`.
+RustFS 1.0.0 stores objects in the Compose-managed `rustfs-data` volume.
+No host disk setup is needed. Existing host-directory object-store data is
+not migrated into this volume automatically.
 
 #### Starting the stack
 
@@ -81,32 +69,35 @@ docker compose -f docker/docker-compose.yml up --build
 ```
 
 This starts:
-- **MinIO** on port 9000 (S3 API) and 9001 (console)
-- **Triplox** on port 5490 with SlateDB backed by MinIO
+- **RustFS** on port 9000 (S3 API) and 9001 (console)
+- **Triplox** on port 5490 with SlateDB backed by RustFS
 
-#### Tracing object-store operations
+#### Inspecting object storage
 
-Stream real-time S3 calls against MinIO from the host:
+Use the bundled RustFS CLI to list buckets and inspect the server:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec mc mc admin trace -v triplox
+docker compose -f docker/docker-compose.yml exec rc rc ls triplox/
+docker compose -f docker/docker-compose.yml exec rc rc admin info cluster triplox
+docker compose -f docker/docker-compose.yml logs -f rustfs
 ```
 
-Useful filters: `--call s3`, `--status-code 4xx,5xx`, `--funcname s3.GetObject`.
+The `rc` service recreates its development alias on startup. Server logs are
+not a per-request S3 trace.
 
 #### Resetting the stack
 
-Wipe all MinIO data and the triplox local log, and bring everything back to a
+Wipe all RustFS data and the triplox local log, and bring everything back to a
 clean slate:
 
 ```bash
 ./docker/scripts/reset-remote-stack.sh
 ```
 
-This runs `docker compose down -v` (removing the `triplox-log` named volume)
-and clears the contents of `docker/data/minio/` (keeping the ext4 mount). It
-does not unmount or delete the loopback image. After it finishes, re-run
+This runs `docker compose down -v`, removing the `rustfs-data` and
+`triplox-log` volumes. After it finishes, re-run
 `docker compose -f docker/docker-compose.yml up --build`.
+Use `docker compose down` without `-v` to preserve data across restarts.
 
 ### Kafka mode (AutoMQ)
 
@@ -117,9 +108,9 @@ docker compose -f docker/docker-compose-kafka.yml up --build
 ```
 
 This starts:
-- **MinIO** on port 9000 (S3 API) and 9001 (console)
-- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by MinIO
-- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on MinIO
+- **RustFS** on port 9000 (S3 API) and 9001 (console)
+- **AutoMQ** (Kafka-compatible broker) on port 9092, backed by RustFS
+- **Triplox** on port 5490 with transaction log on Kafka and SlateDB on RustFS
 
 The Kafka topic (`triplox-tx-log`) uses a single partition to guarantee total
 ordering (WAL semantics), and `message.timestamp.type=LogAppendTime` so Triplox
@@ -135,8 +126,8 @@ AutoMQ stack with:
 ./docker/scripts/run-kafka-integration-tests.sh
 ```
 
-The script starts MinIO + AutoMQ (advertising `localhost:9092` so host clients
-can connect, with MinIO data on a named volume instead of the loopback mount),
+The script starts RustFS + AutoMQ (advertising `localhost:9092` so host clients
+can connect, with RustFS data in a separate test volume),
 runs `cargo test -p triplox --features kafka-integration-test kafka_log::tests`,
 and tears the stack down afterwards. The same script backs the manually
 triggered `Kafka Integration` workflow (`gh workflow run kafka-integration.yml`
@@ -146,19 +137,18 @@ both bind port 9092, so stop the dev stack first.
 
 #### Resetting the Kafka stack
 
-Wipe all MinIO data used by the Kafka stack and remove Kafka compose named
+Wipe all RustFS data used by the Kafka stack and remove Kafka compose named
 volumes:
 
 ```bash
-./docker/scripts/reset-kafka-stack.sh
+docker compose -f docker/docker-compose-kafka.yml down -v
 ```
 
-This stops `docker/docker-compose-kafka.yml`, removes named volumes such as
-`mc-config`, and clears the contents of `docker/data/minio/` (keeping the ext4
-mount). It resets the AutoMQ buckets (`automq-data`, `automq-ops`) and the
-Triplox Kafka storage bucket (`triplox-kafka`). Because MinIO data is shared
-with the remote stack, it also removes any remote-stack bucket data in that
-directory. After it finishes, re-run
+This stops `docker/docker-compose-kafka.yml` and removes its `rustfs-data`
+volume, including the AutoMQ buckets (`automq-data`, `automq-ops`) and the
+Triplox Kafka storage bucket (`triplox-kafka`). The default remote and Kafka
+stacks share this volume, so resetting either also removes the other stack's
+object data. Stop the other stack first. After the reset, re-run
 `docker compose -f docker/docker-compose-kafka.yml up --build`.
 
 ### Custom config
