@@ -87,7 +87,8 @@ mod tests {
     fn each_placeholder_gets_a_distinct_variable() {
         let query = parse_query(
             "{:find [?name]
-              :where [[_ :name ?name] [_ :age _]]}",
+              :where [[_ :name ?name]
+                      [_ :age _]]}",
         )
         .unwrap();
         let original = query.clone();
@@ -105,14 +106,25 @@ mod tests {
     #[test]
     fn nested_placeholders_become_local_explicit_join_variables() {
         let mut query = parse_query(
-            "[:find ?e :where (or [?e :name _] (and [?e :age _] (not [?e :email _])))]",
+            "{:find [?e]
+              :where [(or [?e :name _]
+                          (and [?e :age _]
+                               (not [?e :email _])))]}",
         )
         .unwrap();
         let WhereClause::OrJoin(or) = &mut query.where_clauses[0] else {
             panic!("expected OR");
         };
         assert_eq!(or.mentioned_variables().len(), 1);
-        let expected = parse_query("[:find ?e :where (or-join [?e] [?e :name ?tb_placeholder0] (and [?e :age ?tb_placeholder1] (not-join [?e] [?e :email ?tb_placeholder2])))]").unwrap();
+        let expected = parse_query(
+            "{:find [?e]
+              :where [(or-join [?e]
+                        [?e :name ?tb_placeholder0]
+                        (and [?e :age ?tb_placeholder1]
+                             (not-join [?e]
+                               [?e :email ?tb_placeholder2])))]}",
+        )
+        .unwrap();
         let mut rewritten = rewrite_query(&query);
         assert_eq!(rewritten, expected);
         let WhereClause::OrJoin(or) = &mut rewritten.where_clauses[0] else {
@@ -123,14 +135,38 @@ mod tests {
 
     #[test]
     fn explicit_interfaces_hide_named_locals_from_enclosing_rewrites() {
-        let query = parse_query("[:find ?e :where (or [?e :name _] (or-join [?e] (and [?e :age ?local] [?e :email _])))]").unwrap();
-        let expected = parse_query("[:find ?e :where (or-join [?e] [?e :name ?tb_placeholder0] (or-join [?e] (and [?e :age ?local] [?e :email ?tb_placeholder1])))]").unwrap();
+        let query = parse_query(
+            "{:find [?e]
+              :where [(or [?e :name _]
+                          (or-join [?e]
+                            (and [?e :age ?local]
+                                 [?e :email _])))]}",
+        )
+        .unwrap();
+        let expected = parse_query(
+            "{:find [?e]
+              :where [(or-join [?e]
+                        [?e :name ?tb_placeholder0]
+                        (or-join [?e]
+                          (and [?e :age ?local]
+                               [?e :email ?tb_placeholder1])))]}",
+        )
+        .unwrap();
         assert_eq!(rewrite_query(&query), expected);
     }
 
     #[test]
     fn leaves_other_placeholder_positions_and_query_fields_unchanged() {
-        let query = parse_query("[:find ?e :with ?value :in [?input _] :where [?e _ ?value _] [(identity ?value) [?result _]] :order [?e :asc] :limit 10]").unwrap();
+        let query = parse_query(
+            "[:find ?e
+              :with ?value
+              :in [?input _]
+              :where [?e _ ?value _]
+                     [(identity ?value) [?result _]]
+              :order [?e :asc]
+              :limit 10]",
+        )
+        .unwrap();
         assert_eq!(rewrite_query(&query), query);
     }
 }
