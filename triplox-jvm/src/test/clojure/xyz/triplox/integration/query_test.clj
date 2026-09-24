@@ -1207,5 +1207,6 @@
     '[:find ?name :where [?e :name ?name] (not (not [?e :age _]))]
     #{["Alice"] ["Cara"]})
 
-  (is (thrown-with-msg? TriploxException #"different free variables"
-                        (q '[:find ?e :where (or [?e :age _] [?e :salary ?salary])]))))
+  (is (thrown-with-msg? TriploxException #"does not mention join variables"
+                        (q '{:find [?e]
+                             :where [(or [?e :age _] [?e :salary ?salary])]}))))

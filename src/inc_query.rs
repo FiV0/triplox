@@ -31,10 +31,10 @@ impl IncrementalQueryPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    let rewritten = rewrite_query(query)?;
-    reject_unsupported_query_shape(&rewritten)?;
-    validate_query(query, &[])?;
+    let rewritten = rewrite_query(query);
     let query = &rewritten;
+    reject_unsupported_query_shape(query)?;
+    validate_query(query, &[])?;
 
     let descriptors = descriptor::describe_where_clauses(&query.where_clauses, schema)?;
     let where_plan = planner::plan_scope(&descriptors, None)?;

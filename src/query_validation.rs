@@ -251,7 +251,7 @@ fn validate_or_branch_variables(branches: &[OrWhereClause]) -> Result<(), Error>
     Ok(())
 }
 
-pub(crate) fn validate_join_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
+fn validate_join_clauses(clauses: &[WhereClause]) -> Result<(), Error> {
     validate_where_clauses_recursively(clauses, &mut |clause: &WhereClause| match clause {
         WhereClause::OrJoin(oj) => match &oj.unify_vars {
             UnifyVars::Implicit => validate_or_branch_variables(&oj.clauses),

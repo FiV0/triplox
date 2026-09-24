@@ -784,9 +784,9 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
-    validate_query(query, args)?;
-    let rewritten = rewrite_query(query)?;
+    let rewritten = rewrite_query(query);
     let query = &rewritten;
+    validate_query(query, args)?;
     let logical_plan = build_logical_plan(query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();
     let stages = logical_plan.materialize(db, None)?;
