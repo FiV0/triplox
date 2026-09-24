@@ -74,9 +74,8 @@ struct PendingDescriptor<'a> {
 
 fn order_descriptors<'a>(
     descriptors: &'a [Descriptor],
-    incoming_vars: Option<&[Variable]>,
+    initial_grounded: &[Variable],
 ) -> Result<Vec<&'a Descriptor>> {
-    let initial_grounded = incoming_vars.unwrap_or_default();
     let mut ordered = Vec::with_capacity(descriptors.len());
     let mut grounded = initial_grounded.iter().cloned().collect::<HashSet<_>>();
     let mut remaining = descriptors
@@ -92,13 +91,10 @@ fn order_descriptors<'a>(
             .iter()
             .enumerate()
             .filter(|(_, descriptor)| {
-                (incoming_vars.is_some()
-                    || !ordered.is_empty()
-                    || !matches!(descriptor.descriptor.kind, DescriptorKind::Not { .. }))
-                    && descriptor
-                        .required_variables
-                        .iter()
-                        .all(|variable| grounded.contains(variable))
+                descriptor
+                    .required_variables
+                    .iter()
+                    .all(|variable| grounded.contains(variable))
             })
             .max_by_key(|(index, descriptor)| {
                 let shared = descriptor
@@ -115,13 +111,11 @@ fn order_descriptors<'a>(
             let descriptor = remaining
                 .first()
                 .expect("non-empty remaining descriptors must have a first descriptor");
-            let Some(missing) = descriptor
+            let missing = descriptor
                 .required_variables
                 .iter()
                 .find(|variable| !grounded.contains(variable))
-            else {
-                bail!("Cannot plan `not` without a positive relation");
-            };
+                .expect("a non-introducible descriptor must have a missing variable");
             return Err(anyhow!(
                 "Insufficient bindings for incremental query variable {}",
                 missing
@@ -266,7 +260,8 @@ pub(super) fn plan_scope(
     scope: &ScopeDescriptor,
     incoming_vars: Option<Vec<Variable>>,
 ) -> Result<RelPlan> {
-    let ordered = order_descriptors(&scope.descriptors, incoming_vars.as_deref())?;
+    let initial_grounded = incoming_vars.as_deref().unwrap_or_default();
+    let ordered = order_descriptors(&scope.descriptors, initial_grounded)?;
     if ordered.is_empty() {
         bail!("Incremental queries require at least one triple pattern");
     }
@@ -335,7 +330,7 @@ mod tests {
             }),
         };
 
-        let error = order_descriptors(&[descriptor], None).unwrap_err();
+        let error = order_descriptors(&[descriptor], &[]).unwrap_err();
 
         assert!(error.to_string().contains("?missing"));
         assert!(error.to_string().contains("Insufficient bindings"));

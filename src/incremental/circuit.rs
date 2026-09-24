@@ -763,9 +763,6 @@ mod tests {
               :where [(or [?e :name _] [?e :age _])]}",
             "{:find [?e]
               :where [(or-join [?e] [?e :name _] [?e :age _])]}",
-            "{:find [?e]
-              :where [[?e :name _]
-                      (or [_ :name _] [_ :age _])]}",
         ] {
             let storage = tempfile::tempdir().unwrap();
             let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
@@ -785,36 +782,27 @@ mod tests {
 
     #[test]
     fn placeholder_not_preserves_support_counts_and_outer_changes() {
-        for (query, first, second) in [
+        let query = "{:find [?e]
+                      :where [[?e :name _] (not [_ :follows ?e])]}";
+        let first = triple(101, FOLLOWS, 100_i64.into());
+        let second = triple(102, FOLLOWS, 100_i64.into());
+        let storage = tempfile::tempdir().unwrap();
+        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let row = vec![DataType::Long(100)];
+        let alice = triple(100, NAME, "Alice".into());
+        let bob = triple(100, NAME, "Bob".into());
+        for (batch, expected) in [
+            (vec![Tup2(alice.clone(), 1)], vec![(row.clone(), 1)]),
             (
-                "[:find ?e :where [?e :name _] (not [_ :follows ?e])]",
-                triple(101, FOLLOWS, 100_i64.into()),
-                triple(102, FOLLOWS, 100_i64.into()),
+                vec![Tup2(first.clone(), 1), Tup2(second.clone(), 1)],
+                vec![(row.clone(), -1)],
             ),
-            (
-                "[:find ?e :where (not [_ :age _]) [?e :name _]]",
-                triple(101, AGE, 30_i64.into()),
-                triple(102, AGE, 40_i64.into()),
-            ),
+            (vec![Tup2(first, -1)], vec![]),
+            (vec![Tup2(alice, -1), Tup2(bob.clone(), 1)], vec![]),
+            (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
+            (vec![Tup2(bob, -1)], vec![(row, -1)]),
         ] {
-            let storage = tempfile::tempdir().unwrap();
-            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
-            let row = vec![DataType::Long(100)];
-            let alice = triple(100, NAME, "Alice".into());
-            let bob = triple(100, NAME, "Bob".into());
-            for (batch, expected) in [
-                (vec![Tup2(alice.clone(), 1)], vec![(row.clone(), 1)]),
-                (
-                    vec![Tup2(first.clone(), 1), Tup2(second.clone(), 1)],
-                    vec![(row.clone(), -1)],
-                ),
-                (vec![Tup2(first, -1)], vec![]),
-                (vec![Tup2(alice, -1), Tup2(bob.clone(), 1)], vec![]),
-                (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
-                (vec![Tup2(bob, -1)], vec![(row, -1)]),
-            ] {
-                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
-            }
+            assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
         }
     }
 

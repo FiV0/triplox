@@ -785,7 +785,7 @@ where
     M: DbMetadataOps + Send + Sync + 'static,
 {
     validate_query(query, args)?;
-    let rewritten = rewrite_query(query);
+    let rewritten = rewrite_query(query)?;
     let query = &rewritten;
     let logical_plan = build_logical_plan(query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();

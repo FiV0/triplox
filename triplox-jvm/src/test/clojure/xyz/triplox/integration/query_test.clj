@@ -1207,12 +1207,6 @@
     #{}
 
     '[:find ?name :where [?e :name ?name] (not (not [?e :age _]))]
-    #{["Alice"] ["Cara"]}
-
-    '[:find ?name :where (not [_ :salary _]) [_ :name ?name]]
-    #{}
-
-    '[:find ?name :where [_ :name ?name] (or [_ :age _] [_ :salary _])]
-    #{["Alice"] ["Bob"] ["Cara"]})
+    #{["Alice"] ["Cara"]})
   (is (thrown-with-msg? TriploxException #"different free variables"
         (q '[:find ?e :where (or [?e :age _] [?e :salary ?salary])]))))

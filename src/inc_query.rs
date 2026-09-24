@@ -31,7 +31,7 @@ impl IncrementalQueryPlan {
 }
 
 pub(crate) fn plan_query(query: &ParsedQuery, schema: &Schema) -> Result<IncrementalQueryPlan> {
-    let rewritten = rewrite_query(query);
+    let rewritten = rewrite_query(query)?;
     reject_unsupported_query_shape(&rewritten)?;
     validate_query(query, &[])?;
     let query = &rewritten;
