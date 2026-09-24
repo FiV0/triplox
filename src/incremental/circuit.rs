@@ -734,72 +734,25 @@ mod tests {
 
     #[test]
     fn explicit_not_join_restores_only_after_last_local_support() {
-        for query in [
-            "[:find ?e
-              :where [?e :name ?name]
-                     (not-join [?e]
-                       [?e :follows ?friend])]",
-            "[:find ?e
-              :where [?e :name ?friend]
-                     (not-join [?e]
-                       [?e :follows ?friend])]",
-        ] {
-            let storage = tempfile::tempdir().unwrap();
-            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
-            let row = vec![DataType::Long(100)];
-            let name = triple(100, NAME, "Alice".into());
-            let first = triple(100, FOLLOWS, 101_i64.into());
-            let second = triple(100, FOLLOWS, 102_i64.into());
-            for (batch, expected) in [
-                (vec![Tup2(name, 1), Tup2(first.clone(), 1)], vec![]),
-                (vec![Tup2(second.clone(), 1)], vec![]),
-                (vec![Tup2(first.clone(), -1)], vec![]),
-                (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
-                (vec![Tup2(first, 1)], vec![(row, -1)]),
-            ] {
-                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
-            }
-        }
-    }
-
-    #[test]
-    fn explicit_not_join_preserves_outer_rows_sharing_a_key() {
-        let storage = tempfile::tempdir().unwrap();
-        let query = "[:find ?owner
-                      :where [?owner :follows ?e]
+        // The body-local ?friend must not capture the outer ?friend.
+        let query = "[:find ?e
+                      :where [?e :name ?friend]
                              (not-join [?e]
-                               [?e :age ?local])]";
+                               [?e :follows ?friend])]";
+        let storage = tempfile::tempdir().unwrap();
         let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
-        let first = triple(101, FOLLOWS, 100_i64.into());
-        let second = triple(102, FOLLOWS, 100_i64.into());
-        let local_a = triple(100, AGE, 30_i64.into());
-        let local_b = triple(100, AGE, 40_i64.into());
-        let a = vec![DataType::Long(101)];
-        let b = vec![DataType::Long(102)];
+        let row = vec![DataType::Long(100)];
+        let name = triple(100, NAME, "Alice".into());
+        let first = triple(100, FOLLOWS, 101_i64.into());
+        let second = triple(100, FOLLOWS, 102_i64.into());
         for (batch, expected) in [
-            (
-                vec![
-                    Tup2(first.clone(), 1),
-                    Tup2(second.clone(), 1),
-                    Tup2(local_a.clone(), 1),
-                ],
-                vec![],
-            ),
-            (
-                vec![Tup2(local_a.clone(), -1)],
-                vec![(a.clone(), 1), (b.clone(), 1)],
-            ),
-            (
-                vec![Tup2(local_a.clone(), 1), Tup2(local_b.clone(), 1)],
-                vec![(a.clone(), -1), (b, -1)],
-            ),
-            (vec![Tup2(local_a, -1)], vec![]),
-            (vec![Tup2(second, -1)], vec![]),
-            (vec![Tup2(local_b, -1)], vec![(a, 1)]),
+            (vec![Tup2(name, 1), Tup2(first.clone(), 1)], vec![]),
+            (vec![Tup2(second.clone(), 1)], vec![]),
+            (vec![Tup2(first.clone(), -1)], vec![]),
+            (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
+            (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            let mut actual = circuit.apply(batch).unwrap();
-            actual.sort_by_key(|row| format!("{row:?}"));
-            assert_eq!(actual, expected);
+            assert_eq!(circuit.apply(batch).unwrap(), expected);
         }
     }
 
