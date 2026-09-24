@@ -21,6 +21,9 @@ ParsedQuery + QueryArg values + database basis
               validate_query
                     |
                     v
+               rewrite_query
+                    |
+                    v
            build_logical_plan
      recursive descriptors + stages
                     |

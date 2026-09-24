@@ -765,3 +765,13 @@
 
     (api/transact *conn* [{:name "Bob"}])
     (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
+
+(deftest test-placeholder-subscription
+  (api/transact *conn* [{:name "Alice" :age 30}])
+  (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                        :where [[?e :name ?name]
+                                                (or [?e :age _] [?e :salary _])
+                                                (not [_ :last-name ?name])]})]
+    (is (= [[["Alice"] 1]] (take-priming! sub)))
+    (api/transact *conn* [{:name "Bob" :salary 200}])
+    (is (= [[["Bob"] 1]] (take-delta! sub)))))

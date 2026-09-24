@@ -33,6 +33,7 @@ use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::engine::GenericJoinEngine;
 use crate::query::plan::build_logical_plan;
 use crate::query_validation::validate_query;
+use crate::rewrite::rewrite_query;
 use itertools::Itertools;
 use regex::Regex;
 
@@ -783,6 +784,8 @@ where
     D: DbReadOps + Send + Sync + 'static,
     M: DbMetadataOps + Send + Sync + 'static,
 {
+    let rewritten = rewrite_query(query);
+    let query = &rewritten;
     validate_query(query, args)?;
     let logical_plan = build_logical_plan(query, args)?;
     let output_variables = logical_plan.output_variables().to_vec();

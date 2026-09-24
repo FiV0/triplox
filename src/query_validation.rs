@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{bail, Error};
 use edn::query::{
     Binding, Element, FindSpec, Limit, OrWhereClause, ParsedQuery, Pattern, PatternNonValuePlace,
-    PatternValuePlace, Predicate, UnifyVars, Variable, WhereClause, WhereFn,
+    Predicate, UnifyVars, Variable, WhereClause, WhereFn,
 };
 use itertools::Itertools;
 
@@ -163,17 +163,6 @@ fn validate_pattern(pattern: &Pattern) -> Result<(), Error> {
     ) {
         bail!("Attribute position must be a keyword or entid");
     }
-    if matches!(&pattern.entity, PatternNonValuePlace::Placeholder) {
-        return Err(anyhow::anyhow!(
-            "Placeholders in entity position are not supported"
-        ));
-    }
-    if matches!(&pattern.value, PatternValuePlace::Placeholder) {
-        return Err(anyhow::anyhow!(
-            "Placeholders in value position are not supported"
-        ));
-    }
-
     let mut seen = HashSet::new();
     for var in pattern_variables(pattern) {
         if !seen.insert(var.clone()) {

@@ -558,42 +558,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_entity_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?name :where [_ :name ?name]]")
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?e :where [?e :name _]]")
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("value position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_query_two_patterns_join() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
@@ -2533,40 +2497,6 @@ mod tests {
                 vec![DataType::String("Alice".to_string()), DataType::Long(30)],
                 vec![DataType::String("Alice".to_string()), DataType::Long(40)],
             ]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_entity_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in value position"),
-            "unexpected error: {}",
-            err
         );
     }
 
