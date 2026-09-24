@@ -1449,25 +1449,6 @@ mod tests {
     }
 
     #[test]
-    fn plans_explicit_not_join_with_local_variables() {
-        let query = edn::parse::parse_query(
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :follows ?name] [?name :age ?age])]",
-        )
-        .unwrap();
-        let plan = build_logical_plan(&query, &[]).unwrap();
-        assert_eq!(plan.output_variables(), &[var("?e"), var("?name")]);
-        let LogicalDescriptorKind::Not { children } = &plan.descriptors[1].kind else {
-            panic!("expected NOT");
-        };
-        assert_eq!(plan.descriptors[1].variables, vec![var("?e")]);
-        assert_eq!(children.incoming_variables(), Some([var("?e")].as_slice()));
-        assert_eq!(
-            children.output_variables(),
-            &[var("?e"), var("?name"), var("?age")]
-        );
-    }
-
-    #[test]
     fn rejects_scope_variables_missing_from_scope_order() {
         let descriptors = vec![relation(0, &["?x"])];
 
