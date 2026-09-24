@@ -793,3 +793,14 @@
       (api/transact *conn* [[:db/retract alice :name "Alice"]])
       (doseq [sub [names local global]]
         (is (= [[["Alice"] -1]] (take-delta! sub)))))))
+
+(deftest test-or-placeholder-subscription
+  (api/transact *conn* [{:name "Alice"}])
+  (let [alice (single-value '{:find [?e]
+                              :where [[?e :name "Alice"]]})]
+    (with-open [sub (api/subscribe *conn* '{:find [?e]
+                                          :where [(or [?e :name _]
+                                                      [?e :age _])]})]
+      (is (= [[[alice] 1]] (take-priming! sub)))
+      (api/transact *conn* [[:db/retract alice :name "Alice"]])
+      (is (= [[[alice] -1]] (take-delta! sub))))))
