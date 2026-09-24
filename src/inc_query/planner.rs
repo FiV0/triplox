@@ -226,7 +226,10 @@ fn plan_difference(
         .cloned()
         .collect::<Vec<_>>();
     let negative = plan_scope(scope, Some(key_vars.clone()))?;
-    debug_assert_eq!(negative.output_vars, key_vars);
+    // `not-join` locals may follow the key in the negative layout; the antijoin only reads the key.
+    debug_assert!(key_vars
+        .iter()
+        .all(|variable| negative.output_vars.contains(variable)));
 
     Ok(RelPlan {
         incoming_vars: Some(incoming_vars.clone()),

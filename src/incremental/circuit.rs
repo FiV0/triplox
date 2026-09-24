@@ -733,6 +733,30 @@ mod tests {
     }
 
     #[test]
+    fn explicit_not_join_restores_only_after_last_local_support() {
+        // The body-local ?friend must not capture the outer ?friend.
+        let query = "[:find ?e
+                      :where [?e :name ?friend]
+                             (not-join [?e]
+                               [?e :follows ?friend])]";
+        let storage = tempfile::tempdir().unwrap();
+        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let row = vec![DataType::Long(100)];
+        let name = triple(100, NAME, "Alice".into());
+        let first = triple(100, FOLLOWS, 101_i64.into());
+        let second = triple(100, FOLLOWS, 102_i64.into());
+        for (batch, expected) in [
+            (vec![Tup2(name, 1), Tup2(first.clone(), 1)], vec![]),
+            (vec![Tup2(second.clone(), 1)], vec![]),
+            (vec![Tup2(first.clone(), -1)], vec![]),
+            (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
+            (vec![Tup2(first, 1)], vec![(row, -1)]),
+        ] {
+            assert_eq!(circuit.apply(batch).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn query_circuit_uses_file_backed_storage_root() {
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("query-1");

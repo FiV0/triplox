@@ -185,8 +185,12 @@ fn describe_where_clause(clause: &WhereClause, schema: &Schema) -> Result<Descri
 
 fn describe_not(not: &NotJoin, schema: &Schema) -> Result<Descriptor> {
     let scope = describe_where_clauses(&not.clauses, schema)?;
+    let variables = match &not.unify_vars {
+        edn::query::UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+        edn::query::UnifyVars::Implicit => scope.variables.clone(),
+    };
     Ok(Descriptor {
-        variables: scope.variables.clone(),
+        variables,
         groundable: Vec::new(),
         kind: DescriptorKind::Not { scope },
     })
