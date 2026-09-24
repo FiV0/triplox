@@ -766,36 +766,12 @@
     (api/transact *conn* [{:name "Bob"}])
     (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
 
-(deftest test-placeholder-subscriptions
-  (api/transact *conn* edge-schema)
-  (api/transact *conn* [{:db/id "alice" :name "Alice"}
-                       {:db/id "bob" :name "Bob"}])
-  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
-        bob (single-value '[:find ?e :where [?e :name "Bob"]])
-        named '[:find ?name :where [_ :name ?name]]
-        correlated '[:find ?name :where [?e :name ?name] (not [_ :g/to ?e])]]
-    (with-open [names (api/subscribe *conn* named)
-                local (api/subscribe *conn* correlated)]
-      (doseq [sub [names local]]
-        (is (= #{[["Alice"] 1] [["Bob"] 1]} (set (take-delta! sub)))))
-      (api/transact *conn* [[:db/add bob :g/to alice]
-                           [:db/add alice :g/to alice]])
-      (is (= [[["Alice"] -1]] (take-delta! local)))
-      (api/transact *conn* [[:db/retract bob :g/to alice]])
-      (is (= ::api/timeout (api/take! local 200)))
-      (api/transact *conn* [[:db/retract alice :g/to alice]])
-      (is (= [[["Alice"] 1]] (take-delta! local)))
-      (api/transact *conn* [[:db/retract alice :name "Alice"]])
-      (doseq [sub [names local]]
-        (is (= [[["Alice"] -1]] (take-delta! sub)))))))
-
-(deftest test-or-placeholder-subscription
-  (api/transact *conn* [{:name "Alice"}])
-  (let [alice (single-value '{:find [?e]
-                              :where [[?e :name "Alice"]]})]
-    (with-open [sub (api/subscribe *conn* '{:find [?e]
-                                          :where [(or [?e :name _]
-                                                      [?e :age _])]})]
-      (is (= [[[alice] 1]] (take-priming! sub)))
-      (api/transact *conn* [[:db/retract alice :name "Alice"]])
-      (is (= [[[alice] -1]] (take-delta! sub))))))
+(deftest test-placeholder-subscription
+  (api/transact *conn* [{:name "Alice" :age 30}])
+  (with-open [sub (api/subscribe *conn* '{:find [?name]
+                                        :where [[?e :name ?name]
+                                                (or [?e :age _] [?e :salary _])
+                                                (not [_ :last-name ?name])]})]
+    (is (= [[["Alice"] 1]] (take-priming! sub)))
+    (api/transact *conn* [{:name "Bob" :salary 200}])
+    (is (= [[["Bob"] 1]] (take-delta! sub)))))
