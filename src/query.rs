@@ -364,7 +364,7 @@ pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
     match clause {
         WhereClause::Pattern(pattern) => pattern_variables(pattern),
         WhereClause::OrJoin(oj) if matches!(oj.unify_vars, UnifyVars::Explicit(_)) => {
-            or_join_variables(oj)
+            clause_mentioned_variables(clause)
                 .into_iter()
                 .filter(|variable| {
                     oj.clauses
@@ -393,29 +393,27 @@ pub(crate) fn clause_bound_variables(clause: &WhereClause) -> Vec<Variable> {
     }
 }
 
-/// Variables visible outside an OR, excluding locals of nested explicit joins.
-pub(crate) fn or_join_variables(or: &OrJoin) -> Vec<Variable> {
-    match &or.unify_vars {
-        UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
-        UnifyVars::Implicit => or
-            .clauses
-            .iter()
-            .flat_map(or_branch_mentioned_variables)
-            .unique()
-            .collect(),
-    }
-}
-
 /// Variables mentioned at a clause's boundary.
 pub(crate) fn clause_mentioned_variables(clause: &WhereClause) -> Vec<Variable> {
     match clause {
-        WhereClause::OrJoin(or) => or_join_variables(or),
-        WhereClause::NotJoin(not) => not
-            .clauses
-            .iter()
-            .flat_map(clause_mentioned_variables)
-            .unique()
-            .collect(),
+        WhereClause::OrJoin(or) => match &or.unify_vars {
+            UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+            UnifyVars::Implicit => or
+                .clauses
+                .iter()
+                .flat_map(or_branch_mentioned_variables)
+                .unique()
+                .collect(),
+        },
+        WhereClause::NotJoin(not) => match &not.unify_vars {
+            UnifyVars::Explicit(variables) => variables.iter().cloned().collect(),
+            UnifyVars::Implicit => not
+                .clauses
+                .iter()
+                .flat_map(clause_mentioned_variables)
+                .unique()
+                .collect(),
+        },
         _ => clause.collect_mentioned_variables().into_iter().collect(),
     }
 }

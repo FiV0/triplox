@@ -84,6 +84,9 @@ fn reject_unsupported_where_clause(clause: &WhereClause) -> Result<()> {
         WhereClause::Pattern(pattern) => reject_unsupported_pattern_shape(pattern),
         WhereClause::Pred(_) | WhereClause::WhereFn(_) => Ok(()),
         WhereClause::NotJoin(not) => {
+            if matches!(not.unify_vars, edn::query::UnifyVars::Explicit(_)) {
+                bail!("Incremental queries do not support explicit not-join");
+            }
             for clause in &not.clauses {
                 reject_unsupported_where_clause(clause)?;
             }
@@ -941,6 +944,14 @@ mod tests {
         assert_plan_err(
             "[:find ?name :where [_ :name ?name]]",
             "Placeholders in entity position",
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_not_join_until_incremental_planning_supports_locals() {
+        assert_plan_err(
+            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :age ?local])]",
+            "Incremental queries do not support explicit not-join",
         );
     }
 

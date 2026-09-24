@@ -14,7 +14,7 @@ use crate::db_value::DB;
 use crate::expr::{expr_variables, Expr};
 use crate::ops::{DataType, QueryArg};
 use crate::query::{
-    convert_predicate, convert_where_fn, non_value_place_to_datatype, or_join_variables,
+    clause_mentioned_variables, convert_predicate, convert_where_fn, non_value_place_to_datatype,
     pattern_variables, query_variable_order, resolve_attribute_from_pattern,
     value_place_to_datatype,
 };
@@ -245,7 +245,7 @@ impl DescriptorBuilder {
                     .iter()
                     .map(|branch| self.branch(branch))
                     .collect::<Result<Vec<_>>>()?;
-                let variables = or_join_variables(or);
+                let variables = clause_mentioned_variables(clause);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -255,11 +255,7 @@ impl DescriptorBuilder {
             WhereClause::NotJoin(not) => {
                 let id = self.allocate_id();
                 let children = self.where_clauses(&not.clauses)?;
-                let variables = children
-                    .iter()
-                    .flat_map(|descriptor| descriptor.variables.iter().cloned())
-                    .unique()
-                    .collect();
+                let variables = clause_mentioned_variables(clause);
                 Ok(Descriptor {
                     id,
                     variables,
@@ -858,8 +854,13 @@ fn plan_descriptor(
                 "NOT descriptor {} incoming layout does not contain every correlated variable",
                 descriptor.id
             );
+            let variable_order = variable_order
+                .iter()
+                .filter(|variable| descriptor.variables.contains(variable))
+                .cloned()
+                .collect::<Vec<_>>();
             LogicalDescriptorKind::Not {
-                children: plan_scope(children, variable_order, Some(incoming_variables))
+                children: plan_scope(children, &variable_order, Some(incoming_variables))
                     .with_context(|| format!("Failed to plan NOT descriptor {}", descriptor.id))?,
             }
         }
@@ -1668,6 +1669,51 @@ mod tests {
         values.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
 
         assert_eq!(values, vec![DataType::Long(1), DataType::Long(4)]);
+        Ok(())
+    }
+
+    #[test]
+    fn executes_explicit_not_join_without_capturing_outer_variables() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        let query = edn::parse::parse_query(
+            "[:find ?x ?y
+          :in [?x ...] [?y ...]
+          :where
+          (not-join [?x] [(+ ?x 1) ?y] [(= ?y 3)])]",
+        )
+        .unwrap();
+        let arguments = [
+            QueryArg::Collection(vec![
+                DataType::Long(1),
+                DataType::Long(2),
+                DataType::Long(3),
+            ]),
+            QueryArg::Collection(vec![DataType::Long(10)]),
+        ];
+        let logical = build_logical_plan(&query, &arguments)?;
+        let db = db_at_tx_id(&components, runtime.handle(), HashMap::new(), 0);
+
+        let stages = logical.materialize(db, None)?;
+        let result = GenericJoinEngine::execute(&stages, BindingBag::unit())?;
+        let mut rows = result
+            .rows
+            .iter()
+            .map(|row| -> Result<Vec<DataType>> {
+                row.iter()
+                    .map(|value| Ok(DataType::decode(value)?))
+                    .collect()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataType::Long(1), DataType::Long(10)],
+                vec![DataType::Long(3), DataType::Long(10)],
+            ]
+        );
         Ok(())
     }
 

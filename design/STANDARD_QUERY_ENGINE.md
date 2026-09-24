@@ -12,7 +12,7 @@ incremental query engine described in
 The engine is row-oriented. It plans a query without opening storage,
 materializes that recursive plan for one database basis, and executes a
 sequence of scopes with stages over a growing `BindingBag`. Nested scopes
-exist for `or`, `or-join`, and `not` evaluation.
+exist for `or`, `or-join`, `not`, and `not-join` evaluation.
 
 ```text
 ParsedQuery + QueryArg values + database basis
@@ -166,7 +166,7 @@ currently bound variable set:
 | Predicate | None. Every referenced variable must already be bound. |
 | Function | Its output when every input is bound and the output is not. |
 | OR | Every missing OR variable, but only if every branch can derive the complete missing set. |
-| NOT | None. All variables in the body must be supplied by the outer scope. |
+| NOT | None. All variables in the body, or the declared `not-join` variables, must be supplied by the outer scope. |
 
 OR groundability computes each branch to a fixed point. A branch may therefore
 derive one variable from another inside the branch. The OR is groundable only
@@ -394,7 +394,7 @@ rows in one stage may therefore be extended by different patterns.
 | `PredicatePattern` | Never proposes. It decodes referenced columns, evaluates an `Expr`, and filters rows once all variables are bound. |
 | `FunctionPattern` | Proposes its single output after all expression inputs are bound. If the output is already bound, it evaluates and compares instead. |
 | `OrPattern` | Executes each branch independently, aligns layouts, distinct-unions branch results, and then joins or semijoins them with the complete outer input. |
-| `NotPattern` | Executes its body with projected outer bindings and antijoins matching bindings from the complete outer input. |
+| `NotPattern` | Executes its body with projected outer bindings, projects away `not-join` locals, and antijoins matching bindings from the complete outer input. |
 
 ---
 

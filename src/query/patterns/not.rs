@@ -47,11 +47,9 @@ where
             "NOT incoming variables must be the NOT variable set"
         );
         ensure!(
-            logical_plan
-                .output_variables()
+            variables
                 .iter()
-                .collect::<HashSet<_>>()
-                == variables_set,
+                .all(|variable| logical_plan.output_variables().contains(variable)),
             "NOT body does not produce the NOT variable set"
         );
         Ok(Self {
@@ -77,7 +75,7 @@ where
             })?;
         GenericJoinEngine::execute(&stages, BindingBag::unit())
             .with_context(|| format!("NOT pattern {} logical plan failed", self.id))?
-            .reorder(&self.variables)
+            .project(&self.variables)
     }
 }
 

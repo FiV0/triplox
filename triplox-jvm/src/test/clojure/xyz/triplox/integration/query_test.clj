@@ -360,6 +360,132 @@
                                  :where [(or-join [?e]
                                                   [?e :age ?local])]}))))))
 
+(deftest test-not-join-query
+  (tc/transact *conn* [{:db/ident :follows
+                        :db/valueType :db.type/ref
+                        :db/cardinality :db.cardinality/many}
+                       {:db/ident :tags
+                        :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/many}])
+  (let [result (tc/transact *conn* [{:db/id "alice" :name "Alice" :age 30}
+                                    {:db/id "bob" :name "Bob" :age 17}
+                                    {:db/id "cara" :name "Cara" :age 40}
+                                    [:db/add "alice" :follows "cara"]
+                                    [:db/add "cara" :follows "bob"]
+                                    [:db/add "alice" :tags "a"]
+                                    [:db/add "alice" :tags "b"]
+                                    [:db/add "cara" :tags "a"]])]
+    (is (:committed? result)
+        (pr-str result)))
+
+  (let [ids (into {} (q '[:find ?name ?e :where [?e :name ?name]]))
+        alice (ids "Alice")
+        bob (ids "Bob")
+        cara (ids "Cara")]
+
+    (testing "Body variables stay local"
+      (is (= #{[bob]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    [?e :follows ?friend])]}))))
+
+    (testing "Body-local predicates"
+      (is (= #{[bob] [cara]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    [?e :follows ?friend]
+                                    [?friend :age ?age]
+                                    [(>= ?age 18)])]}))))
+
+    (testing "Body-local function outputs"
+      (is (= #{[alice] [bob]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    [?e :age ?age]
+                                    [(+ ?age 1) ?next]
+                                    [(> ?next 31)])]}))))
+
+    (testing "Local variables do not capture preceding outer variables"
+      (is (= #{[bob 17]}
+             (q '{:find [?e ?age]
+                  :where [[?e :age ?age]
+                          (not-join [?e]
+                                    [?e :follows ?age])]}))))
+
+    (testing "Duplicate local witnesses remove a row once"
+      (is (= #{[1]}
+             (q '{:find [(count ?e)]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    [?e :tags ?tag])]}))))
+
+    (testing "Multiple join variables"
+      (is (= #{[cara bob]}
+             (q '{:find [?e ?friend]
+                  :where [[?e :follows ?friend]
+                          (not-join [?e ?friend]
+                                    [?e :tags ?tag]
+                                    [?friend :tags ?tag])]}))))
+
+    (testing "Input variables as join variables"
+      (is (= #{[bob] [cara]}
+             (q '{:find [?e]
+                  :in [?age]
+                  :where [[?e :age ?a]
+                          (not-join [?e ?age]
+                                    [?e :age ?age])]}
+                30))))
+
+    (testing "Not inside not-join"
+      (is (= #{[bob] [cara]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    [?e :follows ?friend]
+                                    (not [?friend :age 17]))]}))))
+
+    (testing "Or-join inside not-join"
+      (is (= #{[bob]}
+             (q '{:find [?e]
+                  :where [[?e :name ?name]
+                          (not-join [?e]
+                                    (or-join [?e]
+                                             [?e :follows ?local]
+                                             [?e :tags ?local]))]}))))
+
+    (testing "Not-join inside or-join"
+      (is (= #{[alice] [bob]}
+             (q '{:find [?e]
+                  :where [(or-join [?e]
+                                   (and [?e :age ?age]
+                                        (not-join [?e]
+                                                  [?e :follows ?friend]))
+                                   [?e :tags "b"])]}))))
+
+    (testing "Find cannot expose body-local variables"
+      (is (thrown-with-msg? TriploxException #"Find variable \?local not in where clauses"
+                            (q '{:find [?local]
+                                 :where [[?e :name ?name]
+                                         (not-join [?e]
+                                                   [?e :age ?local])]}))))
+
+    (testing "Join variables must be bound outside"
+      (is (thrown-with-msg? TriploxException #"Variable \?x in NOT clause is not bound"
+                            (q '{:find [?e]
+                                 :where [[?e :name ?name]
+                                         (not-join [?x]
+                                                   [?x :age 30])]}))))
+
+    (testing "Body must mention every join variable"
+      (is (thrown-with-msg? TriploxException #"NOT-JOIN does not mention join variables \{\?name\}"
+                            (q '{:find [?e]
+                                 :where [[?e :name ?name]
+                                         (not-join [?e ?name]
+                                                   [?e :age 30])]}))))))
+
 (deftest test-ors-must-use-same-vars
   (is (thrown? TriploxException
                (q '{:find [?e]
