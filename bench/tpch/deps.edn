@@ -1,0 +1,5 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        xyz.triplox/triplox {:mvn/version "0.1.0-alpha"}
+        io.airlift.tpch/tpch {:mvn/version "0.10"}}
+ :aliases {:run {:main-opts ["-m" "tpch.main"]}}}
