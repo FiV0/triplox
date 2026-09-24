@@ -17,15 +17,13 @@ The following is a non-exhaustive list of things that we plan to add to Triplox 
 
 - Reader node support. Currently the node can only run as primary node.
 - query API features
-  - `or-join`
-  - `not-join`
   - rules
   - queries over the complete transaction history as data
 - the `entity` API
 - incremental queries (IQs)
-  - `or`/`or-join`
+  - `or`
   - `and`
-  - `not`/`not-join`
+  - `not`
   - `predicate`/`function` patterns
   - rules (rules for IQs require recursive circuits which are more tricky than simply building a circuit tree)
 - explicit entity id partition support
