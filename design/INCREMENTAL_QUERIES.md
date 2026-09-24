@@ -137,15 +137,6 @@ This check does not resolve dependencies inside OR branches before selecting
 the OR. It can select an OR with circular function dependencies before an
 outside clause that would supply a needed binding, rejecting an executable query.
 
-### Explicit NOT joins
-
-`(not-join [?e ...] clause ...)` exposes only its declared variables, which
-must be bound before it runs and mentioned by its body. Other body variables are
-local, even if the same name appears outside. The negative scope is seeded with
-only the declared variables; locals may follow them in its output layout and are
-ignored by the antijoin. A row reappears only after the last local match
-supporting its key is retracted.
-
 ### Physical relation plans
 
 Every physical relation plan records:
