@@ -976,7 +976,7 @@ mod tests {
     fn plans_each_placeholder_as_a_fresh_variable() {
         let query = parse_query("[:find ?name :where [_ :name ?name] [_ :age _]]");
         let explicit = parse_query(
-            "[:find ?name :where [?placeholder0 :name ?name] [?placeholder1 :age ?placeholder2]]",
+            "[:find ?name :where [?tb_placeholder0 :name ?name] [?tb_placeholder1 :age ?tb_placeholder2]]",
         );
         assert_eq!(
             plan_query(&query, &test_schema()).unwrap(),
@@ -993,8 +993,8 @@ mod tests {
         let explicit = parse_query(
             "{:find [?e]
               :where [(or-join [?e]
-                        [?e :name ?placeholder0]
-                        [?e :age ?placeholder1])]}",
+                        [?e :name ?tb_placeholder0]
+                        [?e :age ?tb_placeholder1])]}",
         );
         assert_eq!(
             plan_query(&query, &test_schema()).unwrap(),

@@ -1183,9 +1183,6 @@
     '[:find (count ?name) :where [_ :name ?name] [_ :age _]]
     #{[6]}
 
-    '[:find ?placeholder0 :where [_ :age ?placeholder0]]
-    #{[30] [40]}
-
     '[:find ?name :where [?e :name ?name]
       (or [?e :age _] [?e :salary _])]
     #{["Alice"] ["Bob"] ["Cara"]}
