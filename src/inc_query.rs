@@ -693,7 +693,11 @@ mod tests {
     fn explicit_not_join_seeds_only_join_variables() {
         let plan = plan_query(
             &parse_query(
-                "[:find ?e ?name :where [?e :name ?name] (not-join [?e] [?e :follows ?name] [?name :age ?age])]",
+                "[:find ?e ?name
+                  :where [?e :name ?name]
+                         (not-join [?e]
+                           [?e :follows ?name]
+                           [?name :age ?age])]",
             ),
             &test_schema(),
         )

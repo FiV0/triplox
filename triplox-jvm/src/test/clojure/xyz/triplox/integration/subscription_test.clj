@@ -169,8 +169,10 @@
         one (single-value '[:find ?e :where [?e :age 1]])
         two (single-value '[:find ?e :where [?e :age 2]])
         ;; The body-local ?name must not capture the outer ?name.
-        query '[:find ?name :where [?e :name ?name]
-                (not-join [?e] [?e :g/to ?name])]]
+        query '[:find ?name
+                :where [?e :name ?name]
+                       (not-join [?e]
+                         [?e :g/to ?name])]]
     (with-open [sub (api/subscribe *conn* query)]
       (is (= [[["Alice"] 1]] (take-delta! sub)))
       (api/transact *conn* [[:db/add alice :g/to one]

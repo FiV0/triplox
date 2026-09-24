@@ -735,8 +735,14 @@ mod tests {
     #[test]
     fn explicit_not_join_restores_only_after_last_local_support() {
         for query in [
-            "[:find ?e :where [?e :name ?name] (not-join [?e] [?e :follows ?friend])]",
-            "[:find ?e :where [?e :name ?friend] (not-join [?e] [?e :follows ?friend])]",
+            "[:find ?e
+              :where [?e :name ?name]
+                     (not-join [?e]
+                       [?e :follows ?friend])]",
+            "[:find ?e
+              :where [?e :name ?friend]
+                     (not-join [?e]
+                       [?e :follows ?friend])]",
         ] {
             let storage = tempfile::tempdir().unwrap();
             let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
@@ -759,7 +765,10 @@ mod tests {
     #[test]
     fn explicit_not_join_preserves_outer_rows_sharing_a_key() {
         let storage = tempfile::tempdir().unwrap();
-        let query = "[:find ?owner :where [?owner :follows ?e] (not-join [?e] [?e :age ?local])]";
+        let query = "[:find ?owner
+                      :where [?owner :follows ?e]
+                             (not-join [?e]
+                               [?e :age ?local])]";
         let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
         let first = triple(101, FOLLOWS, 100_i64.into());
         let second = triple(102, FOLLOWS, 100_i64.into());
