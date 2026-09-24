@@ -30,6 +30,22 @@ Don't write like an LLM.
 
 Prefer one-line TODOs.
 
+When writing queries in tests, **DO NOT** write the query on one line. Prefer the EDN map version
+of the query instead of the vector version.
+Instead of writing
+```clj
+[:find ?e ?name :where [?e :name ?name] (not-join [?e] [?e :follows ?name] [?name :age ?age])]
+```
+write the query as
+```clj
+{:find [?e ?name]
+ :where [[?e :name ?name]
+         (not-join [?e]
+                   [?e :follows ?name]
+                   [?name :age ?age])]}
+
+```
+
 ## Git
 
 Only commit and push when explicitly asked to by the user.
