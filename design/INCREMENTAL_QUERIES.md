@@ -124,8 +124,9 @@ without receiving them from an incoming relation. A pattern can ground all of
 its variables. A function grounds its result variable unless the expression
 also reads that variable. An `or` can ground the intersection of variables
 groundable by all branches. Predicates and `not` ground no variables, so every
-variable they mention must already be available from the enclosing positive
-relation.
+variable they expose must already be available from the enclosing positive
+relation. A `not` exposes the variables its body mentions; a `not-join` exposes
+only its declared variables, and its body binds the rest locally.
 
 The planner derives a descriptor's required bindings as
 `variables - groundable`. A descriptor is eligible once all required variables
