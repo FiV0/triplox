@@ -44,13 +44,6 @@ A query starts at the latest visible database value captured during
 registration. A non-empty delta is emitted if the priming of the circuit produces results;
 later deltas describe changes from subsequent transactions.
 
-Entity and value placeholders use the same `rewrite_query` pass as standard
-queries. Triple patterns, OR branches, and NOT bodies support them. Placeholder-only NOT
-bodies use empty internal correlation keys and are scheduled after a positive
-relation exists. The original query is validated with the usual scope rules;
-the incremental shape check applies to the rewritten query. Rewritten OR and
-NOT clauses use explicit join interfaces to keep generated variables local.
-
 ---
 
 ## Architecture
