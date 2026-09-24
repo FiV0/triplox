@@ -1172,6 +1172,7 @@
   (tc/transact *conn* [{:name "Alice" :age 30 :salary 100}
                        {:name "Bob" :salary 200}
                        {:name "Cara" :age 40}])
+
   (are [query expected] (= expected (q query))
     '[:find ?name :where [_ :name ?name]]
     #{["Alice"] ["Bob"] ["Cara"]}
@@ -1208,5 +1209,6 @@
 
     '[:find ?name :where [?e :name ?name] (not (not [?e :age _]))]
     #{["Alice"] ["Cara"]})
+
   (is (thrown-with-msg? TriploxException #"different free variables"
-        (q '[:find ?e :where (or [?e :age _] [?e :salary ?salary])]))))
+                        (q '[:find ?e :where (or [?e :age _] [?e :salary ?salary])]))))
