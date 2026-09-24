@@ -854,8 +854,13 @@ fn plan_descriptor(
                 "NOT descriptor {} incoming layout does not contain every correlated variable",
                 descriptor.id
             );
+            let variable_order = variable_order
+                .iter()
+                .filter(|variable| descriptor.variables.contains(variable))
+                .cloned()
+                .collect::<Vec<_>>();
             LogicalDescriptorKind::Not {
-                children: plan_scope(children, variable_order, Some(incoming_variables))
+                children: plan_scope(children, &variable_order, Some(incoming_variables))
                     .with_context(|| format!("Failed to plan NOT descriptor {}", descriptor.id))?,
             }
         }
