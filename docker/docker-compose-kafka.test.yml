@@ -1,10 +1,8 @@
-# Override for running the Kafka integration tests from the host
-# (see docker/scripts/run-kafka-integration-tests.sh):
-# keep MinIO data in a named volume instead of the ext4 loopback mount.
+# Isolate Kafka integration-test data from the development stack.
 services:
-  minio:
+  rustfs:
     volumes:
-      - minio-test-data:/data
+      - rustfs-test-data:/data
 
 volumes:
-  minio-test-data:
+  rustfs-test-data:

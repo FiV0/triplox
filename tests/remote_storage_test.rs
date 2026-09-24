@@ -1,5 +1,8 @@
 #![cfg(feature = "remote-test")]
 
+use slatedb::object_store::aws::AmazonS3Builder;
+use slatedb::object_store::path::Path;
+use slatedb::object_store::{ObjectStoreExt, WriteMultipart};
 use tempfile::tempdir;
 use testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers::core::{IntoContainerPort, WaitFor};
@@ -12,20 +15,51 @@ use triplox::ops::{DataType, TxOp};
 use triplox::schema::test_schema_tx;
 use triplox::TransactionResult;
 
+async fn check_multipart_round_trip(endpoint: &str) {
+    let store = AmazonS3Builder::new()
+        .with_endpoint(endpoint)
+        .with_bucket_name("triplox")
+        .with_access_key_id("rustfsadmin")
+        .with_secret_access_key("rustfsadmin")
+        .with_region("us-east-1")
+        .with_allow_http(true)
+        .build()
+        .unwrap();
+    // Exercise SlateDB's S3 client with two full parts and a short final part.
+    let part_size = 5 * 1024 * 1024;
+    let data: Vec<u8> = (0..2 * part_size + 12345)
+        .map(|i| ((i / part_size + i % 251) % 256) as u8)
+        .collect();
+    let path = Path::from("multipart-regression");
+    let mut upload = WriteMultipart::new(store.put_multipart(&path).await.unwrap());
+    upload.write(&data);
+    upload.finish().await.unwrap();
+
+    let downloaded = store.get(&path).await.unwrap().bytes().await.unwrap();
+    assert_eq!(downloaded.len(), data.len());
+    assert!(downloaded.as_ref() == data.as_slice());
+    let range = part_size - 16..part_size + 16;
+    let downloaded = store
+        .get_range(&path, range.start as u64..range.end as u64)
+        .await
+        .unwrap();
+    assert_eq!(downloaded.as_ref(), &data[range]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_remote_node_with_s3_storage() {
     triplox::logging::init();
 
-    // Start MinIO container
-    let container = GenericImage::new("quay.io/minio/minio", "RELEASE.2025-09-07T16-13-09Z")
+    // Start RustFS container
+    let container = GenericImage::new("rustfs/rustfs", "1.0.0")
         .with_exposed_port(9000.tcp())
         .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/minio/health/live").with_expected_status_code(200u16),
+            HttpWaitStrategy::new("/health/ready").with_expected_status_code(200u16),
         ))
-        .with_env_var("MINIO_ROOT_USER", "minioadmin")
-        .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-        .with_cmd(vec!["server", "/data"])
-        .with_startup_timeout(std::time::Duration::from_secs(30))
+        .with_env_var("RUSTFS_ACCESS_KEY", "rustfsadmin")
+        .with_env_var("RUSTFS_SECRET_KEY", "rustfsadmin")
+        .with_cmd(vec!["/data"])
+        .with_startup_timeout(std::time::Duration::from_secs(60))
         .start()
         .await
         .unwrap();
@@ -39,8 +73,8 @@ async fn test_remote_node_with_s3_storage() {
         .endpoint_url(&endpoint)
         .region(aws_sdk_s3::config::Region::new("us-east-1"))
         .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            "minioadmin",
-            "minioadmin",
+            "rustfsadmin",
+            "rustfsadmin",
             None,
             None,
             "test",
@@ -56,14 +90,16 @@ async fn test_remote_node_with_s3_storage() {
         .await
         .expect("Failed to create bucket");
 
+    check_multipart_round_trip(&endpoint).await;
+
     // Create remote node with temp dirs for the FileLog and local disk storage.
     let log_dir = tempdir().unwrap();
     let disk_dir = tempdir().unwrap();
     let remote_config = RemoteStorageConfig {
         endpoint,
         bucket: "triplox".to_string(),
-        access_key: "minioadmin".to_string(),
-        secret_key: "minioadmin".to_string(),
+        access_key: "rustfsadmin".to_string(),
+        secret_key: "rustfsadmin".to_string(),
         region: "us-east-1".to_string(),
         cache_path: disk_dir.path().to_path_buf(),
         wal_flush_interval_us: std::num::NonZeroU64::new(25_000).unwrap(),
@@ -97,7 +133,11 @@ async fn test_remote_node_with_s3_storage() {
     // Query
     let db = node.db().await.unwrap();
     let result = db
-        .query("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]")
+        .query(
+            "{:find [?name ?age]
+              :where [[?e :name ?name]
+                      [?e :age ?age]]}",
+        )
         .await
         .unwrap();
 
@@ -107,5 +147,28 @@ async fn test_remote_node_with_s3_storage() {
         vec![DataType::String("alice".to_string()), DataType::Long(30),]
     );
 
+    node.close().await.unwrap();
+
+    // Reopen with an empty cache so reads must recover persisted objects.
+    let cold_cache = tempdir().unwrap();
+    let remote_config = RemoteStorageConfig {
+        cache_path: cold_cache.path().to_path_buf(),
+        ..remote_config
+    };
+    let node = Node::remote_node(&remote_config, &log_dir.path().join("log"))
+        .await
+        .unwrap();
+    let reopened = node
+        .db()
+        .await
+        .unwrap()
+        .query(
+            "{:find [?name ?age]
+              :where [[?e :name ?name]
+                      [?e :age ?age]]}",
+        )
+        .await
+        .unwrap();
+    assert_eq!(reopened, result);
     node.close().await.unwrap();
 }

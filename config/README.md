@@ -30,32 +30,26 @@ combination is rejected at startup.
 | `triplox.toml`        | memory | In-process, no persistence. Default.              |
 | `triplox-dev.toml`    | dev    | Dev-only: a fresh in-memory node per connection.  |
 | `triplox-local.toml`  | local  | Persistent local FS at `./data/`.                 |
-| `triplox-remote.toml` | remote | S3-compatible (MinIO) at `http://localhost:9000`. |
+| `triplox-remote.toml` | remote | S3-compatible (RustFS) at `http://localhost:9000`. |
 
-## Running locally against MinIO in Docker
+## Running locally against RustFS in Docker
 
 Useful when you want to exercise the remote-storage code path while iterating
-on triplox natively. MinIO stays in Docker; triplox runs from `cargo`.
+on triplox natively. RustFS stays in Docker; triplox runs from `cargo`.
 
-### 1. One-time ext4 loopback setup
+### 1. Start RustFS in Docker
 
-MinIO refuses to start on btrfs, so `docker/data/minio/` is a loopback ext4
-image. Create and mount it once (and re-run after each reboot):
-
-```bash
-./docker/scripts/setup-minio-disk.sh
-```
-
-### 2. Start only MinIO (not triplox) in Docker
+Objects live in the Compose-managed `rustfs-data` volume; no host disk setup
+is needed.
 
 ```bash
-docker compose -f docker/docker-compose.yml up minio createbucket
+docker compose -f docker/docker-compose.yml up rustfs createbucket
 ```
 
-`createbucket` exits after creating the `triplox` bucket; `minio` keeps
+`createbucket` exits after creating the `triplox` bucket; `rustfs` keeps
 running on `localhost:9000` (S3 API) and `localhost:9001` (console).
 
-### 3. Run triplox locally
+### 2. Run triplox locally
 
 ```bash
 cargo run -- config/triplox-remote.toml              # debug build
@@ -69,9 +63,9 @@ in `triplox-remote.toml`). SlateDB's disk-backed object-store cache lives at
 SlateDB cache is capped at SlateDB's default 16 GiB. It grows across restarts
 and must be wiped manually when you want a cold read path.
 
-### 4. Reset
+### 3. Reset
 
-Wipe MinIO contents, the local log, and local disk storage before the next run:
+Wipe RustFS contents, the local log, and local disk storage before the next run:
 
 ```bash
 ./config/scripts/reset-local-remote.sh
