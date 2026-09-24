@@ -757,6 +757,68 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_or_preserves_support_counts() {
+        for query in [
+            "{:find [?e]
+              :where [(or [?e :name _] [?e :age _])]}",
+            "{:find [?e]
+              :where [(or-join [?e] [?e :name _] [?e :age _])]}",
+            "{:find [?e]
+              :where [[?e :name _]
+                      (or [_ :name _] [_ :age _])]}",
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let row = vec![DataType::Long(100)];
+            let name = triple(100, NAME, "Alice".into());
+            let age = triple(100, AGE, 30_i64.into());
+            for (batch, expected) in [
+                (vec![Tup2(name.clone(), 1)], vec![(row.clone(), 1)]),
+                (vec![Tup2(age.clone(), 1)], vec![]),
+                (vec![Tup2(age, -1)], vec![]),
+                (vec![Tup2(name, -1)], vec![(row, -1)]),
+            ] {
+                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+            }
+        }
+    }
+
+    #[test]
+    fn placeholder_not_preserves_support_counts_and_outer_changes() {
+        for (query, first, second) in [
+            (
+                "[:find ?e :where [?e :name _] (not [_ :follows ?e])]",
+                triple(101, FOLLOWS, 100_i64.into()),
+                triple(102, FOLLOWS, 100_i64.into()),
+            ),
+            (
+                "[:find ?e :where (not [_ :age _]) [?e :name _]]",
+                triple(101, AGE, 30_i64.into()),
+                triple(102, AGE, 40_i64.into()),
+            ),
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let row = vec![DataType::Long(100)];
+            let alice = triple(100, NAME, "Alice".into());
+            let bob = triple(100, NAME, "Bob".into());
+            for (batch, expected) in [
+                (vec![Tup2(alice.clone(), 1)], vec![(row.clone(), 1)]),
+                (
+                    vec![Tup2(first.clone(), 1), Tup2(second.clone(), 1)],
+                    vec![(row.clone(), -1)],
+                ),
+                (vec![Tup2(first, -1)], vec![]),
+                (vec![Tup2(alice, -1), Tup2(bob.clone(), 1)], vec![]),
+                (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
+                (vec![Tup2(bob, -1)], vec![(row, -1)]),
+            ] {
+                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+            }
+        }
+    }
+
+    #[test]
     fn query_circuit_uses_file_backed_storage_root() {
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("query-1");

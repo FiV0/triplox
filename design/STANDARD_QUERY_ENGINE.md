@@ -21,6 +21,9 @@ ParsedQuery + QueryArg values + database basis
               validate_query
                     |
                     v
+               rewrite_query
+                    |
+                    v
            build_logical_plan
      recursive descriptors + stages
                     |
@@ -42,6 +45,24 @@ ParsedQuery + QueryArg values + database basis
 `execute_query` in `src/query.rs` owns this orchestration. The planner and
 runtime implementation live under `src/query/`; final result processing
 remains in `src/query.rs`.
+
+### Placeholders
+
+Entity and value placeholders (`_`) match independently. After validating the
+original query, `rewrite_query` replaces each occurrence with a fresh
+`?placeholderN` variable that cannot collide with user variables. Affected
+implicit `or` and `not` clauses become explicit joins over their original visible
+variables, keeping generated variables local. Existing explicit interfaces stay
+unchanged, and planners and runtime operators use their normal join behavior.
+
+For example, `(not [?e :age _])` becomes
+`(not-join [?e] [?e :age ?placeholder0])`. A placeholder-only body such as
+`(not [_ :age _])` has an empty internal interface and checks existence across
+the database. User-written empty join lists remain unsupported. Attribute,
+transaction, and binding positions keep their existing restrictions.
+
+Validation precedes rewriting so generated variables do not change the rules
+for user-written variables, including implicit OR branch compatibility.
 
 ---
 

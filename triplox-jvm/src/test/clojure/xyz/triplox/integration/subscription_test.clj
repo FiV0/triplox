@@ -765,3 +765,31 @@
 
     (api/transact *conn* [{:name "Bob"}])
     (is (= [[["Bob"] 1]] (take-delta! names-sub)))))
+
+(deftest test-placeholder-subscriptions
+  (api/transact *conn* edge-schema)
+  (api/transact *conn* [{:db/id "alice" :name "Alice"}
+                       {:db/id "bob" :name "Bob"}])
+  (let [alice (single-value '[:find ?e :where [?e :name "Alice"]])
+        bob (single-value '[:find ?e :where [?e :name "Bob"]])
+        named '[:find ?name :where [_ :name ?name]]
+        correlated '[:find ?name :where [?e :name ?name] (not [_ :g/to ?e])]
+        uncorrelated '[:find ?name :where (not [_ :g/to _]) [_ :name ?name]]]
+    (with-open [names (api/subscribe *conn* named)
+                local (api/subscribe *conn* correlated)
+                global (api/subscribe *conn* uncorrelated)]
+      (doseq [sub [names local global]]
+        (is (= #{[["Alice"] 1] [["Bob"] 1]} (set (take-delta! sub)))))
+      (api/transact *conn* [[:db/add bob :g/to alice]
+                           [:db/add alice :g/to alice]])
+      (is (= [[["Alice"] -1]] (take-delta! local)))
+      (is (= #{[["Alice"] -1] [["Bob"] -1]} (set (take-delta! global))))
+      (api/transact *conn* [[:db/retract bob :g/to alice]])
+      (is (= ::api/timeout (api/take! local 200)))
+      (is (= ::api/timeout (api/take! global 200)))
+      (api/transact *conn* [[:db/retract alice :g/to alice]])
+      (is (= [[["Alice"] 1]] (take-delta! local)))
+      (is (= #{[["Alice"] 1] [["Bob"] 1]} (set (take-delta! global))))
+      (api/transact *conn* [[:db/retract alice :name "Alice"]])
+      (doseq [sub [names local global]]
+        (is (= [[["Alice"] -1]] (take-delta! sub)))))))

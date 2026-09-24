@@ -1,5 +1,5 @@
 (ns xyz.triplox.integration.query-test
-  (:require [clojure.test :as t :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :as t :refer [deftest is are testing use-fixtures]]
             [xyz.triplox.api :as tc])
   (:import (xyz.triplox.client TriploxException)))
 
@@ -1167,3 +1167,52 @@
               "seed"
               [["Alice" "seed"]]
               [["Smith" 20 30]]))))
+
+(deftest test-query-placeholders
+  (tc/transact *conn* [{:name "Alice" :age 30 :salary 100}
+                       {:name "Bob" :salary 200}
+                       {:name "Cara" :age 40}])
+  (are [query expected] (= expected (q query))
+    '[:find ?name :where [_ :name ?name]]
+    #{["Alice"] ["Bob"] ["Cara"]}
+
+    '[:find ?name :where [?e :name ?name] [?e :age _]]
+    #{["Alice"] ["Cara"]}
+
+    '[:find (count ?name) :where [_ :name ?name] [_ :age _]]
+    #{[6]}
+
+    '[:find ?placeholder0 :where [_ :age ?placeholder0]]
+    #{[30] [40]}
+
+    '[:find ?name :where [?e :name ?name]
+      (or [?e :age _] [?e :salary _])]
+    #{["Alice"] ["Bob"] ["Cara"]}
+
+    '[:find (count ?e) :where (or [?e :age _] [?e :salary _])]
+    #{[3]}
+
+    '[:find ?name :where [?e :name ?name]
+      (or-join [?e] [?e :age _] [?e :salary _])]
+    #{["Alice"] ["Bob"] ["Cara"]}
+
+    '[:find ?name :where [?e :name ?name] (not [?e :age _])]
+    #{["Bob"]}
+
+    '[:find ?name :where [?e :name ?name] (not-join [?e] [?e :age _])]
+    #{["Bob"]}
+
+    '[:find ?name :where [?e :name ?name]
+      (not (or [?e :age _] [?e :salary _]))]
+    #{}
+
+    '[:find ?name :where [?e :name ?name] (not (not [?e :age _]))]
+    #{["Alice"] ["Cara"]}
+
+    '[:find ?name :where (not [_ :salary _]) [_ :name ?name]]
+    #{}
+
+    '[:find ?name :where [_ :name ?name] (or [_ :age _] [_ :salary _])]
+    #{["Alice"] ["Bob"] ["Cara"]})
+  (is (thrown-with-msg? TriploxException #"different free variables"
+        (q '[:find ?e :where (or [?e :age _] [?e :salary ?salary])]))))

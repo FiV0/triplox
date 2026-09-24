@@ -558,38 +558,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_entity_placeholder() {
+    async fn test_query_placeholders_match_named_variables() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
+        node.execute_tx(vec![
+            TxOp::put([(kw!(:name), "Alice".into()), (kw!(:age), 30_i64.into())]),
+            TxOp::put([(kw!(:name), "Alice".into()), (kw!(:age), 40_i64.into())]),
+            TxOp::put([(kw!(:name), "Bob".into())]),
+        ])
+        .await
+        .unwrap();
         let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?name :where [_ :name ?name]]")
+        for (query, explicit) in [
+            (
+                "[:find ?name :where [_ :name ?name]]",
+                "[:find ?name :where [?entity :name ?name]]",
+            ),
+            (
+                "[:find ?e :where [?e :name _]]",
+                "[:find ?e :where [?e :name ?value]]",
+            ),
+            (
+                "[:find ?name :where [_ :name ?name] [_ :age _]]",
+                "[:find ?name :where [?x :name ?name] [?y :age ?z]]",
+            ),
+            (
+                "[:find (sum ?age) :where [_ :age ?age]]",
+                "[:find (sum ?age) :where [?e :age ?age]]",
+            ),
+            (
+                "[:find ?placeholder0 :where [_ :name ?placeholder0]]",
+                "[:find ?placeholder0 :where [?entity :name ?placeholder0]]",
+            ),
+            (
+                "[:find ?name :where [?e :name ?name] (not [?e :age _])]",
+                "[:find ?name :where [?e :name ?name] (not-join [?e] [?e :age ?local])]",
+            ),
+        ] {
+            let mut actual = db.query(query).await.unwrap();
+            let mut expected = db.query(explicit).await.unwrap();
+            actual.sort_by_key(|row| format!("{row:?}"));
+            expected.sort_by_key(|row| format!("{row:?}"));
+            assert_eq!(actual, expected, "{query}");
+        }
+        let error = db
+            .query("[:find ?placeholder0 :where [_ :age ?age]]")
             .await
             .unwrap_err();
-
         assert!(
-            err.to_string().contains("entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let db = node.db().await.unwrap();
-        let err = db
-            .query("[:find ?e :where [?e :name _]]")
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("value position"),
-            "unexpected error: {}",
-            err
+            error
+                .to_string()
+                .contains("Find variable ?placeholder0 not in where clauses"),
+            "{error:#}"
         );
     }
 
@@ -2537,37 +2557,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_incremental_query_rejects_entity_placeholder() {
+    async fn test_register_incremental_query_with_or_placeholders() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?name :where [_ :name ?name]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in entity position"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_register_incremental_query_rejects_value_placeholder() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-
-        let err = node
-            .register_incremental_query(parse_query("[:find ?e :where [?e :name _]]"), &[])
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("Placeholders in value position"),
-            "unexpected error: {}",
-            err
-        );
+        node.register_incremental_query(
+            parse_query(
+                "{:find [?e]
+                  :where [(or [?e :name _] [?e :age _])]}",
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
