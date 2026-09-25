@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + ufw ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y docker.io ufw
+systemctl enable --now docker
+
+# --- Host firewall: outbound only (reaches Triplox); SSH from admin. ---
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from ${private_cidr}
+ufw allow from ${admin_cidr} to any port 22 proto tcp
+ufw --force enable
+
+# The AuctionMark image is on an unmerged branch, so we don't run it here — just
+# drop a ready-to-run helper wired to this rig's Triplox host and knobs.
+cat > /usr/local/bin/run-loadgen.sh <<'LOADGEN_SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="$${LOADGEN_IMAGE:-${loadgen_image}}"
+if [ -z "$IMAGE" ]; then
+  echo "No load-gen image set. Re-run with the AuctionMark image, e.g.:"
+  echo "  LOADGEN_IMAGE=ghcr.io/fiv0/triplox-auctionmark:latest $0"
+  exit 1
+fi
+docker pull "$IMAGE"
+docker run --rm \
+  -e TRIPLOX_HOST="${triplox_private_ip}" \
+  -e TRIPLOX_PORT="${triplox_port}" \
+  -e SCALE_FACTOR="${scale_factor}" \
+  -e THREADS="${threads}" \
+  -e DURATION="${duration}" \
+  "$IMAGE"
+LOADGEN_SCRIPT
+chmod +x /usr/local/bin/run-loadgen.sh
+
+echo "Load-gen host ready. Set LOADGEN_IMAGE and run: /usr/local/bin/run-loadgen.sh"

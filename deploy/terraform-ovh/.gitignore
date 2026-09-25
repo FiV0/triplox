@@ -1,0 +1,17 @@
+# Local provider/plugin cache
+.terraform/
+
+# State (local backend) — contains the S3 secret key in plaintext; never commit
+*.tfstate
+*.tfstate.*
+
+# Real variable values (keep terraform.tfvars.example)
+*.tfvars
+
+# Crash logs and CLI config
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# .terraform.lock.hcl IS committed (provider pinning) — do not ignore it.
