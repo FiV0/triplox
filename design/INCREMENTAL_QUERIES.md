@@ -41,7 +41,7 @@ the circuits compared to just tailing the WAL files of SlateDB. I am not
 saying it is out of scope, it is just out of scope for now.
 
 A query starts at the latest visible database value captured during
-registration. A non-empty delta is emitted if the priming of the circuit produces results;
+registration. An initial delta is always emitted with the priming result, including an empty result;
 later deltas describe changes from subsequent transactions.
 
 ---
@@ -275,7 +275,7 @@ IncrementalQueryService::register_query
 triplox-incremental-query thread
     builds one QueryCircuit for the plan
     primes it with the initial triples
-    queues the non-empty priming result at the registration basis
+    queues the priming result, including an empty result, at the registration basis
     creates a bounded input queue and starts an async worker owning the circuit
     stores the basis, routing state, and worker controls
     returns an IncrementalQuerySubscription
@@ -331,7 +331,7 @@ execution permit. If its input queue fills, the dispatcher stops routing to that
 query and terminates it with a lag error. Pending inputs are discarded.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
-circuit step. The first delta is the non-empty priming result at the registration
+circuit step. The first delta is the priming result, which may be empty, at the registration
 basis; later deltas describe transactions after that basis. A priming failure
 rejects registration. A live failure removes only the affected query.
 
@@ -362,8 +362,8 @@ Registration creates a cutover point:
 5. Insert the registered query into the incremental service.
 6. Start the CDC loop if it is not already running.
 
-If the initial query result is non-empty, registration queues it as the first
-delta with the registration `TxKey`. Empty priming results are omitted. Later
+Registration always queues the initial query result as the first delta with the
+registration `TxKey`, even when the result is empty. Later
 deltas describe transactions after the returned basis.
 
 Registration is serialized against CDC application. This prevents a race where
