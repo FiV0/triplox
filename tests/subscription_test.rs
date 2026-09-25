@@ -18,11 +18,18 @@ use triplox::TransactionResult;
 const NAMES_QUERY: &str = "[:find ?name :where [?e :name ?name]]";
 
 async fn next_delta(sub: &mut triplox::subscription::Subscription) -> triplox::subscription::Delta {
-    tokio::time::timeout(Duration::from_secs(10), sub.next())
-        .await
-        .expect("a delta within 10s")
-        .expect("the stream yields a delta")
-        .expect("the delta is Ok")
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let delta = sub.next().await?;
+            if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                return Some(delta);
+            }
+        }
+    })
+    .await
+    .expect("a delta within 10s")
+    .expect("the stream yields a delta")
+    .expect("the delta is Ok")
 }
 
 fn add_name(entity: &'static str, name: &'static str) -> Vec<TxOp> {
@@ -253,6 +260,12 @@ async fn shutdown_ends_live_subscription_and_drains_server() {
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
 
+    let priming = tokio::time::timeout(Duration::from_secs(2), sub.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(priming.rows.is_empty());
     token.cancel();
 
     let next = tokio::time::timeout(Duration::from_secs(2), sub.next())

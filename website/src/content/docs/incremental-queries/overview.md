@@ -49,11 +49,33 @@ for calculating fixed points which is a lot more tricky then compiling a circuit
 
 An incremental query is registered on a connection. Incremental queries (IQs) are defined with the same syntax as [standard queries](/query-language/datalog/). The reason IQs take a connection and not a db value, as standard queries do, is because they return change between db values (in other systems you might call these DB snapshots).
 Every Client API has a concept of a `subscribe` method which registers the incremental query on the server.
+The first delta contains the initial result, including an empty result. Later
+deltas report each processed transaction, even when their rows are empty.
+Consuming an empty delta advances the subscription's transaction key without
+changing its rows. An empty delta is different from a timeout or stream closure.
 `subscribe` returns a stateful object that either needs to get closed or explicitly unregistered depending on the API. Incremental queries require resources on the server and the closing mechanics assure that these resources are properly cleaned up on the server. `subscribe` takes the connection and the query as arguments.
 
 When an incremental query gets registered it takes out a DB value at a given `TxKey`. For now, this is the `TxKey` the node has caught up to indexing, meaning you can currently only register incremental queries at roughly where the indexer is at. It builds, what is called in [DBSP](https://docs.rs/dbsp/latest/dbsp/) terminology, a circuit. This circuit gets bootstrapped by the data from the given `TxKey`, meaning the data that is currently present in the indexes. You can think of this bootstrapping as running the standard query through the circuit. This means the circuit initialization might take quite a while depending on how much data is already in the indexes that is relevant for the given incremental query. I want to give some intuition of why the circuit needs to get bootstrapped with the old data when we are only interested in future deltas. Consider a join of two abstract relations $A \bowtie B$. When something in $A$ changes (written as $\Delta A$) we still might need to join it against the old data, i.e. $\Delta A \bowtie B_{old}$, to know if actually to emit a tuple from the query.
 
 ### Views
+
+The experimental Clojure `xyz.triplox.view` namespace continuously drains a
+subscription and applies its weighted deltas. `get-view` returns its current
+rows; `tx-key` returns the last transaction applied to those rows. Use
+`await-tx` to wait for a transaction instead of sleeping or checking whether
+the result changed:
+
+```clojure
+(require '[xyz.triplox.view :as view])
+
+(with-open [v (view/->view conn '[:find ?name :where [?e :person/name ?name]])]
+  (let [tx (t/transact conn [{:person/name "Ada Lovelace"}])]
+    (view/await-tx v (select-keys tx [:tx-id :system-time]) 10000)))
+;; => {:rows [["Ada Lovelace"]], :tx-key {:tx-id ..., :system-time ...}}
+```
+
+The returned rows and key come from the same applied view state. Waiting
+throws on timeout, terminal subscription error, or closure before the target.
 
 A view in traditional DBMSs acts like a virtual table. The data is often computed when access is requested or updated periodically. Systems like [Materialize](https://github.com/materializeinc/materialize) update the views incrementally. Once you have incremental queries, it is "easy" to implement views on top. I prefer to rather give the more primitive option of an incremental query and let users decide how they want to maintain their views. If there is a high demand for views maintained on the server, we can reconsider.
 You can find an example of how to implement views for Clojure in the [incremental query tutorial](https://github.com/FiV0/triplox-incremental-tutorial/blob/079a7298c4658acd8fc46917ec00797871ad3f73/src/tutorial.clj#L281-L321). The idea should be fairly easy translatable to other client languages.
