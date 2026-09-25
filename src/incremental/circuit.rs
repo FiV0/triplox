@@ -446,7 +446,9 @@ fn query_find_stream(
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
-fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+fn decode_output_rows(
+    batch: &impl IndexedZSetReader<Key = OutputRow, Val = ()>,
+) -> Result<Vec<(Vec<DataType>, isize)>> {
     batch
         .iter()
         .map(|(row, (), weight)| {
@@ -462,7 +464,7 @@ fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>>
 }
 
 // All circuits use the same process RSS budget, based on capacity rather than free memory.
-static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
+pub(super) static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     let total_memory = system.total_memory();
@@ -506,18 +508,29 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
-    output: OutputHandle<OutputZSet>,
+    output: OutputHandle<dbsp::typed_batch::SpineSnapshot<OutputZSet>>,
 }
 
 impl QueryCircuit {
     // Builds a DBSP circuit for one incremental query plan.
     pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        let config = storage_circuit_config(storage_path)?;
+        Self::build_with_pool(plan, storage_path, None)
+    }
+
+    pub(super) fn build_with_pool(
+        plan: IncrementalQueryPlan,
+        storage_path: &Path,
+        pool: Option<dbsp::RuntimePool>,
+    ) -> Result<Self> {
+        let mut config = storage_circuit_config(storage_path)?;
+        if let Some(pool) = pool {
+            config = config.with_max_rss_bytes(None).with_runtime_pool(pool);
+        }
         let (handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
             let stream = query_find_stream(where_stream, &plan.find_plan);
-            Ok((handle, stream.output()))
+            Ok((handle, stream.accumulate_output()))
         })
         .map_err(anyhow::Error::from)?;
 
@@ -536,7 +549,7 @@ impl QueryCircuit {
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
         self.handle.transaction().map_err(anyhow::Error::from)?;
-        decode_output_rows(&self.output.consolidate())
+        decode_output_rows(&self.output.concat())
     }
 }
 
