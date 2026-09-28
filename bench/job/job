@@ -92,15 +92,17 @@ def prepare(args):
         rows = {
             "company_type": "1,production companies\n",
             "kind_type": "1,movie\n",
-            "link_type": "1,sequel\n",
+            "link_type": "1,follows\n",
             "company_name": "1,Film Company,[us],,,\n",
-            "title": "1,First Movie,,1,2000,,,,,,\n2,Second Movie,,1,2001,,,,,,\n",
+            "title": "1,Money Movie,,1,1998,,,,,,\n2,Second Movie,,1,2001,,,,,,\n",
+            "keyword": "1,sequel,,\n",
+            "movie_keyword": "1,1,1\n",
             "movie_link": "1,1,2,1\n",
             "movie_companies": "1,1,1,1,\n2,2,1,1,(presents)\n",
         }
         for table in TABLES:
             (directory / f"{table}.csv").write_text(rows.get(table, ""))
-        write_json(directory / "fixture.json", {"fixture": True, "version": 1})
+        write_json(directory / "fixture.json", {"fixture": True, "version": 2})
     elif args.download_data:
         directory = Path(args.data_dir).resolve()
         directory.mkdir(parents=True, exist_ok=True)
@@ -208,7 +210,7 @@ def stop_services(state, remove=False):
         with (Path(config["output"]) / "compose.log").open("w") as log:
             command(base + ["logs", "--no-color"], env=environment, stdout=log)
         disk = {}
-        for service, path in [("minio", "/data"), ("triplox", "/var/lib/triplox")]:
+        for service, path in [("rustfs", "/data"), ("triplox", "/var/lib/triplox")]:
             try:
                 disk[service + "-kilobytes"] = int(capture(base + ["exec", "-T", service, "du", "-sk", path]).split()[0])
             except (subprocess.SubprocessError, ValueError, IndexError):
@@ -292,9 +294,6 @@ def run(args):
         raise RuntimeError("up requires one --engine")
     if args.command == "up" and args.engine == "datalevin":
         raise RuntimeError("Datalevin is embedded; use run instead of up")
-    if not args.ingest_only and args.command == "run" and any(e.startswith("triplox") for e in engines):
-        if not (REPO / "src/rewrite.rs").exists():
-            raise RuntimeError("Triplox JOB query execution awaits merged PR #493 in this worktree; infrastructure can be checked with --ingest-only")
     compile_java()
     run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     root = ROOT / "runs" / run_id

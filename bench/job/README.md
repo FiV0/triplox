@@ -5,10 +5,9 @@ Datalevin, Datomic Pro Peer, Triplox standard queries, and Triplox incremental
 queries. The source, schema, numeric ID offsets, and expected answers are
 vendored; no sibling Datalevin checkout is needed. See [NOTICE.md](NOTICE.md).
 
-**Triplox JOB queries require [placeholder support, PR #493](https://github.com/FiV0/triplox/pull/493).**
-The launcher rejects Triplox query runs until its rewrite module is present in
-this checkout. Merge that change and rebuild the server and client before
-running them. Baseline query runs and `--ingest-only` checks work independently.
+Triplox uses the placeholder support added in
+[PR #493](https://github.com/FiV0/triplox/pull/493) for missing-attribute checks.
+Build the server and client from this checkout before running Triplox queries.
 
 ## Prerequisites
 
@@ -34,13 +33,40 @@ This checks both baselines, including the full cache warmup and answer
 comparison. The small fixture exercises only a few joins; most query answers
 are empty. Its timings are smoke-test output, not representative JOB results.
 
-After incorporating #493, build this checkout and check all four modes:
+Build this checkout and check all four modes:
 
 ```bash
 ./job prepare --build-triplox --engine all
 ./job run --engine all --data-dir data/fixture \
   --workload maintenance --batch-size 1 --cycles 1
 ```
+
+The fixture includes matches for queries 11a and 11b, whose missing-attribute
+checks translate to `(not [?mc :movie-companies/note _])`.
+
+For a focused correctness regression, start a dev server from the
+repository root (`cargo run -- config/triplox-dev.toml`), publish this checkout's
+client, and run from this directory:
+
+```bash
+../../triplox-jvm/gradlew -p ../../triplox-jvm publishToMavenLocal -x test \
+  -PtriploxVersion=0.1.0-job-benchmark -PsignAllPublications=false
+clojure -M:datalevin:triplox:integration-test
+```
+
+Run `./job test` first to compile the CSV reader. Set `TRIPLOX_HOST` and
+`TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
+gives each connection its own in-memory database.
+It registers all 113 views before batched ingestion and compares every query's
+standard and incremental answers with the original Datalevin query at nine
+checkpoints, including the empty database. It checks view freshness even when
+answers do not change, and asserts query 11b's known answers while adding,
+changing, and retracting its optional note, retracting/restoring a join, and
+updating/restoring a year. Most other queries are empty on this small fixture;
+this validates execution and these transitions, not full IMDb answer coverage.
+The correctness oracle disables Datalevin's result cache: version 1.1.0 can
+return stale `missing?` results after an attribute-only change. Timed benchmark
+runs retain the normal cache settings described below.
 
 For the original IMDb snapshot:
 
@@ -125,9 +151,10 @@ allocate its own entity IDs. All modes receive the same transaction data.
 `load.json` counts source rows and attempted datoms, including repeated
 identity assertions and stubs; it does not claim those are distinct writes.
 
-Datalevin runs the original query forms. Datomic gets compiler-safe variable
-names and pure Clojure predicate helpers for Datalevin's nested predicates,
-string comparisons, `like`, and `in`. Triplox gets native scalar expressions
+Datalevin runs the original query forms. Datomic and Triplox get portable
+variable names without dots. Datomic gets pure Clojure predicate helpers for
+Datalevin's nested predicates, string comparisons, `like`, and `in`.
+Triplox gets native scalar expressions
 and anchored regular expressions for `like`. Missing attributes use negation
 with `_` placeholders. These adaptations preserve intent but can affect query
 planning and cost. Each engine's actual query forms are saved in `queries.edn`.
@@ -142,7 +169,7 @@ transactor's properties. This is persisted H2-backed dev storage, not an
 in-memory Datomic database. See the [Pro releases](https://docs.datomic.com/releases-pro.html)
 and [storage documentation](https://docs.datomic.com/operation/storage.html).
 
-Triplox uses [compose.yml](compose.yml): a pinned MinIO image, bucket setup,
+Triplox uses [compose.yml](compose.yml): a pinned RustFS image, bucket setup,
 and the image built from this checkout. Object storage, local log, cache, and
 incremental state use dedicated named volumes for each run. Only the Triplox
 client port is published, bound to localhost. The credentials in
@@ -151,7 +178,7 @@ client port is published, bound to localhost. The credentials in
 container inspection records the actual image IDs. Rebuild the default image
 when the checkout changes.
 
-A query-free infrastructure check is available before #493:
+A query-free infrastructure check is also available:
 
 ```bash
 ./job run --engine datomic --data-dir data/fixture --ingest-only
