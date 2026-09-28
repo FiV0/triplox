@@ -3,8 +3,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.walk :as walk])
-  (:import [java.io PushbackReader]
-           [java.util.regex Pattern]))
+  (:import [java.io PushbackReader]))
 
 (defn read-queries []
   (with-open [r (PushbackReader. (io/reader (io/resource "job/upstream-queries.clj")))]
@@ -32,7 +31,9 @@
 
 (defn like-regex [pattern]
   (str "(?s)\\A"
-       (apply str (map #(case % \% ".*" \_ "." (Pattern/quote (str %))) pattern))
+       (apply str (map #(case % \% ".*" \_ "."
+                             (if (str/includes? "\\.^$|?*+()[]{}" (str %))
+                               (str "\\" %) (str %))) pattern))
        "\\z"))
 
 (def ^:private compiled-like (memoize #(re-pattern (like-regex %))))
@@ -101,13 +102,13 @@
         (boolean-chain 'and (map #(apply list op %) (partition 2 1 args)))
         :else (apply list op args)))))
 
-(defn- datomic-variables [query]
+(defn- portable-variables [query]
   (let [variables (distinct (filter #(and (symbol? %) (str/starts-with? (str %) "?"))
                                     (tree-seq coll? seq query)))]
     (walk/postwalk-replace (zipmap variables (map #(symbol (str "?jobv" %)) (range))) query)))
 
 (defn translate [id engine]
-  (let [query (cond-> (get queries id) (= engine :datomic) datomic-variables)
+  (let [query (cond-> (get queries id) (#{:datomic :triplox} engine) portable-variables)
         [find-part [_ & clauses]] (split-with #(not= :where %) query)]
     (when-not query (throw (ex-info "Unknown query" {:id id})))
     (into (vec (concat find-part [:where]))

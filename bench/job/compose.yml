@@ -1,24 +1,24 @@
 services:
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    command: /data
     environment:
-      MINIO_ROOT_USER: triplox
-      MINIO_ROOT_PASSWORD: triplox123
+      RUSTFS_ACCESS_KEY: triplox
+      RUSTFS_SECRET_KEY: triplox123
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     healthcheck:
-      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
+      test: [CMD, curl, -f, http://localhost:9000/health/ready]
       interval: 2s
       timeout: 2s
       retries: 60
   createbucket:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: rustfs/rc:v0.1.36
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
     entrypoint: /bin/sh
-    command: ["-c", "mc alias set local http://minio:9000 triplox triplox123 && mc mb --ignore-existing local/job"]
+    command: ["-c", "rc alias set local http://rustfs:9000 triplox triplox123 && rc mb --ignore-existing local/job"]
   triplox:
     image: ${JOB_TRIPLOX_IMAGE:-triplox:job-benchmark}
     build:
@@ -34,5 +34,5 @@ services:
       createbucket:
         condition: service_completed_successfully
 volumes:
-  minio-data:
+  rustfs-data:
   triplox-data:
