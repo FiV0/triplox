@@ -4,7 +4,7 @@
             [job.source :as source])
   (:import [java.nio.charset StandardCharsets]
            [java.security MessageDigest]
-           [java.util HexFormat Random]))
+           [java.util HexFormat]))
 
 (def schema
   (assoc source/schema :job/id {:db/valueType :db.type/long
@@ -46,39 +46,22 @@
                   row))
           entities)))
 
-(defn retract-rows [rows]
-  (vec (for [row rows
-             [attribute value] (sort-by key (dissoc row :job/id))]
-         [:db/retract [:job/id (:job/id row)] attribute
-          (if (ref-attribute? attribute) [:job/id value] value)])))
-
-(defn year-updates [rows restore?]
-  (mapv (fn [row]
-          {:db/id (str (:job/id row)) :job/id (:job/id row)
-           :title/production-year (+ (:title/production-year row) (if restore? 0 1))})
-        rows))
-
 (defn encoded-size [value]
   (alength (.getBytes (pr-str value) StandardCharsets/UTF_8)))
 
-(defn split-batches
-  ([rows batch-size max-bytes] (split-batches rows batch-size max-bytes transaction))
-  ([rows batch-size max-bytes tx-fn]
+(defn split-batches [rows batch-size max-bytes]
   (letfn [(split [batch]
-            (if (<= (encoded-size (tx-fn batch)) max-bytes)
+            (if (<= (encoded-size (transaction batch)) max-bytes)
               [batch]
               (if (= 1 (count batch))
                 (throw (ex-info "A source row exceeds the transaction byte budget"
                                 {:id (:job/id (first batch)) :max-bytes max-bytes}))
                 (let [[left right] (split-at (quot (count batch) 2) batch)]
                   (concat (split left) (split right))))))]
-    (mapcat split (partition-all batch-size rows)))))
+    (mapcat split (partition-all batch-size rows))))
 
-(defn load-data! [directory {:keys [batch-size max-bytes seed cycles]} transact!]
-  (let [random (Random. seed)
-        capacity (* batch-size cycles)
-        pools (atom {})
-        counts (atom {})
+(defn load-data! [directory {:keys [batch-size max-bytes]} transact!]
+  (let [counts (atom {})
         transactions (atom 0)
         datoms (atom 0)
         last-tx (atom nil)]
@@ -94,36 +77,12 @@
              directory descriptor
              (fn [pending row]
                (swap! counts update table (fnil inc 0))
-               (when (or (= table :movie-companies)
-                         (and (= table :title) (:title/production-year row)))
-                 (swap! pools update table
-                        (fn [{:keys [seen rows] :or {seen 0 rows []}}]
-                          (let [seen (inc seen)
-                                index (if (< (count rows) capacity) (count rows)
-                                          (.nextLong random seen))]
-                            {:seen seen :rows (cond (< (count rows) capacity) (conj rows row)
-                                                    (< index capacity) (assoc rows index row)
-                                                    :else rows)}))))
                (let [pending (conj pending row)]
                  (if (= batch-size (count pending))
                    (do (flush! pending) []) pending))) [])]
         (when (seq remaining) (flush! remaining))))
     {:table-counts @counts :transactions @transactions :attempted-datoms @datoms
-     :last-tx @last-tx :samples (update-vals @pools :rows)}))
-
-(defn maintenance-trace [{:keys [samples]} {:keys [batch-size max-bytes cycles]}]
-  (vec
-   (mapcat
-    (fn [cycle]
-      (let [select #(->> (get samples %) (drop (* cycle batch-size)) (take batch-size))]
-        (for [[kind rows tx-fn]
-              [[:retract (select :movie-companies) retract-rows]
-               [:restore (select :movie-companies) transaction]
-               [:update (select :title) #(year-updates % false)]
-               [:restore-year (select :title) #(year-updates % true)]]
-              batch (split-batches rows batch-size max-bytes tx-fn)]
-          {:cycle cycle :kind kind :source-rows (count batch) :tx-data (tx-fn batch)})))
-    (range cycles))))
+     :last-tx @last-tx}))
 
 (defn sha256 [file]
   (let [digest (MessageDigest/getInstance "SHA-256")

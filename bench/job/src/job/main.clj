@@ -30,7 +30,7 @@
               ((:schema! engine))
               (artifacts/write-json! (io/file output "load.json")
                                      (dissoc (data/load-data! (:data-dir config) config (:transact! engine))
-                                             :last-tx :samples))
+                                             :last-tx))
               (finally ((:close! engine))))
             (runner/run! engine config))
           (artifacts/write-json! (io/file output "status.json") {:status "ok"})))
