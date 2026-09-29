@@ -48,7 +48,6 @@ write the query as
 
 ## Git
 
-Only commit and push when explicitly asked to by the user.
 End Codex-created commits with `Co-authored-by: Codex <model> <noreply@openai.com>`.
 Replace `<model>` with the model used to create the commit.
 Don't ever open the default editor for creating commit messages. Always do
