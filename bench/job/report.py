@@ -20,8 +20,11 @@ def report(root):
     manifest = read_json(root / "manifest.json")
     if manifest is None:
         raise ValueError("Missing run manifest")
+    format_version = manifest.get("format-version", 1)
+    answer_checkpoint = "final" if format_version >= 3 else "initial"
     summaries, queries, answers, mismatches, problems = [], [], {}, [], []
     configurations = []
+    incremental_verified = False
     for directory in sorted(root.iterdir()):
         config = read_json(directory / "config.json") if directory.is_dir() else None
         if config is None:
@@ -33,7 +36,7 @@ def report(root):
         resources = [json.loads(line) for line in samples_file.read_text().splitlines()] if samples_file.exists() else []
         refreshes = [e for e in events if e["phase"] == "refresh" and e["status"] == "ok"]
         first = next((e for e in events if e["phase"] == "initial"), {})
-        initial_queries = next((e for e in events if e["phase"] == "query-pass" and e["checkpoint"] == "initial"), {})
+        initial_queries = next((e for e in events if e["phase"] == "query-pass" and e["checkpoint"] == answer_checkpoint), {})
         ingestion = next((e for e in events if e["phase"] == "ingestion"), {})
         ingest_only = config.get("ingest-only", False)
         warmed = any(e["phase"] == "warmup" and e["status"] == "ok" for e in events)
@@ -45,11 +48,12 @@ def report(root):
                           "initial-ms": first.get("elapsed-ms", initial_queries.get("elapsed-ms")),
                           "initial-metric": "infrastructure check only" if ingest_only else ("ingestion + catch-up" if first else "query pass on loaded data"),
                           "ingestion-ms": ingestion.get("elapsed-ms", first.get("ingestion-ms")), "catchup-ms": first.get("catchup-ms"),
-                          "refresh-count": len(refreshes), "refresh-p50-ms": percentile(durations, .5),
-                          "refresh-p95-ms": percentile(durations, .95),
-                          "source-rows-per-second": sum(e["source-rows"] for e in refreshes) * 1000 / sum(durations) if sum(durations) else None,
                           "runner-peak-rss-bytes": max((s.get("runner-rss-bytes", 0) for s in resources), default=0),
                           "transactor-peak-rss-bytes": max((s.get("transactor-rss-bytes", 0) for s in resources), default=0)})
+        if format_version < 3:
+            summaries[-1].update({"refresh-count": len(refreshes), "refresh-p50-ms": percentile(durations, .5),
+                                  "refresh-p95-ms": percentile(durations, .95),
+                                  "source-rows-per-second": sum(e["source-rows"] for e in refreshes) * 1000 / sum(durations) if sum(durations) else None})
         answers[directory.name] = {str(p.relative_to(directory / "answers")): hashlib.sha256(p.read_bytes()).hexdigest()
                                    for p in (directory / "answers").rglob("*.edn")}
         if not ingest_only:
@@ -57,16 +61,25 @@ def report(root):
             if not selected:
                 problems.append(f"{directory.name}: missing query selection")
             trace = read_json(directory / "trace.json", {})
-            checkpoints = ["initial"] + [f"batch-{n}" for n in range(trace.get("batches", 0))]
+            checkpoints = [answer_checkpoint]
+            if format_version < 3 and config.get("workload") == "maintenance":
+                checkpoints += (["final"] if format_version >= 2 else
+                                [f"batch-{n}" for n in range(trace.get("batches", 0))])
             required = {f"{checkpoint}/{query}.edn" for checkpoint in checkpoints for query in selected}
             if set(answers[directory.name]) != required:
                 problems.append(f"{directory.name}: missing or unexpected checkpoint answers")
-            if config["workload"] == "maintenance" and (not trace or len(refreshes) != trace.get("batches")):
+            if format_version < 3 and config.get("workload") == "maintenance" and (not trace or len(refreshes) != trace.get("batches")):
                 problems.append(f"{directory.name}: incomplete maintenance trace")
             if directory.name in ("datalevin", "datomic") and not warmed:
                 problems.append(f"{directory.name}: warmup did not complete")
             if not first and not initial_queries:
-                problems.append(f"{directory.name}: initial measurement missing")
+                problems.append(f"{directory.name}: measurement missing")
+            if directory.name == "triplox-incremental" and format_version >= 2:
+                verified = {e["checkpoint"] for e in events if e["phase"] == "verification"
+                            and e["status"] == "ok" and e.get("queries") == len(selected)}
+                incremental_verified = set(checkpoints) <= verified and summaries[-1]["status"] == "ok"
+                if not incremental_verified:
+                    problems.append(f"{directory.name}: standard-query verification did not complete")
     if not summaries:
         problems.append("No engine artifacts")
     if configurations and any(c != configurations[0] for c in configurations):
@@ -83,6 +96,7 @@ def report(root):
                 mismatches.append({"answer": key, "hashes": hashes})
     compared = len(answers) > 1 and any(answers.values())
     (root / "comparison.json").write_text(json.dumps({"mismatches": mismatches, "problems": problems,
+                                                       "incremental-standard-verified": incremental_verified,
                                                        "cross-engine-verified": compared and not mismatches and not problems and all(row["status"] == "ok" for row in summaries),
                                                        "engines": list(answers)}, indent=2) + "\n")
     for filename, rows in [("summary.csv", summaries), ("queries.csv", queries)]:
@@ -94,11 +108,14 @@ def report(root):
     lines = ["# JOB results", "", f"Run: `{manifest['run-id']}`", "",
              "Datalevin and Datomic query timings exclude loading and the complete cache-warmup pass.",
              "Triplox incremental initial timings include ingestion and client-view catch-up.", "",
-             "| Engine | Status | Cache state | Initial metric | Milliseconds | Refresh p95 ms |",
-             "|---|---|---|---|---:|---:|"]
+             "| Engine | Status | Cache state | Metric | Milliseconds |",
+             "|---|---|---|---|---:|"]
     for row in summaries:
-        lines.append(f"| {row['engine']} | {row['status']} | {row['cache-state']} | {row['initial-metric']} | {row['initial-ms']} | {row['refresh-p95-ms']} |")
+        lines.append(f"| {row['engine']} | {row['status']} | {row['cache-state']} | {row['initial-metric']} | {row['initial-ms']} |")
     lines += ["", f"Cross-engine answer mismatches or missing answers: {len(mismatches)}.",
+              ("Final incremental answers match standard Triplox queries." if format_version >= 3 else
+               "Incremental answers match standard Triplox queries at the saved checkpoints.")
+              if incremental_verified else "",
               "" if compared else "Cross-engine verification was not performed: fewer than two engines supplied answers.",
               *problems,
               "", "Failed and incomplete runs are not full-suite performance results."]

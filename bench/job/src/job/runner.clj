@@ -16,8 +16,9 @@
            (.cancel task true)
            (throw (ex-info "Benchmark operation timed out" {:timeout-ms timeout-ms} error))))))
 
-(defn- query-pass! [engine executor config measured? checkpoint]
+(defn- query-pass! [engine executor config measured?]
   (let [{:keys [query-ids output timeout-ms verify-expected]} config
+        checkpoint (if measured? "final" "warmup")
         pass-start (when measured? (System/nanoTime))
         db ((:db engine))
         results
@@ -37,10 +38,10 @@
         pass-ms (when measured? (milliseconds pass-start))]
     (when measured?
       (doseq [[id rows elapsed] results]
-        (let [answer (artifacts/save-result! output checkpoint id rows)]
+        (let [answer (artifacts/save-result! output "final" id rows)]
           (artifacts/append! output (merge {:phase "query" :checkpoint checkpoint :query id
                                             :elapsed-ms elapsed :status "ok"} answer)))
-        (when (and verify-expected (= checkpoint "initial"))
+        (when verify-expected
           (artifacts/verify-upstream! output id rows)))
       (artifacts/append! output {:phase "query-pass" :checkpoint checkpoint
                                 :elapsed-ms pass-ms :status "ok"}))
@@ -48,7 +49,7 @@
 
 (defn warmup! [engine executor {:keys [output engine-name] :as config}]
   (when (#{"datalevin" "datomic"} engine-name)
-    (query-pass! engine executor config false "warmup")
+    (query-pass! engine executor config false)
     (artifacts/append! output {:phase "warmup" :status "ok"
                               :queries (count (:query-ids config))})))
 
@@ -58,15 +59,34 @@
             (let [remaining (max 0 (quot (- deadline (System/nanoTime)) 1000000))]
               [id ((:await-view! engine) view tx remaining)])) views)))
 
+(defn- verify-views! [engine executor {:keys [output timeout-ms]} checkpoint snapshots]
+  (let [db ((:db engine))]
+    (try
+      (doseq [[id {:keys [rows]}] snapshots]
+        (let [standard (artifacts/normalized
+                        (bounded executor timeout-ms #((:query engine) db id)))
+              incremental (artifacts/normalized rows)]
+          (when-not (= standard incremental)
+            (let [file (io/file output "mismatches" checkpoint (str id ".edn"))]
+              (io/make-parents file)
+              (spit file (pr-str {:standard standard :incremental incremental})))
+            (artifacts/append! output {:phase "verification" :checkpoint checkpoint
+                                      :query id :status "failed"})
+            (throw (ex-info "Incremental result differs from standard query"
+                            {:query id :checkpoint checkpoint})))))
+      (artifacts/append! output {:phase "verification" :checkpoint checkpoint
+                                :queries (count snapshots) :status "ok"})
+      (finally (when-let [close (:close-db! engine)] (close db))))))
+
 (defn- save-views! [{:keys [output verify-expected]} checkpoint snapshots]
   (doseq [[id {:keys [rows tx-key]}] snapshots]
     (let [answer (artifacts/save-result! output checkpoint id rows)]
       (artifacts/append! output (merge {:phase "view" :checkpoint checkpoint :query id
                                         :applied-tx-id (:tx-id tx-key) :status "ok"} answer)))
-    (when (and verify-expected (= checkpoint "initial"))
+    (when verify-expected
       (artifacts/verify-upstream! output id rows))))
 
-(defn run! [engine {:keys [engine-name output data-dir workload timeout-ms query-ids]
+(defn run! [engine {:keys [engine-name output data-dir timeout-ms query-ids]
                     :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
         incremental? (= engine-name "triplox-incremental")
@@ -91,39 +111,16 @@
         (artifacts/append! output {:phase "ingestion" :elapsed-ms ingestion-ms :status "ok"
                                   :transactions (:transactions loaded)})
         (artifacts/write-json! (io/file output "load.json")
-                               (dissoc loaded :samples :last-tx))
+                               (dissoc loaded :last-tx))
         (if incremental?
           (let [catchup-ms (- initial-ms ingestion-ms)]
             (artifacts/append! output {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
                                       :catchup-ms catchup-ms :elapsed-ms initial-ms
                                       :final-tx-id (:tx-id tx)})
-            (save-views! config "initial" snapshots))
+            (verify-views! engine executor config "final" snapshots)
+            (save-views! config "final" snapshots))
           (do (warmup! engine executor config)
-              (query-pass! engine executor config true "initial")))
-        (when (= workload "maintenance")
-          (let [trace (data/maintenance-trace loaded config)
-                trace-file (io/file output "trace.edn")]
-            (when (empty? trace)
-              (throw (ex-info "Maintenance needs movie_companies or dated title rows" {})))
-            (spit trace-file (pr-str trace))
-            (artifacts/write-json! (io/file output "trace.json")
-                                   {:sha256 (data/sha256 trace-file) :batches (count trace)})
-            (doseq [[index {:keys [kind cycle source-rows tx-data]}] (map-indexed vector trace)]
-              (let [checkpoint (str "batch-" index)
-                    start (System/nanoTime)
-                    tx (bounded executor timeout-ms #((:transact! engine) tx-data))
-                    tx-ms (milliseconds start)]
-                (if incremental?
-                  (let [snapshots (await-views! engine @views tx timeout-ms)
-                        elapsed (milliseconds start)]
-                    (artifacts/append! output {:phase "refresh" :checkpoint checkpoint :status "ok"
-                                              :kind kind :cycle cycle :source-rows source-rows
-                                              :transaction-ms tx-ms :elapsed-ms elapsed})
-                    (save-views! config checkpoint snapshots))
-                  (let [query-ms (query-pass! engine executor config true checkpoint)]
-                      (artifacts/append! output {:phase "refresh" :checkpoint checkpoint :status "ok"
-                                                :kind kind :cycle cycle :source-rows source-rows
-                                                :transaction-ms tx-ms :elapsed-ms (+ tx-ms query-ms)}))))))))
+              (query-pass! engine executor config true))))
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
         (.shutdownNow executor)
