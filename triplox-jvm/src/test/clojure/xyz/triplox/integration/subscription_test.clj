@@ -108,6 +108,90 @@
               [["Ivanov"] 1]]
              (take-delta! sub))))))
 
+(defn- apply-row-delta [rows delta]
+  (reduce (fn [rows [row weight]]
+            (let [n (+ (get rows row 0) weight)]
+              (if (zero? n)
+                (dissoc rows row)
+                (assoc rows row n))))
+          rows delta))
+
+(deftest indexed-priming-preserves-existing-facts-for-new-links
+  (api/transact *conn* follows-schema)
+  (api/transact *conn* [{:db/id "watcher" :name "Watcher" :follows "book"}
+                        {:db/id "book" :name "Book"}
+                        {:db/id "camera" :name "Camera"}])
+  (let [watcher (single-value '{:find [?e]
+                                :where [[?e :name "Watcher"]]})
+        book (single-value '{:find [?e]
+                             :where [[?e :name "Book"]]})
+        camera (single-value '{:find [?e]
+                               :where [[?e :name "Camera"]]})
+        query {:find ['?name]
+               :where [[watcher :follows '?item]
+                       ['?item :name '?name]]}]
+    (with-open [sub (api/subscribe *conn* query)]
+      (is (= [[["Book"] 1]] (take-priming! sub)))
+      (is (= #{["Book"]} (q query)))
+      (let [tx (api/transact *conn* [[:db/retract watcher :follows book]
+                                    [:db/add watcher :follows camera]])]
+        (is (:committed? tx))
+        (is (= [[["Book"] -1] [["Camera"] 1]] (take-delta! sub)))
+        (is (= (select-keys tx [:tx-id :system-time]) (api/tx-key sub)))
+        (is (= #{["Camera"]} (q query)))))))
+
+(deftest indexed-priming-matches-queries-through-updates
+  (api/transact *conn* [{:db/ident :tags
+                         :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/many}])
+  (let [initial-tx (api/transact *conn* [{:db/id "first" :name "Alice" :age 30}
+                                       {:db/id "bob" :name "Bob"}
+                                       {:db/id "second" :name "Alice" :age 20}
+                                       [:db/add "first" :tags "red"]
+                                       [:db/add "first" :tags "blue"]
+                                       [:db/add "second" :tags "red"]])
+        alice (single-value '{:find [?e]
+                              :where [[?e :name "Alice"]
+                                      [?e :age 30]]})
+        bob (single-value '{:find [?e]
+                            :where [[?e :name "Bob"]]})
+        other-alice (single-value '{:find [?e]
+                                    :where [[?e :name "Alice"]
+                                            [?e :age 20]]})
+        join-query '{:find [?e]
+                     :where [[?e :name "Alice"]
+                             [?e :age 30]]}
+        or-not-query '{:find [?e]
+                       :where [(or [?e :name "Alice"] [?e :name "Bob"])
+                               (not [?e :age 30])]}
+        count-query {:find ['(count ?e)]
+                     :where [['?e :tags "red"]
+                             [alice :tags '?tag]]}]
+    (is (:committed? initial-tx))
+    (with-open [join-sub (api/subscribe *conn* join-query)
+                or-not-sub (api/subscribe *conn* or-not-query)
+                count-sub (api/subscribe *conn* count-query)]
+      (let [subscriptions [[join-query join-sub (atom {})]
+                           [or-not-query or-not-sub (atom {})]
+                           [count-query count-sub (atom {})]]
+            check-results! (fn [tx]
+                             (doseq [[query sub rows] subscriptions]
+                               (swap! rows apply-row-delta (take-delta! sub))
+                               (is (= (frequencies (q query)) @rows) (pr-str query))
+                               (is (= (select-keys tx [:tx-id :system-time])
+                                      (api/tx-key sub)))))]
+        (check-results! initial-tx)
+        (doseq [ops [[[:db/add alice :age 31]
+                      [:db/add bob :name "Carol"]
+                      [:db/add other-alice :age 30]
+                      [:db/retract alice :tags "red"]]
+                     [[:db/add alice :age 30]
+                      [:db/add bob :name "Bob"]
+                      [:db/add alice :tags "green"]]]]
+          (let [tx (api/transact *conn* ops)]
+            (is (:committed? tx))
+            (check-results! tx)))))))
+
 (deftest test-basic-query-1
   (with-open [sub (api/subscribe *conn* '{:find [?name]
                                           :where [[?e :name "Ivan"]
