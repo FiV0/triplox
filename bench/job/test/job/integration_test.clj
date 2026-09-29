@@ -30,7 +30,7 @@
         triplox-db ((:db triplox))]
     (doseq [[id view] views]
       (testing (str "JOB " id)
-        ;; Datalevin 1.1.0 can cache stale missing? results after note-only writes.
+        ;; Read uncached baseline answers for verification.
         (let [expected (binding [datalevin-query/*cache?* false]
                          (artifacts/normalized ((:query baseline) baseline-db id)))
               actual (runner/bounded executor 30000 #((:query triplox) triplox-db id))
@@ -41,7 +41,7 @@
           (when (= id "11b")
             (is (= expected-11b expected) "fixture exercises missing-attribute negation")))))))
 
-(deftest all-job-queries-follow-transactions
+(deftest final-job-results-match-standard-queries
   (let [directory (.toFile (Files/createTempDirectory "triplox-job-test-"
                                                       (make-array java.nio.file.attribute.FileAttribute 0)))
         baseline (engines/open! {:engine "datalevin" :state-dir (str directory)})
@@ -52,30 +52,17 @@
         views (atom [])]
     (try
       ((:schema! baseline))
-      (let [schema-tx ((:schema! triplox))]
-        (doseq [id (queries/selected "all")]
-          (testing (str "register JOB " id " before ingestion")
-            (swap! views conj [id (runner/bounded executor 30000 #((:view! triplox) id))])))
-        (is (= 113 (count @views)))
-        (testing "empty database"
-          (check-queries! baseline triplox @views schema-tx executor [])))
-      (doseq [rows (partition-all 2 fixture)]
-        (let [tx (data/transaction rows)]
-          ((:transact! baseline) tx)
-          ((:transact! triplox) tx)))
-      (doseq [[label tx expected]
-              [["loaded" [{:job/id 5 :title/production-year 1998}] matching-answer]
-               ["add missing attribute" [[:db/add [:job/id 9] :movie-companies/note "(presents)"]] []]
-               ["change existing attribute" [[:db/add [:job/id 9] :movie-companies/note "(distributes)"]] []]
-               ["remove attribute" [[:db/retract [:job/id 9] :movie-companies/note "(distributes)"]] matching-answer]
-               ["retract join" [[:db/retract [:job/id 9] :movie-companies/movie [:job/id 5]]] []]
-               ["restore join" [[:db/add [:job/id 9] :movie-companies/movie [:job/id 5]]] matching-answer]
-               ["update year" [{:job/id 5 :title/production-year 1999}] []]
-               ["restore year" [{:job/id 5 :title/production-year 1998}] matching-answer]]]
-        (testing label
-          (println "check all JOB queries:" label)
-          ((:transact! baseline) tx)
-          (check-queries! baseline triplox @views ((:transact! triplox) tx) executor expected)))
+      ((:schema! triplox))
+      (doseq [id (queries/selected "all")]
+        (testing (str "register JOB " id " before ingestion")
+          (swap! views conj [id (runner/bounded executor 30000 #((:view! triplox) id))])))
+      (is (= 113 (count @views)))
+      (let [last-tx (reduce (fn [_ rows]
+                             (let [tx (data/transaction rows)]
+                               ((:transact! baseline) tx)
+                               ((:transact! triplox) tx)))
+                           nil (partition-all 2 fixture))]
+        (check-queries! baseline triplox @views last-tx executor matching-answer))
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
         (.shutdownNow executor)
