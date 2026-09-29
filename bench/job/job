@@ -304,7 +304,7 @@ def run(args):
                  "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
     files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
              p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "target", "__pycache__", ".cpcache"}]
-    manifest = {"format-version": 1, "run-id": run_id, "config": base,
+    manifest = {"format-version": 3, "run-id": run_id, "config": base,
                 "git-revision": capture(["git", "rev-parse", "HEAD"]),
                 "git-status": capture(["git", "status", "--short"]),
                 "tracked-diff-sha256": hashlib.sha256(capture(["git", "diff", "HEAD"]).encode()).hexdigest(),
@@ -374,12 +374,9 @@ def main():
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument("--download-data", action="store_true")
     parser.add_argument("--build-triplox", action="store_true")
-    parser.add_argument("--workload", choices=["initial", "maintenance"], default="initial")
     parser.add_argument("--queries", default="all")
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--max-bytes", type=int, default=262144)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--timeout-ms", type=int, default=600000)
     parser.add_argument("--run-timeout-seconds", type=int, default=86400)
     parser.add_argument("--heap", default="4g")
@@ -391,8 +388,8 @@ def main():
     parser.add_argument("--remove", action="store_true")
     parser.add_argument("--ingest-only", action="store_true", help="Infrastructure check without queries or performance scores")
     args = parser.parse_args()
-    if min(args.batch_size, args.max_bytes, args.cycles, args.timeout_ms) < 1:
-        parser.error("batch size, byte budget, cycles, and timeout must be positive")
+    if min(args.batch_size, args.max_bytes, args.timeout_ms) < 1:
+        parser.error("batch size, byte budget, and timeout must be positive")
     if args.command == "prepare":
         prepare(args)
     elif args.command == "test":

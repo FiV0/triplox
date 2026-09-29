@@ -26,7 +26,7 @@ cd bench/job
 ./job prepare --fixture --data-dir data/fixture --engine baselines
 ./job test
 ./job run --engine baselines --data-dir data/fixture \
-  --workload maintenance --batch-size 1 --cycles 1
+  --batch-size 1
 ```
 
 This checks both baselines, including the full cache warmup and answer
@@ -38,13 +38,13 @@ Build this checkout and check all four modes:
 ```bash
 ./job prepare --build-triplox --engine all
 ./job run --engine all --data-dir data/fixture \
-  --workload maintenance --batch-size 1 --cycles 1
+  --batch-size 1
 ```
 
 The fixture includes matches for queries 11a and 11b, whose missing-attribute
 checks translate to `(not [?mc :movie-companies/note _])`.
 
-For a focused correctness regression, start a dev server from the
+For a small fixture check of the final results, start a dev server from the
 repository root (`cargo run -- config/triplox-dev.toml`), publish this checkout's
 client, and run from this directory:
 
@@ -57,27 +57,22 @@ clojure -M:datalevin:triplox:integration-test
 Run `./job test` first to compile the CSV reader. Set `TRIPLOX_HOST` and
 `TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
 gives each connection its own in-memory database.
-It registers all 113 views before batched ingestion and compares every query's
-standard and incremental answers with the original Datalevin query at nine
-checkpoints, including the empty database. It checks view freshness even when
-answers do not change, and asserts query 11b's known answers while adding,
-changing, and retracting its optional note, retracting/restoring a join, and
-updating/restoring a year. Most other queries are empty on this small fixture;
-this validates execution and these transitions, not full IMDb answer coverage.
-The correctness oracle disables Datalevin's result cache: version 1.1.0 can
-return stale `missing?` results after an attribute-only change. Timed benchmark
-runs retain the normal cache settings described below.
+It registers all 113 views before batched ingestion, waits for the final
+loading transaction, and compares every query's incremental result with its
+standard Triplox result and the original Datalevin query. It also checks the
+known nonempty answer for query 11b. The Datalevin oracle uses uncached answers.
+Most other queries are empty on this small fixture, so this does not establish
+full IMDb answer coverage. No updates or deletions are added after loading.
 
 For the original IMDb snapshot:
 
 ```bash
 ./job prepare --download-data --data-dir data/imdb --engine all
 ./job run --engine all --data-dir data/imdb
-./job run --engine all --data-dir data/imdb --workload maintenance
 ```
 
 You can supply an existing directory containing all 21 original CSV files
-instead of downloading. Original-data runs check the initial answers against
+instead of downloading. Original-data runs check the final answers against
 the vendored Datalevin expectations. Generated fixtures carry `fixture.json`,
 which disables that check; cross-engine comparisons still run. A modified
 IMDb dataset needs its own expectations and should not be presented as the
@@ -92,12 +87,12 @@ for independent runs, retaining each run directory.
 
 ## What is measured
 
-| Mode | Initial score | Maintenance score per batch |
-|---|---|---|
-| Datalevin | Complete query pass after warmup | Transaction + complete query pass |
-| Datomic Pro Peer | Complete query pass after warmup | Transaction + complete query pass |
-| Triplox standard | Complete query pass on loaded data | Transaction + complete query pass |
-| Triplox incremental | Ingestion + final view catchup | Transaction + final view catchup |
+| Mode | Score |
+|---|---|
+| Datalevin | Complete query pass after warmup |
+| Datomic Pro Peer | Complete query pass after warmup |
+| Triplox standard | Complete query pass on loaded data |
+| Triplox incremental | Ingestion + final view catchup |
 
 Datalevin and Datomic load the entire dataset, then execute one complete pass
 of the selected queries without measuring it. Only after that pass completes
@@ -112,7 +107,7 @@ data. The last committed transaction supplies the target transaction key.
 Catchup ends when **every view has applied** through that key, including
 transactions that leave its result unchanged. Registration and schema setup
 are reported outside the score. Ingestion includes CSV parsing, transaction
-construction, sampling, and transaction acknowledgments. Result serialization
+construction and transaction acknowledgments. Result serialization
 and verification happen after timed work.
 
 This is deliberately an apples-to-pears comparison: warmed query execution on
@@ -122,22 +117,21 @@ these scores do not establish general query speedups or equal durability.
 JOB emphasizes multiway joins and optimization; the small aggregate outputs
 can also conceal substantial intermediate maintenance work.
 
-`--workload maintenance` first performs the same initial workload, then replays
-a seeded trace. Each cycle retracts sampled `movie_companies` row attributes,
-restores them, increments sampled title production years, and restores those
-years. Identity attributes remain so references stay valid. A bounded seeded
-reservoir samples the source rows; every engine constructs the same trace.
-After each transaction, standard modes recompute the entire selected suite;
-incremental mode waits for all views. There are no concurrent writes during
-checkpoint snapshots. Saved trace hashes must match before comparison.
+Once loading and catchup finish, incremental mode executes each selected
+standard Triplox query against the same loaded database and compares its rows
+with the final incremental view. This is one correctness check per query,
+outside the measured time, with no concurrent writes. A mismatch fails the run
+and saves both answers for diagnosis. This also runs with
+`--engine triplox-incremental` alone.
+
+Answers are saved once, under `answers/final/`. The benchmark ends there;
+it does not delete, restore, or modify data to test incremental maintenance.
 
 Default controls:
 
-- `--batch-size 1000`: maximum source rows per ingestion/mutation transaction.
+- `--batch-size 1000`: maximum source rows per ingestion transaction.
 - `--max-bytes 262144`: maximum serialized EDN transaction bytes; large batches
   split deterministically. This is not a wire-byte or datom-count limit.
-- `--seed 42 --cycles 10`: maintenance sampling and cycles. Small datasets can
-  yield fewer populated cycles; the report records actual batch counts.
 - `--heap 4g --transactor-heap 2g`: runner JVM and separate transactor heaps.
 - `--timeout-ms 600000`: transaction, query, registration, and view-catchup
   deadlines. Query interruption is best effort; the process exits on failure.
@@ -209,12 +203,12 @@ reports with `./job report --runs runs/<run-id>`.
   diff hash, benchmark source hashes, JVM and machine details, run status.
 - `dataset.json`: byte sizes and SHA-256 for every source CSV.
 - `<engine>/config.json`, `selection.json`, `queries.edn`: exact workload inputs.
-- `<engine>/measurements.jsonl`: raw phase/query/checkpoint observations.
+- `<engine>/measurements.jsonl`: raw phase/query timings and final verification status.
   Successful warmup has no measured durations.
-- `<engine>/answers/<checkpoint>/<query>.edn`: normalized, sorted answer sets;
-  integer types are normalized. Measurement events also contain answer hashes.
-- `<engine>/trace.edn`, `trace.json`: replayable maintenance transactions,
-  batch count, and trace checksum.
+- `<engine>/answers/final/<query>.edn`: normalized, sorted final answer sets.
+  Integer types are normalized; measurement events also contain answer hashes.
+- `<engine>/mismatches/final/<query>.edn`: standard and incremental answers
+  when their comparison fails.
 - `<engine>/load.json`, `resources.jsonl`, `disk.json`: ingestion counts,
   sampled process RSS/container statistics, and persisted state size.
   Container runs also include `containers.json` and `container-disk.json`.
@@ -222,13 +216,16 @@ reports with `./job report --runs runs/<run-id>`.
 - `<engine>/status.json`, `runner.log`, `transactor.log` or `compose.log`:
   success/failure and diagnostic evidence.
 - `summary.csv`, `queries.csv`, `summary.md`, `comparison.json`: regenerated
-  summaries, per-query timings, p50/p95 maintenance latency, source-row
-  throughput, and answer mismatches/missing checkpoints.
+  summaries, per-query timings, missing or differing final answers, and whether
+  incremental answers were verified against standard Triplox queries.
 
 The reporter fails on incomplete runs, missing warmup, incompatible workload
-configurations, differing traces, or differing/missing answers. A single
-engine run can check the original expected answers but cannot establish
-cross-engine parity. Ingestion-only reports explicitly omit query verification.
+configurations, differing/missing answers, or missing
+standard-query verification for incremental runs. A single engine run can
+check the original expected answers; an incremental run also checks standard
+Triplox queries, but neither establishes cross-engine parity on its own.
+Ingestion-only reports explicitly omit query verification. Older format-1 and format-2
+runs remain reportable using their original saved checkpoints.
 Do not combine a failed/partial run into a full-suite performance score.
 
 Keep generated data, state, downloads, and runs out of Git. For published
