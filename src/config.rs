@@ -28,6 +28,10 @@ fn default_wal_flush_interval_us() -> NonZeroU64 {
     NonZeroU64::new(200_000).unwrap()
 }
 
+fn default_cdc_poll_interval_us() -> NonZeroU64 {
+    NonZeroU64::new(100_000).unwrap()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum StorageConfig {
@@ -55,6 +59,9 @@ pub struct RemoteStorageConfig {
     /// Writer WAL flush interval in microseconds; must be positive.
     #[serde(default = "default_wal_flush_interval_us")]
     pub wal_flush_interval_us: NonZeroU64,
+    /// CDC poll interval when caught up, in microseconds; must be positive.
+    #[serde(default = "default_cdc_poll_interval_us")]
+    pub cdc_poll_interval_us: NonZeroU64,
 }
 
 impl std::fmt::Debug for RemoteStorageConfig {
@@ -267,6 +274,7 @@ mod tests {
         };
         assert_eq!(storage.region, "eu-central-1");
         assert_eq!(storage.wal_flush_interval_us.get(), 200_000);
+        assert_eq!(storage.cdc_poll_interval_us.get(), 100_000);
         assert_eq!(storage.cache_path, PathBuf::from("/tmp/triplox-disk"));
         assert_eq!(
             storage.cache_path.join("cache"),
@@ -306,6 +314,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolves_custom_cdc_poll_interval() {
+        let input = include_str!("../config/triplox-remote.toml").replacen(
+            "[storage]",
+            "[storage]\ncdc_poll_interval_us = 250",
+            1,
+        );
+        let config: Config = toml::from_str(&input).unwrap();
+        let NodeConfig::Remote { storage, .. } = config.resolve().unwrap() else {
+            panic!("expected remote node");
+        };
+        assert_eq!(storage.cdc_poll_interval_us.get(), 250);
+    }
+
+    #[test]
+    fn rejects_invalid_cdc_poll_intervals() {
+        for value in ["0", "-1", "1.5", "\"100\""] {
+            let input = include_str!("../config/triplox-remote.toml").replacen(
+                "[storage]",
+                &format!("[storage]\ncdc_poll_interval_us = {value}"),
+                1,
+            );
+            let err = toml::from_str::<Config>(&input).unwrap_err().to_string();
+            assert!(err.contains("nonzero u64"), "got: {err}");
+        }
+    }
+
     #[cfg(feature = "kafka")]
     #[test]
     fn resolves_kafka_with_topic_default() {
@@ -329,7 +364,25 @@ mod tests {
             panic!("expected kafka node");
         };
         assert_eq!(storage.bucket, "triplox-kafka");
+        assert_eq!(storage.cdc_poll_interval_us.get(), 100_000);
         assert_eq!(log.topic, "triplox-tx-log");
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn resolves_kafka_with_custom_cdc_poll_interval() {
+        let input = include_str!("../config/triplox-remote.toml")
+            .replacen("[storage]", "[storage]\ncdc_poll_interval_us = 250", 1)
+            .replace("type = \"file\"", "type = \"kafka\"")
+            .replace(
+                "path = \"/tmp/triplox-log/log\"",
+                "bootstrap_servers = \"localhost:9092\"",
+            );
+        let config: Config = toml::from_str(&input).unwrap();
+        let NodeConfig::Kafka { storage, .. } = config.resolve().unwrap() else {
+            panic!("expected kafka node");
+        };
+        assert_eq!(storage.cdc_poll_interval_us.get(), 250);
     }
 
     #[test]

@@ -25,8 +25,6 @@ use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::transaction::TxKey;
 use crate::{codec, util::concat_bytes};
 
-const CDC_POLL_INTERVAL: Duration = Duration::from_millis(200);
-
 pub(crate) fn datoms_to_tuples(
     datoms: &[Datom],
     schema: &Schema,
@@ -62,6 +60,7 @@ pub(crate) fn spawn_cdc_loop<N>(
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
+    poll_interval: Duration,
 ) -> JoinHandle<Result<()>>
 where
     N: SchemaProvider,
@@ -73,6 +72,7 @@ where
         service,
         registration_gate,
         cancel,
+        poll_interval,
     ))
 }
 
@@ -83,13 +83,14 @@ async fn run_cdc_loop<N>(
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
+    poll_interval: Duration,
 ) -> Result<()>
 where
     N: SchemaProvider,
 {
     let wal_reader = WalReader::new(object_path, object_store);
     let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), CDC_POLL_INTERVAL, cancel).await?;
+        CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
         let schema = node.schema().await;
@@ -216,6 +217,7 @@ mod tests {
             CancellationToken::new(),
             slate.object_path.clone(),
             slate.object_store.clone(),
+            Duration::from_micros(250),
         );
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -227,6 +229,7 @@ mod tests {
             service,
             Arc::new(Mutex::new(())),
             cancel,
+            Duration::from_micros(250),
         )
         .await;
 
