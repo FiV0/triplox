@@ -5,8 +5,6 @@ Datalevin, Datomic Pro Peer, Triplox standard queries, and Triplox incremental
 queries. The source, schema, numeric ID offsets, and expected answers are
 vendored; no sibling Datalevin checkout is needed. See [NOTICE.md](NOTICE.md).
 
-Triplox uses the placeholder support added in
-[PR #493](https://github.com/FiV0/triplox/pull/493) for missing-attribute checks.
 Build the server and client from this checkout before running Triplox queries.
 
 ## Prerequisites
