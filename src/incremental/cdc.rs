@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,10 +12,10 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::codec::Encode;
-use crate::inc_query::IncrementalQueryPlan;
+use crate::codec::{self, Encode};
+use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
-use crate::indexer::eav_key_to_parts;
+use crate::indexer::{aev_key_to_parts, ave_key_to_parts};
 use crate::node::SchemaProvider;
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
@@ -23,7 +23,11 @@ use crate::schema::Schema;
 use crate::slate::cdc::{CdcCursor, CdcStream};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::transaction::TxKey;
-use crate::{codec, util::concat_bytes};
+
+#[cfg(test)]
+tokio::task_local! {
+    static INITIAL_SCAN_ENTRIES: std::cell::Cell<usize>;
+}
 
 pub(crate) fn datoms_to_tuples(
     datoms: &[Datom],
@@ -128,6 +132,75 @@ pub(crate) fn tx_key_from_datoms(datoms: &[Datom]) -> Result<TxKey> {
         .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction key"))
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct InitialScan {
+    attribute: i64,
+    entity: Option<Vec<u8>>,
+    value: Option<Vec<u8>>,
+}
+
+impl InitialScan {
+    fn from_pattern(pattern: &PatternPlan) -> Self {
+        let constant = |slot: &PatternSlot| match slot {
+            PatternSlot::Constant(value) => Some(value.clone()),
+            PatternSlot::Variable(_) => None,
+        };
+        Self {
+            attribute: pattern.attribute,
+            entity: constant(&pattern.entity),
+            value: constant(&pattern.value),
+        }
+    }
+
+    fn covers(&self, other: &Self) -> bool {
+        self.attribute == other.attribute
+            && self
+                .entity
+                .as_ref()
+                .is_none_or(|e| other.entity.as_ref() == Some(e))
+            && self
+                .value
+                .as_ref()
+                .is_none_or(|v| other.value.as_ref() == Some(v))
+    }
+
+    fn prefix(&self) -> Vec<u8> {
+        let index = if self.entity.is_none() && self.value.is_some() {
+            codec::AVE
+        } else {
+            codec::AEV
+        };
+        let mut prefix = vec![index];
+        codec::encode_i64(self.attribute, &mut prefix);
+        if let Some(entity) = &self.entity {
+            prefix.extend_from_slice(entity);
+        }
+        if let Some(value) = &self.value {
+            prefix.extend_from_slice(value);
+        }
+        prefix
+    }
+}
+
+fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
+    let mut scans = plan
+        .leaf_patterns()
+        .into_iter()
+        .map(InitialScan::from_pattern)
+        .collect::<Vec<_>>();
+    scans.sort();
+    scans.dedup();
+    scans
+        .iter()
+        .filter(|scan| {
+            !scans
+                .iter()
+                .any(|other| other != *scan && other.covers(scan))
+        })
+        .cloned()
+        .collect()
+}
+
 pub(crate) async fn scan_current_triples<D>(
     db: &D,
     plan: &IncrementalQueryPlan,
@@ -136,46 +209,52 @@ pub(crate) async fn scan_current_triples<D>(
 where
     D: slatedb::DbReadOps + Sync,
 {
-    // TODO: maybe this should be become a function on IncrementalQueryPlan
-    let attributes = plan
-        .leaf_patterns()
-        .into_iter()
-        .map(|pattern| pattern.attribute)
-        .collect::<HashSet<_>>();
     let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();
-    // TODO: This needs to be done efficiently via AVE/AEV using attribute and query constants. See #329.
-    let mut iter = db
-        .scan_with_options(
-            concat_bytes(&[&[codec::EAV]])..vec![codec::EAV_END],
-            &DEFAULT_SCAN_OPTIONS,
-        )
-        .await?;
+    for scan in initial_scans(plan) {
+        let prefix = scan.prefix();
+        let mut iter = db
+            .scan_prefix_with_options(&prefix, .., &DEFAULT_SCAN_OPTIONS)
+            .await?;
 
-    while let Some(kv) = iter.next().await? {
-        let (entity, attribute, value, tx_eid, op) = eav_key_to_parts(kv.key)?;
-        if tx_eid > as_of_tx_eid || !attributes.contains(&attribute) {
-            continue;
-        }
+        while let Some(kv) = iter.next().await? {
+            #[cfg(test)]
+            let _ = INITIAL_SCAN_ENTRIES.try_with(|count| count.set(count.get() + 1));
+            let (attribute, entity, value, tx_eid, op) = if prefix[0] == codec::AVE {
+                let (attribute, value, entity, tx_eid, op) = ave_key_to_parts(kv.key)?;
+                (attribute, entity, value, tx_eid, op)
+            } else {
+                aev_key_to_parts(kv.key)?
+            };
+            if tx_eid > as_of_tx_eid {
+                continue;
+            }
 
-        let entity = match entity {
-            DataType::Long(entity) => DataType::Long(entity).encode(),
-            other => return Err(anyhow!("Expected Long entity in EAV key, got {:?}", other)),
-        };
-        match op {
-            codec::ADD | codec::RETRACT => {}
-            other => return Err(anyhow!("Unknown op byte: {}", other)),
-        }
+            let entity = match entity {
+                DataType::Long(entity) => DataType::Long(entity).encode(),
+                other => {
+                    return Err(anyhow!(
+                        "Expected Long entity in index key, got {:?}",
+                        other
+                    ))
+                }
+            };
+            match op {
+                codec::ADD | codec::RETRACT => {}
+                other => return Err(anyhow!("Unknown op byte: {}", other)),
+            }
 
-        let triple = EncodedTriple {
-            entity,
-            attribute,
-            value: value.encode(),
-        };
-        let should_replace = latest_by_triple
-            .get(&triple)
-            .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
-        if should_replace {
-            latest_by_triple.insert(triple, (tx_eid, op));
+            let triple = EncodedTriple {
+                entity,
+                attribute,
+                value: value.encode(),
+            };
+            // Overlapping scans contribute each live triple only once.
+            let should_replace = latest_by_triple
+                .get(&triple)
+                .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
+            if should_replace {
+                latest_by_triple.insert(triple, (tx_eid, op));
+            }
         }
     }
 
@@ -198,10 +277,355 @@ mod tests {
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
+    use crate::inc_query::test_support::test_schema as scan_schema;
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::partition::tx_eid_from_tx_id;
     use crate::schema::{Attribute, Schema, ValueType};
+
+    fn scan_plan(query: &str) -> IncrementalQueryPlan {
+        crate::inc_query::plan_query(&edn::parse::parse_query(query).unwrap(), &scan_schema())
+            .unwrap()
+    }
+
+    async fn write_scan_datoms(db: &slatedb::Db, tx: i64, datoms: &[Datom]) {
+        let mut batch = slatedb::WriteBatch::new();
+        crate::indexer::write_index_entries(&mut batch, datoms, &scan_schema(), tx).unwrap();
+        db.write(batch).await.unwrap();
+    }
+
+    fn scan_datom(entity: i64, attribute: edn::Keyword, value: DataType, op: DatomOp) -> Datom {
+        Datom {
+            entity,
+            attribute,
+            value,
+            op,
+        }
+    }
+
+    async fn full_eav_reference(
+        db: &slatedb::Db,
+        plan: &IncrementalQueryPlan,
+        basis: i64,
+    ) -> (Vec<Tup2<EncodedTriple, ZWeight>>, usize) {
+        let mut iter = db.scan_prefix([codec::EAV], ..).await.unwrap();
+        let mut latest = HashMap::new();
+        let mut visited = 0;
+        while let Some(kv) = iter.next().await.unwrap() {
+            visited += 1;
+            let (entity, attribute, value, tx, op) =
+                crate::indexer::eav_key_to_parts(kv.key).unwrap();
+            if tx <= basis {
+                let triple = EncodedTriple {
+                    entity: entity.encode(),
+                    attribute,
+                    value: value.encode(),
+                };
+                let version = latest.entry(triple).or_insert((tx, op));
+                *version = (*version).max((tx, op));
+            }
+        }
+        let matches = |slot: &PatternSlot, value: &[u8]| match slot {
+            PatternSlot::Variable(_) => true,
+            PatternSlot::Constant(constant) => constant == value,
+        };
+        let patterns = plan.leaf_patterns();
+        let mut triples = latest
+            .into_iter()
+            .filter_map(|(triple, (_, op))| {
+                (op == codec::ADD
+                    && patterns.iter().any(|pattern| {
+                        pattern.attribute == triple.attribute
+                            && matches(&pattern.entity, &triple.entity)
+                            && matches(&pattern.value, &triple.value)
+                    }))
+                .then_some(Tup2(triple, 1))
+            })
+            .collect::<Vec<_>>();
+        triples.sort();
+        (triples, visited)
+    }
+
+    #[tokio::test]
+    async fn initial_scans_match_history_at_each_basis() {
+        let slate = crate::slate::in_memory_slate().await;
+        let alice = scan_datom(42, kw!(:name), "Alice".into(), DatomOp::Assert);
+        let age = scan_datom(42, kw!(:age), DataType::Long(30), DatomOp::Assert);
+        write_scan_datoms(
+            &slate.db,
+            1,
+            &[
+                alice.clone(),
+                age.clone(),
+                scan_datom(43, kw!(:name), "Bob".into(), DatomOp::Assert),
+                scan_datom(
+                    42,
+                    kw!(:type),
+                    DataType::Keyword(kw!(:person)),
+                    DatomOp::Assert,
+                ),
+                scan_datom(42, kw!(:follows), DataType::Long(43), DatomOp::Assert),
+            ],
+        )
+        .await;
+        write_scan_datoms(
+            &slate.db,
+            2,
+            &[
+                Datom {
+                    op: DatomOp::Retract,
+                    ..alice.clone()
+                },
+                Datom {
+                    op: DatomOp::Retract,
+                    ..age
+                },
+                scan_datom(42, kw!(:age), DataType::Long(31), DatomOp::Assert),
+            ],
+        )
+        .await;
+        write_scan_datoms(&slate.db, 3, std::slice::from_ref(&alice)).await;
+        write_scan_datoms(
+            &slate.db,
+            4,
+            &[Datom {
+                op: DatomOp::Retract,
+                ..alice
+            }],
+        )
+        .await;
+
+        for query in [
+            r#"{:find [?e ?name]
+                 :where [[?e :name ?name]]}"#,
+            r#"{:find [?name]
+                 :where [[42 :name ?name]]}"#,
+            r#"{:find [?e]
+                 :where [[?e :name "Alice"]]}"#,
+            r#"{:find [?e]
+                 :where [[?e :age 30] [42 :name "Alice"]]}"#,
+            r#"{:find [?e ?name]
+                 :where [[?e :name "Alice"] [42 :name ?name]]}"#,
+            r#"{:find [?e]
+                 :where [(or [?e :name "Alice"] [?e :name "Bob"])
+                         (not [?e :age 30])]}"#,
+            r#"{:find [?e]
+                 :where [[?e :type :person] [?e :follows 43]]}"#,
+        ] {
+            let plan = scan_plan(query);
+            for basis in 0..=4 {
+                let actual = scan_current_triples(slate.db.as_ref(), &plan, basis)
+                    .await
+                    .unwrap();
+                let (expected, _) = full_eav_reference(&slate.db, &plan, basis).await;
+                assert_eq!(actual, expected, "query {query}, basis {basis}");
+            }
+        }
+        slate.db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn initial_scans_select_stored_triples_by_constants() {
+        let slate = crate::slate::in_memory_slate().await;
+        let datoms = [
+            scan_datom(42, kw!(:name), "Alice".into(), DatomOp::Assert),
+            scan_datom(42, kw!(:name), "Alice Jr".into(), DatomOp::Assert),
+            scan_datom(43, kw!(:name), "Alice".into(), DatomOp::Assert),
+            scan_datom(43, kw!(:name), "".into(), DatomOp::Assert),
+            scan_datom(43, kw!(:age), DataType::Long(-30), DatomOp::Assert),
+        ];
+        write_scan_datoms(&slate.db, 1, &datoms).await;
+        for (query, selected) in [
+            (
+                r#"{:find [?e]
+                  :where [[?e :name _]]}"#,
+                vec![0, 1, 2, 3],
+            ),
+            (
+                r#"{:find [?v]
+                  :where [[42 :name ?v]]}"#,
+                vec![0, 1],
+            ),
+            (
+                r#"{:find [?e]
+                  :where [[?e :name "Alice"]]}"#,
+                vec![0, 2],
+            ),
+            (
+                r#"{:find [?e]
+                  :where [[?e :age -30]
+                          [42 :name "Alice"]]}"#,
+                vec![0, 4],
+            ),
+            (
+                r#"{:find [?e ?v]
+                  :where [[?e :name "Alice"]
+                          [42 :name ?v]]}"#,
+                vec![0, 1, 2],
+            ),
+            (
+                r#"{:find [?e]
+                  :where [[?e :name ""]]}"#,
+                vec![3],
+            ),
+            (
+                r#"{:find [?e]
+                  :where [[?e :name "Ali"]]}"#,
+                vec![],
+            ),
+        ] {
+            let plan = scan_plan(query);
+            let actual = scan_current_triples(slate.db.as_ref(), &plan, 1)
+                .await
+                .unwrap();
+            let selected = selected
+                .into_iter()
+                .map(|i| datoms[i].clone())
+                .collect::<Vec<_>>();
+            let mut expected = datoms_to_tuples(&selected, &test_schema()).unwrap();
+            expected.sort();
+            assert_eq!(actual, expected, "{query}");
+        }
+        slate.db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn initial_scans_avoid_unrelated_index_entries() {
+        let slate = crate::slate::in_memory_slate().await;
+        let mut datoms = Vec::new();
+        for entity in 0..200 {
+            let name = if entity == 42 || entity == 43 {
+                "Alice".to_string()
+            } else {
+                format!("person-{entity}")
+            };
+            datoms.extend([
+                scan_datom(entity, kw!(:name), name.into(), DatomOp::Assert),
+                scan_datom(entity, kw!(:age), DataType::Long(30), DatomOp::Assert),
+                scan_datom(
+                    entity,
+                    kw!(:type),
+                    DataType::Keyword(kw!(:person)),
+                    DatomOp::Assert,
+                ),
+            ]);
+        }
+        datoms.push(scan_datom(
+            42,
+            kw!(:name),
+            "Alice Jr".into(),
+            DatomOp::Assert,
+        ));
+        write_scan_datoms(&slate.db, 1, &datoms).await;
+        for (label, query, expected_reads, expected_triples) in [
+            (
+                "attribute",
+                r#"{:find [?e]
+                              :where [[?e :name _]]}"#,
+                201,
+                201,
+            ),
+            (
+                "entity",
+                r#"{:find [?v]
+                           :where [[42 :name ?v]]}"#,
+                2,
+                2,
+            ),
+            (
+                "value",
+                r#"{:find [?e]
+                          :where [[?e :name "Alice"]]}"#,
+                2,
+                2,
+            ),
+            (
+                "full triple and age",
+                r#"{:find [?age]
+                                        :where [[42 :name "Alice"]
+                                                [42 :age ?age]]}"#,
+                2,
+                2,
+            ),
+            (
+                "overlap",
+                r#"{:find [?e ?v]
+                            :where [[?e :name "Alice"]
+                                    [42 :name ?v]]}"#,
+                4,
+                3,
+            ),
+            (
+                "covered scans",
+                r#"{:find [?e]
+                                  :where [[?e :name _]
+                                          (or [?e :name "Alice"]
+                                              [?e :name "Alice Jr"])]}"#,
+                201,
+                201,
+            ),
+        ] {
+            let plan = scan_plan(query);
+            let (actual, visited) = INITIAL_SCAN_ENTRIES
+                .scope(std::cell::Cell::new(0), async {
+                    let actual = scan_current_triples(slate.db.as_ref(), &plan, 1)
+                        .await
+                        .unwrap();
+                    (actual, INITIAL_SCAN_ENTRIES.with(std::cell::Cell::get))
+                })
+                .await;
+            let (expected, full_reads) = full_eav_reference(&slate.db, &plan, 1).await;
+            assert_eq!(actual, expected, "{label}");
+            assert_eq!(full_reads, 601);
+            assert_eq!(visited, expected_reads, "{label}");
+            assert_eq!(actual.len(), expected_triples, "{label}");
+            eprintln!(
+                "{label}: {full_reads} full-scan entries -> {visited} indexed entries, {} triples",
+                actual.len()
+            );
+        }
+        slate.db.close().await.unwrap();
+    }
+
+    #[test]
+    fn initial_scans_normalize_nested_patterns() {
+        let plan = scan_plan(
+            r#"{:find [?e]
+                :where [[?e :name _]
+                        (or [?e :name "Alice"] [?e :name "Bob"])
+                        (not [42 :name "Alice"])
+                        (not [?e :age 30])]}"#,
+        );
+        let scans = initial_scans(&plan);
+        assert_eq!(
+            scans,
+            vec![
+                InitialScan {
+                    attribute: 10,
+                    entity: None,
+                    value: None
+                },
+                InitialScan {
+                    attribute: 11,
+                    entity: None,
+                    value: Some(DataType::Long(30).encode())
+                },
+            ]
+        );
+
+        let plan = scan_plan(
+            r#"{:find [?e ?v]
+                :where [[?e :name "Alice"]
+                        [42 :name ?v]
+                        [42 :name "Alice"]
+                        [43 :name "Alice"]
+                        (not [?e :name "Alice"])]}"#,
+        );
+        let scans = initial_scans(&plan);
+        assert_eq!(scans.len(), 2);
+        assert!(!scans[0].covers(&scans[1]));
+        assert!(!scans[1].covers(&scans[0]));
+    }
 
     #[tokio::test]
     async fn cdc_loop_exits_ok_when_cancelled() {
