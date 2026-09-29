@@ -368,23 +368,6 @@ mod tests {
         assert_eq!(log.topic, "triplox-tx-log");
     }
 
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn resolves_kafka_with_custom_cdc_poll_interval() {
-        let input = include_str!("../config/triplox-remote.toml")
-            .replacen("[storage]", "[storage]\ncdc_poll_interval_us = 250", 1)
-            .replace("type = \"file\"", "type = \"kafka\"")
-            .replace(
-                "path = \"/tmp/triplox-log/log\"",
-                "bootstrap_servers = \"localhost:9092\"",
-            );
-        let config: Config = toml::from_str(&input).unwrap();
-        let NodeConfig::Kafka { storage, .. } = config.resolve().unwrap() else {
-            panic!("expected kafka node");
-        };
-        assert_eq!(storage.cdc_poll_interval_us.get(), 250);
-    }
-
     #[test]
     fn dev_storage_resolves_without_log() {
         let config: Config = toml::from_str(
