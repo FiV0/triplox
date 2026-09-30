@@ -166,6 +166,9 @@ and the image built from this checkout. Object storage, local log, cache, and
 incremental state use dedicated named volumes for each run. Only the Triplox
 client port is published, bound to localhost. The credentials in
 [config/triplox.toml](config/triplox.toml) are local benchmark defaults.
+The config sets a 100 ms CDC poll interval (server default: 200 ms); it only
+affects `triplox-incremental`, since the CDC loop starts with the first
+subscription.
 `JOB_TRIPLOX_IMAGE` overrides the server image for infrastructure diagnostics;
 container inspection records the actual image IDs. Rebuild the default image
 when the checkout changes.
