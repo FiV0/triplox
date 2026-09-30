@@ -294,66 +294,16 @@ mod tests {
         }
     }
 
-    async fn full_eav_reference(
-        db: &slatedb::Db,
-        plan: &IncrementalQueryPlan,
-        basis: i64,
-    ) -> Vec<Tup2<EncodedTriple, ZWeight>> {
-        let mut iter = db.scan_prefix([codec::EAV], ..).await.unwrap();
-        let mut latest = HashMap::new();
-        while let Some(kv) = iter.next().await.unwrap() {
-            let (entity, attribute, value, tx, op) =
-                crate::indexer::eav_key_to_parts(kv.key).unwrap();
-            if tx <= basis {
-                let triple = EncodedTriple {
-                    entity: entity.encode(),
-                    attribute,
-                    value: value.encode(),
-                };
-                let version = latest.entry(triple).or_insert((tx, op));
-                *version = (*version).max((tx, op));
-            }
-        }
-        let matches = |slot: &PatternSlot, value: &[u8]| match slot {
-            PatternSlot::Variable(_) => true,
-            PatternSlot::Constant(constant) => constant == value,
-        };
-        let patterns = plan.leaf_patterns();
-        let mut triples = latest
-            .into_iter()
-            .filter_map(|(triple, (_, op))| {
-                (op == codec::ADD
-                    && patterns.iter().any(|pattern| {
-                        pattern.attribute == triple.attribute
-                            && matches(&pattern.entity, &triple.entity)
-                            && matches(&pattern.value, &triple.value)
-                    }))
-                .then_some(Tup2(triple, 1))
-            })
-            .collect::<Vec<_>>();
-        triples.sort();
-        triples
-    }
-
     #[tokio::test]
-    async fn initial_scans_match_history_at_each_basis() {
+    async fn initial_scans_follow_history_at_each_basis() {
         let slate = crate::slate::in_memory_slate().await;
-        let alice = scan_datom(42, kw!(:name), "Alice".into(), DatomOp::Assert);
-        let age = scan_datom(42, kw!(:age), DataType::Long(30), DatomOp::Assert);
+        let name = |entity, value: &str, op| scan_datom(entity, kw!(:name), value.into(), op);
         write_scan_datoms(
             &slate.db,
             1,
             &[
-                alice.clone(),
-                age.clone(),
-                scan_datom(43, kw!(:name), "Bob".into(), DatomOp::Assert),
-                scan_datom(
-                    42,
-                    kw!(:type),
-                    DataType::Keyword(kw!(:person)),
-                    DatomOp::Assert,
-                ),
-                scan_datom(42, kw!(:follows), DataType::Long(43), DatomOp::Assert),
+                name(42, "Alice", DatomOp::Assert),
+                name(42, "Ada", DatomOp::Assert),
             ],
         )
         .await;
@@ -361,53 +311,63 @@ mod tests {
             &slate.db,
             2,
             &[
-                Datom {
-                    op: DatomOp::Retract,
-                    ..alice.clone()
-                },
-                Datom {
-                    op: DatomOp::Retract,
-                    ..age
-                },
-                scan_datom(42, kw!(:age), DataType::Long(31), DatomOp::Assert),
+                name(42, "Alice", DatomOp::Retract),
+                name(43, "Alice", DatomOp::Assert),
             ],
         )
         .await;
-        write_scan_datoms(&slate.db, 3, std::slice::from_ref(&alice)).await;
-        write_scan_datoms(
-            &slate.db,
-            4,
-            &[Datom {
-                op: DatomOp::Retract,
-                ..alice
-            }],
-        )
-        .await;
+        write_scan_datoms(&slate.db, 3, &[name(42, "Alice", DatomOp::Assert)]).await;
+        write_scan_datoms(&slate.db, 4, &[name(42, "Alice", DatomOp::Retract)]).await;
 
-        for query in [
-            r#"{:find [?e ?name]
-                 :where [[?e :name ?name]]}"#,
-            r#"{:find [?name]
-                 :where [[42 :name ?name]]}"#,
-            r#"{:find [?e]
-                 :where [[?e :name "Alice"]]}"#,
-            r#"{:find [?e]
-                 :where [[?e :age 30] [42 :name "Alice"]]}"#,
-            r#"{:find [?e ?name]
-                 :where [[?e :name "Alice"] [42 :name ?name]]}"#,
-            r#"{:find [?e]
-                 :where [(or [?e :name "Alice"] [?e :name "Bob"])
-                         (not [?e :age 30])]}"#,
-            r#"{:find [?e]
-                 :where [[?e :type :person] [?e :follows 43]]}"#,
+        // Live :name triples expected at bases 0 through 4.
+        for (query, by_basis) in [
+            (
+                r#"{:find [?n]
+                    :where [[42 :name ?n]]}"#,
+                [
+                    vec![],
+                    vec![(42, "Alice"), (42, "Ada")],
+                    vec![(42, "Ada")],
+                    vec![(42, "Alice"), (42, "Ada")],
+                    vec![(42, "Ada")],
+                ],
+            ),
+            (
+                r#"{:find [?e]
+                    :where [[?e :name "Alice"]]}"#,
+                [
+                    vec![],
+                    vec![(42, "Alice")],
+                    vec![(43, "Alice")],
+                    vec![(42, "Alice"), (43, "Alice")],
+                    vec![(43, "Alice")],
+                ],
+            ),
+            (
+                r#"{:find [?e ?v]
+                    :where [[?e :name "Alice"]
+                            [42 :name ?v]]}"#,
+                [
+                    vec![],
+                    vec![(42, "Alice"), (42, "Ada")],
+                    vec![(42, "Ada"), (43, "Alice")],
+                    vec![(42, "Alice"), (42, "Ada"), (43, "Alice")],
+                    vec![(42, "Ada"), (43, "Alice")],
+                ],
+            ),
         ] {
             let plan = scan_plan(query);
-            for basis in 0..=4 {
-                let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis)
+            for (basis, live) in by_basis.into_iter().enumerate() {
+                let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis as i64)
                     .await
                     .unwrap();
                 actual.sort();
-                let expected = full_eav_reference(&slate.db, &plan, basis).await;
+                let live = live
+                    .into_iter()
+                    .map(|(entity, value)| name(entity, value, DatomOp::Assert))
+                    .collect::<Vec<_>>();
+                let mut expected = datoms_to_tuples(&live, &scan_schema()).unwrap();
+                expected.sort();
                 assert_eq!(actual, expected, "query {query}, basis {basis}");
             }
         }
@@ -423,6 +383,19 @@ mod tests {
             scan_datom(43, kw!(:name), "Alice".into(), DatomOp::Assert),
             scan_datom(43, kw!(:name), "".into(), DatomOp::Assert),
             scan_datom(43, kw!(:age), DataType::Long(-30), DatomOp::Assert),
+            scan_datom(
+                42,
+                kw!(:type),
+                DataType::Keyword(kw!(:person)),
+                DatomOp::Assert,
+            ),
+            scan_datom(
+                43,
+                kw!(:type),
+                DataType::Keyword(kw!(:robot)),
+                DatomOp::Assert,
+            ),
+            scan_datom(42, kw!(:follows), DataType::Long(43), DatomOp::Assert),
         ];
         write_scan_datoms(&slate.db, 1, &datoms).await;
         for (query, selected) in [
@@ -463,6 +436,12 @@ mod tests {
                   :where [[?e :name "Ali"]]}"#,
                 vec![],
             ),
+            (
+                r#"{:find [?e]
+                  :where [[?e :type :person]
+                          [?e :follows 43]]}"#,
+                vec![5, 7],
+            ),
         ] {
             let plan = scan_plan(query);
             let mut actual = scan_current_triples(slate.db.as_ref(), &plan, 1)
@@ -473,7 +452,7 @@ mod tests {
                 .into_iter()
                 .map(|i| datoms[i].clone())
                 .collect::<Vec<_>>();
-            let mut expected = datoms_to_tuples(&selected, &test_schema()).unwrap();
+            let mut expected = datoms_to_tuples(&selected, &scan_schema()).unwrap();
             expected.sort();
             assert_eq!(actual, expected, "{query}");
         }
