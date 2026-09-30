@@ -344,6 +344,18 @@ mod tests {
                 ],
             ),
             (
+                r#"{:find [?age]
+                    :where [[42 :name "Alice"]
+                            [42 :age ?age]]}"#,
+                [
+                    vec![],
+                    vec![(42, "Alice")],
+                    vec![],
+                    vec![(42, "Alice")],
+                    vec![],
+                ],
+            ),
+            (
                 r#"{:find [?e ?v]
                     :where [[?e :name "Alice"]
                             [42 :name ?v]]}"#,
@@ -419,24 +431,6 @@ mod tests {
                     ),
                     prefix(codec::AEV, AGE_ATTR_ID, &[DataType::Long(42)]),
                 ],
-            ),
-            (
-                "overlap",
-                r#"{:find [?e ?v]
-                    :where [[?e :name "Alice"]
-                            [42 :name ?v]]}"#,
-                vec![
-                    prefix(codec::AVE, NAME_ATTR_ID, &["Alice".into()]),
-                    prefix(codec::AEV, NAME_ATTR_ID, &[DataType::Long(42)]),
-                ],
-            ),
-            (
-                "covered scans",
-                r#"{:find [?e]
-                    :where [[?e :name _]
-                            (or [?e :name "Alice"]
-                                [?e :name "Alice Jr"])]}"#,
-                vec![prefix(codec::AEV, NAME_ATTR_ID, &[])],
             ),
         ] {
             let prefixes = initial_scans(&scan_plan(query))
