@@ -776,14 +776,6 @@
     (api/transact *conn* [{:name "Bob" :salary 200}])
     (is (= [[["Bob"] 1]] (take-delta! sub)))))
 
-(defn- apply-row-delta [rows delta]
-  (reduce (fn [rows [row weight]]
-            (let [n (+ (get rows row 0) weight)]
-              (if (zero? n)
-                (dissoc rows row)
-                (assoc rows row n))))
-          rows delta))
-
 (deftest indexed-priming-preserves-existing-facts-for-new-links
   (api/transact *conn* follows-schema)
   (api/transact *conn* [{:db/id "alice" :name "Alice" :follows "bob"}
@@ -808,6 +800,14 @@
         (is (= [[["Erin"] 1]] (take-delta! sub)))
         (is (= (select-keys tx [:tx-id :system-time]) (api/tx-key sub)))
         (is (= #{["Dan"] ["Erin"]} (q query)))))))
+
+(defn- apply-row-delta [rows delta]
+  (reduce (fn [rows [row weight]]
+            (let [n (+ (get rows row 0) weight)]
+              (if (zero? n)
+                (dissoc rows row)
+                (assoc rows row n))))
+          rows delta))
 
 (deftest indexed-priming-matches-queries-through-updates
   (api/transact *conn* [{:db/ident :tags
