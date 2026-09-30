@@ -809,7 +809,7 @@
                 (assoc rows row n))))
           rows delta))
 
-(deftest indexed-priming-matches-queries-through-updates
+(deftest indexed-priming-facts-are-retracted-and-joined-by-updates
   (api/transact *conn* [{:db/ident :tags
                          :db/valueType :db.type/string
                          :db/cardinality :db.cardinality/many}])
@@ -827,12 +827,15 @@
         other-alice (single-value '{:find [?e]
                                     :where [[?e :name "Alice"]
                                             [?e :age 20]]})
+        ;; {alice} -> {other-alice} -> {alice other-alice}: retracts loaded alice :age 30, joins loaded other-alice :name
         join-query '{:find [?e]
                      :where [[?e :name "Alice"]
                              [?e :age 30]]}
+        ;; {other-alice bob} -> {alice} -> {bob}: retracts loaded alice :age 30 and bob :name "Bob"
         or-not-query '{:find [?e]
                        :where [(or [?e :name "Alice"] [?e :name "Bob"])
                                (not [?e :age 30])]}
+        ;; 4 -> 1 -> 2: retracts alice :tags "red", which both the AVE and AEV scans load
         count-query {:find ['(count ?e)]
                      :where [['?e :tags "red"]
                              [alice :tags '?tag]]}]
