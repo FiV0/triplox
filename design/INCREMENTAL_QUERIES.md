@@ -477,7 +477,8 @@ TOML settings:
 
   DBSP also owns one runtime worker thread per circuit. The semaphore limits
   outstanding apply jobs, not the total thread count.
-- `CDC_POLL_INTERVAL` controls WAL polling as before.
+- WAL polling uses `cdc_poll_interval_us` for remote nodes (default 200ms) and a
+  fixed 10ms for local and memory nodes.
 
 These are count limits, not byte limits. Shared transaction payloads reduce
 copying, but queue references, variable batch sizes, in-flight copies, and result

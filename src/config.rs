@@ -29,7 +29,7 @@ fn default_wal_flush_interval_us() -> NonZeroU64 {
 }
 
 fn default_cdc_poll_interval_us() -> NonZeroU64 {
-    NonZeroU64::new(100_000).unwrap()
+    NonZeroU64::new(200_000).unwrap()
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,7 +274,7 @@ mod tests {
         };
         assert_eq!(storage.region, "eu-central-1");
         assert_eq!(storage.wal_flush_interval_us.get(), 200_000);
-        assert_eq!(storage.cdc_poll_interval_us.get(), 100_000);
+        assert_eq!(storage.cdc_poll_interval_us.get(), 200_000);
         assert_eq!(storage.cache_path, PathBuf::from("/tmp/triplox-disk"));
         assert_eq!(
             storage.cache_path.join("cache"),
@@ -364,7 +364,7 @@ mod tests {
             panic!("expected kafka node");
         };
         assert_eq!(storage.bucket, "triplox-kafka");
-        assert_eq!(storage.cdc_poll_interval_us.get(), 100_000);
+        assert_eq!(storage.cdc_poll_interval_us.get(), 200_000);
         assert_eq!(log.topic, "triplox-tx-log");
     }
 
