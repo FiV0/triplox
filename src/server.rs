@@ -479,7 +479,9 @@ impl<L: TxLog + 'static> Server<L> {
 // Dev Server (per-connection in-memory nodes)
 // ---------------------------------------------------------------------------
 
-pub struct DevServer;
+pub struct DevServer {
+    incremental: crate::config::IncrementalConfig,
+}
 
 impl Default for DevServer {
     fn default() -> Self {
@@ -489,7 +491,11 @@ impl Default for DevServer {
 
 impl DevServer {
     pub fn new() -> Self {
-        DevServer
+        Self::with_incremental(crate::config::IncrementalConfig::default())
+    }
+
+    pub fn with_incremental(incremental: crate::config::IncrementalConfig) -> Self {
+        Self { incremental }
     }
 
     pub async fn listen(&self, addr: &str, token: CancellationToken) -> Result<()> {
@@ -498,13 +504,14 @@ impl DevServer {
     }
 
     pub async fn listen_on(&self, listener: TcpListener, token: CancellationToken) -> Result<()> {
+        let incremental = self.incremental;
         accept_loop(
             listener,
             token,
             "Dev HTTP",
             move |stream, _peer, conn_id, conn_token, join_set| {
                 join_set.spawn(async move {
-                    let node = Arc::new(Node::memory_node().await);
+                    let node = Arc::new(Node::memory_node_with_incremental(incremental).await);
 
                     let app_state = Arc::new(Server {
                         node: node.clone(),
