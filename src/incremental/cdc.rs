@@ -159,13 +159,16 @@ impl InitialScan {
                 .is_none_or(|v| other.value.as_ref() == Some(v))
     }
 
-    fn prefix(&self) -> Vec<u8> {
-        let index = if self.entity.is_none() && self.value.is_some() {
+    fn index(&self) -> u8 {
+        if self.entity.is_none() && self.value.is_some() {
             codec::AVE
         } else {
             codec::AEV
-        };
-        let mut prefix = vec![index];
+        }
+    }
+
+    fn prefix(&self) -> Vec<u8> {
+        let mut prefix = vec![self.index()];
         codec::encode_i64(self.attribute, &mut prefix);
         if let Some(entity) = &self.entity {
             prefix.extend_from_slice(entity);
@@ -206,17 +209,19 @@ where
 {
     let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();
     for scan in initial_scans(plan) {
-        let prefix = scan.prefix();
+        let index = scan.index();
         let mut iter = db
-            .scan_prefix_with_options(&prefix, .., &DEFAULT_SCAN_OPTIONS)
+            .scan_prefix_with_options(scan.prefix(), .., &DEFAULT_SCAN_OPTIONS)
             .await?;
 
         while let Some(kv) = iter.next().await? {
-            let (attribute, entity, value, tx_eid, op) = if prefix[0] == codec::AVE {
-                let (attribute, value, entity, tx_eid, op) = ave_key_to_parts(kv.key)?;
-                (attribute, entity, value, tx_eid, op)
-            } else {
-                aev_key_to_parts(kv.key)?
+            let (attribute, entity, value, tx_eid, op) = match index {
+                codec::AEV => aev_key_to_parts(kv.key)?,
+                codec::AVE => {
+                    let (attribute, value, entity, tx_eid, op) = ave_key_to_parts(kv.key)?;
+                    (attribute, entity, value, tx_eid, op)
+                }
+                other => unreachable!("initial scans use AEV or AVE, got index {other}"),
             };
             if tx_eid > as_of_tx_eid {
                 continue;
