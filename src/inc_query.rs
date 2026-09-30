@@ -137,6 +137,10 @@ pub(crate) mod test_support {
         edn::parse::parse_query(input).expect("query should parse")
     }
 
+    pub(crate) fn query_plan(query: &str) -> super::IncrementalQueryPlan {
+        super::plan_query(&parse_query(query), &test_schema()).expect("query should plan")
+    }
+
     pub(crate) fn test_schema() -> Schema {
         let attrs = [
             (kw!(:name), NAME_ATTR_ID, ValueType::String),

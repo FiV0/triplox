@@ -160,8 +160,9 @@ fn join_pattern_streams(
     })
 }
 
-// TODO: This filtering should happen at storage level. See #329
 // Creates the DBSP stream of rows matching one planned triple pattern.
+// Initial loads are already narrowed by storage prefix scans, but CDC deltas
+// carry every changed triple, so constants must still be checked here.
 pub(crate) fn pattern_stream(
     fact_input: &Stream<RootCircuit, OrdZSet<EncodedTriple>>,
     pattern: PatternPlan,
@@ -552,7 +553,7 @@ mod tests {
     use super::*;
     use crate::codec::Encode;
     use crate::inc_query::test_support::{
-        parse_query, test_schema, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS,
+        parse_query, query_plan, test_schema, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS,
         NAME_ATTR_ID as NAME, TYPE_ATTR_ID as TYPE,
     };
     use crate::inc_query::{plan_query, IncrementalQueryPlan, PatternSlot};
@@ -643,11 +644,6 @@ mod tests {
             value: PatternSlot::Variable("?name".to_var()),
             pattern_vars: vec!["?e".to_var(), "?name".to_var()],
         }
-    }
-
-    fn query_plan(query: &str) -> IncrementalQueryPlan {
-        let query = parse_query(query);
-        plan_query(&query, &test_schema()).expect("query should plan")
     }
 
     #[test]
