@@ -58,6 +58,16 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(report(self.root))
         self.assertTrue(json.loads((self.root / "comparison.json").read_text())["cross-engine-verified"])
 
+    def test_summary_shows_ingestion_time(self):
+        directory = self.engine("datalevin")
+        with (directory / "measurements.jsonl").open("a") as stream:
+            stream.write("\n" + json.dumps({"phase": "ingestion", "status": "ok", "elapsed-ms": 34}))
+        self.engine("datomic")
+        self.assertTrue(report(self.root))
+        summary = (self.root / "summary.md").read_text()
+        self.assertIn("| datalevin | ok | warmed | query pass on loaded data | 12 | 34 |", summary)
+        self.assertIn("| datomic | ok | warmed | query pass on loaded data | 12 | n/a |", summary)
+
     def test_mismatch_and_missing_answers_fail(self):
         self.engine("datalevin")
         directory = self.engine("datomic", "[]")
