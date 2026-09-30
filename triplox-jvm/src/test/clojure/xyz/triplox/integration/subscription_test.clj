@@ -786,28 +786,28 @@
 
 (deftest indexed-priming-preserves-existing-facts-for-new-links
   (api/transact *conn* follows-schema)
-  (api/transact *conn* [{:db/id "watcher" :name "Watcher" :follows "book"}
-                        {:db/id "book" :name "Book"}
-                        {:db/id "camera" :name "Camera"}])
+  (api/transact *conn* [{:db/id "alice" :name "Alice" :follows "bob"}
+                        {:db/id "bob" :name "Bob" :follows "dan"}
+                        {:db/id "carol" :name "Carol" :follows "erin"}
+                        {:db/id "dan" :name "Dan"}
+                        {:db/id "erin" :name "Erin"}])
 
-  (let [watcher (single-value '{:find [?e]
-                                :where [[?e :name "Watcher"]]})
-        book (single-value '{:find [?e]
-                             :where [[?e :name "Book"]]})
-        camera (single-value '{:find [?e]
-                               :where [[?e :name "Camera"]]})
+  (let [alice (single-value '{:find [?e]
+                              :where [[?e :name "Alice"]]})
+        carol (single-value '{:find [?e]
+                              :where [[?e :name "Carol"]]})
+        ;; Carol's existing :follows edge lies outside the narrowed [alice :follows ?friend] scan.
         query {:find ['?name]
-               :where [[watcher :follows '?item]
-                       ['?item :name '?name]]}]
+               :where [[alice :follows '?friend]
+                       ['?friend :follows '?fof]
+                       ['?fof :name '?name]]}]
     (with-open [sub (api/subscribe *conn* query)]
-      (is (= [[["Book"] 1]] (take-priming! sub)))
-      (is (= #{["Book"]} (q query)))
-      (let [tx (api/transact *conn* [[:db/retract watcher :follows book]
-                                     [:db/add watcher :follows camera]])]
+      (is (= [[["Dan"] 1]] (take-priming! sub)))
+      (let [tx (api/transact *conn* [[:db/add alice :follows carol]])]
         (is (:committed? tx))
-        (is (= [[["Book"] -1] [["Camera"] 1]] (take-delta! sub)))
+        (is (= [[["Erin"] 1]] (take-delta! sub)))
         (is (= (select-keys tx [:tx-id :system-time]) (api/tx-key sub)))
-        (is (= #{["Camera"]} (q query)))))))
+        (is (= #{["Dan"] ["Erin"]} (q query)))))))
 
 (deftest indexed-priming-matches-queries-through-updates
   (api/transact *conn* [{:db/ident :tags
