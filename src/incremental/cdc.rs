@@ -200,36 +200,18 @@ fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
         .collect()
 }
 
-/// Upper bound on prefix scans in flight while priming a subscription.
-const MAX_CONCURRENT_INITIAL_SCANS: usize = 8;
-
-pub(crate) async fn scan_current_triples<D>(
-    db: &D,
-    plan: &IncrementalQueryPlan,
-    as_of_tx_eid: i64,
-) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>
-where
-    D: slatedb::DbReadOps + Sync,
-{
-    let latest_by_triple = stream::iter(initial_scans(plan))
-        .map(|scan| async move { scan_latest_triples(db, &scan, as_of_tx_eid).await })
-        .buffer_unordered(MAX_CONCURRENT_INITIAL_SCANS)
-        // Overlapping scans contribute each live triple only once.
-        .try_fold(
-            HashMap::new(),
-            |mut latest_by_triple, scan_latest| async move {
-                for (triple, (tx_eid, op)) in scan_latest {
-                    keep_latest(&mut latest_by_triple, triple, tx_eid, op);
-                }
-                Ok(latest_by_triple)
-            },
-        )
-        .await?;
-
-    Ok(latest_by_triple
-        .into_iter()
-        .filter_map(|(triple, (_tx_eid, op))| (op == codec::ADD).then_some(Tup2(triple, 1)))
-        .collect())
+fn keep_latest(
+    latest_by_triple: &mut HashMap<EncodedTriple, (i64, u8)>,
+    triple: EncodedTriple,
+    tx_eid: i64,
+    op: u8,
+) {
+    let should_replace = latest_by_triple
+        .get(&triple)
+        .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
+    if should_replace {
+        latest_by_triple.insert(triple, (tx_eid, op));
+    }
 }
 
 async fn scan_latest_triples<D>(
@@ -283,18 +265,36 @@ where
     Ok(latest_by_triple)
 }
 
-fn keep_latest(
-    latest_by_triple: &mut HashMap<EncodedTriple, (i64, u8)>,
-    triple: EncodedTriple,
-    tx_eid: i64,
-    op: u8,
-) {
-    let should_replace = latest_by_triple
-        .get(&triple)
-        .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
-    if should_replace {
-        latest_by_triple.insert(triple, (tx_eid, op));
-    }
+/// Upper bound on prefix scans in flight while priming a subscription.
+const MAX_CONCURRENT_INITIAL_SCANS: usize = 8;
+
+pub(crate) async fn scan_current_triples<D>(
+    db: &D,
+    plan: &IncrementalQueryPlan,
+    as_of_tx_eid: i64,
+) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>
+where
+    D: slatedb::DbReadOps + Sync,
+{
+    let latest_by_triple = stream::iter(initial_scans(plan))
+        .map(|scan| async move { scan_latest_triples(db, &scan, as_of_tx_eid).await })
+        .buffer_unordered(MAX_CONCURRENT_INITIAL_SCANS)
+        // Overlapping scans contribute each live triple only once.
+        .try_fold(
+            HashMap::new(),
+            |mut latest_by_triple, scan_latest| async move {
+                for (triple, (tx_eid, op)) in scan_latest {
+                    keep_latest(&mut latest_by_triple, triple, tx_eid, op);
+                }
+                Ok(latest_by_triple)
+            },
+        )
+        .await?;
+
+    Ok(latest_by_triple
+        .into_iter()
+        .filter_map(|(triple, (_tx_eid, op))| (op == codec::ADD).then_some(Tup2(triple, 1)))
+        .collect())
 }
 
 #[cfg(test)]
