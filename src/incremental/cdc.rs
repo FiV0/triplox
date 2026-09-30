@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use edn::kw;
+use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
@@ -199,6 +200,9 @@ fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
         .collect()
 }
 
+/// Upper bound on prefix scans in flight while priming a subscription.
+const MAX_CONCURRENT_INITIAL_SCANS: usize = 8;
+
 pub(crate) async fn scan_current_triples<D>(
     db: &D,
     plan: &IncrementalQueryPlan,
@@ -207,59 +211,90 @@ pub(crate) async fn scan_current_triples<D>(
 where
     D: slatedb::DbReadOps + Sync,
 {
-    let mut latest_by_triple: HashMap<EncodedTriple, (i64, u8)> = HashMap::new();
-    for scan in initial_scans(plan) {
-        let index = scan.index();
-        let mut iter = db
-            .scan_prefix_with_options(scan.prefix(), .., &DEFAULT_SCAN_OPTIONS)
-            .await?;
-
-        while let Some(kv) = iter.next().await? {
-            let (attribute, entity, value, tx_eid, op) = match index {
-                codec::AEV => aev_key_to_parts(kv.key)?,
-                codec::AVE => {
-                    let (attribute, value, entity, tx_eid, op) = ave_key_to_parts(kv.key)?;
-                    (attribute, entity, value, tx_eid, op)
+    let latest_by_triple = stream::iter(initial_scans(plan))
+        .map(|scan| async move { scan_latest_triples(db, &scan, as_of_tx_eid).await })
+        .buffer_unordered(MAX_CONCURRENT_INITIAL_SCANS)
+        // Overlapping scans contribute each live triple only once.
+        .try_fold(
+            HashMap::new(),
+            |mut latest_by_triple, scan_latest| async move {
+                for (triple, (tx_eid, op)) in scan_latest {
+                    keep_latest(&mut latest_by_triple, triple, tx_eid, op);
                 }
-                other => unreachable!("initial scans use AEV or AVE, got index {other}"),
-            };
-            if tx_eid > as_of_tx_eid {
-                continue;
-            }
-
-            let entity = match entity {
-                DataType::Long(entity) => DataType::Long(entity).encode(),
-                other => {
-                    return Err(anyhow!(
-                        "Expected Long entity in index key, got {:?}",
-                        other
-                    ))
-                }
-            };
-            match op {
-                codec::ADD | codec::RETRACT => {}
-                other => return Err(anyhow!("Unknown op byte: {}", other)),
-            }
-
-            let triple = EncodedTriple {
-                entity,
-                attribute,
-                value: value.encode(),
-            };
-            // Overlapping scans contribute each live triple only once.
-            let should_replace = latest_by_triple
-                .get(&triple)
-                .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
-            if should_replace {
-                latest_by_triple.insert(triple, (tx_eid, op));
-            }
-        }
-    }
+                Ok(latest_by_triple)
+            },
+        )
+        .await?;
 
     Ok(latest_by_triple
         .into_iter()
         .filter_map(|(triple, (_tx_eid, op))| (op == codec::ADD).then_some(Tup2(triple, 1)))
         .collect())
+}
+
+async fn scan_latest_triples<D>(
+    db: &D,
+    scan: &InitialScan,
+    as_of_tx_eid: i64,
+) -> Result<HashMap<EncodedTriple, (i64, u8)>>
+where
+    D: slatedb::DbReadOps + Sync,
+{
+    let index = scan.index();
+    let mut iter = db
+        .scan_prefix_with_options(scan.prefix(), .., &DEFAULT_SCAN_OPTIONS)
+        .await?;
+
+    let mut latest_by_triple = HashMap::new();
+    while let Some(kv) = iter.next().await? {
+        let (attribute, entity, value, tx_eid, op) = match index {
+            codec::AEV => aev_key_to_parts(kv.key)?,
+            codec::AVE => {
+                let (attribute, value, entity, tx_eid, op) = ave_key_to_parts(kv.key)?;
+                (attribute, entity, value, tx_eid, op)
+            }
+            other => unreachable!("initial scans use AEV or AVE, got index {other}"),
+        };
+        if tx_eid > as_of_tx_eid {
+            continue;
+        }
+
+        let entity = match entity {
+            DataType::Long(entity) => DataType::Long(entity).encode(),
+            other => {
+                return Err(anyhow!(
+                    "Expected Long entity in index key, got {:?}",
+                    other
+                ))
+            }
+        };
+        match op {
+            codec::ADD | codec::RETRACT => {}
+            other => return Err(anyhow!("Unknown op byte: {}", other)),
+        }
+
+        let triple = EncodedTriple {
+            entity,
+            attribute,
+            value: value.encode(),
+        };
+        keep_latest(&mut latest_by_triple, triple, tx_eid, op);
+    }
+    Ok(latest_by_triple)
+}
+
+fn keep_latest(
+    latest_by_triple: &mut HashMap<EncodedTriple, (i64, u8)>,
+    triple: EncodedTriple,
+    tx_eid: i64,
+    op: u8,
+) {
+    let should_replace = latest_by_triple
+        .get(&triple)
+        .is_none_or(|(latest_tx_eid, _)| tx_eid >= *latest_tx_eid);
+    if should_replace {
+        latest_by_triple.insert(triple, (tx_eid, op));
+    }
 }
 
 #[cfg(test)]
