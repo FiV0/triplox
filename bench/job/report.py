@@ -107,11 +107,14 @@ def report(root):
             writer.writerows(rows)
     lines = ["# JOB results", "", f"Run: `{manifest['run-id']}`", "",
              "Datalevin and Datomic query timings exclude loading and the complete cache-warmup pass.",
-             "Triplox incremental initial timings include ingestion and client-view catch-up.", "",
-             "| Engine | Status | Cache state | Metric | Milliseconds |",
-             "|---|---|---|---|---:|"]
+             "Triplox incremental initial timings include ingestion and client-view catch-up.",
+             "Ingestion covers CSV parsing, transaction construction and acknowledgments;",
+             "Triplox incremental ingests with every view registered.", "",
+             "| Engine | Status | Cache state | Metric | Milliseconds | Ingestion ms |",
+             "|---|---|---|---|---:|---:|"]
     for row in summaries:
-        lines.append(f"| {row['engine']} | {row['status']} | {row['cache-state']} | {row['initial-metric']} | {row['initial-ms']} |")
+        ingestion_ms = "n/a" if row["ingestion-ms"] is None else row["ingestion-ms"]
+        lines.append(f"| {row['engine']} | {row['status']} | {row['cache-state']} | {row['initial-metric']} | {row['initial-ms']} | {ingestion_ms} |")
     lines += ["", f"Cross-engine answer mismatches or missing answers: {len(mismatches)}.",
               ("Final incremental answers match standard Triplox queries." if format_version >= 3 else
                "Incremental answers match standard Triplox queries at the saved checkpoints.")
