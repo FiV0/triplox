@@ -58,7 +58,9 @@
 (defn make-state
   "Create shared benchmark state. Thread-safe."
   []
-  {:user-counter     (AtomicLong. 0)
+  {;; procedures write through this; the live benchmark replaces it to observe each write
+   :transact         tc/transact
+   :user-counter     (AtomicLong. 0)
    :region-counter   (AtomicLong. 0)
    :category-counter (AtomicLong. 0)
    :gag-counter      (AtomicLong. 0)
@@ -87,6 +89,9 @@
 ;; ---------------------------------------------------------------------------
 ;; Helpers
 ;; ---------------------------------------------------------------------------
+
+(defn transact! [conn state tx]
+  ((:transact state) conn tx))
 
 (defn next-id [^AtomicLong counter]
   (.getAndIncrement counter))
@@ -496,7 +501,7 @@
                   :item/start-date now
                   :item/end-date (millis->instant end-ms)
                   :item/status :open}]
-    (*transact* conn (into [item-doc] image-docs))
+    (transact! conn state (into [item-doc] image-docs))
     ;; apply seller fee — read current balance then decrement
     (let [balance (or (ffirst (tc/q (tc/db conn)
                                     '{:find [?b]
@@ -581,14 +586,14 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-closed rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (*transact* conn
-        [{:item-feedback/id (next-id (:feedback-counter state))
-          :item-feedback/item-id [:item/id (:item-id item)]
-          :item-feedback/user-id [:user/id (:seller-id item)]
-          :item-feedback/buyer-id [:user/id buyer-id]
-          :item-feedback/rating (+ 1 (.nextInt rng 5))
-          :item-feedback/comment (str "Feedback " (.nextInt rng 10000))
-          :item-feedback/date (now-instant)}]))))
+      (transact! conn state
+                 [{:item-feedback/id (next-id (:feedback-counter state))
+                   :item-feedback/item-id [:item/id (:item-id item)]
+                   :item-feedback/user-id [:user/id (:seller-id item)]
+                   :item-feedback/buyer-id [:user/id buyer-id]
+                   :item-feedback/rating (+ 1 (.nextInt rng 5))
+                   :item-feedback/comment (str "Feedback " (.nextInt rng 10000))
+                   :item-feedback/date (now-instant)}]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 8: new-purchase (2%)
@@ -631,15 +636,15 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (*transact* conn
-                   [{:item-comment/id (next-id (:comment-counter state))
-                     :item-comment/item-id [:item/id (:item-id item)]
-                     :item-comment/user-id [:user/id (:seller-id item)]
-                     :item-comment/buyer-id [:user/id buyer-id]
-                     :item-comment/question (str "Question about item " (:item-id item))
-                     :item-comment/response ""
-                     :item-comment/created (now-instant)
-                     :item-comment/updated (now-instant)}]))))
+      (transact! conn state
+                 [{:item-comment/id (next-id (:comment-counter state))
+                   :item-comment/item-id [:item/id (:item-id item)]
+                   :item-comment/user-id [:user/id (:seller-id item)]
+                   :item-comment/buyer-id [:user/id buyer-id]
+                   :item-comment/question (str "Question about item " (:item-id item))
+                   :item-comment/response ""
+                   :item-comment/created (now-instant)
+                   :item-comment/updated (now-instant)}]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 10: update-item (2%)
@@ -649,9 +654,9 @@
   "Update item description."
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
-    (*transact* conn
-      [{:db/id [:item/id (:item-id item)]
-        :item/description (str "Updated description " (.nextInt rng 100000))}])))
+    (transact! conn state
+               [{:db/id [:item/id (:item-id item)]
+                 :item/description (str "Updated description " (.nextInt rng 100000))}])))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 11: get-comment (2%)
@@ -717,7 +722,7 @@
                             {:db/id [:item/id item-id]
                              :item/status :waiting-for-purchase})
                           expired)]
-        (*transact* conn tx-data)
+        (transact! conn state tx-data)
         ;; move items from open to waiting
         (doseq [[item-id seller-id end] expired]
           (let [sample (->ItemSample item-id seller-id (instant->millis end))]
