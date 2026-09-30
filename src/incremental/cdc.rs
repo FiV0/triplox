@@ -259,7 +259,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use edn::kw;
@@ -268,20 +267,14 @@ mod tests {
 
     use super::*;
     use crate::clock::st_from_unix_epoch;
-    use crate::inc_query::test_support::test_schema as scan_schema;
+    use crate::inc_query::test_support::{query_plan, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::partition::tx_eid_from_tx_id;
-    use crate::schema::{Attribute, Schema, ValueType};
-
-    fn scan_plan(query: &str) -> IncrementalQueryPlan {
-        crate::inc_query::plan_query(&edn::parse::parse_query(query).unwrap(), &scan_schema())
-            .unwrap()
-    }
 
     async fn write_scan_datoms(db: &slatedb::Db, tx: i64, datoms: &[Datom]) {
         let mut batch = slatedb::WriteBatch::new();
-        crate::indexer::write_index_entries(&mut batch, datoms, &scan_schema(), tx).unwrap();
+        crate::indexer::write_index_entries(&mut batch, datoms, &test_schema(), tx).unwrap();
         db.write(batch).await.unwrap();
     }
 
@@ -368,7 +361,7 @@ mod tests {
                 ],
             ),
         ] {
-            let plan = scan_plan(query);
+            let plan = query_plan(query);
             for (basis, live) in by_basis.into_iter().enumerate() {
                 let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis as i64)
                     .await
@@ -378,7 +371,7 @@ mod tests {
                     .into_iter()
                     .map(|(entity, value)| name(entity, value, DatomOp::Assert))
                     .collect::<Vec<_>>();
-                let mut expected = datoms_to_tuples(&live, &scan_schema()).unwrap();
+                let mut expected = datoms_to_tuples(&live, &test_schema()).unwrap();
                 expected.sort();
                 assert_eq!(actual, expected, "query {query}, basis {basis}");
             }
@@ -388,8 +381,6 @@ mod tests {
 
     #[test]
     fn initial_scans_pick_index_prefixes() {
-        use crate::inc_query::test_support::{AGE_ATTR_ID, NAME_ATTR_ID};
-
         fn prefix(index: u8, attribute: i64, parts: &[DataType]) -> Vec<u8> {
             let mut prefix = vec![index];
             codec::encode_i64(attribute, &mut prefix);
@@ -433,7 +424,7 @@ mod tests {
                 ],
             ),
         ] {
-            let prefixes = initial_scans(&scan_plan(query))
+            let prefixes = initial_scans(&query_plan(query))
                 .iter()
                 .map(InitialScan::prefix)
                 .collect::<Vec<_>>();
@@ -443,7 +434,7 @@ mod tests {
 
     #[test]
     fn initial_scans_normalize_nested_patterns() {
-        let plan = scan_plan(
+        let plan = query_plan(
             r#"{:find [?e]
                 :where [[?e :name _]
                         (or [?e :name "Alice"] [?e :name "Bob"])
@@ -455,19 +446,19 @@ mod tests {
             scans,
             vec![
                 InitialScan {
-                    attribute: 10,
+                    attribute: NAME_ATTR_ID,
                     entity: None,
                     value: None
                 },
                 InitialScan {
-                    attribute: 11,
+                    attribute: AGE_ATTR_ID,
                     entity: None,
                     value: Some(DataType::Long(30).encode())
                 },
             ]
         );
 
-        let plan = scan_plan(
+        let plan = query_plan(
             r#"{:find [?e ?v]
                 :where [[?e :name "Alice"]
                         [42 :name ?v]
@@ -512,42 +503,6 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
-    }
-
-    fn test_schema() -> Schema {
-        let name = kw!(:name);
-        let age = kw!(:age);
-        let mut ident_map = HashMap::new();
-        ident_map.insert(name.clone(), 10);
-        ident_map.insert(age.clone(), 11);
-
-        let mut entid_map = HashMap::new();
-        entid_map.insert(10, name);
-        entid_map.insert(11, age);
-
-        let mut attribute_map = HashMap::new();
-        attribute_map.insert(
-            10,
-            Attribute {
-                value_type: ValueType::String,
-                multival: true,
-                unique: None,
-            },
-        );
-        attribute_map.insert(
-            11,
-            Attribute {
-                value_type: ValueType::Long,
-                multival: true,
-                unique: None,
-            },
-        );
-
-        Schema {
-            entid_map,
-            ident_map,
-            attribute_map,
-        }
     }
 
     #[test]
@@ -615,7 +570,7 @@ mod tests {
             vec![Tup2(
                 EncodedTriple {
                     entity: DataType::Long(42).encode(),
-                    attribute: 10,
+                    attribute: NAME_ATTR_ID,
                     value: DataType::String("Alice".to_string()).encode(),
                 },
                 1,
@@ -640,7 +595,7 @@ mod tests {
             vec![Tup2(
                 EncodedTriple {
                     entity: DataType::Long(42).encode(),
-                    attribute: 11,
+                    attribute: AGE_ATTR_ID,
                     value: DataType::Long(30).encode(),
                 },
                 -1,
