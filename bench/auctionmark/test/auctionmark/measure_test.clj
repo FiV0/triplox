@@ -21,9 +21,9 @@
     (is (= 1 (:expected-deliveries (m/summary t 1))))
     (is (= :incorrect-result (-> (m/record-delivery t 1 0 {} 2000000) :errors first :error)))
     (is (= :unexpected-delta (-> t
-                                (m/record-delivery 1 0 {["new"] 1} 2000000)
-                                (m/record-delivery 1 0 {["new"] 1} 2000000)
-                                :errors first :error)))))
+                                 (m/record-delivery 1 0 {["new"] 1} 2000000)
+                                 (m/record-delivery 1 0 {["new"] 1} 2000000)
+                                 :errors first :error)))))
 
 (deftest unchanged-and-warmup-transactions-have-no-latency-samples
   (let [t (-> (m/empty-tracker)

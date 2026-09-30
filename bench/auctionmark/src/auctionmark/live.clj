@@ -296,12 +296,12 @@
   (let [u (proc/pick-random-user rng state)
         watches (filter #(= [:user/id u] (:user-watch/user-id %)) (vals (:user-watch/id model)))]
     (if (and (seq watches) (.nextBoolean rng))
-      (proc/*transact* conn [[:db/retractEntity [:user-watch/id (:user-watch/id (first watches))]]])
+      (proc/transact! conn state [[:db/retractEntity [:user-watch/id (:user-watch/id (first watches))]]])
       (when-let [item (proc/pick-random-item rng state)]
-        (proc/*transact* conn [{:user-watch/id (proc/next-id (:watch-counter state))
-                                :user-watch/user-id [:user/id u]
-                                :user-watch/item-id [:item/id (:item-id item)]
-                                :user-watch/created (proc/now-instant)}])))))
+        (proc/transact! conn state [{:user-watch/id (proc/next-id (:watch-counter state))
+                                     :user-watch/user-id [:user/id u]
+                                     :user-watch/item-id [:item/id (:item-id item)]
+                                     :user-watch/created (proc/now-instant)}])))))
 
 (defn- advance-auction!
   "Move the oldest open item to waiting-for-purchase, or the oldest waiting item to closed."
@@ -312,7 +312,7 @@
                            [:items-open :items-waiting :waiting-for-purchase])
         from-queue ^ConcurrentLinkedQueue (get state from)]
     (when-let [item (.peek from-queue)]
-      (proc/*transact* conn [{:db/id [:item/id (:item-id item)] :item/status status}])
+      (proc/transact! conn state [{:db/id [:item/id (:item-id item)] :item/status status}])
       (.remove from-queue item)
       (.add ^ConcurrentLinkedQueue (get state to) item))))
 
