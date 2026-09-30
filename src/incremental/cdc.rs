@@ -251,12 +251,10 @@ where
         }
     }
 
-    let mut triples = latest_by_triple
+    Ok(latest_by_triple
         .into_iter()
         .filter_map(|(triple, (_tx_eid, op))| (op == codec::ADD).then_some(Tup2(triple, 1)))
-        .collect::<Vec<_>>();
-    triples.sort();
-    Ok(triples)
+        .collect())
 }
 
 #[cfg(test)]
@@ -405,9 +403,10 @@ mod tests {
         ] {
             let plan = scan_plan(query);
             for basis in 0..=4 {
-                let actual = scan_current_triples(slate.db.as_ref(), &plan, basis)
+                let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis)
                     .await
                     .unwrap();
+                actual.sort();
                 let expected = full_eav_reference(&slate.db, &plan, basis).await;
                 assert_eq!(actual, expected, "query {query}, basis {basis}");
             }
@@ -466,9 +465,10 @@ mod tests {
             ),
         ] {
             let plan = scan_plan(query);
-            let actual = scan_current_triples(slate.db.as_ref(), &plan, 1)
+            let mut actual = scan_current_triples(slate.db.as_ref(), &plan, 1)
                 .await
                 .unwrap();
+            actual.sort();
             let selected = selected
                 .into_iter()
                 .map(|i| datoms[i].clone())
