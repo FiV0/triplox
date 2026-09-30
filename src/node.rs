@@ -32,6 +32,7 @@ pub use triplox_client::node::{
 };
 pub use triplox_client::transaction::{TransactionResult, TxKey};
 
+const DEFAULT_LOCAL_CDC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Node<L: TxLog> {
@@ -59,6 +60,7 @@ impl<L: TxLog> Node<L> {
         slate: SlateComponents,
         log: Arc<L>,
         incremental_storage_path: PathBuf,
+        cdc_poll_interval: Duration,
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
@@ -93,6 +95,7 @@ impl<L: TxLog> Node<L> {
             subscription.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
+            cdc_poll_interval,
         );
 
         // Wait for catch-up to complete if there are un-indexed transactions
@@ -134,6 +137,7 @@ impl Node<MemoryLog> {
             subscription.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
+            DEFAULT_LOCAL_CDC_POLL_INTERVAL,
         );
 
         Node {
@@ -152,9 +156,10 @@ impl Node<FileLog> {
         slate: SlateComponents,
         log_file: &Path,
         incremental_storage_path: PathBuf,
+        cdc_poll_interval: Duration,
     ) -> Result<Self, Error> {
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
-        Self::from_slate_and_tx_log(slate, log, incremental_storage_path).await
+        Self::from_slate_and_tx_log(slate, log, incremental_storage_path, cdc_poll_interval).await
     }
 
     pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
@@ -167,7 +172,13 @@ impl Node<FileLog> {
         {
             std::fs::create_dir_all(parent)?;
         }
-        Self::from_slate_and_log(slate, log_path, storage_path.join("dbsp")).await
+        Self::from_slate_and_log(
+            slate,
+            log_path,
+            storage_path.join("dbsp"),
+            DEFAULT_LOCAL_CDC_POLL_INTERVAL,
+        )
+        .await
     }
 
     pub async fn remote_node(
@@ -192,7 +203,13 @@ impl Node<FileLog> {
             Duration::from_micros(storage.wal_flush_interval_us.get()),
         )
         .await?;
-        Self::from_slate_and_log(slate, log_path, storage.cache_path.join("dbsp")).await
+        Self::from_slate_and_log(
+            slate,
+            log_path,
+            storage.cache_path.join("dbsp"),
+            Duration::from_micros(storage.cdc_poll_interval_us.get()),
+        )
+        .await
     }
 }
 
@@ -215,7 +232,13 @@ impl Node<KafkaLog> {
         )
         .await?;
         let log = Arc::new(KafkaLog::new(&log.bootstrap_servers, log.topic.clone()).await?);
-        Self::from_slate_and_tx_log(slate, log, storage.cache_path.join("dbsp")).await
+        Self::from_slate_and_tx_log(
+            slate,
+            log,
+            storage.cache_path.join("dbsp"),
+            Duration::from_micros(storage.cdc_poll_interval_us.get()),
+        )
+        .await
     }
 }
 

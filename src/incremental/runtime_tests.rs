@@ -135,6 +135,7 @@ impl Fixture {
             commands,
             cdc_object_path: "/test_retirement".into(),
             cdc_object_store: Arc::new(slatedb::object_store::memory::InMemory::new()),
+            cdc_poll_interval: Duration::from_millis(10),
             cancel: self.inner.cancel.clone(),
             cdc_task: Arc::new(StdMutex::new(None)),
             registration_gate: Arc::new(Mutex::new(())),

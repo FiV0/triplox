@@ -132,6 +132,7 @@ pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
     cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
+    cdc_poll_interval: Duration,
     cancel: CancellationToken,
     cdc_task: Arc<StdMutex<Option<JoinHandle<Result<()>>>>>,
     registration_gate: Arc<Mutex<()>>,
@@ -147,12 +148,14 @@ impl IncrementalQueryService {
         cancel: CancellationToken,
         cdc_object_path: String,
         cdc_object_store: Arc<dyn ObjectStore>,
+        cdc_poll_interval: Duration,
     ) -> Self {
         Self::new_with_options(
             storage_root,
             cancel,
             cdc_object_path,
             cdc_object_store,
+            cdc_poll_interval,
             IncrementalQueryOptions::default(),
         )
     }
@@ -162,6 +165,7 @@ impl IncrementalQueryService {
         cancel: CancellationToken,
         cdc_object_path: String,
         cdc_object_store: Arc<dyn ObjectStore>,
+        cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
     ) -> Self {
         let cancel = cancel.child_token();
@@ -190,6 +194,7 @@ impl IncrementalQueryService {
             commands: sender,
             cdc_object_path,
             cdc_object_store,
+            cdc_poll_interval,
             cancel,
             cdc_task: Arc::new(StdMutex::new(None)),
             registration_gate: Arc::new(Mutex::new(())),
@@ -234,6 +239,7 @@ impl IncrementalQueryService {
             self.clone(),
             self.registration_gate.clone(),
             self.cancel.clone(),
+            self.cdc_poll_interval,
         );
         *cdc_task = Some(handle);
     }
@@ -694,6 +700,7 @@ mod tests {
             CancellationToken::new(),
             "/test_circuit_runtime".to_owned(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
         )
     }
 
@@ -827,6 +834,7 @@ mod tests {
             CancellationToken::new(),
             "/test_history".into(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
                 max_concurrent_steps: NonZeroUsize::MIN,
@@ -899,6 +907,7 @@ mod tests {
             CancellationToken::new(),
             "/test_incremental_cdc_error".to_string(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
         );
         let handle: JoinHandle<Result<()>> = tokio::spawn(async { Err(anyhow!("cdc failed")) });
         *service.cdc_task.lock().unwrap() = Some(handle);
@@ -919,6 +928,7 @@ mod tests {
             CancellationToken::new(),
             "/test_incremental_cdc_join_error".to_string(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
         );
         let handle: JoinHandle<Result<()>> = tokio::spawn(async {
             panic!("cdc task panic");
@@ -942,6 +952,7 @@ mod tests {
             CancellationToken::new(),
             "/test_incremental_shutdown_cdc_error".to_string(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
         );
         let _subscription = service
             .register_prepared_query(
@@ -987,6 +998,7 @@ mod tests {
             CancellationToken::new(),
             "/test_incremental_registration_gate".to_string(),
             Arc::new(InMemory::new()),
+            Duration::from_millis(10),
         );
         let query_tx_key = test_tx_key_with_tx_id(1);
         let apply_tx_key = test_tx_key_with_tx_id(2);
