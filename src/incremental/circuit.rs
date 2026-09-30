@@ -553,10 +553,10 @@ mod tests {
     use super::*;
     use crate::codec::Encode;
     use crate::inc_query::test_support::{
-        parse_query, query_plan, test_schema, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS,
-        NAME_ATTR_ID as NAME, TYPE_ATTR_ID as TYPE,
+        query_plan, AGE_ATTR_ID as AGE, FOLLOWS_ATTR_ID as FOLLOWS, NAME_ATTR_ID as NAME,
+        TYPE_ATTR_ID as TYPE,
     };
-    use crate::inc_query::{plan_query, IncrementalQueryPlan, PatternSlot};
+    use crate::inc_query::{IncrementalQueryPlan, PatternSlot};
     use crate::ops::{DataType, Entid};
 
     fn build_pattern_circuit(
