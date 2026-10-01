@@ -494,6 +494,8 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
         },
         StorageOptions {
             min_storage_bytes: Some(0),
+            // Disable Bloom filters for now to make circuit memory easier to bound.
+            bloom_false_positive_rate: Some(0.0),
             ..StorageOptions::default()
         },
     )
