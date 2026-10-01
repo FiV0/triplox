@@ -1,6 +1,6 @@
 [toolchain]
-# Pinned to a known-good stable. rustc 1.97.0 (2026-07-07) ICEs while
+# DBSP requires Rust 1.96.1. rustc 1.97.0 (2026-07-07) ICEs while
 # compiling the `dbsp` dependency (vtable-slot resolution for
 # StarJoinFuncTrait / dyn_clone::DynClone). Unpin once a fixed rustc ships.
-channel = "1.95.0"
+channel = "1.96.1"
 components = ["rustfmt", "clippy", "rust-analyzer"]

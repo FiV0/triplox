@@ -35,6 +35,7 @@ type AggregateStream = Stream<RootCircuit, OrdIndexedZSet<EncodedRow, AggregateO
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
     thiserror::Error,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
@@ -68,6 +69,7 @@ pub(in crate::incremental) enum AggregateError {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 pub(super) enum AggregateOutput {
@@ -111,6 +113,7 @@ fn empty_global_aggregate(func: &AggregateFunc) -> Option<AggregateOutput> {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 struct SumValue {
@@ -132,6 +135,7 @@ struct SumValue {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 enum DbspSum {
@@ -248,6 +252,7 @@ impl MulByRef<ZWeight> for DbspSum {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 struct AverageValue {
@@ -268,6 +273,7 @@ struct AverageValue {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 enum DbspAverage {
@@ -374,6 +380,7 @@ impl MulByRef<ZWeight> for DbspAverage {
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 // This is a giant hack. We should add proper type analysis to the where stream outputs and

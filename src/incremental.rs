@@ -72,6 +72,7 @@ pub(crate) type EncodedRow = Vec<EncodedValue>;
     rkyv::Serialize,
     rkyv::Deserialize,
     feldera_macros::IsNone,
+    feldera_macros::OrdRepr,
 )]
 #[archive_attr(derive(Eq, PartialEq, Ord, PartialOrd))]
 pub(crate) struct EncodedTriple {

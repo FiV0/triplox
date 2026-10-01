@@ -55,7 +55,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -1589,9 +1589,9 @@ dependencies = [
 
 [[package]]
 name = "dbsp"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09c0655fcdd8c3f7b31837ce5fb462a1ce507373fe26de0a16265d7fa4de85f"
+checksum = "3ec1476f32ece0aff8f9668e90bc8fbb5a40f9aa9997b7f4fa05492cc0f93859"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1606,11 +1606,11 @@ dependencies = [
  "derive_more 1.0.0",
  "dyn-clone",
  "enum-map",
- "fastbloom",
  "fdlimit",
  "feldera-buffer-cache",
  "feldera-ir",
  "feldera-macros",
+ "feldera-modular-bloom",
  "feldera-samply",
  "feldera-size-of",
  "feldera-storage",
@@ -1623,6 +1623,7 @@ dependencies = [
  "inventory",
  "itertools 0.14.0",
  "libc",
+ "lz4_flex",
  "memory-stats",
  "metrics",
  "mimalloc-rust-sys",
@@ -1658,6 +1659,7 @@ dependencies = [
  "uuid",
  "xxhash-rust",
  "zip",
+ "zstd 0.12.4",
 ]
 
 [[package]]
@@ -1956,18 +1958,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastbloom"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7f34442dbe69c60fe8eaf58a8cafff81a1f278816d8ab4db255b3bef4ac3c4"
-dependencies = [
- "getrandom 0.3.4",
- "libm",
- "rand 0.9.5",
- "siphasher",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1985,9 +1975,9 @@ dependencies = [
 
 [[package]]
 name = "feldera-buffer-cache"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97c5f55f65f244aef2160852129816b5a84f60ab0fead7ae7a1c20dc454fcc5a"
+checksum = "1b9d8fe051bc5ac8a9ddacabc0f59ceeda7f89a8c83da2b4780dc2675e64f625"
 dependencies = [
  "enum-map",
  "feldera-types",
@@ -1998,9 +1988,9 @@ dependencies = [
 
 [[package]]
 name = "feldera-ir"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02587674d5579bc1453090122ba30698c0054714e7d56f30f1e4b02c38d6af81"
+checksum = "4f2800e02c88b6b016c9ef7e1a3420604a345a2746b49183d1022c7c7d175fa5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2010,9 +2000,9 @@ dependencies = [
 
 [[package]]
 name = "feldera-macros"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e783ec2be9e54a502486b6836b594568a4713e1adca44ee19a4c8e631978004a"
+checksum = "58ab234cfb960173ee4fa514676422a9c011a37e5f4a0b44c963b94849a01aa5"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -2021,10 +2011,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "feldera-samply"
-version = "0.337.0"
+name = "feldera-modular-bloom"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43b0c52ca3103fe3e0b2b188ece46bbf1d7a78e3e263d49149f9bac758ec264a"
+checksum = "02139d104294754efa1aadd0fff21ba33e3a07e8eaa56a8f7f80b6f704840b5d"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "feldera-samply"
+version = "0.358.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e549e80bc2d59d3c6b04d4ed6e9255936c572458bfa0f323d2b13d46c3f8e71b"
 dependencies = [
  "crossbeam",
  "feldera-size-of",
@@ -2057,9 +2056,9 @@ dependencies = [
 
 [[package]]
 name = "feldera-storage"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753ef88e72e82de309fc62bd2bbe5f29fc21a924a2b98779ff0de3c3f4e2161c"
+checksum = "5137d6473635b31aae26f14969f776a2bd65892d4d73ed9e531b32c7c8609219"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -2082,9 +2081,9 @@ dependencies = [
 
 [[package]]
 name = "feldera-types"
-version = "0.337.0"
+version = "0.358.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d541601630d8fd5eba2aa47b887b86dd82878d8b4c9a69b72d079694b2bf1502"
+checksum = "7979793eec8502c0dac9ecfb431afe34c33b3f4ddc50e93672c426e25a5c22e9"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2289,7 +2288,7 @@ dependencies = [
  "serde",
  "tracing",
  "twox-hash",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -3233,12 +3232,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "libm"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
-
-[[package]]
 name = "libz-sys"
 version = "1.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3336,6 +3329,12 @@ dependencies = [
  "cc",
  "libc",
 ]
+
+[[package]]
+name = "lz4_flex"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ef0d4ed8669f8f8826eb00dc878084aa8f253506c4fd5e8f58f5bce72ddb97e"
 
 [[package]]
 name = "lzma-rust2"
@@ -6753,7 +6752,7 @@ dependencies = [
  "time",
  "zeroize",
  "zopfli",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -6782,11 +6781,30 @@ dependencies = [
 
 [[package]]
 name = "zstd"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a27595e173641171fc74a1232b7b1c7a7cb6e18222c11e9dfb9888fa424c53c"
+dependencies = [
+ "zstd-safe 6.0.6",
+]
+
+[[package]]
+name = "zstd"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.2.4",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "6.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee98ffd0b48ee95e6c5168188e44a54550b1564d9d530ee21d5f0eaed1069581"
+dependencies = [
+ "libc",
+ "zstd-sys",
 ]
 
 [[package]]
