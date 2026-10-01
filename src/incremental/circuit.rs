@@ -514,13 +514,20 @@ impl QueryCircuit {
     // Builds a DBSP circuit for one incremental query plan.
     pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
         let config = storage_circuit_config(storage_path)?;
-        let (handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
+        let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
             let stream = query_find_stream(where_stream, &plan.find_plan);
             Ok((handle, stream.output()))
         })
         .map_err(anyhow::Error::from)?;
+
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let profile = handle.graph_profile()?;
+            for graph in &profile.worker_graphs {
+                tracing::debug!("DBSP circuit:\n{graph}");
+            }
+        }
 
         Ok(Self {
             handle,
