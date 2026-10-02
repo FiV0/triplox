@@ -101,6 +101,9 @@
       (let [start (System/nanoTime)
             loaded (data/load-data! data-dir config
                                     #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
+            _ (when-let [await-tx! (:await-tx! engine)]
+                (when (pos? (:transactions loaded))
+                  (await-tx! (:last-tx loaded))))
             ingestion-ms (milliseconds start)
             tx (:last-tx loaded)
             snapshots (when (and incremental? (pos? (:transactions loaded)))
