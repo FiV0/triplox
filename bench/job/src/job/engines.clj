@@ -43,16 +43,22 @@
                       (when-not (:committed? result)
                         (throw (ex-info "Triplox transaction rejected" result)))
                       (select-keys result [:tx-id :system-time])))
-        await-tx! (fn [tx]
+        await-tx! (fn [tx timeout-ms]
                     ;; Opening a db as of `tx` waits until `tx` is indexed, but the server
-                    ;; gives up after its own timeout; retry those until the backlog drains.
-                    (let [db (loop []
+                    ;; gives up after its own timeout; retry those until the backlog drains
+                    ;; or our own deadline passes.
+                    (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))
+                          db (loop []
                                (let [result (try ((api "db") conn tx)
                                                  (catch Exception e
                                                    (if (some-> (ex-message e) (.contains "was not indexed within"))
                                                      ::not-indexed
                                                      (throw e))))]
-                                 (if (= ::not-indexed result) (recur) result)))
+                                 (cond
+                                   (not= ::not-indexed result) result
+                                   (< (System/nanoTime) deadline) (recur)
+                                   :else (throw (ex-info "Triplox transaction was not indexed in time"
+                                                         {:tx tx :timeout-ms timeout-ms})))))
                           rejected ((api "q") db '[:find ?tx ?error :where [?tx :db/txError ?error]])]
                       (when (seq rejected)
                         (throw (ex-info "Triplox transactions rejected"
