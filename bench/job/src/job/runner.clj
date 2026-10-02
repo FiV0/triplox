@@ -86,6 +86,13 @@
     (when verify-expected
       (artifacts/verify-upstream! output id rows))))
 
+;; Engines that submit transactions asynchronously must wait for the last one to be
+;; indexed before ingestion counts as finished.
+(defn await-loaded! [engine loaded timeout-ms]
+  (when-let [await-tx! (:await-tx! engine)]
+    (when (pos? (:transactions loaded))
+      (await-tx! (:last-tx loaded) timeout-ms))))
+
 (defn run! [engine {:keys [engine-name output data-dir timeout-ms query-ids]
                     :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
@@ -101,9 +108,7 @@
       (let [start (System/nanoTime)
             loaded (data/load-data! data-dir config
                                     #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
-            _ (when-let [await-tx! (:await-tx! engine)]
-                (when (pos? (:transactions loaded))
-                  (await-tx! (:last-tx loaded))))
+            _ (await-loaded! engine loaded timeout-ms)
             ingestion-ms (milliseconds start)
             tx (:last-tx loaded)
             snapshots (when (and incremental? (pos? (:transactions loaded)))

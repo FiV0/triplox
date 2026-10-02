@@ -28,9 +28,9 @@
           (if (:ingest-only config)
             (try
               ((:schema! engine))
-              (artifacts/write-json! (io/file output "load.json")
-                                     (dissoc (data/load-data! (:data-dir config) config (:transact! engine))
-                                             :last-tx))
+              (let [loaded (data/load-data! (:data-dir config) config (:transact! engine))]
+                (runner/await-loaded! engine loaded (:timeout-ms config))
+                (artifacts/write-json! (io/file output "load.json") (dissoc loaded :last-tx)))
               (finally ((:close! engine))))
             (runner/run! engine config))
           (artifacts/write-json! (io/file output "status.json") {:status "ok"})))
