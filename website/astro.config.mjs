@@ -50,6 +50,7 @@ export default defineConfig({
         starlightThemeBlack({
           navLinks: [
             { label: 'Docs', link: '/getting-started/introduction/' },
+            { label: 'Rationale', link: '/rationale/' },
             { label: 'Blog', link: '/blog/' },
           ],
           footerText: '',
@@ -62,6 +63,7 @@ export default defineConfig({
           label: 'Getting Started',
           items: [
             { label: 'Introduction', slug: 'getting-started/introduction' },
+            { label: 'Rationale', slug: 'rationale' },
             { label: 'Quick Start', slug: 'getting-started/quick-start' },
             { label: 'Architecture', slug: 'getting-started/architecture' },
             { label: 'Concepts', slug: 'getting-started/concepts' },
