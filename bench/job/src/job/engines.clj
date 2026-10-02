@@ -42,9 +42,24 @@
                     (let [result ((api "transact") conn tx)]
                       (when-not (:committed? result)
                         (throw (ex-info "Triplox transaction rejected" result)))
-                      (select-keys result [:tx-id :system-time])))]
+                      (select-keys result [:tx-id :system-time])))
+        await-tx! (fn [tx]
+                    ;; Opening a db as of `tx` waits until `tx` is indexed, but the server
+                    ;; gives up after its own timeout; retry those until the backlog drains.
+                    (let [db (loop []
+                               (let [result (try ((api "db") conn tx)
+                                                 (catch Exception e
+                                                   (if (some-> (ex-message e) (.contains "was not indexed within"))
+                                                     ::not-indexed
+                                                     (throw e))))]
+                                 (if (= ::not-indexed result) (recur) result)))
+                          rejected ((api "q") db '[:find ?tx ?error :where [?tx :db/txError ?error]])]
+                      (when (seq rejected)
+                        (throw (ex-info "Triplox transactions rejected"
+                                        {:count (count rejected) :first (first rejected)})))))]
     {:schema! #(transact! (data/schema-tx :triplox))
-     :transact! transact!
+     :transact! #((api "submit-tx") conn %)
+     :await-tx! await-tx!
      :db #((api "db") conn)
      :query (fn [db id] ((api "q") db (queries/translate id :triplox)))
      :view! (fn [id] ((view "->view") conn (queries/translate id :triplox)))
