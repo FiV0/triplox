@@ -4,7 +4,7 @@ use crate::transaction::TxKey;
 use anyhow::{Context, Result};
 use log::warn;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, Mutex};
 
@@ -73,7 +73,8 @@ fn read_records_blocking(
     after_tx_id: Option<TxId>,
     limit: u16,
 ) -> Result<Vec<Record>> {
-    let mut file = OpenOptions::new().read(true).open(path)?;
+    // bincode reads Vec<u8> byte by byte; unbuffered that's one syscall per byte.
+    let mut file = BufReader::new(OpenOptions::new().read(true).open(path)?);
     let mut records = Vec::new();
 
     match after_tx_id {
