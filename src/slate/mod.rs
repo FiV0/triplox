@@ -75,7 +75,7 @@ pub async fn in_memory_slate() -> SlateComponents {
                 flush_interval: Some(DEFAULT_LOCAL_WAL_FLUSH_INTERVAL),
                 ..Settings::default()
             })
-            .with_db_cache(default_db_cache())
+            .with_db_cache(default_db_cache(), 0)
             .build()
             .await
             .unwrap(),
@@ -108,7 +108,7 @@ pub async fn local_slate(root_path: &Path) -> SlateComponents {
                 flush_interval: Some(DEFAULT_LOCAL_WAL_FLUSH_INTERVAL),
                 ..Settings::default()
             })
-            .with_db_cache(default_db_cache())
+            .with_db_cache(default_db_cache(), 0)
             .build()
             .await
             .unwrap(),
@@ -167,7 +167,7 @@ pub async fn remote_slate(
     let db = Arc::new(
         Db::builder("triplox", object_store.clone())
             .with_settings(settings)
-            .with_db_cache(default_db_cache())
+            .with_db_cache(default_db_cache(), 0)
             .build()
             .await?,
     );
@@ -197,4 +197,5 @@ pub const DEFAULT_SCAN_OPTIONS: ScanOptions = ScanOptions {
     max_fetch_tasks: 1,
     order: slatedb::IterationOrder::Ascending,
     filter_context: None,
+    tracing_options: None,
 };
