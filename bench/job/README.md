@@ -19,6 +19,27 @@ implicitly.
 Run commands from this directory. Paths supplied to the launcher resolve from
 your shell's working directory.
 
+### Separate filesystems for Triplox runs
+
+Triplox runs keep RustFS's data and the SlateDB disk cache on their own
+loop-mounted ext4 filesystems, so their writes do not share a journal or
+page-cache writeback with the Triplox file log, which stays on the root
+filesystem. Without this, every file log fsync can wait behind gigabytes of
+RustFS and cache writes. Create and mount the images once per boot:
+
+```bash
+sudo ./disks setup    # 70G rustfs.img + 20G slatedb-cache.img under disks.d/
+./disks status
+```
+
+Sizes can be changed on first setup with `JOB_RUSTFS_DISK_SIZE` and
+`JOB_SLATEDB_CACHE_DISK_SIZE`. The images are preallocated, and the loop devices
+use direct I/O. `./job` refuses to start Triplox runs without the mounts and
+records them in `<engine>/disks.json`; `./job down --remove` deletes the run's
+directories on them. `sudo ./disks teardown [--delete]` unmounts the images (and
+deletes them). The filesystems still share the physical drive, so a device cache
+flush is not isolated; use separate drives for full isolation.
+
 ```bash
 cd bench/job
 ./job prepare --fixture --data-dir data/fixture --engine baselines

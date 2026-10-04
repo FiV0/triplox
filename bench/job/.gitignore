@@ -5,3 +5,4 @@
 /target/
 /.cpcache/
 __pycache__/
+/disks.d/

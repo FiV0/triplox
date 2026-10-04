@@ -22,6 +22,14 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
+# Loop-mounted filesystems created by ./disks, keyed by the compose variable they back.
+DISK_MOUNTS = {"JOB_RUSTFS_DIR": ROOT / "disks.d/mnt/rustfs",
+               "JOB_SLATEDB_CACHE_DIR": ROOT / "disks.d/mnt/slatedb-cache"}
+
+
+def triplox_environment(config):
+    return dict(os.environ, JOB_TRIPLOX_PORT=str(config["port"]),
+                **{variable: str(mount / config["project"]) for variable, mount in DISK_MOUNTS.items()})
 DATOMIC_VERSION = "1.0.7705"
 ENGINES = ["datalevin", "datomic", "triplox-standard", "triplox-incremental"]
 TABLES = "comp_cast_type company_type kind_type link_type role_type info_type movie_link aka_name aka_title company_name complete_cast keyword char_name movie_companies movie_info movie_info_idx movie_keyword name person_info title cast_info".split()
@@ -125,7 +133,9 @@ def prepare(args):
                  "publishToMavenLocal", "-x", "test", "-PtriploxVersion=0.1.0-job-benchmark",
                  "-PsignAllPublications=false"])
         command(["docker", "compose", "-f", ROOT / "compose.yml", "build",
-                 "--build-arg", f"GIT_SHA={capture(['git', 'rev-parse', 'HEAD'])}", "triplox"])
+                 "--build-arg", f"GIT_SHA={capture(['git', 'rev-parse', 'HEAD'])}", "triplox"],
+                # The bind-mount directories are only needed to run, not to build.
+                env=dict(os.environ, **{variable: "/unused" for variable in DISK_MOUNTS}))
 
 
 def wait_port(port, process=None, timeout=120):
@@ -175,7 +185,19 @@ def start_services(config):
         wait_port(port + 1, process)
     elif engine.startswith("triplox"):
         require_free_port(config["port"])
-        environment = dict(os.environ, JOB_TRIPLOX_PORT=str(config["port"]))
+        unmounted = [str(mount) for mount in DISK_MOUNTS.values() if not os.path.ismount(mount)]
+        if unmounted:
+            raise RuntimeError(f"Not mounted: {', '.join(unmounted)}; run `sudo ./disks setup` first")
+        environment = triplox_environment(config)
+        disks = {}
+        for variable, mount in DISK_MOUNTS.items():
+            directory = Path(environment[variable])
+            directory.mkdir()
+            # The containers write as their own users.
+            directory.chmod(0o777)
+            disks[mount.name] = {"directory": str(directory),
+                                 "mount": json.loads(capture(["findmnt", "-J", "-T", str(directory)]))}
+        write_json(Path(config["output"]) / "disks.json", disks)
         command(["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"], "up", "-d"], env=environment)
         wait_port(config["port"])
         ids = capture(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={config['project']}"]).split()
@@ -205,7 +227,7 @@ def stop_services(state, remove=False):
                     raise RuntimeError("Transactor has not stopped; state preserved")
         process_file.unlink()
     if config["engine"].startswith("triplox"):
-        environment = dict(os.environ, JOB_TRIPLOX_PORT=str(config["port"]))
+        environment = triplox_environment(config)
         base = ["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"]]
         with (Path(config["output"]) / "compose.log").open("w") as log:
             command(base + ["logs", "--no-color"], env=environment, stdout=log)
@@ -218,6 +240,13 @@ def stop_services(state, remove=False):
         if any(value is not None for value in disk.values()):
             write_json(Path(config["output"]) / "container-disk.json", disk)
         command(base + ["down"] + (["--volumes"] if remove else []), env=environment)
+        if remove:
+            for variable, mount in DISK_MOUNTS.items():
+                if Path(environment[variable]).exists():
+                    # Files belong to the container users, so delete them from a container.
+                    command(["docker", "run", "--rm", "--user", "root", "--entrypoint", "rm",
+                             "-v", f"{mount}:/disk", os.environ.get("JOB_TRIPLOX_IMAGE", "triplox:job-benchmark"),
+                             "-rf", f"/disk/{config['project']}"])
     if remove:
         shutil.rmtree(state)
 
