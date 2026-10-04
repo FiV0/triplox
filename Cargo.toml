@@ -48,8 +48,9 @@ rkyv = { version = "0.7.45", features = ["std", "size_64", "validation", "uuid"]
 serde = { workspace = true, features = ["derive"] }
 size-of = { version = "0.1.7", package = "feldera-size-of" }
 sysinfo = { version = "0.35.2", default-features = false, features = ["system"] }
-slatedb = { version = "0.17", features = ["aws", "wal_disable"] }
-slatedb-estimates = "0.1.0-alpha.2"
+# rev must match slatedb-estimates' pin to avoid duplicate crates
+slatedb = { git = "https://github.com/FiV0/slatedb", rev = "32a3468eaf6503916b236b770aaa9f4915adb811", features = ["aws", "wal_disable"] }
+slatedb-estimates = { git = "https://github.com/FiV0/slatedb-estimates", rev = "53b0d857bb51541a65ef5836f93f08da5633d82f" }
 thiserror = { workspace = true }
 toml = "1.1"
 tokio = { version = "1.40.0", features = ["full"] }

@@ -1908,7 +1908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3522,7 +3522,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4245,7 +4245,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4623,7 +4623,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4693,7 +4693,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5113,8 +5113,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slatedb"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "543da8a0c19e1a6af286a3c314a1c936af598603f3af98549514fffffb837334"
+source = "git+https://github.com/FiV0/slatedb?rev=32a3468eaf6503916b236b770aaa9f4915adb811#32a3468eaf6503916b236b770aaa9f4915adb811"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -5158,8 +5157,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5cb9fe0fa807c333fbb5880b222f5e72889fa22e40b2f13f479490d8b22f192"
+source = "git+https://github.com/FiV0/slatedb?rev=32a3468eaf6503916b236b770aaa9f4915adb811#32a3468eaf6503916b236b770aaa9f4915adb811"
 dependencies = [
  "chrono",
  "log",
@@ -5174,8 +5172,7 @@ dependencies = [
 [[package]]
 name = "slatedb-estimates"
 version = "0.1.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b645a675fc3d9ffcc85c7d3130491756e0504792d7bdbf44679bc8f10b9d16ce"
+source = "git+https://github.com/FiV0/slatedb-estimates?rev=53b0d857bb51541a65ef5836f93f08da5633d82f#53b0d857bb51541a65ef5836f93f08da5633d82f"
 dependencies = [
  "slatedb",
 ]
@@ -5183,8 +5180,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872044a3b57e2846a3761619bab7cb88052034d137cf17afb2382c63a24c3b11"
+source = "git+https://github.com/FiV0/slatedb?rev=32a3468eaf6503916b236b770aaa9f4915adb811#32a3468eaf6503916b236b770aaa9f4915adb811"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5380,7 +5376,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5390,7 +5386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6290,7 +6286,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
