@@ -28,8 +28,7 @@
           (if (:ingest-only config)
             (try
               ((:schema! engine))
-              (let [loaded (data/load-data! (:data-dir config) config (:transact! engine))]
-                (runner/await-loaded! engine loaded (:timeout-ms config))
+              (let [loaded (runner/load! engine config (:transact! engine))]
                 (artifacts/write-json! (io/file output "load.json") (dissoc loaded :last-tx)))
               (finally ((:close! engine))))
             (runner/run! engine config))

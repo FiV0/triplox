@@ -66,6 +66,7 @@
     {:schema! #(transact! (data/schema-tx :triplox))
      :transact! #((api "submit-tx") conn %)
      :await-tx! await-tx!
+     :indexed-tx #(.txId (.txKey ((api "db") conn)))
      :db #((api "db") conn)
      :query (fn [db id] ((api "q") db (queries/translate id :triplox)))
      :view! (fn [id] ((view "->view") conn (queries/translate id :triplox)))

@@ -86,7 +86,7 @@
         config {:engine-name engine-name :query-ids ["1a" "2a"]
                 :output (str directory) :timeout-ms 1000}]
     (try
-      (with-redefs [data/load-data! (fn [_ _ transact!]
+      (with-redefs [data/load-data! (fn [_ _ transact! & _]
                                      (transact! [{:step 1}])
                                      (transact! [{:step 2}])
                                      {:transactions 3 :last-tx (transact! [{:step 3}])})]
