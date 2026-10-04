@@ -60,18 +60,27 @@
                   (concat (split left) (split right))))))]
     (mapcat split (partition-all batch-size rows))))
 
-(defn load-data! [directory {:keys [batch-size max-bytes]} transact!]
+(defn load-data!
+  "Loads every table. `progress`, when given, is an atom reset after each
+  transaction to the table, rows and transactions loaded so far, and the last tx."
+  [directory {:keys [batch-size max-bytes]} transact! & [progress]]
   (let [counts (atom {})
         transactions (atom 0)
         datoms (atom 0)
         last-tx (atom nil)]
-    (doseq [[table :as descriptor] source/tables]
+    (doseq [[[table :as descriptor] index] (map vector source/tables (range))]
       (let [flush! (fn [rows]
                      (doseq [batch (split-batches rows batch-size max-bytes)]
                        (let [tx (transaction batch)]
                          (reset! last-tx (transact! tx))
                          (swap! transactions inc)
-                         (swap! datoms + (reduce + (map #(dec (count %)) tx))))))
+                         (swap! datoms + (reduce + (map #(dec (count %)) tx)))
+                         (when progress
+                           (reset! progress {:table table :table-index (inc index)
+                                             :tables (count source/tables)
+                                             :rows (reduce + (vals @counts))
+                                             :transactions @transactions
+                                             :last-tx @last-tx})))))
             remaining
             (reduce-table
              directory descriptor

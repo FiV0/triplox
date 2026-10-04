@@ -86,12 +86,55 @@
     (when verify-expected
       (artifacts/verify-upstream! output id rows))))
 
+(defn- report-progress!
+  "Prints ingestion progress to the runner log every 10 seconds until stopped.
+  For Triplox, tx ids are file log offsets, so `behind` is the unindexed log size."
+  [engine progress]
+  (let [start (System/nanoTime)
+        previous (atom [start 0])
+        thread (Thread.
+                (fn []
+                  (try
+                    (loop []
+                      (Thread/sleep 10000)
+                      (let [{:keys [table table-index tables rows transactions last-tx]} @progress
+                            now (System/nanoTime)
+                            [then rows-then] @previous
+                            behind (when-let [indexed-tx (:indexed-tx engine)]
+                                     (when last-tx
+                                       (try (format " indexing %.1f MB behind"
+                                                    (/ (- (:tx-id last-tx) (indexed-tx)) 1e6))
+                                            (catch Exception _ " indexing lag unknown"))))]
+                        (reset! previous [now (or rows 0)])
+                        (println (format "progress %.0fs table %s (%s/%s) rows %d (%.0f/s) transactions %d%s"
+                                         (/ (- now start) 1e9) (some-> table name) table-index tables
+                                         (or rows 0) (/ (- (or rows 0) rows-then) (/ (- now then) 1e9))
+                                         (or transactions 0) (or behind "")))
+                        (flush))
+                      (recur))
+                    (catch InterruptedException _))))]
+    (.setDaemon thread true)
+    (.start thread)
+    thread))
+
 ;; Engines that submit transactions asynchronously must wait for the last one to be
 ;; indexed before ingestion counts as finished.
 (defn await-loaded! [engine loaded timeout-ms]
   (when-let [await-tx! (:await-tx! engine)]
     (when (pos? (:transactions loaded))
       (await-tx! (:last-tx loaded) timeout-ms))))
+
+(defn load!
+  "Loads the dataset through `transact!` and waits until it is indexed, reporting
+  progress to the runner log meanwhile."
+  [engine {:keys [data-dir timeout-ms] :as config} transact!]
+  (let [progress (atom {})
+        reporter (report-progress! engine progress)]
+    (try
+      (let [loaded (data/load-data! data-dir config transact! progress)]
+        (await-loaded! engine loaded timeout-ms)
+        loaded)
+      (finally (.interrupt ^Thread reporter)))))
 
 (defn run! [engine {:keys [engine-name output data-dir timeout-ms query-ids]
                     :as config}]
@@ -106,9 +149,7 @@
           (artifacts/append! output {:phase "registration" :elapsed-ms (milliseconds start)
                                     :status "ok"})))
       (let [start (System/nanoTime)
-            loaded (data/load-data! data-dir config
-                                    #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
-            _ (await-loaded! engine loaded timeout-ms)
+            loaded (load! engine config #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
             ingestion-ms (milliseconds start)
             tx (:last-tx loaded)
             snapshots (when (and incremental? (pos? (:transactions loaded)))
