@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Give RustFS and the SlateDB cache their own loop-mounted ext4 filesystems so
+# their writes do not share a journal (or page-cache writeback) with the Triplox
+# file log on the root filesystem. Run with sudo:
+#
+#   sudo ./disks setup      # create (once), attach and mount the images
+#   sudo ./disks teardown   # unmount and detach; add --delete to remove the images
+#   ./disks status
+#
+# Mounts do not survive a reboot; rerun `sudo ./disks setup` afterwards.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/disks.d"
+disks=("rustfs:${JOB_RUSTFS_DISK_SIZE:-70G}" "slatedb-cache:${JOB_SLATEDB_CACHE_DISK_SIZE:-20G}")
+
+require_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "run with sudo" >&2
+    exit 1
+  fi
+}
+
+status() {
+  for entry in "${disks[@]}"; do
+    name=${entry%%:*}
+    mnt="$root/mnt/$name"
+    if mountpoint -q "$mnt"; then
+      dev=$(findmnt -no SOURCE "$mnt")
+      echo "$name: $dev on $mnt, direct-io=$(cat "/sys/block/${dev#/dev/}/loop/dio")"
+    else
+      echo "$name: not mounted"
+    fi
+  done
+}
+
+setup() {
+  require_root
+  owner=${SUDO_USER:-root}
+  mkdir -p "$root/mnt"
+  for entry in "${disks[@]}"; do
+    name=${entry%%:*}
+    size=${entry#*:}
+    image="$root/$name.img"
+    mnt="$root/mnt/$name"
+    mkdir -p "$mnt"
+    if mountpoint -q "$mnt"; then
+      continue
+    fi
+    if [[ ! -f $image ]]; then
+      fallocate -l "$size" "$image"
+      # Initialise inode tables and journal now instead of in the background
+      # during a benchmark.
+      mkfs.ext4 -q -F -E lazy_itable_init=0,lazy_journal_init=0 "$image"
+    fi
+    dev=$(losetup --find --show --direct-io=on --sector-size 4096 "$image")
+    mount -o noatime "$dev" "$mnt"
+    chown "$owner:" "$mnt"
+  done
+  chown "$owner:" "$root" "$root/mnt"
+  status
+}
+
+teardown() {
+  require_root
+  for entry in "${disks[@]}"; do
+    name=${entry%%:*}
+    image="$root/$name.img"
+    mnt="$root/mnt/$name"
+    if mountpoint -q "$mnt"; then
+      umount "$mnt"
+    fi
+    if [[ -f $image ]]; then
+      losetup -j "$image" | cut -d: -f1 | while read -r dev; do losetup -d "$dev"; done
+      if [[ ${1:-} == --delete ]]; then
+        rm "$image"
+      fi
+    fi
+  done
+}
+
+case ${1:-} in
+  setup) setup ;;
+  teardown) teardown "${2:-}" ;;
+  status) status ;;
+  *) echo "usage: $0 setup|teardown [--delete]|status" >&2; exit 2 ;;
+esac
