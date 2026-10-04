@@ -58,7 +58,7 @@
                 :await-view! (fn [_ tx _] (record! :await) {:rows [] :tx-key tx})
                 :close! #(record! :close)}]
     (with-redefs [data/load-data! (fn [& _] (record! :load)
-                                       {:transactions 1 :last-tx {:tx-id 7}})
+                                       {:transactions 1 :table-counts {:title 1} :last-tx {:tx-id 7}})
                   artifacts/append! (fn [& _] (record! :write))
                   artifacts/write-json! (fn [& _] (record! :write))
                   artifacts/save-result! (fn [& _] (record! :write) {})]
@@ -89,7 +89,7 @@
       (with-redefs [data/load-data! (fn [_ _ transact! & _]
                                      (transact! [{:step 1}])
                                      (transact! [{:step 2}])
-                                     {:transactions 3 :last-tx (transact! [{:step 3}])})]
+                                     {:transactions 3 :table-counts {:title 3} :last-tx (transact! [{:step 3}])})]
         (f #(runner/run! engine config) directory queries))
       (finally
         (doseq [file (reverse (file-seq directory))] (io/delete-file file))))))

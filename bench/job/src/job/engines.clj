@@ -1,20 +1,46 @@
 (ns job.engines
   (:require [clojure.java.io :as io]
             [job.data :as data]
-            [job.queries :as queries])
+            [job.queries :as queries]
+            [job.source :as source])
   (:import [java.lang AutoCloseable]))
 
 (defn- function [ns-name name]
   (requiring-resolve (symbol ns-name name)))
 
+;; Loads like Datalevin's own JOB-bench: the source's numeric entity ids go straight
+;; into `fill-db` as trusted datoms, bypassing transaction processing, then `analyze`.
 (defn- datalevin [{:keys [state-dir]}]
   (let [api #(function "datalevin.core" %)
-        conn ((api "get-conn") (str (io/file state-dir "database")) data/schema)]
+        db (atom ((api "empty-db") (str (io/file state-dir "database")) source/schema
+                  {:closed-schema? true
+                   :kv-opts {:mapsize 100000 :key-compress :hu}}))
+        load! (fn [{:keys [data-dir]} progress]
+                (let [counts (atom {})
+                      datoms (atom 0)]
+                  (doseq [[[table read-triples] index] (map vector source/tables (range))]
+                    (with-open [reader (io/reader (data/table-file data-dir table) :encoding "UTF-8")]
+                      (let [rows (fn [triples]
+                                   (swap! counts update table (fnil inc 0))
+                                   (when (zero? (mod (get @counts table) 10000))
+                                     (reset! progress {:table table :table-index (inc index)
+                                                       :tables (count source/tables)
+                                                       :rows (reduce + (vals @counts))
+                                                       :transactions 0}))
+                                   triples)]
+                        (swap! db (api "fill-db")
+                               (sequence (comp (partition-by first)
+                                               (map rows)
+                                               cat
+                                               (map (fn [[e a v]] (swap! datoms inc) ((api "datom") e a v))))
+                                         (read-triples reader))))))
+                  ((api "analyze") @db)
+                  {:table-counts @counts :attempted-datoms @datoms}))]
     {:schema! (constantly nil)
-     :transact! (fn [tx] ((api "transact!") conn tx) nil)
-     :db #(deref conn)
+     :load! load!
+     :db #(deref db)
      :query (fn [db id] (mapv vec ((api "q") (get queries/queries id) db)))
-     :close! #((api "close") conn)}))
+     :close! #((api "close-db") @db)}))
 
 (defn- datomic [{:keys [datomic-uri timeout-ms]}]
   (let [api #(function "datomic.api" %)]
