@@ -299,7 +299,7 @@
         report {:created-at (str (Instant/now))
                 :options opts
                 :revision (str/trim (:out (shell/sh "git" "rev-parse" "HEAD")))
-                :feldera-revision "ded0d390b64bdfe82a9afac9084404ad3809547e"
+                :feldera-revision "5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
                 :environment (some-> (System/getenv "AUCTIONMARK_ENVIRONMENT") (json/read-str :key-fn keyword))
                 :sampled-processes (keys pids)}]
     (with-open [conn (tc/connect (:host opts) (:port opts)
