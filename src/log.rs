@@ -37,7 +37,6 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     log: &L,
     last_tx_id: &mut Option<TxId>,
     subscriber: &Arc<tokio::sync::RwLock<S>>,
-    batch_limit: u16,
     max_records: Option<u64>,
     task_token: &CancellationToken,
 ) {
@@ -51,8 +50,8 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
 
         let read_limit = match remaining {
             Some(0) => break,
-            Some(count) => count.min(batch_limit as u64) as u16,
-            None => batch_limit,
+            Some(count) => count.min(CATCH_UP_BATCH_SIZE as u64) as u16,
+            None => CATCH_UP_BATCH_SIZE,
         };
 
         let txs = log.read_txs_after(*last_tx_id, read_limit).await;
@@ -112,7 +111,6 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
             log.as_ref(),
             &mut last_tx_id,
             &subscriber,
-            CATCH_UP_BATCH_SIZE,
             None,
             &task_token,
         )
@@ -138,7 +136,6 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                                 log.as_ref(),
                                 &mut last_tx_id,
                                 &subscriber,
-                                CATCH_UP_BATCH_SIZE,
                                 Some(missed),
                                 &task_token,
                             )
@@ -203,65 +200,51 @@ impl Subscriber for MockSubscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::st_from_unix_epoch;
-    use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+    use crate::clock::{st_from_unix_epoch, SystemClock};
+    use crate::memory_log::MemoryLog;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use tokio::sync::{mpsc, Barrier, Mutex, Notify, RwLock, Semaphore};
+    use tokio::sync::{mpsc, Barrier, Notify, RwLock, Semaphore};
 
-    struct AppendLog {
-        records: Mutex<Vec<Record>>,
-        tx_sender: broadcast::Sender<Record>,
-        max_read_limit: AtomicU16,
+    // Counts the records returned by reads.
+    struct CountingLog {
+        inner: MemoryLog,
+        records_read: AtomicUsize,
     }
 
-    impl AppendLog {
+    impl CountingLog {
         fn new(channel_capacity: usize) -> Self {
             Self {
-                records: Mutex::new(vec![]),
-                tx_sender: broadcast::channel(channel_capacity).0,
-                max_read_limit: AtomicU16::new(0),
+                inner: MemoryLog::with_channel_capacity(Box::new(SystemClock), channel_capacity),
+                records_read: AtomicUsize::new(0),
             }
         }
     }
 
-    impl TxLogReader for AppendLog {
+    impl TxLogReader for CountingLog {
         async fn read_txs_after(
             &self,
             after_tx_id: Option<TxId>,
             limit: u16,
         ) -> Result<Vec<Record>> {
-            self.max_read_limit.fetch_max(limit, Ordering::SeqCst);
-            let records = self.records.lock().await;
-            let start = after_tx_id.map(|id| id as usize + 1).unwrap_or(0);
-            let end = std::cmp::min(start + limit as usize, records.len());
-            if start >= records.len() {
-                return Ok(vec![]);
-            }
-            Ok(records[start..end].to_vec())
+            let records = self.inner.read_txs_after(after_tx_id, limit).await?;
+            self.records_read.fetch_add(records.len(), Ordering::SeqCst);
+            Ok(records)
         }
 
         async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
-            self.tx_sender.subscribe()
+            self.inner.subscribe_txs().await
         }
     }
 
-    impl TxLogWriter for AppendLog {
+    impl TxLogWriter for CountingLog {
         async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-            let mut records = self.records.lock().await;
-            let tx_key = TxKey {
-                tx_id: records.len() as TxId,
-                system_time: st_from_unix_epoch(records.len() as u64),
-            };
-            let record = Record { tx_key, record };
-            records.push(record.clone());
-            drop(records);
-            let _ = self.tx_sender.send(record);
-            Ok(tx_key)
+            self.inner.append_tx(record).await
         }
     }
 
     struct SlowReadLog {
-        inner: AppendLog,
+        inner: MemoryLog,
         read_started: Arc<Barrier>,
         release_read: Notify,
     }
@@ -269,7 +252,7 @@ mod tests {
     impl SlowReadLog {
         fn new() -> Self {
             Self {
-                inner: AppendLog::new(1024),
+                inner: MemoryLog::new(Box::new(SystemClock)),
                 read_started: Arc::new(Barrier::new(2)),
                 release_read: Notify::new(),
             }
@@ -421,7 +404,6 @@ mod tests {
             &log,
             &mut last_tx_id,
             &subscriber,
-            u16::MAX,
             Some(u16::MAX as u64 + 3),
             &token,
         )
@@ -439,7 +421,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut last_tx_id = None;
 
-        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, Some(3), &token).await;
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, Some(3), &token).await;
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 3);
@@ -455,7 +437,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut last_tx_id = None;
 
-        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, None, &token).await;
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, None, &token).await;
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 10);
@@ -477,7 +459,6 @@ mod tests {
                 task_log.as_ref(),
                 &mut last_tx_id,
                 &task_subscriber,
-                100,
                 None,
                 &task_token,
             )
@@ -494,12 +475,11 @@ mod tests {
         assert!(subscriber.read().await.records.is_empty());
     }
 
-    // Under sustained load the subscriber lags the broadcast channel repeatedly. Each
-    // catch-up must read in bounded chunks and let readers of the lock in between txs.
+    // A lagged catch-up reads in bounded chunks and lets readers in between txs.
     #[tokio::test]
     async fn lagged_catch_up_is_chunked_and_lets_readers_in() {
         let record_count = 3 * CATCH_UP_BATCH_SIZE as usize;
-        let log = Arc::new(AppendLog::new(1));
+        let log = Arc::new(CountingLog::new(1));
         let gate = Arc::new(Semaphore::new(0));
         let (entered, mut entered_rx) = mpsc::unbounded_channel();
         let subscriber = Arc::new(RwLock::new(GatedSubscriber {
@@ -509,7 +489,7 @@ mod tests {
         }));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        // Hold the live path on tx 0 while the remaining txs overflow the channel.
+        // Hold the subscriber on tx 0 while the remaining txs overflow the channel.
         log.append_tx(vec![]).await.unwrap();
         assert_eq!(entered_rx.recv().await, Some(0));
         for _ in 1..record_count {
@@ -517,6 +497,8 @@ mod tests {
         }
         gate.add_permits(1);
         assert_eq!(entered_rx.recv().await, Some(1), "tx 1 is only in the log");
+        // Only tx 0 and the first chunk are in memory, not the whole lag.
+        assert!(log.records_read.load(Ordering::SeqCst) <= 1 + CATCH_UP_BATCH_SIZE as usize);
 
         // Queue a reader behind the catch-up's write lock, then let one tx finish.
         let reader = subscriber.read();
@@ -548,6 +530,5 @@ mod tests {
             .map(|record| record.tx_key.tx_id)
             .collect();
         assert_eq!(tx_ids, (0..record_count as TxId).collect::<Vec<_>>());
-        assert!(log.max_read_limit.load(Ordering::SeqCst) <= CATCH_UP_BATCH_SIZE);
     }
 }
