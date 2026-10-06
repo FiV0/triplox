@@ -6,7 +6,7 @@ use slatedb::DbReadOps;
 use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use edn::kw;
 
@@ -14,7 +14,7 @@ use crate::codec::{
     self, decode_datatype, decode_i64, encode_datatype, encode_i64, encode_i64_bytes, Encode,
 };
 use crate::iterator::slate_key_iterator::SlateKeyIterator;
-use crate::log::{Record, Subscriber};
+use crate::log::{Record, Subscriber, TxId};
 use crate::metadata::Metadata;
 use crate::ops::DataType;
 use crate::ops::{Datom, DatomOp, Entid, TxOp};
@@ -42,10 +42,17 @@ pub(crate) struct TxCompletion {
 
 pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
 
+/// The latest indexed tx and the schema as of that tx, published after each indexed write.
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedState {
+    pub tx_key: TxKey,
+    pub schema: Arc<Schema>,
+}
+
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
-    latest_indexed_tx: TxKey,
+    indexed_state: watch::Sender<IndexedState>,
     tx_completion_sender: broadcast::Sender<TxCompletion>,
 }
 
@@ -247,10 +254,14 @@ impl Indexer {
         tx_completion_capacity: usize,
     ) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(tx_completion_capacity);
+        let indexed_state = watch::Sender::new(IndexedState {
+            tx_key: latest_indexed_tx,
+            schema: Arc::new(metadata.schema.clone()),
+        });
         Indexer {
             slatedb,
             metadata,
-            latest_indexed_tx,
+            indexed_state,
             tx_completion_sender,
         }
     }
@@ -259,8 +270,23 @@ impl Indexer {
         &self.metadata
     }
 
-    pub(crate) fn latest_tx_key(&self) -> TxKey {
-        self.latest_indexed_tx
+    /// A handle for reading indexed state and awaiting txs without the indexer lock.
+    pub(crate) fn handle(&self) -> IndexerHandle {
+        IndexerHandle {
+            indexed_state: self.indexed_state.subscribe(),
+            tx_completion_sender: self.tx_completion_sender.clone(),
+            slatedb: self.slatedb.clone(),
+        }
+    }
+
+    /// Publish `tx_key` as indexed. Must happen before its completion is broadcast.
+    fn publish_indexed(&self, tx_key: TxKey, schema_changed: bool) {
+        self.indexed_state.send_modify(|state| {
+            state.tx_key = tx_key;
+            if schema_changed {
+                state.schema = Arc::new(self.metadata.schema.clone());
+            }
+        });
     }
 
     /// Transact a set of operations, automatically retracting old values for
@@ -359,13 +385,14 @@ impl Indexer {
 
         // 10. Apply on success only
         self.metadata.partition_map = pending_pm;
-        if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
+        let schema_update = schema_update.filter(|update| !update.is_empty());
+        let schema_changed = schema_update.is_some();
+        if let Some(schema_update) = schema_update {
             self.metadata.schema.apply_schema_update(schema_update);
             self.metadata.advance_generation();
         }
 
-        // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = tx_key;
+        self.publish_indexed(tx_key, schema_changed);
 
         if let Err(e) = self.tx_completion_sender.send(TxCompletion {
             tx_key,
@@ -534,24 +561,9 @@ impl Indexer {
         Ok(())
     }
 
-    /// Subscribe to transaction completion notifications.
-    ///
-    /// Returns a `TxWaiter` that can later be used to wait for a specific transaction.
-    /// Call this **before** appending to the log to avoid a race where the indexer
-    /// broadcasts the result before the caller subscribes.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let waiter = indexer.read().await.tx_waiter();
-    /// let tx_key = log.append_tx(data).await;
-    /// waiter.await_tx(tx_key).await?;
-    /// ```
+    #[cfg(test)]
     pub(crate) fn tx_waiter(&self) -> TxWaiter {
-        TxWaiter {
-            baseline: self.latest_indexed_tx,
-            rx: self.tx_completion_sender.subscribe(),
-            slatedb: self.slatedb.clone(),
-        }
+        self.handle().tx_waiter()
     }
 
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
@@ -567,14 +579,62 @@ impl Indexer {
             .await?;
         // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
-        self.latest_indexed_tx = tx_key;
+        self.publish_indexed(tx_key, false);
         Ok(tx_key)
+    }
+}
+
+/// Lock-free access to what the indexer publishes: the latest `IndexedState` and tx completions.
+#[derive(Clone)]
+pub(crate) struct IndexerHandle {
+    indexed_state: watch::Receiver<IndexedState>,
+    tx_completion_sender: broadcast::Sender<TxCompletion>,
+    slatedb: Arc<Db>,
+}
+
+impl IndexerHandle {
+    pub(crate) fn indexed_state(&self) -> IndexedState {
+        self.indexed_state.borrow().clone()
+    }
+
+    /// Wait until `tx_id` is indexed and return the state that covers it.
+    pub(crate) async fn await_indexed_state(&self, tx_id: TxId) -> Result<IndexedState, Error> {
+        let mut rx = self.indexed_state.clone();
+        let state = rx
+            .wait_for(|state| state.tx_key.tx_id >= tx_id)
+            .await
+            .map_err(|_| anyhow::anyhow!("Indexer shutdown while waiting for tx {}", tx_id))?;
+        Ok(state.clone())
+    }
+
+    /// Subscribe to transaction completion notifications.
+    ///
+    /// Returns a `TxWaiter` that can later be used to wait for a specific transaction.
+    /// Call this **before** appending to the log to avoid a race where the indexer
+    /// broadcasts the result before the caller subscribes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let waiter = indexer_handle.tx_waiter();
+    /// let tx_key = log.append_tx(data).await;
+    /// waiter.await_tx(tx_key).await?;
+    /// ```
+    pub(crate) fn tx_waiter(&self) -> TxWaiter {
+        // Subscribe before reading the baseline: the indexer publishes state before
+        // broadcasting, so any tx past the baseline still reaches `rx`.
+        let rx = self.tx_completion_sender.subscribe();
+        let baseline = self.indexed_state.borrow().tx_key;
+        TxWaiter {
+            baseline,
+            rx,
+            slatedb: self.slatedb.clone(),
+        }
     }
 }
 
 /// A pre-subscribed handle for waiting on transaction completion.
 ///
-/// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
+/// Created by `IndexerHandle::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
     /// Latest indexed tx captured when this waiter subscribed.
