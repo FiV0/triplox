@@ -80,7 +80,7 @@ impl TxLogWriter for MemoryLog {
         };
         let tx_key = record.tx_key;
         state.txs.push(record.clone());
-        drop(state);
+        // Send under the lock so subscribers receive records in tx_id order.
         // TODO: verify if warning on no receivers is idiomatic Rust broadcast channel pattern
         if let Err(e) = self.tx_sender.send(record) {
             warn!(
@@ -88,6 +88,7 @@ impl TxLogWriter for MemoryLog {
                 e
             );
         }
+        drop(state);
         Ok(tx_key)
     }
 }

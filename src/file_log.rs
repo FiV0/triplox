@@ -133,12 +133,12 @@ impl TxLogWriter for FileLog {
         bincode::serialize_into(&mut state.file, &record).context("Failed to serialize record")?;
         state.file.flush()?;
         state.file.get_ref().sync_data()?;
-        drop(state);
 
-        // Notify subscribers
+        // Notify subscribers under the lock so they receive records in tx_id order.
         if let Err(e) = self.tx_sender.send(record.clone()) {
             warn!("Failed to send record from file log to subscribers: {}", e);
         }
+        drop(state);
 
         Ok(record.tx_key)
     }
