@@ -332,17 +332,23 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
 
     async fn db(&self) -> Result<DB, Error> {
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        // Read both under one lock so the ident map covers every tx up to tx_key.
+        let (tx_key, ident_map) = {
+            let indexer = self.indexer.read().await;
+            (
+                indexer.latest_tx_key(),
+                indexer.metadata().schema.ident_map.clone(),
+            )
+        };
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
-        DB::from_latest_sdb(self.slate.db.clone(), ident_map, handle, range_stats).await
+        Ok(DB::new(
+            self.slate.db.clone(),
+            ident_map,
+            handle,
+            tx_key,
+            range_stats,
+        ))
     }
 
     async fn db_as_of(&self, tx_key: TxKey) -> Result<DB, Error> {

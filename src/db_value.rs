@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Error;
 use tokio::runtime::Handle;
 
-use crate::indexer::latest_tx_key_from_sdb;
 use crate::ops::QueryArg;
 use crate::partition::tx_eid_from_tx_id;
 use crate::query::{execute_query, QueryResult};
@@ -59,23 +58,6 @@ where
             tx_key,
             range_stats,
         }
-    }
-
-    /// Construct a DB from a SlateDB instance by scanning EAV for TX_PARTITION entities to find the latest TxKey.
-    pub async fn from_latest_sdb(
-        sdb: Arc<D>,
-        ident_map: IdentMap,
-        handle: Handle,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error> {
-        let tx_key = latest_tx_key_from_sdb(sdb.as_ref()).await?;
-        Ok(Self {
-            sdb,
-            ident_map: Arc::new(ident_map),
-            handle,
-            tx_key,
-            range_stats,
-        })
     }
 
     pub fn tx_key(&self) -> TxKey {
