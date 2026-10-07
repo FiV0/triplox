@@ -29,6 +29,7 @@ pub(crate) trait Subscriber: Send + Sync {
 
 pub type TxId = i64;
 
+const CATCH_UP_BATCH_SIZE: u16 = 100;
 const CATCH_UP_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 const CATCH_UP_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
@@ -36,7 +37,6 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     log: &L,
     last_tx_id: &mut Option<TxId>,
     subscriber: &Arc<tokio::sync::RwLock<S>>,
-    batch_limit: u16,
     max_records: Option<u64>,
     task_token: &CancellationToken,
 ) {
@@ -50,8 +50,8 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
 
         let read_limit = match remaining {
             Some(0) => break,
-            Some(count) => count.min(batch_limit as u64) as u16,
-            None => batch_limit,
+            Some(count) => count.min(CATCH_UP_BATCH_SIZE as u64) as u16,
+            None => CATCH_UP_BATCH_SIZE,
         };
 
         let txs = log.read_txs_after(*last_tx_id, read_limit).await;
@@ -59,16 +59,18 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
             Ok(txs) if txs.is_empty() => break,
             Ok(txs) => {
                 retry_delay = CATCH_UP_RETRY_INITIAL_DELAY;
-                trace!("Processing {} txs catching up", txs.len());
-                let mut subscriber = subscriber.write().await;
-                for tx in &txs {
-                    subscriber.accept(tx.clone()).await;
+                let read_count = txs.len();
+                trace!("Processing {} txs catching up", read_count);
+                for tx in txs {
+                    let tx_id = tx.tx_key.tx_id;
+                    // Lock per tx so readers aren't blocked for the whole catch-up.
+                    subscriber.write().await.accept(tx).await;
+                    *last_tx_id = Some(tx_id);
                 }
-                *last_tx_id = Some(txs.last().unwrap().tx_key.tx_id);
                 if let Some(count) = remaining.as_mut() {
-                    *count = count.saturating_sub(txs.len() as u64);
+                    *count = count.saturating_sub(read_count as u64);
                 }
-                if txs.len() < read_limit as usize {
+                if read_count < read_limit as usize {
                     break;
                 }
             }
@@ -109,7 +111,6 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
             log.as_ref(),
             &mut last_tx_id,
             &subscriber,
-            100,
             None,
             &task_token,
         )
@@ -135,7 +136,6 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
                                 log.as_ref(),
                                 &mut last_tx_id,
                                 &subscriber,
-                                u16::MAX,
                                 Some(missed),
                                 &task_token,
                             )
@@ -200,14 +200,51 @@ impl Subscriber for MockSubscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clock::st_from_unix_epoch;
+    use crate::clock::{st_from_unix_epoch, SystemClock};
+    use crate::memory_log::MemoryLog;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use tokio::sync::{Barrier, Mutex, Notify, RwLock};
+    use tokio::sync::{mpsc, Barrier, Notify, RwLock, Semaphore};
+
+    // Counts the records returned by reads.
+    struct CountingLog {
+        inner: MemoryLog,
+        records_read: AtomicUsize,
+    }
+
+    impl CountingLog {
+        fn new(channel_capacity: usize) -> Self {
+            Self {
+                inner: MemoryLog::with_channel_capacity(Box::new(SystemClock), channel_capacity),
+                records_read: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl TxLogReader for CountingLog {
+        async fn read_txs_after(
+            &self,
+            after_tx_id: Option<TxId>,
+            limit: u16,
+        ) -> Result<Vec<Record>> {
+            let records = self.inner.read_txs_after(after_tx_id, limit).await?;
+            self.records_read.fetch_add(records.len(), Ordering::SeqCst);
+            Ok(records)
+        }
+
+        async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
+            self.inner.subscribe_txs().await
+        }
+    }
+
+    impl TxLogWriter for CountingLog {
+        async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
+            self.inner.append_tx(record).await
+        }
+    }
 
     struct SlowReadLog {
-        records: Mutex<Vec<Record>>,
-        tx_sender: broadcast::Sender<Record>,
+        inner: MemoryLog,
         read_started: Arc<Barrier>,
         release_read: Notify,
     }
@@ -215,8 +252,7 @@ mod tests {
     impl SlowReadLog {
         fn new() -> Self {
             Self {
-                records: Mutex::new(vec![]),
-                tx_sender: broadcast::channel(1024).0,
+                inner: MemoryLog::new(Box::new(SystemClock)),
                 read_started: Arc::new(Barrier::new(2)),
                 release_read: Notify::new(),
             }
@@ -231,33 +267,17 @@ mod tests {
         ) -> Result<Vec<Record>> {
             self.read_started.wait().await;
             self.release_read.notified().await;
-
-            let records = self.records.lock().await;
-            let start = after_tx_id.map(|id| id as usize + 1).unwrap_or(0);
-            let end = std::cmp::min(start + limit as usize, records.len());
-            if start >= records.len() {
-                return Ok(vec![]);
-            }
-            Ok(records[start..end].to_vec())
+            self.inner.read_txs_after(after_tx_id, limit).await
         }
 
         async fn subscribe_txs(&self) -> broadcast::Receiver<Record> {
-            self.tx_sender.subscribe()
+            self.inner.subscribe_txs().await
         }
     }
 
     impl TxLogWriter for SlowReadLog {
         async fn append_tx(&self, record: Vec<u8>) -> Result<TxKey> {
-            let mut records = self.records.lock().await;
-            let tx_key = TxKey {
-                tx_id: records.len() as TxId,
-                system_time: st_from_unix_epoch(records.len() as u64),
-            };
-            let record = Record { tx_key, record };
-            records.push(record.clone());
-            drop(records);
-            let _ = self.tx_sender.send(record);
-            Ok(tx_key)
+            self.inner.append_tx(record).await
         }
     }
 
@@ -338,6 +358,21 @@ mod tests {
         }
     }
 
+    // Reports each tx as it enters `accept`, then blocks until the test adds a permit.
+    struct GatedSubscriber {
+        records: Vec<Record>,
+        entered: mpsc::UnboundedSender<TxId>,
+        gate: Arc<Semaphore>,
+    }
+
+    impl Subscriber for GatedSubscriber {
+        async fn accept(&mut self, record: Record) {
+            let _ = self.entered.send(record.tx_key.tx_id);
+            self.gate.acquire().await.unwrap().forget();
+            self.records.push(record);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn append_does_not_wait_for_pending_subscription_read() {
         let log = Arc::new(SlowReadLog::new());
@@ -369,7 +404,6 @@ mod tests {
             &log,
             &mut last_tx_id,
             &subscriber,
-            u16::MAX,
             Some(u16::MAX as u64 + 3),
             &token,
         )
@@ -387,7 +421,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut last_tx_id = None;
 
-        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, Some(3), &token).await;
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, Some(3), &token).await;
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 3);
@@ -403,7 +437,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut last_tx_id = None;
 
-        catch_up_transactions(&log, &mut last_tx_id, &subscriber, 100, None, &token).await;
+        catch_up_transactions(&log, &mut last_tx_id, &subscriber, None, &token).await;
 
         let subscriber = subscriber.read().await;
         assert_eq!(subscriber.records.len(), 10);
@@ -425,7 +459,6 @@ mod tests {
                 task_log.as_ref(),
                 &mut last_tx_id,
                 &task_subscriber,
-                100,
                 None,
                 &task_token,
             )
@@ -440,5 +473,62 @@ mod tests {
             .expect("catch-up should stop on cancellation")
             .unwrap();
         assert!(subscriber.read().await.records.is_empty());
+    }
+
+    // A lagged catch-up reads in bounded chunks and lets readers in between txs.
+    #[tokio::test]
+    async fn lagged_catch_up_is_chunked_and_lets_readers_in() {
+        let record_count = 3 * CATCH_UP_BATCH_SIZE as usize;
+        let log = Arc::new(CountingLog::new(1));
+        let gate = Arc::new(Semaphore::new(0));
+        let (entered, mut entered_rx) = mpsc::unbounded_channel();
+        let subscriber = Arc::new(RwLock::new(GatedSubscriber {
+            records: vec![],
+            entered,
+            gate: gate.clone(),
+        }));
+        let token = subscribe(log.clone(), None, subscriber.clone()).await;
+
+        // Block the startup catch-up on tx 0 while the remaining txs overflow the channel.
+        log.append_tx(vec![]).await.unwrap();
+        assert_eq!(entered_rx.recv().await, Some(0));
+        for _ in 1..record_count {
+            log.append_tx(vec![]).await.unwrap();
+        }
+        gate.add_permits(1);
+        assert_eq!(entered_rx.recv().await, Some(1), "tx 1 is only in the log");
+        // Only tx 0 and the first chunk have been read, not the whole lag.
+        assert!(log.records_read.load(Ordering::SeqCst) <= 1 + CATCH_UP_BATCH_SIZE as usize);
+
+        // Queue a reader behind the catch-up's write lock, then let one tx finish.
+        let reader = subscriber.read();
+        tokio::pin!(reader);
+        assert!(futures::poll!(reader.as_mut()).is_pending());
+        gate.add_permits(1);
+        let accepted = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should not wait for the whole catch-up")
+            .records
+            .len();
+        assert_eq!(accepted, 2);
+
+        gate.add_permits(record_count);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while subscriber.read().await.records.len() < record_count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("catch-up should finish");
+        token.cancel();
+
+        let tx_ids: Vec<TxId> = subscriber
+            .read()
+            .await
+            .records
+            .iter()
+            .map(|record| record.tx_key.tx_id)
+            .collect();
+        assert_eq!(tx_ids, (0..record_count as TxId).collect::<Vec<_>>());
     }
 }

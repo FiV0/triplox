@@ -24,9 +24,13 @@ struct MemoryLogState {
 
 impl MemoryLog {
     pub fn new(clock: Box<dyn SystemTimeSource>) -> Self {
+        Self::with_channel_capacity(clock, 1024)
+    }
+
+    pub fn with_channel_capacity(clock: Box<dyn SystemTimeSource>, capacity: usize) -> Self {
         MemoryLog {
             state: RwLock::new(MemoryLogState { txs: vec![], clock }),
-            tx_sender: broadcast::channel(1024).0,
+            tx_sender: broadcast::channel(capacity).0,
         }
     }
 }
