@@ -224,10 +224,7 @@ impl IncrementalQueryService {
         Ok(subscription)
     }
 
-    fn start_cdc_once<N>(&self, node: Arc<N>)
-    where
-        N: crate::node::SchemaProvider,
-    {
+    fn start_cdc_once(&self, indexer: Arc<RwLock<Indexer>>) {
         let mut cdc_task = self.cdc_task.lock().unwrap();
         if cdc_task.is_some() {
             return;
@@ -236,7 +233,7 @@ impl IncrementalQueryService {
         let handle = spawn_cdc_loop(
             self.cdc_object_path.clone(),
             self.cdc_object_store.clone(),
-            node,
+            indexer,
             self.clone(),
             self.registration_gate.clone(),
             self.cancel.clone(),

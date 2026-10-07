@@ -9,15 +9,14 @@ use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
-use crate::indexer::{aev_key_to_parts, ave_key_to_parts};
-use crate::node::SchemaProvider;
+use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
 use crate::schema::Schema;
@@ -53,22 +52,19 @@ pub(crate) fn datoms_to_tuples(
         .collect::<Result<Vec<_>>>()
 }
 
-pub(crate) fn spawn_cdc_loop<N>(
+pub(crate) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    node: Arc<N>,
+    indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
     poll_interval: Duration,
-) -> JoinHandle<Result<()>>
-where
-    N: SchemaProvider,
-{
+) -> JoinHandle<Result<()>> {
     tokio::spawn(run_cdc_loop(
         object_path,
         object_store,
-        node,
+        indexer,
         service,
         registration_gate,
         cancel,
@@ -76,24 +72,21 @@ where
     ))
 }
 
-async fn run_cdc_loop<N>(
+async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    node: Arc<N>,
+    indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
     poll_interval: Duration,
-) -> Result<()>
-where
-    N: SchemaProvider,
-{
+) -> Result<()> {
     let wal_reader = WalReader::new(object_path, object_store);
     let mut stream =
         CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
-        let schema = node.schema().await;
+        let schema = indexer.read().await.metadata().schema.clone();
         let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
         if datoms.is_empty() {
             continue;

@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +20,6 @@ use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{QueryArg, TxOp};
-use crate::schema::Schema;
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
 use tokio_util::sync::CancellationToken;
@@ -41,16 +39,6 @@ pub struct Node<L: TxLog> {
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
-}
-
-pub(crate) trait SchemaProvider: Send + Sync + 'static {
-    fn schema(&self) -> impl Future<Output = Schema> + Send + '_;
-}
-
-impl SchemaProvider for tokio::sync::RwLock<Indexer> {
-    async fn schema(&self) -> Schema {
-        self.read().await.metadata().schema.clone()
-    }
 }
 
 impl<L: TxLog> Node<L> {
