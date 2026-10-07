@@ -6,7 +6,7 @@ use slatedb::DbReadOps;
 use slatedb::WriteBatch;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use edn::kw;
 
@@ -42,11 +42,63 @@ pub(crate) struct TxCompletion {
 
 pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
 
+pub(crate) struct IndexedState {
+    pub(crate) tx_key: TxKey,
+    pub(crate) schema: Arc<Schema>,
+}
+
+#[derive(Clone)]
+pub(crate) struct IndexerReadHandle {
+    indexed_state: watch::Receiver<Arc<IndexedState>>,
+    tx_completion_sender: broadcast::WeakSender<TxCompletion>,
+    slatedb: Arc<Db>,
+}
+
+impl IndexerReadHandle {
+    pub(crate) fn snapshot(&self) -> Arc<IndexedState> {
+        self.indexed_state.borrow().clone()
+    }
+
+    pub(crate) async fn await_published(&self, tx_key: TxKey) -> Result<Arc<IndexedState>> {
+        let mut receiver = self.indexed_state.clone();
+        let state = receiver
+            .wait_for(|state| state.tx_key.tx_id >= tx_key.tx_id)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Indexer shutdown while waiting for publication of tx {}",
+                    tx_key.tx_id
+                )
+            })?;
+        Ok(state.clone())
+    }
+
+    /// Subscribe before capturing the baseline so concurrent completions cannot be missed.
+    pub(crate) fn tx_waiter(&self) -> Result<TxWaiter> {
+        let sender = self
+            .tx_completion_sender
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Indexer shutdown while creating transaction waiter"))?;
+        let rx = sender.subscribe();
+        let baseline = self.snapshot().tx_key;
+        Ok(TxWaiter {
+            baseline,
+            rx,
+            slatedb: self.slatedb.clone(),
+        })
+    }
+}
+
 pub struct Indexer {
     slatedb: Arc<Db>,
     metadata: Metadata,
-    latest_indexed_tx: TxKey,
+    indexed_state: watch::Sender<Arc<IndexedState>>,
     tx_completion_sender: broadcast::Sender<TxCompletion>,
+    #[cfg(test)]
+    pub(crate) before_publication: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -247,11 +299,17 @@ impl Indexer {
         tx_completion_capacity: usize,
     ) -> Self {
         let (tx_completion_sender, _) = broadcast::channel(tx_completion_capacity);
+        let (indexed_state, _) = watch::channel(Arc::new(IndexedState {
+            tx_key: latest_indexed_tx,
+            schema: Arc::new(metadata.schema.clone()),
+        }));
         Indexer {
             slatedb,
             metadata,
-            latest_indexed_tx,
+            indexed_state,
             tx_completion_sender,
+            #[cfg(test)]
+            before_publication: None,
         }
     }
 
@@ -259,8 +317,30 @@ impl Indexer {
         &self.metadata
     }
 
-    pub(crate) fn latest_tx_key(&self) -> TxKey {
-        self.latest_indexed_tx
+    pub(crate) fn read_handle(&self) -> IndexerReadHandle {
+        IndexerReadHandle {
+            indexed_state: self.indexed_state.subscribe(),
+            tx_completion_sender: self.tx_completion_sender.downgrade(),
+            slatedb: self.slatedb.clone(),
+        }
+    }
+
+    fn publish_state(&self, tx_key: TxKey, schema_changed: bool) {
+        let schema = if schema_changed {
+            Arc::new(self.metadata.schema.clone())
+        } else {
+            self.indexed_state.borrow().schema.clone()
+        };
+        self.indexed_state
+            .send_replace(Arc::new(IndexedState { tx_key, schema }));
+    }
+
+    #[cfg(test)]
+    async fn pause_before_publication(&mut self) {
+        if let Some((reached, resume)) = self.before_publication.take() {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
     }
 
     /// Transact a set of operations, automatically retracting old values for
@@ -359,13 +439,17 @@ impl Indexer {
 
         // 10. Apply on success only
         self.metadata.partition_map = pending_pm;
-        if let Some(schema_update) = schema_update.filter(|update| !update.is_empty()) {
+        let schema_update = schema_update.filter(|update| !update.is_empty());
+        let schema_changed = schema_update.is_some();
+        if let Some(schema_update) = schema_update {
             self.metadata.schema.apply_schema_update(schema_update);
             self.metadata.advance_generation();
         }
 
-        // Update latest indexed tx and broadcast completion
-        self.latest_indexed_tx = tx_key;
+        // Publish before broadcasting completion or processing the next transaction.
+        #[cfg(test)]
+        self.pause_before_publication().await;
+        self.publish_state(tx_key, schema_changed);
 
         if let Err(e) = self.tx_completion_sender.send(TxCompletion {
             tx_key,
@@ -534,24 +618,11 @@ impl Indexer {
         Ok(())
     }
 
-    /// Subscribe to transaction completion notifications.
-    ///
-    /// Returns a `TxWaiter` that can later be used to wait for a specific transaction.
-    /// Call this **before** appending to the log to avoid a race where the indexer
-    /// broadcasts the result before the caller subscribes.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let waiter = indexer.read().await.tx_waiter();
-    /// let tx_key = log.append_tx(data).await;
-    /// waiter.await_tx(tx_key).await?;
-    /// ```
+    #[cfg(test)]
     pub(crate) fn tx_waiter(&self) -> TxWaiter {
-        TxWaiter {
-            baseline: self.latest_indexed_tx,
-            rx: self.tx_completion_sender.subscribe(),
-            slatedb: self.slatedb.clone(),
-        }
+        self.read_handle()
+            .tx_waiter()
+            .expect("indexer owns the completion sender")
     }
 
     /// Write an aborted transaction entity (no user data) when transact_tx fails.
@@ -567,14 +638,16 @@ impl Indexer {
             .await?;
         // No need to advance generation for aborted transactions
         self.metadata.partition_map = pending_pm;
-        self.latest_indexed_tx = tx_key;
+        #[cfg(test)]
+        self.pause_before_publication().await;
+        self.publish_state(tx_key, false);
         Ok(tx_key)
     }
 }
 
 /// A pre-subscribed handle for waiting on transaction completion.
 ///
-/// Created by `Indexer::tx_waiter()`. Holds a broadcast receiver so that
+/// Created by `IndexerReadHandle::tx_waiter()`. Holds a broadcast receiver so that
 /// no messages are missed between subscription and the actual wait.
 pub(crate) struct TxWaiter {
     /// Latest indexed tx captured when this waiter subscribed.
@@ -1291,6 +1364,118 @@ mod tests {
             attribute: kw!(:nonexistent),
             value: "x".into(),
         }]
+    }
+
+    #[tokio::test]
+    async fn test_published_state_tracks_persisted_transactions() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        // Bootstrap publication must survive having no receivers.
+        let reader = indexer.read_handle();
+        let initial = reader.snapshot();
+        assert_eq!(initial.tx_key.tx_id, 1);
+        assert!(initial.schema.get_attribute(&kw!(:name)).is_some());
+
+        indexer.transact_tx(test_tx_key(2), add_op("alice")).await?;
+        let committed = reader.snapshot();
+        assert_eq!(committed.tx_key, test_tx_key(2));
+        assert!(Arc::ptr_eq(&initial.schema, &committed.schema));
+
+        let attribute = kw!(:published);
+        let definition = crate::schema::unique_value_schema_attribute(attribute.clone(), "string");
+        indexer
+            .transact_tx(test_tx_key(3), vec![definition.clone()])
+            .await?;
+        let updated = reader.snapshot();
+        assert_eq!(updated.tx_key, test_tx_key(3));
+        assert!(updated.schema.get_attribute(&attribute).is_some());
+        assert!(initial.schema.get_attribute(&attribute).is_none());
+        assert!(!Arc::ptr_eq(&initial.schema, &updated.schema));
+
+        let unpublished = kw!(:unpublished);
+        let mut invalid = aborting_op();
+        invalid.push(crate::schema::unique_value_schema_attribute(
+            unpublished.clone(),
+            "string",
+        ));
+        indexer.transact_tx(test_tx_key(4), invalid).await?;
+        let aborted = reader.snapshot();
+        assert_eq!(aborted.tx_key, test_tx_key(4));
+        assert!(Arc::ptr_eq(&updated.schema, &aborted.schema));
+        assert!(aborted.schema.get_attribute(&unpublished).is_none());
+
+        indexer
+            .accept(Record {
+                tx_key: test_tx_key(5),
+                record: vec![0xff],
+            })
+            .await;
+        assert!(Arc::ptr_eq(&aborted, &reader.snapshot()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_handle_subscribes_before_capturing_baseline() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let mut indexer = bootstrapped_indexer(&components).await;
+        let reader = indexer.read_handle();
+        let state_sender = indexer.indexed_state.clone();
+        let (reached, blocked) = tokio::sync::oneshot::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        // Block baseline capture using the watch write lock, without blocking subscription.
+        let publisher = tokio::task::spawn_blocking(move || {
+            state_sender.send_modify(|_| {
+                reached.send(()).unwrap();
+                resume.recv().unwrap();
+            });
+        });
+        blocked.await?;
+        let creating_waiter = tokio::task::spawn_blocking(move || reader.tx_waiter());
+        let subscribed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while indexer.tx_completion_sender.receiver_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        indexer
+            .accept(Record {
+                tx_key: test_tx_key(2),
+                record: vec![0xff],
+            })
+            .await;
+        release.send(())?;
+        publisher.await?;
+        let waiter = creating_waiter.await??;
+        subscribed.expect("completion subscription must precede baseline capture");
+
+        assert_eq!(waiter.baseline.tx_id, 1);
+        let completion = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            waiter.await_tx(test_tx_key(2)),
+        )
+        .await??;
+        assert!(matches!(completion.outcome, TxOutcome::Failed(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_handle_does_not_keep_completion_channel_alive() -> Result<(), Error> {
+        let components = in_memory_slate().await;
+        let indexer = bootstrapped_indexer(&components).await;
+        let reader = indexer.read_handle();
+        let waiter = reader.tx_waiter()?;
+        drop(indexer);
+
+        assert!(reader.tx_waiter().is_err());
+        assert!(reader.await_published(test_tx_key(2)).await.is_err());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            waiter.await_indexed(test_tx_key(2)),
+        )
+        .await?;
+        assert!(result.is_err());
+        assert_eq!(reader.snapshot().tx_key.tx_id, 1);
+        Ok(())
     }
 
     /// Unwrap an error outcome (`Aborted` or `Failed`), asserting its message

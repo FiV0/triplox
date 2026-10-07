@@ -9,14 +9,14 @@ use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
-use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
+use crate::indexer::{aev_key_to_parts, ave_key_to_parts, IndexerReadHandle};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
 use crate::schema::Schema;
@@ -55,7 +55,7 @@ pub(crate) fn datoms_to_tuples(
 pub(crate) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    indexer_read: IndexerReadHandle,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
@@ -64,7 +64,7 @@ pub(crate) fn spawn_cdc_loop(
     tokio::spawn(run_cdc_loop(
         object_path,
         object_store,
-        indexer,
+        indexer_read,
         service,
         registration_gate,
         cancel,
@@ -75,24 +75,34 @@ pub(crate) fn spawn_cdc_loop(
 async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    indexer_read: IndexerReadHandle,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> Result<()> {
     let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
+    let mut stream = CdcStream::new(
+        wal_reader,
+        CdcCursor::default(),
+        poll_interval,
+        cancel.clone(),
+    )
+    .await?;
 
     while let Some(tx) = stream.next_transaction().await? {
-        let schema = indexer.read().await.metadata().schema.clone();
-        let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
+        let state = indexer_read.snapshot();
+        let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &state.schema)?;
         if datoms.is_empty() {
             continue;
         }
         let tx_key = tx_key_from_datoms(&datoms)?;
-        let tuples = datoms_to_tuples(&datoms, &schema)?;
+        // Keep CDC behind publication so registration cannot miss an applied transaction.
+        let state = tokio::select! {
+            _ = cancel.cancelled() => break,
+            state = indexer_read.await_published(tx_key) => state?,
+        };
+        let tuples = datoms_to_tuples(&datoms, &state.schema)?;
         let _registration_guard = registration_gate.lock().await;
         service.apply_triples(tx_key, tuples).await?;
         // The registration gate is released before polling the next WAL transaction.
@@ -295,7 +305,7 @@ mod tests {
     use std::sync::Arc;
 
     use edn::kw;
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -508,12 +518,12 @@ mod tests {
     #[tokio::test]
     async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
-        let indexer = Arc::new(RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             Metadata::new(test_schema(), PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
             CancellationToken::new(),
@@ -527,7 +537,7 @@ mod tests {
         let result = run_cdc_loop(
             slate.object_path,
             slate.object_store,
-            indexer,
+            indexer.read_handle(),
             service,
             Arc::new(Mutex::new(())),
             cancel,

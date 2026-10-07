@@ -14,7 +14,9 @@ use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
-use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
+use crate::indexer::{
+    latest_tx_key_from_sdb, Indexer, IndexerReadHandle, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY,
+};
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
@@ -35,7 +37,9 @@ const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Node<L: TxLog> {
     log: Arc<L>,
+    #[cfg(test)]
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
+    indexer_read: IndexerReadHandle,
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
@@ -56,12 +60,14 @@ impl<L: TxLog> Node<L> {
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_KEY {
             log.ensure_bootstrap_record().await?;
         }
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             metadata,
             latest_indexed,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
+        let indexer_read = indexer.read_handle();
+        let indexer = Arc::new(tokio::sync::RwLock::new(indexer));
 
         let after_tx_id = Some(latest_indexed.tx_id);
 
@@ -73,7 +79,7 @@ impl<L: TxLog> Node<L> {
 
         // Create a waiter for catch-up completion
         let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
+            Some(_) => Some(indexer_read.tx_waiter()?),
             None => None,
         };
 
@@ -93,7 +99,9 @@ impl<L: TxLog> Node<L> {
 
         Ok(Node {
             log,
+            #[cfg(test)]
             indexer,
+            indexer_read,
             slate,
             subscription,
             incremental,
@@ -106,12 +114,14 @@ impl Node<MemoryLog> {
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             metadata,
             bootstrap_tx_key,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
+        let indexer_read = indexer.read_handle();
+        let indexer = Arc::new(tokio::sync::RwLock::new(indexer));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();
 
@@ -130,7 +140,9 @@ impl Node<MemoryLog> {
 
         Node {
             log,
+            #[cfg(test)]
             indexer,
+            indexer_read,
             slate,
             subscription,
             incremental,
@@ -248,7 +260,7 @@ impl<L: TxLog> Node<L> {
     }
 
     async fn db_as_of_with_timeout(&self, tx_key: TxKey, timeout: Duration) -> Result<DB, Error> {
-        let waiter = self.indexer.read().await.tx_waiter();
+        let waiter = self.indexer_read.tx_waiter()?;
         tokio::time::timeout(timeout, waiter.await_indexed(tx_key))
             .await
             .map_err(|_| TriploxError::TxIndexingTimeout {
@@ -256,14 +268,7 @@ impl<L: TxLog> Node<L> {
                 timeout,
             })??;
 
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
+        let ident_map = self.indexer_read.snapshot().schema.ident_map.clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         Ok(DB::new(
@@ -287,7 +292,7 @@ impl<L: TxLog> Node<L> {
         }
 
         self.incremental
-            .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
+            .register_query(self.slate.db.as_ref(), query, self.indexer_read.clone())
             .await
     }
 
@@ -310,7 +315,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
 
-        let waiter = self.indexer.read().await.tx_waiter();
+        let waiter = self.indexer_read.tx_waiter()?;
 
         let tx_key = self.log.append_tx(serialized).await?;
 
@@ -332,14 +337,9 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
 
     async fn db(&self) -> Result<DB, Error> {
-        // Read both under one lock so the ident map covers every tx up to tx_key.
-        let (tx_key, ident_map) = {
-            let indexer = self.indexer.read().await;
-            (
-                indexer.latest_tx_key(),
-                indexer.metadata().schema.ident_map.clone(),
-            )
-        };
+        let state = self.indexer_read.snapshot();
+        let tx_key = state.tx_key;
+        let ident_map = state.schema.ident_map.clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         Ok(DB::new(
@@ -416,7 +416,7 @@ mod tests {
             value: "bob".into(),
         }];
 
-        let waiter = node.indexer.read().await.tx_waiter();
+        let waiter = node.indexer_read.tx_waiter().unwrap();
 
         // submit_tx returns immediately with a TxKey
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
@@ -1246,7 +1246,7 @@ mod tests {
         node.close().await.unwrap();
     }
 
-    // The indexer's `latest_indexed_tx` field must be restored on restart so that
+    // The published basis must be restored on restart so that
     // a TxWaiter for an already-indexed transaction returns immediately. Without
     // the fix, `await_tx` falls into the broadcast loop and hangs forever because
     // no new completions will be broadcast.
@@ -1283,7 +1283,7 @@ mod tests {
 
         // A waiter obtained after restart should resolve immediately for the
         // already-indexed tx_key. Without the fix this hangs forever.
-        let waiter = node.indexer.read().await.tx_waiter();
+        let waiter = node.indexer_read.tx_waiter().unwrap();
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(2), waiter.await_tx(basis)).await;
 
@@ -1898,6 +1898,258 @@ mod tests {
             .expect("timed out waiting for incremental delta")
             .expect("subscription should be open");
         incremental_delta(delta)
+    }
+
+    #[tokio::test]
+    async fn test_indexer_writer_lock_does_not_block_readers_or_tx_submission() {
+        let node = Arc::new(Node::memory_node().await);
+        define_test_schema(node.as_ref()).await;
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "Alice".into(),
+        }])
+        .await
+        .unwrap();
+        let basis = node.indexer_read.snapshot().tx_key;
+        let query = r#"{:find [?name]
+                        :where [[?e :name ?name]]}"#;
+        let writer = node.indexer.write().await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(node.indexer_read.snapshot().tx_key, basis);
+            node.indexer_read
+                .tx_waiter()
+                .unwrap()
+                .await_indexed(basis)
+                .await
+                .unwrap();
+            assert_eq!(node.db().await.unwrap().tx_key(), basis);
+            assert_eq!(node.db_as_of(basis).await.unwrap().tx_key(), basis);
+        })
+        .await
+        .expect("published readers must not wait for the writer lock");
+
+        let mut subscription = tokio::time::timeout(
+            Duration::from_secs(2),
+            node.register_incremental_query(parse_query(query), &[]),
+        )
+        .await
+        .expect("registration must not wait for the writer lock")
+        .unwrap();
+        assert_eq!(subscription.tx_key, basis);
+        assert_eq!(
+            recv_incremental_delta(&mut subscription).await.rows,
+            vec![(vec![DataType::String("Alice".into())], 1)]
+        );
+
+        let mut records = node.log.subscribe_txs().await;
+        let executing_node = node.clone();
+        let executing = tokio::spawn(async move {
+            executing_node
+                .execute_tx(vec![TxOp::Add {
+                    entity: "bob".into(),
+                    attribute: kw!(:name),
+                    value: "Bob".into(),
+                }])
+                .await
+        });
+        let record = tokio::time::timeout(Duration::from_secs(2), records.recv())
+            .await
+            .expect("execute_tx must append while the writer lock is held")
+            .unwrap();
+        assert!(!executing.is_finished());
+        assert_eq!(node.db().await.unwrap().tx_key(), basis);
+        drop(writer);
+
+        let result = tokio::time::timeout(Duration::from_secs(2), executing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommitted(key) if key == record.tx_key));
+        flush_wal(&node).await;
+        let delta = recv_incremental_delta(&mut subscription).await;
+        assert_eq!(delta.tx_key, record.tx_key);
+        assert_eq!(delta.rows, vec![(vec![DataType::String("Bob".into())], 1)]);
+        Arc::try_unwrap(node).ok().unwrap().close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_close_cancels_cdc_waiting_for_publication() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let mut subscription = node
+            .register_incremental_query(
+                parse_query(
+                    r#"{:find [?name]
+                :where [[?e :name ?name]]}"#,
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+        let (reached, paused) = tokio::sync::oneshot::channel();
+        let (resume, release) = tokio::sync::oneshot::channel();
+        node.indexer.write().await.before_publication = Some((reached, release));
+        let waiter = node.indexer_read.tx_waiter().unwrap();
+        let tx_key = node
+            .submit_tx(vec![TxOp::Add {
+                entity: "alice".into(),
+                attribute: kw!(:name),
+                value: "Alice".into(),
+            }])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), paused)
+            .await
+            .unwrap()
+            .unwrap();
+        flush_wal(&node).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), subscription.deltas.recv())
+                .await
+                .is_err()
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), node.close())
+            .await
+            .expect("shutdown must cancel the publication wait")
+            .unwrap();
+        resume.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), waiter.await_tx(tx_key))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_registration_during_publication_pause_preserves_cdc_handoff() {
+        let node = Arc::new(Node::memory_node().await);
+        define_test_schema(node.as_ref()).await;
+        node.execute_tx(vec![TxOp::Add {
+            entity: "alice".into(),
+            attribute: kw!(:name),
+            value: "Alice".into(),
+        }])
+        .await
+        .unwrap();
+        flush_wal(&node).await;
+        let query = r#"{:find [?name]
+                        :where [[?e :name ?name]]}"#;
+        let mut existing = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        recv_incremental_delta(&mut existing).await;
+        let previous = node.indexer_read.snapshot();
+        let attribute = kw!(:published);
+        let (reached, paused) = tokio::sync::oneshot::channel();
+        let (resume, release) = tokio::sync::oneshot::channel();
+        node.indexer.write().await.before_publication = Some((reached, release));
+        let executing_node = node.clone();
+        let executing = tokio::spawn(async move {
+            executing_node
+                .execute_tx(vec![
+                    unique_value_schema_attribute(kw!(:published), "string"),
+                    TxOp::Add {
+                        entity: "bob".into(),
+                        attribute: kw!(:name),
+                        value: "Bob".into(),
+                    },
+                ])
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), paused)
+            .await
+            .unwrap()
+            .unwrap();
+        flush_wal(&node).await;
+        let stored = latest_tx_key_from_sdb(node.slate.db.as_ref())
+            .await
+            .unwrap();
+        assert!(stored.tx_id > previous.tx_key.tx_id);
+        assert!(Arc::ptr_eq(&previous, &node.indexer_read.snapshot()));
+        let db = tokio::time::timeout(Duration::from_secs(2), node.db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(db.tx_key(), previous.tx_key);
+        assert_eq!(
+            db.query(query).await.unwrap(),
+            vec![vec![DataType::String("Alice".into())]]
+        );
+        assert!(tokio::time::timeout(
+            Duration::from_millis(100),
+            node.indexer_read.await_published(stored)
+        )
+        .await
+        .is_err());
+
+        let mut registered = tokio::time::timeout(
+            Duration::from_secs(2),
+            node.register_incremental_query(parse_query(query), &[]),
+        )
+        .await
+        .expect("publication wait must not hold the registration gate")
+        .unwrap();
+        assert_eq!(registered.tx_key, previous.tx_key);
+        assert_eq!(
+            recv_incremental_delta(&mut registered).await.rows,
+            vec![(vec![DataType::String("Alice".into())], 1)]
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), existing.deltas.recv())
+                .await
+                .is_err()
+        );
+
+        resume.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), executing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, TransactionResult::TxCommitted(key) if key == stored));
+        let published = node.indexer_read.snapshot();
+        assert_eq!(published.tx_key, stored);
+        assert!(published.schema.get_attribute(&attribute).is_some());
+        assert!(previous.schema.get_attribute(&attribute).is_none());
+        for subscription in [&mut existing, &mut registered] {
+            let delta = recv_incremental_delta(subscription).await;
+            assert_eq!(delta.tx_key, stored);
+            assert_eq!(delta.rows, vec![(vec![DataType::String("Bob".into())], 1)]);
+        }
+
+        let mut using_attribute = node
+            .register_incremental_query(
+                parse_query(
+                    r#"{:find [?value]
+                :where [[?e :published ?value]]}"#,
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+        let result = node
+            .execute_tx(vec![TxOp::Add {
+                entity: "new".into(),
+                attribute,
+                value: "value".into(),
+            }])
+            .await
+            .unwrap();
+        let TransactionResult::TxCommitted(basis) = result else {
+            panic!("data transaction must commit")
+        };
+        flush_wal(&node).await;
+        let delta = recv_incremental_delta(&mut using_attribute).await;
+        assert_eq!(delta.tx_key, basis);
+        assert_eq!(
+            delta.rows,
+            vec![(vec![DataType::String("value".into())], 1)]
+        );
+        Arc::try_unwrap(node).ok().unwrap().close().await.unwrap();
     }
 
     async fn take_priming_delta(

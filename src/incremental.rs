@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -22,7 +22,7 @@ use triplox_client::transaction::TxKey;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
-use crate::indexer::Indexer;
+use crate::indexer::IndexerReadHandle;
 use crate::ops::DataType;
 use edn::query::ParsedQuery;
 
@@ -207,24 +207,22 @@ impl IncrementalQueryService {
         &self,
         db: &slatedb::Db,
         query: ParsedQuery,
-        indexer: Arc<RwLock<Indexer>>,
+        indexer_read: IndexerReadHandle,
     ) -> Result<IncrementalQuerySubscription> {
         let _registration_guard = self.registration_gate.lock().await;
-        let (tx_key, schema) = {
-            let indexer = indexer.read().await;
-            (indexer.latest_tx_key(), indexer.metadata().schema.clone())
-        };
-        let plan = plan_query(&query, &schema)?;
+        let state = indexer_read.snapshot();
+        let tx_key = state.tx_key;
+        let plan = plan_query(&query, &state.schema)?;
         let initial_triples =
             scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
         let subscription = self
             .register_prepared_query(plan, tx_key, initial_triples)
             .await?;
-        self.start_cdc_once(indexer);
+        self.start_cdc_once(indexer_read);
         Ok(subscription)
     }
 
-    fn start_cdc_once(&self, indexer: Arc<RwLock<Indexer>>) {
+    fn start_cdc_once(&self, indexer_read: IndexerReadHandle) {
         let mut cdc_task = self.cdc_task.lock().unwrap();
         if cdc_task.is_some() {
             return;
@@ -233,7 +231,7 @@ impl IncrementalQueryService {
         let handle = spawn_cdc_loop(
             self.cdc_object_path.clone(),
             self.cdc_object_store.clone(),
-            indexer,
+            indexer_read,
             self.clone(),
             self.registration_gate.clone(),
             self.cancel.clone(),
@@ -974,20 +972,8 @@ mod tests {
         assert!(!storage_path.exists());
     }
 
-    // NOTE(coverage): this exercises the `registration_gate` mutual-exclusion
-    // contract at the service layer only — it feeds `basis`/triples to
-    // `register_prepared_query` directly and never drives the real
-    // indexer -> WAL -> CDC -> register pipeline. The full no-missed-transaction
-    // guarantee for a query registered against a *live* CDC loop also depends on
-    // invariants outside this file: the indexer publishes `latest_indexed_tx`
-    // only after issuing the slatedb write, both under the write lock (the write
-    // is not awaited for durability), and `register_query` reads the basis under
-    // the indexer read lock. Since CDC only ever reads transactions that were
-    // already written, the basis observed under the read lock always covers the
-    // CDC loop's position regardless of when the WAL flush happens. A
-    // regression in that lock ordering would NOT be caught here; it needs a
-    // node-level integration test that registers a second query after CDC has
-    // advanced.
+    // This tests the service gate; Node tests cover CDC waiting for publication
+    // before taking the gate and registration scanning at the published basis.
     #[tokio::test]
     async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
         let dir = tempfile::tempdir().unwrap();
