@@ -9,14 +9,14 @@ use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
-use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
+use crate::indexer::{aev_key_to_parts, ave_key_to_parts, IndexerHandle};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
 use crate::schema::Schema;
@@ -55,7 +55,7 @@ pub(crate) fn datoms_to_tuples(
 pub(crate) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    indexer: IndexerHandle,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
@@ -75,7 +75,7 @@ pub(crate) fn spawn_cdc_loop(
 async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
-    indexer: Arc<RwLock<Indexer>>,
+    indexer: IndexerHandle,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
@@ -86,7 +86,11 @@ async fn run_cdc_loop(
         CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
-        let schema = indexer.read().await.metadata().schema.clone();
+        let Some(tx_id) = crate::slate::cdc::tx_id_from_cdc_transaction(&tx)? else {
+            continue;
+        };
+        // The WAL can hold a tx before its schema update is published, so wait for it.
+        let schema = indexer.await_indexed_state(tx_id).await?.schema;
         let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
         if datoms.is_empty() {
             continue;
@@ -295,7 +299,7 @@ mod tests {
     use std::sync::Arc;
 
     use edn::kw;
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -508,12 +512,12 @@ mod tests {
     #[tokio::test]
     async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
-        let indexer = Arc::new(RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             Metadata::new(test_schema(), PartitionMap::new()),
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
             CancellationToken::new(),
@@ -527,7 +531,7 @@ mod tests {
         let result = run_cdc_loop(
             slate.object_path,
             slate.object_store,
-            indexer,
+            indexer.handle(),
             service,
             Arc::new(Mutex::new(())),
             cancel,

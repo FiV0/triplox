@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codec;
 use crate::indexer::eav_key_to_parts;
+use crate::log::TxId;
 use crate::ops::{DataType, Datom, DatomOp};
+use crate::partition::extract_counter;
 use crate::schema::Schema;
 
 /// Tracks the CDC stream position.
@@ -180,6 +182,18 @@ impl CdcStream {
             Ok(false)
         }
     }
+}
+
+/// The tx id of a CDC transaction, read from its first EAV key without a schema.
+/// `None` if it has no live EAV entries.
+pub fn tx_id_from_cdc_transaction(tx: &CdcTransaction) -> Result<Option<TxId>, anyhow::Error> {
+    let Some(entry) = tx.entries.iter().find(|entry| {
+        entry.key.first() == Some(&codec::EAV) && !matches!(entry.value, ValueDeletable::Tombstone)
+    }) else {
+        return Ok(None);
+    };
+    let (_, _, _, tx_eid, _) = eav_key_to_parts(entry.key.clone())?;
+    Ok(Some(extract_counter(tx_eid)))
 }
 
 /// Extract Datoms from a CDC transaction by decoding EAV-prefix index keys.

@@ -42,7 +42,7 @@ pub(crate) struct TxCompletion {
 
 pub const DEFAULT_TX_COMPLETION_CAPACITY: usize = 1024;
 
-/// The latest indexed tx and the schema as of that tx, published after each indexed write.
+/// The latest processed tx (committed, aborted or failed) and the schema as of that tx.
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedState {
     pub tx_key: TxKey,
@@ -281,10 +281,12 @@ impl Indexer {
 
     /// Publish `tx_key` as indexed. Must happen before its completion is broadcast.
     fn publish_indexed(&self, tx_key: TxKey, schema_changed: bool) {
+        // Clone outside `send_modify` so readers don't wait on the schema clone.
+        let schema = schema_changed.then(|| Arc::new(self.metadata.schema.clone()));
         self.indexed_state.send_modify(|state| {
             state.tx_key = tx_key;
-            if schema_changed {
-                state.schema = Arc::new(self.metadata.schema.clone());
+            if let Some(schema) = schema {
+                state.schema = schema;
             }
         });
     }
@@ -316,6 +318,7 @@ impl Indexer {
                         e
                     ));
                     error!("{:#}", err);
+                    self.publish_indexed(tx_key, false);
                     let _ = self.tx_completion_sender.send(TxCompletion {
                         tx_key,
                         outcome: TxOutcome::Failed(err.clone()),
@@ -645,7 +648,7 @@ pub(crate) struct TxWaiter {
 
 impl TxWaiter {
     // await_tx answers if a transaction commited or aborted, ie the exact tx outcome.
-    // await_indexed answers "Are we there yet?" without knowing anything about the result.
+    // IndexerHandle::await_indexed_state answers "Are we there yet?" without the outcome.
 
     /// Wait until `tx_key` has been indexed. Returns the indexed `TxKey` and status,
     /// `Err` on abort or if the indexer shuts down.
@@ -673,31 +676,6 @@ impl TxWaiter {
                     // we deal with the correct resolution in the branch above eventually.
                     continue;
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(anyhow::anyhow!(
-                        "Indexer shutdown while waiting for tx {}",
-                        tx_key.tx_id
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Wait until indexing has reached `tx_key`, regardless of whether that
-    /// transaction committed or aborted.
-    pub async fn await_indexed(mut self, tx_key: TxKey) -> Result<(), Error> {
-        if tx_key.tx_id <= self.baseline.tx_id {
-            return Ok(());
-        }
-
-        loop {
-            match self.rx.recv().await {
-                Ok(completion) => {
-                    if completion.tx_key.tx_id >= tx_key.tx_id {
-                        return Ok(());
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_count)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
                     return Err(anyhow::anyhow!(
                         "Indexer shutdown while waiting for tx {}",
@@ -736,6 +714,7 @@ impl Subscriber for Indexer {
                     "Transaction {} deserialization failed: {}",
                     record.tx_key.tx_id, err
                 );
+                self.publish_indexed(record.tx_key, false);
                 let _ = self.tx_completion_sender.send(TxCompletion {
                     tx_key: record.tx_key,
                     outcome: TxOutcome::Failed(Arc::new(err)),
@@ -1186,6 +1165,8 @@ mod tests {
         assert_eq!(completion.tx_key, tx_key);
         assert!(matches!(completion.outcome, TxOutcome::Failed(_)));
         assert_outcome_err(&completion.outcome, "Failed to deserialize TxOps");
+        // Published as processed, so waiters for this tx id don't hang until the next tx.
+        assert_eq!(indexer.handle().indexed_state().tx_key, tx_key);
 
         Ok(())
     }

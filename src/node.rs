@@ -14,7 +14,9 @@ use crate::file_log::FileLog;
 use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
-use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
+use crate::indexer::{
+    latest_tx_key_from_sdb, Indexer, IndexerHandle, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY,
+};
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
@@ -35,7 +37,10 @@ const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Node<L: TxLog> {
     log: Arc<L>,
+    // Only the subscription task locks the indexer; readers go through `indexer_handle`.
+    #[cfg(test)]
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
+    indexer_handle: IndexerHandle,
     pub(crate) slate: SlateComponents,
     subscription: CancellationToken,
     incremental: IncrementalQueryService,
@@ -56,12 +61,14 @@ impl<L: TxLog> Node<L> {
         if latest_indexed == *crate::bootstrap::BOOTSTRAP_TX_KEY {
             log.ensure_bootstrap_record().await?;
         }
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             metadata,
             latest_indexed,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
+        let indexer_handle = indexer.handle();
+        let indexer = Arc::new(tokio::sync::RwLock::new(indexer));
 
         let after_tx_id = Some(latest_indexed.tx_id);
 
@@ -70,12 +77,6 @@ impl<L: TxLog> Node<L> {
         // Read the last tx_key from the log before subscribing (for catch-up awaiting)
         let records = log.read_txs_after(after_tx_id, u16::MAX).await?;
         let last_tx_key = records.last().map(|r| r.tx_key);
-
-        // Create a waiter for catch-up completion
-        let waiter = match last_tx_key {
-            Some(_) => Some(indexer.read().await.tx_waiter()),
-            None => None,
-        };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
         let incremental = IncrementalQueryService::new(
@@ -87,13 +88,15 @@ impl<L: TxLog> Node<L> {
         );
 
         // Wait for catch-up to complete if there are un-indexed transactions
-        if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
-            waiter.await_indexed(tx_key).await?;
+        if let Some(tx_key) = last_tx_key {
+            indexer_handle.await_indexed_state(tx_key.tx_id).await?;
         }
 
         Ok(Node {
             log,
+            #[cfg(test)]
             indexer,
+            indexer_handle,
             slate,
             subscription,
             incremental,
@@ -106,12 +109,14 @@ impl Node<MemoryLog> {
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
-        let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
+        let indexer = Indexer::new(
             slate.db.clone(),
             metadata,
             bootstrap_tx_key,
             DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        );
+        let indexer_handle = indexer.handle();
+        let indexer = Arc::new(tokio::sync::RwLock::new(indexer));
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();
 
@@ -130,7 +135,9 @@ impl Node<MemoryLog> {
 
         Node {
             log,
+            #[cfg(test)]
             indexer,
+            indexer_handle,
             slate,
             subscription,
             incremental,
@@ -248,27 +255,22 @@ impl<L: TxLog> Node<L> {
     }
 
     async fn db_as_of_with_timeout(&self, tx_key: TxKey, timeout: Duration) -> Result<DB, Error> {
-        let waiter = self.indexer.read().await.tx_waiter();
-        tokio::time::timeout(timeout, waiter.await_indexed(tx_key))
-            .await
-            .map_err(|_| TriploxError::TxIndexingTimeout {
-                tx_id: tx_key.tx_id,
-                timeout,
-            })??;
+        // A later state's ident map still covers every tx up to tx_key.
+        let state = tokio::time::timeout(
+            timeout,
+            self.indexer_handle.await_indexed_state(tx_key.tx_id),
+        )
+        .await
+        .map_err(|_| TriploxError::TxIndexingTimeout {
+            tx_id: tx_key.tx_id,
+            timeout,
+        })??;
 
-        let ident_map = self
-            .indexer
-            .read()
-            .await
-            .metadata()
-            .schema
-            .ident_map
-            .clone();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         Ok(DB::new(
             self.slate.db.clone(),
-            ident_map,
+            state.schema.ident_map.clone(),
             handle,
             tx_key,
             range_stats,
@@ -287,7 +289,7 @@ impl<L: TxLog> Node<L> {
         }
 
         self.incremental
-            .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
+            .register_query(self.slate.db.as_ref(), query, &self.indexer_handle)
             .await
     }
 
@@ -310,7 +312,7 @@ impl<L: TxLog> SubmitNode for Node<L> {
         let ops = collect_tx_ops(ops)?;
         let serialized = bincode::serialize(&ops)?;
 
-        let waiter = self.indexer.read().await.tx_waiter();
+        let waiter = self.indexer_handle.tx_waiter();
 
         let tx_key = self.log.append_tx(serialized).await?;
 
@@ -332,21 +334,15 @@ impl<L: TxLog> QueryNode for Node<L> {
     type DB = DB;
 
     async fn db(&self) -> Result<DB, Error> {
-        // Read both under one lock so the ident map covers every tx up to tx_key.
-        let (tx_key, ident_map) = {
-            let indexer = self.indexer.read().await;
-            (
-                indexer.latest_tx_key(),
-                indexer.metadata().schema.ident_map.clone(),
-            )
-        };
+        // One published state, so the ident map covers every tx up to tx_key.
+        let state = self.indexer_handle.indexed_state();
         let handle = Handle::current();
         let range_stats = self.slate.range_stats.clone();
         Ok(DB::new(
             self.slate.db.clone(),
-            ident_map,
+            state.schema.ident_map.clone(),
             handle,
-            tx_key,
+            state.tx_key,
             range_stats,
         ))
     }
@@ -416,7 +412,7 @@ mod tests {
             value: "bob".into(),
         }];
 
-        let waiter = node.indexer.read().await.tx_waiter();
+        let waiter = node.indexer_handle.tx_waiter();
 
         // submit_tx returns immediately with a TxKey
         let tx_key = node.submit_tx(tx_ops).await.unwrap();
@@ -1283,7 +1279,7 @@ mod tests {
 
         // A waiter obtained after restart should resolve immediately for the
         // already-indexed tx_key. Without the fix this hangs forever.
-        let waiter = node.indexer.read().await.tx_waiter();
+        let waiter = node.indexer_handle.tx_waiter();
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(2), waiter.await_tx(basis)).await;
 
@@ -2057,6 +2053,60 @@ mod tests {
         ];
         expected.sort_by_key(|row| format!("{:?}", row));
         assert_eq!(rows, expected);
+    }
+
+    // Readers use the published indexed state, so none of them wait on the indexer lock.
+    #[tokio::test]
+    async fn test_readers_complete_while_indexer_write_lock_is_held() {
+        use crate::clock::SystemTimeSource;
+
+        let node = Node::memory_node().await;
+        let mut subscription = node
+            .register_incremental_query(
+                parse_query(
+                    r#"{:find [?ident]
+                        :where [[?e :db/ident ?ident]]}"#,
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+        take_priming_delta(&mut subscription).await;
+
+        // Index a schema tx through the write lock and keep holding it.
+        let mut indexer = node.indexer.write().await;
+        let tx_key = TxKey {
+            tx_id: node.db().await.unwrap().tx_key().tx_id + 1,
+            system_time: crate::clock::SystemClock.now(),
+        };
+        indexer.transact_tx(tx_key, test_schema_tx()).await.unwrap();
+        flush_wal(&node).await;
+
+        let readers = async {
+            let db = node.db().await.unwrap();
+            assert_eq!(db.tx_key(), tx_key);
+            assert!(db.ident_map().contains_key(&kw!(:name)));
+
+            let db = node.db_as_of(tx_key).await.unwrap();
+            assert!(db.ident_map().contains_key(&kw!(:name)));
+
+            node.register_incremental_query(
+                parse_query(
+                    r#"{:find [?name]
+                        :where [[?e :name ?name]]}"#,
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
+
+            let delta = recv_incremental_delta(&mut subscription).await;
+            assert_eq!(delta.tx_key, tx_key);
+        };
+        tokio::time::timeout(Duration::from_secs(10), readers)
+            .await
+            .expect("readers should not wait on the indexer lock");
+        drop(indexer);
     }
 
     #[tokio::test]
