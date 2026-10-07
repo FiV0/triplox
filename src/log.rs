@@ -489,7 +489,7 @@ mod tests {
         }));
         let token = subscribe(log.clone(), None, subscriber.clone()).await;
 
-        // Hold the subscriber on tx 0 while the remaining txs overflow the channel.
+        // Block the startup catch-up on tx 0 while the remaining txs overflow the channel.
         log.append_tx(vec![]).await.unwrap();
         assert_eq!(entered_rx.recv().await, Some(0));
         for _ in 1..record_count {
@@ -497,7 +497,7 @@ mod tests {
         }
         gate.add_permits(1);
         assert_eq!(entered_rx.recv().await, Some(1), "tx 1 is only in the log");
-        // Only tx 0 and the first chunk are in memory, not the whole lag.
+        // Only tx 0 and the first chunk have been read, not the whole lag.
         assert!(log.records_read.load(Ordering::SeqCst) <= 1 + CATCH_UP_BATCH_SIZE as usize);
 
         // Queue a reader behind the catch-up's write lock, then let one tx finish.
