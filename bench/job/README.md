@@ -189,7 +189,10 @@ client port is published, bound to localhost. The credentials in
 [config/triplox.toml](config/triplox.toml) are local benchmark defaults.
 The config sets a 100 ms CDC poll interval (server default: 200 ms); it only
 affects `triplox-incremental`, since the CDC loop starts with the first
-subscription.
+subscription. Incremental subscriptions share a pooled DBSP runtime from
+[FiV0/feldera PR #1](https://github.com/FiV0/feldera/pull/1) with two foreground
+workers, one merger worker, and a 4 GiB shared cache, instead of one dedicated
+runtime per query.
 `JOB_TRIPLOX_IMAGE` overrides the server image for infrastructure diagnostics;
 container inspection records the actual image IDs. Rebuild the default image
 when the checkout changes.
