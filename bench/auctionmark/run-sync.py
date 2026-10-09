@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a disposable MinIO-backed benchmark with a combined two-core/8 GiB budget."""
+"""Run a disposable RustFS-backed benchmark with a combined two-core/8 GiB budget."""
 import argparse
 import datetime
 import hashlib
@@ -13,8 +13,8 @@ import sys
 import time
 import uuid
 
-MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
-MC_IMAGE = "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+RUSTFS_IMAGE = "rustfs/rustfs:1.0.0"
+RC_IMAGE = "rustfs/rc:v0.1.36"
 BENCH = Path(__file__).resolve().parent
 REPO = BENCH.parent.parent
 
@@ -66,50 +66,50 @@ def benchmark(args, benchmark_args):
     if not binary.is_file():
         raise FileNotFoundError(f"Build the release server first: {binary}")
     name = "auctionmark-sync-" + uuid.uuid4().hex[:12]
-    mc_name = name + "-setup"
+    rc_name = name + "-setup"
     server = client = None
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     metadata = {
         "runtime": "pooled", "foreground_threads": 2, "merger_threads": 1,
         "shared_cache_mib": 4096, "cdc_poll_ms": 200,
-        "remote_flush_us": 100, "storage": "MinIO", "log": "local file",
-        "minio_image": MINIO_IMAGE, "server_binary": str(binary),
+        "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
+        "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
         "server_sha256": digest,
         "application_cpu_quota": 1.75, "application_memory_mib": 7424,
-        "minio_cpu_quota": 0.25, "minio_memory_mib": 768,
+        "rustfs_cpu_quota": 0.25, "rustfs_memory_mib": 768,
         "revision": output("git", "-C", str(REPO), "rev-parse", "HEAD"),
         "dirty": bool(output("git", "-C", str(REPO), "status", "--porcelain")),
     }
     try:
         run("docker", "run", "--detach", "--rm", "--name", name,
             "--cpus=0.25", "--memory=768m", "--memory-swap=768m", "--pids-limit=128",
-            "-p", "127.0.0.1::9000", "-e", "MINIO_ROOT_USER=triplox",
-            "-e", "MINIO_ROOT_PASSWORD=triplox123", MINIO_IMAGE, "server", "/data",
+            "-p", "127.0.0.1::9000", "-e", "RUSTFS_ACCESS_KEY=triplox",
+            "-e", "RUSTFS_SECRET_KEY=triplox123", RUSTFS_IMAGE, "/data",
             stdout=subprocess.DEVNULL)
-        minio_port = int(output("docker", "port", name, "9000/tcp").rsplit(":", 1)[1])
-        wait_port(minio_port)
+        rustfs_port = int(output("docker", "port", name, "9000/tcp").rsplit(":", 1)[1])
+        wait_port(rustfs_port)
         # Bucket setup finishes before the measured server and client start.
         for attempt in range(20):
             result = subprocess.run([
-                "docker", "run", "--rm", "--name", mc_name, "--network", "container:" + name,
-                "--cpus=0.25", "--memory=128m", "--memory-swap=128m",
-                "-e", "MC_HOST_probe=http://triplox:triplox123@127.0.0.1:9000",
-                MC_IMAGE, "mb", "--ignore-existing", "probe/auctionmark"],
+                "docker", "run", "--rm", "--name", rc_name, "--network", "container:" + name,
+                "--cpus=0.25", "--memory=128m", "--memory-swap=128m", "--entrypoint", "/bin/sh",
+                RC_IMAGE, "-c", "rc alias set probe http://127.0.0.1:9000 triplox triplox123 && "
+                "rc mb --ignore-existing probe/auctionmark"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
             if result.returncode == 0:
                 break
             if attempt == 19:
-                raise RuntimeError("MinIO bucket setup failed: " + result.stderr)
+                raise RuntimeError("RustFS bucket setup failed: " + result.stderr)
             time.sleep(0.25)
-        minio_pid = output("docker", "inspect", "--format", "{{.State.Pid}}", name)
+        rustfs_pid = output("docker", "inspect", "--format", "{{.State.Pid}}", name)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         # JSON string quoting is compatible with these TOML basic strings.
         config = directory / "server.toml"
         config.write_text(
-            f'[storage]\ntype="remote"\nendpoint="http://127.0.0.1:{minio_port}"\n'
+            f'[storage]\ntype="remote"\nendpoint="http://127.0.0.1:{rustfs_port}"\n'
             'bucket="auctionmark"\naccess_key="triplox"\nsecret_key="triplox123"\n'
             f'cache_path={json.dumps(str(directory / "cache"))}\n'
             'wal_flush_interval_us=100\n'
@@ -126,7 +126,7 @@ def benchmark(args, benchmark_args):
             wait_port(port, server)
             command = ["clojure", "-J-Xmx768m", "-J-XX:ActiveProcessorCount=2", "-M:sync",
                        *benchmark_args, "--host", "127.0.0.1", "--port", str(port),
-                       "--server-pid", str(server.pid), "--minio-pid", minio_pid,
+                       "--server-pid", str(server.pid), "--storage-pid", rustfs_pid,
                        "--memory-mib", "8192", "--output", str(directory / "report.json")]
             client = subprocess.Popen(command, cwd=BENCH, env=environment, start_new_session=True)
             result = client.wait(timeout=args.timeout)
@@ -141,11 +141,11 @@ def benchmark(args, benchmark_args):
         stop(client)
         stop(server)
         try:
-            with (directory / "minio.log").open("w") as log:
+            with (directory / "rustfs.log").open("w") as log:
                 subprocess.run(["docker", "logs", name], stdout=log, stderr=subprocess.STDOUT, timeout=15)
         finally:
             try:
-                subprocess.run(["docker", "rm", "--force", mc_name, name], stdout=subprocess.DEVNULL,
+                subprocess.run(["docker", "rm", "--force", rc_name, name], stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, timeout=30)
             finally:
                 (directory / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")
