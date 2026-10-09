@@ -31,16 +31,16 @@ python3 bench/auctionmark/run-sync.py
 
 `CARGO_TARGET_DIR` or `--server-binary /path/to/triplox` selects an existing release
 binary. The launcher records its SHA-256 and checkout revision; rebuild after Rust
-changes. It creates a fresh MinIO container and local transaction log, starts the
+changes. It creates a fresh RustFS container and local transaction log, starts the
 server, runs the Clojure driver, and tears down the processes and container. Logs,
 configuration, JSON results, and local database files remain in
 `target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
 The default client timeout is 600 seconds, configurable with `--timeout`.
 
 The measured application scope (server and JVM) has a 1.75-core CPU quota and
-7424 MiB memory limit. MinIO has a separate 0.25-core quota and 768 MiB limit, for
+7424 MiB memory limit. RustFS has a separate 0.25-core quota and 768 MiB limit, for
 a combined two cores and 8 GiB. Swapping is disabled. Bucket creation uses a small
-short-lived `mc` container before the server starts. The launcher requires the
+short-lived `rc` container before the server starts. The launcher requires the
 systemd limits to succeed. The direct Clojure command only samples RSS; it does not
 install these operating-system limits.
 
@@ -159,7 +159,7 @@ circuit execution and client consumption. The 200 ms setting is CDC polling, not
 a 200 ms write interval.
 
 Memory/local storage use SlateDB's default 100 ms flush interval. Remote storage
-defaults to 200 ms; this MinIO demo explicitly sets `wal_flush_interval_us=100`
+defaults to 200 ms; this RustFS demo explicitly sets `wal_flush_interval_us=100`
 to preserve its **100 microsecond** flush interval. Actual writes take additional
 time. `src/incremental/cdc.rs` keeps its 200 ms polling interval. With a
 250 ms freshness target, polling phase and object-store latency are material parts
