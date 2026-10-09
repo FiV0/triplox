@@ -31,7 +31,7 @@
    [nil "--drain-ms MS" "Maximum delivery backlog age and final drain" :default 5000 :parse-fn parse-long]
    [nil "--memory-mib N" "Combined sampled RSS limit" :default 8192 :parse-fn parse-long]
    [nil "--server-pid PID" "Server process to sample" :parse-fn parse-long]
-   [nil "--minio-pid PID" "MinIO process to sample" :parse-fn parse-long]
+   [nil "--storage-pid PID" "Object storage process to sample" :parse-fn parse-long]
    [nil "--output PATH" "JSON report" :default "sync-report.json"]
    ["-h" "--help"]])
 
@@ -295,7 +295,7 @@
   [opts]
   (let [pids (cond-> {:client (.pid (ProcessHandle/current))}
                (:server-pid opts) (assoc :server (:server-pid opts))
-               (:minio-pid opts) (assoc :minio (:minio-pid opts)))
+               (:storage-pid opts) (assoc :storage (:storage-pid opts)))
         report {:created-at (str (Instant/now))
                 :options opts
                 :revision (str/trim (:out (shell/sh "git" "rev-parse" "HEAD")))
