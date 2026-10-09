@@ -1,0 +1,61 @@
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.93
+    command: server /data --console-address ":9001"
+    environment:
+      RUSTFS_ROOT_USER: triplox
+      RUSTFS_ROOT_PASSWORD: triplox123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  createbucket:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      mc alias set myrustfs http://rustfs:9000 triplox triplox123 &&
+      mc mb --ignore-existing myrustfs/triplox
+      "
+
+  triplox:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    environment:
+      TRIPLOX_STORAGE: remote
+    ports:
+      - "5490:5490"
+    volumes:
+      - triplox-log:/var/lib/triplox
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      triplox:
+        condition: service_started
+    environment:
+      TRIPLOX_HOST: triplox
+      TRIPLOX_PORT: "5490"
+      SCALE_FACTOR: "0.1"
+      THREADS: "8"
+      DURATION: "120"
+
+volumes:
+  rustfs-data:
+  triplox-log:
