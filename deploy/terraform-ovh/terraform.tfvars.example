@@ -1,0 +1,39 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+# OVH Public Cloud project id (the service_name). Required.
+project_id = "0123456789abcdef0123456789abcdef"
+
+# Region for compute + private network. storage_region is the same location,
+# uppercase and trimmed (GRA11 -> GRA, SBG5 -> SBG, DE1 -> DE).
+# os_region      = "GRA11"
+# storage_region = "GRA"
+
+# SSH public key — the only login path (OVH has no SSM equivalent). Required.
+ssh_public_key = "ssh-ed25519 AAAA... you@host"
+# ssh_user = "debian"   # "ubuntu" if you switch image_name to an Ubuntu image
+
+# IMPORTANT: lock SSH and the Triplox port down to your own IP. The wire protocol
+# is unauthenticated, and on OVH the host firewall (ufw) — not security groups —
+# is what enforces this, so the default 0.0.0.0/0 exposes the database.
+admin_cidr = "203.0.113.10/32"
+
+# Kafka-enabled image to deploy. Must include the kafka feature (built by the
+# "Build and push (kafka)" step in .github/workflows/docker-publish.yml).
+triplox_image = "ghcr.io/fiv0/triplox:snapshot-kafka"
+
+# --- Flavor sizing (OpenStack flavor names) ---
+# automq_flavor  = "r3-16"   # memory-leaning broker
+# triplox_flavor = "b3-16"   # the unit under test
+# loadgen_flavor = "b3-8"
+
+# --- Triplox cache disk ---
+# triplox_disk_mode         = "volume"           # or "local" with an i1-* flavor
+# triplox_cache_volume_gb   = 200
+# triplox_cache_volume_type = "high-speed-gen2"  # NVMe-backed block storage
+
+# --- Load generator (default off; image added later) ---
+# enable_load_gen      = true
+# loadgen_image        = "ghcr.io/fiv0/triplox-auctionmark:latest"
+# loadgen_scale_factor = 0.1
+# loadgen_threads      = 8
+# loadgen_duration     = 120
