@@ -46,9 +46,9 @@ install these operating-system limits.
 
 The server uses two pooled DBSP foreground workers, one merger worker, and a
 **4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap
-on total circuit state. The runtime comes from
-[FiV0/feldera PR #1](https://github.com/FiV0/feldera/pull/1), pinned at
-`ded0d390b64bdfe82a9afac9084404ad3809547e`. Ordinary Triplox configurations continue
+on total circuit state. The runtime comes from the `runtime-pooling` branch of
+[FiV0/feldera](https://github.com/FiV0/feldera/tree/runtime-pooling), pinned at
+`c77ca264ceb90fbe0dfbc3d25de919cd5c59f5eb`. Ordinary Triplox configurations continue
 to use dedicated runtimes unless configured explicitly:
 
 ```toml
