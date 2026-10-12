@@ -63,7 +63,7 @@
                   artifacts/write-json! (fn [& _] (record! :write))
                   artifacts/save-result! (fn [& _] (record! :write) {})]
       (runner/run! engine {:engine-name "triplox-incremental" :query-ids ["1a"]
-                           :output "unused" :timeout-ms 1000})
+                           :output "unused" :timeout-ms 1000 :catchup-timeout-ms 1000})
       (is (= :await (nth @calls (inc (.indexOf @calls :load))))))))
 
 (defn with-loaded-run [engine-name standard-rows f]
@@ -84,7 +84,7 @@
                                {:rows [[(str view) (:tx-id tx)]] :tx-key tx})
                 :close! (constantly nil)}
         config {:engine-name engine-name :query-ids ["1a" "2a"]
-                :output (str directory) :timeout-ms 1000}]
+                :output (str directory) :timeout-ms 1000 :catchup-timeout-ms 1000}]
     (try
       (with-redefs [data/load-data! (fn [_ _ transact! & _]
                                      (transact! [{:step 1}])

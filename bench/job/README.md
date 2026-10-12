@@ -152,8 +152,11 @@ Default controls:
 - `--max-bytes 262144`: maximum serialized EDN transaction bytes; large batches
   split deterministically. This is not a wire-byte or datom-count limit.
 - `--heap 4g --transactor-heap 2g`: runner JVM and separate transactor heaps.
-- `--timeout-ms 600000`: transaction, query, registration, and view-catchup
-  deadlines. Query interruption is best effort; the process exits on failure.
+- `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
+  interruption is best effort; the process exits on failure. Waiting for the
+  last loaded transaction to be indexed has no deadline.
+- `--catchup-timeout-ms 600000`: deadline for every incremental view to apply
+  the last loaded transaction, counted from the end of indexing.
 - `--run-timeout-seconds 86400`: outer limit for each JVM process.
 - `--port 15490 --datomic-port 14334`: local service ports; Datomic also needs
   the next port for H2. Occupied ports fail instead of reusing another service.
