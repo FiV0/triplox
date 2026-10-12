@@ -37,7 +37,7 @@ pub struct Node<L: TxLog> {
     log: Arc<L>,
     indexer: Arc<tokio::sync::RwLock<Indexer>>,
     pub(crate) slate: SlateComponents,
-    subscription: CancellationToken,
+    cancel: CancellationToken,
     incremental: IncrementalQueryService,
 }
 
@@ -77,10 +77,10 @@ impl<L: TxLog> Node<L> {
             None => None,
         };
 
-        let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+        let cancel = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
         let incremental = IncrementalQueryService::new(
             incremental_storage_path,
-            subscription.clone(),
+            cancel.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
             cdc_poll_interval,
@@ -95,7 +95,7 @@ impl<L: TxLog> Node<L> {
             log,
             indexer,
             slate,
-            subscription,
+            cancel,
             incremental,
         })
     }
@@ -115,14 +115,13 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();
 
-        let subscription =
-            subscribe(log.clone(), Some(bootstrap_tx_key.tx_id), indexer.clone()).await;
+        let cancel = subscribe(log.clone(), Some(bootstrap_tx_key.tx_id), indexer.clone()).await;
         let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
                 crate::util::random_string(10)
             )),
-            subscription.clone(),
+            cancel.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
@@ -132,7 +131,7 @@ impl Node<MemoryLog> {
             log,
             indexer,
             slate,
-            subscription,
+            cancel,
             incremental,
         }
     }
@@ -233,7 +232,7 @@ impl Node<KafkaLog> {
 impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
         let incremental_result = self.incremental.shutdown().await;
-        self.subscription.cancel();
+        self.cancel.cancel();
         let db_result = self.slate.db.close().await.map_err(Error::from);
 
         match (incremental_result, db_result) {
