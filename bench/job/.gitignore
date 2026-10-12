@@ -1,0 +1,8 @@
+/data/
+/runs/
+/state/
+/downloads/
+/target/
+/.cpcache/
+__pycache__/
+/disks.d/

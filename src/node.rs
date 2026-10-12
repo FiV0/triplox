@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 #[cfg(feature = "kafka")]
 use crate::config::KafkaLogConfig;
-use crate::config::RemoteStorageConfig;
+use crate::config::{IncrementalConfig, RemoteStorageConfig};
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
@@ -49,6 +49,7 @@ impl<L: TxLog> Node<L> {
         log: Arc<L>,
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
@@ -78,12 +79,13 @@ impl<L: TxLog> Node<L> {
         };
 
         let subscription = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(
+        let incremental = IncrementalQueryService::new_with_runtime(
             incremental_storage_path,
             subscription.clone(),
             slate.object_path.clone(),
             slate.object_store.clone(),
             cdc_poll_interval,
+            incremental_config,
         );
 
         // Wait for catch-up to complete if there are un-indexed transactions
@@ -103,6 +105,10 @@ impl<L: TxLog> Node<L> {
 
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
+        Self::memory_node_with_incremental(IncrementalConfig::default()).await
+    }
+
+    pub async fn memory_node_with_incremental(incremental_config: IncrementalConfig) -> Self {
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
@@ -117,7 +123,7 @@ impl Node<MemoryLog> {
 
         let subscription =
             subscribe(log.clone(), Some(bootstrap_tx_key.tx_id), indexer.clone()).await;
-        let incremental = IncrementalQueryService::new(
+        let incremental = IncrementalQueryService::new_with_runtime(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
                 crate::util::random_string(10)
@@ -126,6 +132,7 @@ impl Node<MemoryLog> {
             slate.object_path.clone(),
             slate.object_store.clone(),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
+            incremental_config,
         );
 
         Node {
@@ -145,12 +152,29 @@ impl Node<FileLog> {
         log_file: &Path,
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
-        Self::from_slate_and_tx_log(slate, log, incremental_storage_path, cdc_poll_interval).await
+        Self::from_slate_and_tx_log(
+            slate,
+            log,
+            incremental_storage_path,
+            cdc_poll_interval,
+            incremental_config,
+        )
+        .await
     }
 
     pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
+        Self::local_node_with_incremental(storage_path, log_path, IncrementalConfig::default())
+            .await
+    }
+
+    pub async fn local_node_with_incremental(
+        storage_path: &Path,
+        log_path: &Path,
+        incremental_config: IncrementalConfig,
+    ) -> Result<Self, Error> {
         std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
         let slate = local_slate(&db_path).await;
@@ -165,6 +189,7 @@ impl Node<FileLog> {
             log_path,
             storage_path.join("dbsp"),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
+            incremental_config,
         )
         .await
     }
@@ -172,6 +197,14 @@ impl Node<FileLog> {
     pub async fn remote_node(
         storage: &RemoteStorageConfig,
         log_path: &Path,
+    ) -> Result<Self, Error> {
+        Self::remote_node_with_incremental(storage, log_path, IncrementalConfig::default()).await
+    }
+
+    pub async fn remote_node_with_incremental(
+        storage: &RemoteStorageConfig,
+        log_path: &Path,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         if let Some(parent) = log_path
             .parent()
@@ -196,6 +229,7 @@ impl Node<FileLog> {
             log_path,
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
+            incremental_config,
         )
         .await
     }
@@ -206,6 +240,14 @@ impl Node<KafkaLog> {
     pub async fn kafka_node(
         storage: &RemoteStorageConfig,
         log: &KafkaLogConfig,
+    ) -> Result<Self, Error> {
+        Self::kafka_node_with_incremental(storage, log, IncrementalConfig::default()).await
+    }
+
+    pub async fn kafka_node_with_incremental(
+        storage: &RemoteStorageConfig,
+        log: &KafkaLogConfig,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         std::fs::create_dir_all(&storage.cache_path)?;
         let cache_path = storage.cache_path.join("cache");
@@ -225,6 +267,7 @@ impl Node<KafkaLog> {
             log,
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
+            incremental_config,
         )
         .await
     }
@@ -1893,10 +1936,17 @@ mod tests {
     async fn recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
-            .await
-            .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open");
+        let delta = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let delta = subscription.deltas.recv().await?;
+                if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                    return Some(delta);
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for incremental delta")
+        .expect("subscription should be open");
         incremental_delta(delta)
     }
 
@@ -1911,11 +1961,18 @@ mod tests {
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
-            .await
-            .ok()
-            .flatten()
-            .map(incremental_delta)
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let delta = subscription.deltas.recv().await?;
+                if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                    return Some(delta);
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+        .map(incremental_delta)
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -1998,10 +2055,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.tx_key, expected_basis);
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
+        let priming = incremental_delta(subscription.deltas.try_recv().unwrap());
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, expected_basis);
     }
 
     #[tokio::test]
@@ -2864,6 +2920,9 @@ mod tests {
 
         node.unregister_incremental_query(handle).await.unwrap();
 
+        assert!(incremental_delta(subscription.deltas.recv().await.unwrap())
+            .rows
+            .is_empty());
         assert!(subscription.deltas.recv().await.is_none());
     }
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::partition::tx_eid_from_tx_id;
 use anyhow::{anyhow, Context, Error, Result};
-use dbsp::{utils::Tup2, ZWeight};
+use dbsp::{utils::Tup2, PoolConfig, RuntimePool, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
 
+use crate::config::IncrementalConfig;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
@@ -38,6 +39,7 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy)]
 struct IncrementalQueryOptions {
+    runtime: IncrementalConfig,
     inbox_capacity: NonZeroUsize,
     max_concurrent_steps: NonZeroUsize,
     retire_timeout: Duration,
@@ -46,6 +48,7 @@ struct IncrementalQueryOptions {
 impl Default for IncrementalQueryOptions {
     fn default() -> Self {
         Self {
+            runtime: IncrementalConfig::Dedicated,
             inbox_capacity: NonZeroUsize::new(256).unwrap(),
             max_concurrent_steps: thread::available_parallelism()
                 .unwrap_or(NonZeroUsize::MIN)
@@ -151,13 +154,34 @@ impl IncrementalQueryService {
         cdc_object_store: Arc<dyn ObjectStore>,
         cdc_poll_interval: Duration,
     ) -> Self {
+        Self::new_with_runtime(
+            storage_root,
+            cancel,
+            cdc_object_path,
+            cdc_object_store,
+            cdc_poll_interval,
+            IncrementalConfig::Dedicated,
+        )
+    }
+
+    pub(crate) fn new_with_runtime(
+        storage_root: PathBuf,
+        cancel: CancellationToken,
+        cdc_object_path: String,
+        cdc_object_store: Arc<dyn ObjectStore>,
+        cdc_poll_interval: Duration,
+        runtime: IncrementalConfig,
+    ) -> Self {
         Self::new_with_options(
             storage_root,
             cancel,
             cdc_object_path,
             cdc_object_store,
             cdc_poll_interval,
-            IncrementalQueryOptions::default(),
+            IncrementalQueryOptions {
+                runtime,
+                ..IncrementalQueryOptions::default()
+            },
         )
     }
 
@@ -351,6 +375,7 @@ struct RegisteredQuery {
 }
 
 struct IncrementalQueryServiceInner {
+    pool: Option<RuntimePool>,
     next_query_id: u64,
     storage_root: PathBuf,
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
@@ -374,6 +399,7 @@ impl IncrementalQueryServiceInner {
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
+            pool: None,
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
@@ -460,6 +486,20 @@ impl IncrementalQueryServiceInner {
                 }
             }
         }
+        if let Some(pool) = self.pool.take() {
+            let result = self
+                .runtime
+                .spawn_blocking(move || {
+                    pool.shutdown()
+                        .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
+                })
+                .await
+                .context("Incremental runtime pool shutdown task panicked")
+                .and_then(|result| result);
+            if cleanup.is_ok() {
+                cleanup = result;
+            }
+        }
         if let Some(response) = shutdown {
             let _ = response.send(cleanup);
         }
@@ -483,14 +523,12 @@ impl IncrementalQueryServiceInner {
         priming_rows: worker::Rows,
     ) -> IncrementalQuerySubscription {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                })
-                .expect("new subscription queue has room for priming");
-        }
+        sender
+            .try_send(IncrementalQueryDelta {
+                tx_key,
+                rows: priming_rows,
+            })
+            .expect("new subscription queue has room for priming");
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
@@ -566,11 +604,34 @@ impl IncrementalQueryServiceInner {
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
+        if self.pool.is_none() {
+            if let IncrementalConfig::Pooled {
+                threads,
+                merger_threads,
+                cache_mib,
+            } = self.options.runtime
+            {
+                self.pool = Some(
+                    self.runtime
+                        .spawn_blocking(move || {
+                            RuntimePool::start(
+                                PoolConfig::with_threads(threads.get())
+                                    .with_merger_threads(merger_threads.get().into())
+                                    .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                                    .with_cache_mib(cache_mib.get()),
+                            )
+                        })
+                        .await
+                        .context("Incremental runtime pool startup task panicked")??,
+                );
+            }
+        }
+        let pool = self.pool.clone();
         let handle = self.allocate_query_id();
         // Registration remains serialized, but DBSP construction and destruction stay off async threads.
         let (circuit, rows) = self
             .prepare_query(handle, move |storage_path| {
-                let mut circuit = QueryCircuit::build(plan, storage_path)?;
+                let mut circuit = QueryCircuit::build_with_pool(plan, storage_path, pool)?;
                 let rows = circuit.apply(initial_triples)?;
                 Ok((circuit, rows))
             })
@@ -692,6 +753,25 @@ mod tests {
             .is_some()
     }
 
+    fn pooled_config() -> IncrementalConfig {
+        IncrementalConfig::Pooled {
+            threads: NonZeroUsize::new(2).unwrap(),
+            merger_threads: std::num::NonZeroU16::MIN,
+            cache_mib: NonZeroUsize::new(16).unwrap(),
+        }
+    }
+
+    fn service_at_with_runtime(dir: &Path, config: IncrementalConfig) -> IncrementalQueryService {
+        IncrementalQueryService::new_with_runtime(
+            dir.to_path_buf(),
+            CancellationToken::new(),
+            "/test_pool".into(),
+            Arc::new(InMemory::new()),
+            Duration::from_millis(10),
+            config,
+        )
+    }
+
     fn service_at(dir: &Path) -> IncrementalQueryService {
         IncrementalQueryService::new(
             dir.to_path_buf(),
@@ -723,6 +803,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pooled_queries_share_workers_and_retire_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().into(),
+            Handle::current(),
+            CancellationToken::new(),
+            IncrementalQueryOptions {
+                runtime: pooled_config(),
+                ..Default::default()
+            },
+        );
+        let basis = test_tx_key_with_tx_id(1);
+        let mut first = inner
+            .register(single_pattern_plan(), basis, vec![name_triple(42, "Alice")])
+            .await
+            .unwrap();
+        let mut second = inner
+            .register(single_pattern_plan(), basis, vec![name_triple(42, "Alice")])
+            .await
+            .unwrap();
+        let pool = inner.pool.as_ref().unwrap().clone();
+        assert_eq!(pool.stats().registered_circuits, 2);
+        assert_eq!(pool.stats().foreground_threads, 2);
+        assert_eq!(pool.stats().merger_threads, 1);
+        assert_eq!(
+            delta(&mut first).await.unwrap().rows,
+            delta(&mut second).await.unwrap().rows
+        );
+        inner.queries[&first.handle].control.terminate(None);
+        let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        inner.retire(completion).unwrap();
+        assert_eq!(pool.stats().registered_circuits, 1);
+        assert!(!inner.query_storage_path(first.handle).exists());
+        let mut old = name_triple(42, "Alice");
+        old.1 = -1;
+        inner.apply_triples(Arc::new(Batch {
+            tx_key: test_tx_key_with_tx_id(2),
+            triples: vec![old, name_triple(42, "Bob")],
+        }));
+        let rows = delta(&mut second).await.unwrap().rows;
+        assert!(rows.contains(&(vec![DataType::String("Alice".into())], -1)));
+        assert!(rows.contains(&(vec![DataType::String("Bob".into())], 1)));
+        inner.queries[&second.handle].control.terminate(None);
+        let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        inner.retire(completion).unwrap();
+        assert_eq!(pool.stats().registered_circuits, 0);
+        assert!(!inner.query_storage_path(second.handle).exists());
+        tokio::task::spawn_blocking(move || pool.shutdown().unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
@@ -740,7 +879,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
+    async fn priming_precedes_live_deltas_including_empty_results() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
         let mut primed = register(
@@ -750,7 +889,9 @@ mod tests {
         )
         .await;
         let mut empty = register(&service, single_pattern_plan(), vec![]).await;
-        assert!(empty.deltas.try_recv().is_err());
+        let priming = delta(&mut empty).await.unwrap();
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, empty.tx_key);
         let tx_key = test_tx_key_with_tx_id(2);
         service
             .apply_triples(tx_key, vec![name_triple(43, "Bob")])
@@ -766,62 +907,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
+    async fn empty_results_report_registration_and_transaction_progress() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
-        let error = service
-            .register_prepared_query(
-                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
-                test_tx_key_with_tx_id(1),
-                vec![name_triple(42, "Alice")],
-            )
+        let mut subscription = register(&service, single_pattern_plan(), vec![]).await;
+        let priming = delta(&mut subscription).await.unwrap();
+        assert!(priming.rows.is_empty());
+        assert_eq!(priming.tx_key, subscription.tx_key);
+        let tx_key = test_tx_key_with_tx_id(2);
+        service
+            .apply_triples(tx_key, vec![age_triple(42, 10)])
             .await
-            .unwrap_err();
-        assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
-        assert!(!dir.path().join("query-1").exists());
+            .unwrap();
+        let progress = delta(&mut subscription).await.unwrap();
+        assert!(progress.rows.is_empty());
+        assert_eq!(progress.tx_key, tx_key);
         service.shutdown().await.unwrap();
     }
 
     #[tokio::test]
+    async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
+        for config in [IncrementalConfig::Dedicated, pooled_config()] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = service_at_with_runtime(dir.path(), config);
+            let error = service
+                .register_prepared_query(
+                    aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+                    test_tx_key_with_tx_id(1),
+                    vec![name_triple(42, "Alice")],
+                )
+                .await
+                .unwrap_err();
+            assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
+            assert!(!dir.path().join("query-1").exists());
+            service.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn live_aggregate_error_removes_only_the_affected_subscription() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let mut aggregate = register(
-            &service,
-            aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
-            vec![],
-        )
-        .await;
-        let mut names = register(&service, single_pattern_plan(), vec![]).await;
-        delta(&mut aggregate).await.unwrap();
-        service
-            .apply_triples(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)])
-            .await
-            .unwrap();
-        service
-            .apply_triples(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")])
-            .await
-            .unwrap();
-        assert!(delta(&mut aggregate)
-            .await
-            .unwrap()
-            .rows
-            .contains(&(vec![DataType::Long(10)], 1)));
-        assert!(delta(&mut aggregate)
-            .await
-            .unwrap_err()
-            .downcast_ref::<circuit::AggregateError>()
-            .is_some());
-        assert!(aggregate.deltas.recv().await.is_none());
-        delta(&mut names).await.unwrap();
-        let tx_key = test_tx_key_with_tx_id(4);
-        service
-            .apply_triples(tx_key, vec![name_triple(44, "Bob")])
-            .await
-            .unwrap();
-        assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
-        service.shutdown().await.unwrap();
-        assert!(!dir.path().join("query-1").exists());
+        for config in [IncrementalConfig::Dedicated, pooled_config()] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = service_at_with_runtime(dir.path(), config);
+            let mut aggregate = register(
+                &service,
+                aggregate_plan(
+                    "[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]",
+                ),
+                vec![],
+            )
+            .await;
+            let mut names = register(&service, single_pattern_plan(), vec![]).await;
+            delta(&mut aggregate).await.unwrap();
+            delta(&mut names).await.unwrap();
+            service
+                .apply_triples(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)])
+                .await
+                .unwrap();
+            assert!(delta(&mut names).await.unwrap().rows.is_empty());
+            service
+                .apply_triples(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")])
+                .await
+                .unwrap();
+            assert!(delta(&mut aggregate)
+                .await
+                .unwrap()
+                .rows
+                .contains(&(vec![DataType::Long(10)], 1)));
+            assert!(delta(&mut aggregate)
+                .await
+                .unwrap_err()
+                .downcast_ref::<circuit::AggregateError>()
+                .is_some());
+            assert!(aggregate.deltas.recv().await.is_none());
+            delta(&mut names).await.unwrap();
+            let tx_key = test_tx_key_with_tx_id(4);
+            service
+                .apply_triples(tx_key, vec![name_triple(44, "Bob")])
+                .await
+                .unwrap();
+            assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
+            service.shutdown().await.unwrap();
+            assert!(!dir.path().join("query-1").exists());
+        }
     }
 
     #[tokio::test]
@@ -844,6 +1012,7 @@ mod tests {
             .register_prepared_query(single_pattern_plan(), basis, vec![])
             .await
             .unwrap();
+        assert_eq!(delta(&mut query).await.unwrap().tx_key, basis);
         for seq in 1..=1000 {
             service
                 .apply_triples(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")])
@@ -864,6 +1033,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path());
         let mut query = register(&service, single_pattern_plan(), vec![]).await;
+        delta(&mut query).await.unwrap();
         drop(service);
         assert!(
             tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())
@@ -1014,12 +1184,22 @@ mod tests {
                 .await
         });
         tokio::task::yield_now().await;
+        assert!(delta(&mut first_subscription)
+            .await
+            .unwrap()
+            .rows
+            .is_empty());
         assert!(first_subscription.deltas.try_recv().is_err());
 
         let mut second_subscription = service
             .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
             .await
             .unwrap();
+        assert!(delta(&mut second_subscription)
+            .await
+            .unwrap()
+            .rows
+            .is_empty());
         assert!(second_subscription.deltas.try_recv().is_err());
 
         drop(registration_guard);
