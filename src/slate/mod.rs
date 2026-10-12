@@ -3,7 +3,8 @@
 pub mod cdc;
 
 use slatedb::config::{
-    DurabilityLevel, ObjectStoreCacheOptions, ReadOptions, ScanOptions, Settings, WriteOptions,
+    CompactorOptions, DurabilityLevel, GarbageCollectorDirectoryOptions, GarbageCollectorOptions,
+    ObjectStoreCacheOptions, ReadOptions, ScanOptions, Settings, WriteOptions,
 };
 use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slatedb::db_cache::{DbCache, SplitCache};
@@ -21,6 +22,35 @@ pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_META_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_RANGE_STATS_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_LOCAL_WAL_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+
+const GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const GC_MIN_AGE: Duration = Duration::from_secs(5 * 60);
+// A single SlateDB read (scan/get) overlapping a compaction must finish within
+// this window, otherwise GC may delete the SSTs it still reads.
+const COMPACTOR_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(5 * 60);
+
+fn default_compactor_options() -> CompactorOptions {
+    CompactorOptions {
+        checkpoint_lifetime: COMPACTOR_CHECKPOINT_LIFETIME,
+        ..CompactorOptions::default()
+    }
+}
+
+fn default_garbage_collector_options() -> GarbageCollectorOptions {
+    let dir = GarbageCollectorDirectoryOptions {
+        interval: Some(GC_INTERVAL),
+        min_age: GC_MIN_AGE,
+        dry_run: false,
+    };
+    // WAL fence GC keeps SlateDB's default (dry run), deleting fences can lose data.
+    GarbageCollectorOptions {
+        manifest_options: Some(dir),
+        wal_options: Some(dir),
+        compacted_options: Some(dir),
+        compactions_options: Some(dir),
+        ..GarbageCollectorOptions::default()
+    }
+}
 
 pub fn default_db_cache() -> Arc<dyn DbCache> {
     let block_cache = FoyerCache::new_with_opts(FoyerCacheOptions {
@@ -106,6 +136,8 @@ pub async fn local_slate(root_path: &Path) -> SlateComponents {
         Db::builder(slate_path.clone(), object_store.clone())
             .with_settings(Settings {
                 flush_interval: Some(DEFAULT_LOCAL_WAL_FLUSH_INTERVAL),
+                compactor_options: Some(default_compactor_options()),
+                garbage_collector_options: Some(default_garbage_collector_options()),
                 ..Settings::default()
             })
             .with_db_cache(default_db_cache(), 0)
@@ -154,7 +186,8 @@ pub async fn remote_slate(
         max_unflushed_bytes: 2 * 1024 * 1024 * 1024,
         l0_max_ssts: 16,
         wal_enabled: true,
-        // compactor_options: None,
+        compactor_options: Some(default_compactor_options()),
+        garbage_collector_options: Some(default_garbage_collector_options()),
         object_store_cache_options: ObjectStoreCacheOptions {
             root_folder: Some(cache_path.to_path_buf()),
             cache_on_flush: true,
