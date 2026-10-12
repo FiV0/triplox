@@ -407,6 +407,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--max-bytes", type=int, default=262144)
     parser.add_argument("--timeout-ms", type=int, default=600000)
+    parser.add_argument("--catchup-timeout-ms", type=int, default=600000)
     parser.add_argument("--run-timeout-seconds", type=int, default=86400)
     parser.add_argument("--heap", default="4g")
     parser.add_argument("--transactor-heap", default="2g")
@@ -417,7 +418,7 @@ def main():
     parser.add_argument("--remove", action="store_true")
     parser.add_argument("--ingest-only", action="store_true", help="Infrastructure check without queries or performance scores")
     args = parser.parse_args()
-    if min(args.batch_size, args.max_bytes, args.timeout_ms) < 1:
+    if min(args.batch_size, args.max_bytes, args.timeout_ms, args.catchup_timeout_ms) < 1:
         parser.error("batch size, byte budget, and timeout must be positive")
     if args.command == "prepare":
         prepare(args)

@@ -119,26 +119,26 @@
 
 ;; Engines that submit transactions asynchronously must wait for the last one to be
 ;; indexed before ingestion counts as finished.
-(defn await-loaded! [engine loaded timeout-ms]
+(defn await-loaded! [engine loaded]
   (when-let [await-tx! (:await-tx! engine)]
     (when (pos? (:transactions loaded))
-      (await-tx! (:last-tx loaded) timeout-ms))))
+      (await-tx! (:last-tx loaded)))))
 
 (defn load!
   "Loads the dataset with the engine's own bulk `:load!`, or else through `transact!`
   waiting until it is indexed, reporting progress to the runner log meanwhile."
-  [engine {:keys [data-dir timeout-ms] :as config} transact!]
+  [engine {:keys [data-dir] :as config} transact!]
   (let [progress (atom {})
         reporter (report-progress! engine progress)]
     (try
       (if-let [bulk-load! (:load! engine)]
         (bulk-load! config progress)
         (let [loaded (data/load-data! data-dir config transact! progress)]
-          (await-loaded! engine loaded timeout-ms)
+          (await-loaded! engine loaded)
           loaded))
       (finally (.interrupt ^Thread reporter)))))
 
-(defn run! [engine {:keys [engine-name output data-dir timeout-ms query-ids]
+(defn run! [engine {:keys [engine-name output data-dir timeout-ms catchup-timeout-ms query-ids]
                     :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
         incremental? (= engine-name "triplox-incremental")
@@ -155,7 +155,7 @@
             ingestion-ms (milliseconds start)
             tx (:last-tx loaded)
             snapshots (when (and incremental? (pos? (:transactions loaded)))
-                        (await-views! engine @views tx timeout-ms))
+                        (await-views! engine @views tx catchup-timeout-ms))
             initial-ms (when incremental? (milliseconds start))]
         (when-not (pos? (reduce + (vals (:table-counts loaded))))
           (throw (ex-info "Dataset contains no rows" {})))
