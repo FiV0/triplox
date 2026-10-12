@@ -332,7 +332,7 @@ def run(args):
     base.update({"data-dir": str(Path(args.data_dir).resolve()), "host": "127.0.0.1",
                  "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
     files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
-             p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "target", "__pycache__", ".cpcache"}]
+             p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "__pycache__", ".cpcache"}]
     manifest = {"format-version": 3, "run-id": run_id, "config": base,
                 "git-revision": capture(["git", "rev-parse", "HEAD"]),
                 "git-status": capture(["git", "status", "--short"]),
