@@ -9,22 +9,26 @@
     :db/valueType value-type
     :db/cardinality cardinality}))
 
+;; Primary keys are identities so foreign keys can be written as lookup refs.
+(defn- pk-attr [ident]
+  (assoc (attr ident :db.type/long) :db/unique :db.unique/identity))
+
 (def schema-tx
   (vec
    (concat
     ;; --- Region ---
-    [(attr :region/regionkey :db.type/long)
+    [(pk-attr :region/regionkey)
      (attr :region/name :db.type/string)
      (attr :region/comment :db.type/string)]
 
     ;; --- Nation ---
-    [(attr :nation/nationkey :db.type/long)
+    [(pk-attr :nation/nationkey)
      (attr :nation/name :db.type/string)
      (attr :nation/regionkey :db.type/ref)
      (attr :nation/comment :db.type/string)]
 
     ;; --- Supplier ---
-    [(attr :supplier/suppkey :db.type/long)
+    [(pk-attr :supplier/suppkey)
      (attr :supplier/name :db.type/string)
      (attr :supplier/address :db.type/string)
      (attr :supplier/nationkey :db.type/ref)
@@ -33,7 +37,7 @@
      (attr :supplier/comment :db.type/string)]
 
     ;; --- Customer ---
-    [(attr :customer/custkey :db.type/long)
+    [(pk-attr :customer/custkey)
      (attr :customer/name :db.type/string)
      (attr :customer/address :db.type/string)
      (attr :customer/nationkey :db.type/ref)
@@ -43,7 +47,7 @@
      (attr :customer/comment :db.type/string)]
 
     ;; --- Part ---
-    [(attr :part/partkey :db.type/long)
+    [(pk-attr :part/partkey)
      (attr :part/name :db.type/string)
      (attr :part/mfgr :db.type/string)
      (attr :part/brand :db.type/string)
@@ -61,7 +65,7 @@
      (attr :partsupp/comment :db.type/string)]
 
     ;; --- Orders ---
-    [(attr :orders/orderkey :db.type/long)
+    [(pk-attr :orders/orderkey)
      (attr :orders/custkey :db.type/ref)
      (attr :orders/orderstatus :db.type/string)
      (attr :orders/totalprice :db.type/double)

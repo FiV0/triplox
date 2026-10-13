@@ -1,6 +1,6 @@
 (ns tpch.main
   "TPC-H benchmark entry point: load data, execute all 22 queries."
-  (:require [io.triplox.api :as tc]
+  (:require [xyz.triplox.api :as tc]
             [tpch.data :as data]
             [tpch.queries :as queries]))
 

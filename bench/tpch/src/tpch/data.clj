@@ -1,7 +1,7 @@
 (ns tpch.data
   "TPC-H data loading via the io.airlift.tpch generator library."
   (:require [clojure.string :as str]
-            [io.triplox.api :as tc]
+            [xyz.triplox.api :as tc]
             [tpch.schema :as schema])
   (:import (io.airlift.tpch GenerateUtils TpchColumn TpchColumnType$Base TpchEntity TpchTable)
            (java.time Instant LocalDate ZoneOffset)))
@@ -72,26 +72,61 @@
 
 (def ^:private batch-size 1000)
 
+;; Referenced tables first, so lookup refs resolve.
+(def ^:private load-order
+  [TpchTable/REGION TpchTable/NATION TpchTable/SUPPLIER TpchTable/CUSTOMER
+   TpchTable/PART TpchTable/PART_SUPPLIER TpchTable/ORDERS TpchTable/LINE_ITEM])
+
+(defn- secs-since [start] (/ (- (System/nanoTime) start) 1e9))
+
+(defn- transact!
+  [conn tx-data]
+  (let [{:keys [committed? error-message] :as result} (tc/transact conn tx-data)]
+    (when-not committed?
+      (throw (ex-info (str "Transaction failed: " error-message) result)))
+    result))
+
+(defn- indexed-count
+  "Count entities of `table` via its first column, which every row has."
+  [conn ^TpchTable table]
+  (let [attr (col-name->keyword (.getTableName table)
+                                (.getColumnName ^TpchColumn (first (.getColumns table))))]
+    (with-open [db (tc/db conn)]
+      (ffirst (tc/q db {:find '[(count ?e)]
+                        :where [['?e attr '?v]]})))))
+
 (defn load-data!
   "Load all TPC-H tables into the Triplox node. Blocks until all data is indexed."
   [conn scale-factor]
   (println "Installing TPC-H schema...")
-  (tc/transact conn schema/schema-tx)
+  (transact! conn schema/schema-tx)
 
   (println "Loading TPC-H data (scale factor:" (str scale-factor) ")...")
-  (doseq [^TpchTable table (TpchTable/getTables)]
-    (let [table-name (.getTableName table)
-          docs (->> (.createGenerator table (double scale-factor) 1 1)
-                    seq
-                    (map (partial tpch-entity->doc table)))
-          doc-count (reduce (fn [cnt chunk]
-                              (tc/submit-tx conn (vec chunk))
-                              (+ cnt (count chunk)))
-                            0
-                            (partition-all batch-size docs))]
-      (println "  Submitted" doc-count table-name)))
+  (let [start (System/nanoTime)
+        submitted (doall
+                   (for [^TpchTable table load-order]
+                     (let [table-start (System/nanoTime)
+                           docs (->> (.createGenerator table (double scale-factor) 1 1)
+                                     seq
+                                     (map (partial tpch-entity->doc table)))
+                           doc-count (reduce (fn [cnt chunk]
+                                               (tc/submit-tx conn (vec chunk))
+                                               (+ cnt (count chunk)))
+                                             0
+                                             (partition-all batch-size docs))]
+                       (println (format "  Submitted %d %s in %.1fs"
+                                        doc-count (.getTableName table) (secs-since table-start)))
+                       [table doc-count])))]
 
-  ;; Fence: wait for all data to be indexed.
-  (println "Waiting for indexing...")
-  (tc/transact conn [{:db/ident :tpch/fence}])
-  (println "Data loading complete."))
+    ;; Fence: wait for all data to be indexed.
+    (println (format "All tables submitted after %.1fs. Waiting for indexing..." (secs-since start)))
+    (transact! conn [{:db/ident :tpch/fence}])
+    (println (format "Data loading complete after %.1fs." (secs-since start)))
+
+    ;; submit-tx doesn't report failed transactions, so compare row counts.
+    (doseq [[^TpchTable table expected] submitted
+            :let [actual (indexed-count conn table)]]
+      (when (not= expected actual)
+        (throw (ex-info (format "%s: submitted %d rows, indexed %s" (.getTableName table) expected actual)
+                        {:table (.getTableName table) :expected expected :actual actual}))))
+    (println "Row counts verified.")))

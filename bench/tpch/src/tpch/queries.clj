@@ -8,7 +8,7 @@
   - ORDER BY on aggregates uses client-side sorting.
   - Assumes re-find (#214), if (#215), year (#216), subs (#217),
     starts-with? (#218) are implemented."
-  (:require [io.triplox.api :as tc]))
+  (:require [xyz.triplox.api :as tc]))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
