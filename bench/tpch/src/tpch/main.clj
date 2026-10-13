@@ -34,11 +34,7 @@
 
         ;; Run queries
         (println "\n--- Executing TPC-H Queries ---")
-        (let [db (tc/db conn)]
-          (try
-            (run-all-queries db)
-            (finally
-              (.close db))))
+        (run-all-queries (tc/db conn))
 
         (println "\nDone.")
         (finally

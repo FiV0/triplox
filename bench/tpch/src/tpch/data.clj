@@ -91,9 +91,8 @@
   [conn ^TpchTable table]
   (let [attr (col-name->keyword (.getTableName table)
                                 (.getColumnName ^TpchColumn (first (.getColumns table))))]
-    (with-open [db (tc/db conn)]
-      (ffirst (tc/q db {:find '[(count ?e)]
-                        :where [['?e attr '?v]]})))))
+    (ffirst (tc/q (tc/db conn) {:find '[(count ?e)]
+                                :where [['?e attr '?v]]}))))
 
 (defn load-data!
   "Load all TPC-H tables into the Triplox node. Blocks until all data is indexed."
