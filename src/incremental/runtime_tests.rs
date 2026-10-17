@@ -84,9 +84,12 @@ impl Fixture {
             storage,
             dropped,
         };
-        let subscription =
+        let mut subscription =
             self.inner
                 .install(handle, probe, *crate::bootstrap::BOOTSTRAP_TX_KEY, vec![]);
+        let initial = subscription.deltas.try_recv().unwrap().unwrap();
+        assert_eq!(initial.tx_key, subscription.tx_key);
+        assert!(initial.rows.is_empty());
         (subscription, events)
     }
 
