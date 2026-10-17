@@ -87,8 +87,7 @@ async fn run_server(
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     triplox::logging::init_with_default_info();
 
     let config = load_config()?;
@@ -99,4 +98,14 @@ async fn main() -> Result<()> {
 
     info!(?incremental, "Incremental query runtime configuration");
     run_server(bind_addr, node_config, incremental).await
+}
+
+fn main() -> Result<()> {
+    // #[tokio::main] cannot name its threads.
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_name("tpx-rt-worker")
+        .enable_all()
+        .build()
+        .context("Failed to start the Tokio runtime")?
+        .block_on(run())
 }
