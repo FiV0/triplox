@@ -100,6 +100,42 @@ impl Fixture {
         (subscription, events)
     }
 
+    // Starts a registration whose build blocks until `release` is sent.
+    fn gated_build(
+        &mut self,
+    ) -> (
+        sync_mpsc::Sender<()>,
+        oneshot::Receiver<Result<IncrementalQuerySubscription>>,
+        PathBuf,
+    ) {
+        let handle = self.inner.allocate_query_id();
+        let storage_path = self.inner.query_storage_path(handle);
+        let (release, gate) = sync_mpsc::channel::<()>();
+        let (dropped, observed) = sync_mpsc::channel();
+        self.drops.push(observed);
+        let (response, registration) = oneshot::channel();
+        self.inner.spawn_build(
+            handle,
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            response,
+            move |storage| {
+                std::fs::create_dir(storage)?;
+                // The build runs on a blocking thread, so waiting here models a slow priming.
+                let _ = gate.recv();
+                let (started, _) = mpsc::unbounded_channel();
+                let probe = Probe {
+                    started,
+                    release: None,
+                    panic: false,
+                    storage: storage.to_path_buf(),
+                    dropped,
+                };
+                Ok((probe, vec![]))
+            },
+        );
+        (release, registration, storage_path)
+    }
+
     fn batch(seq: i64) -> Arc<Batch> {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
@@ -662,40 +698,79 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
 }
 
 #[tokio::test]
+async fn unregister_is_not_blocked_by_registration() {
+    let mut fixture = Fixture::new(4);
+    let (query, _) = fixture.query(None, false);
+    let (release, registration, _) = fixture.gated_build();
+    let (mut service, dispatcher, _storage) = fixture.start();
+    service.retire_timeout = Duration::from_secs(5);
+    // The build is still blocked, so this returns only if the dispatcher keeps serving.
+    service.unregister(query.handle).await.unwrap();
+    release.send(()).unwrap();
+    let mut registered = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let batch = Fixture::batch(1);
+    service
+        .apply_batch(Batch::single(batch.tx_key, batch.triples().to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut registered).await.unwrap().tx_key, batch.tx_key);
+    service.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_pending_build_and_rejects_it() {
+    let mut fixture = Fixture::new(4);
+    let (release, registration, storage_path) = fixture.gated_build();
+    let (mut service, dispatcher, _storage) = fixture.start();
+    service.retire_timeout = Duration::from_secs(5);
+    let shutdown = tokio::spawn(async move { service.shutdown().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A build cannot be interrupted, so shutdown waits for it.
+    assert!(!shutdown.is_finished());
+    release.send(()).unwrap();
+    shutdown.await.unwrap().unwrap();
+    let error = registration.await.unwrap().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("Incremental query service stopped"));
+    assert!(!storage_path.exists());
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn registration_panics_remove_storage_after_unwinding() {
     let mut fixture = Fixture::new(1);
     for panic_during_build in [true, false] {
         let handle = fixture.inner.allocate_query_id();
         let (dropped, observed) = sync_mpsc::channel();
-        let error = fixture
-            .inner
-            .prepare_query(handle, move |storage| {
-                std::fs::create_dir(storage)?;
-                assert!(!panic_during_build, "injected construction panic");
-                let (started, _) = mpsc::unbounded_channel();
-                let mut probe = Probe {
-                    started,
-                    release: None,
-                    panic: true,
-                    storage: storage.to_path_buf(),
-                    dropped,
-                };
-                let rows = futures::executor::block_on(probe.apply(&Batch::single(
-                    *crate::bootstrap::BOOTSTRAP_TX_KEY,
-                    vec![Tup2(
-                        EncodedTriple {
-                            entity: vec![],
-                            attribute: 1,
-                            value: vec![],
-                        },
-                        1,
-                    )],
-                )))?;
-                Ok((probe, rows))
-            })
-            .await
-            .err()
-            .expect("registration should fail");
+        let error = prepare_query(fixture.inner.query_storage_path(handle), move |storage| {
+            std::fs::create_dir(storage)?;
+            assert!(!panic_during_build, "injected construction panic");
+            let (started, _) = mpsc::unbounded_channel();
+            let mut probe = Probe {
+                started,
+                release: None,
+                panic: true,
+                storage: storage.to_path_buf(),
+                dropped,
+            };
+            let rows = futures::executor::block_on(probe.apply(&Fixture::batch(1)))?;
+            Ok((probe, rows))
+        })
+        .await
+        .err()
+        .expect("registration should fail");
         assert!(error
             .downcast_ref::<tokio::task::JoinError>()
             .unwrap()

@@ -274,8 +274,15 @@ IncrementalQueryService::register_query
     starts the CDC loop after Register returns, if not already running
 
 dispatcher task
-    builds one QueryCircuit for the plan
+    starts the DBSP pool with the first query
+    spawns a build task and keeps serving other commands
+
+build task
+    builds one QueryCircuit for the plan on a blocking thread
     primes it with the initial triples
+    reports the circuit back to the dispatcher
+
+dispatcher task
     queues the non-empty priming result at the registration basis
     creates a bounded input queue and starts an async worker owning the circuit
     stores the basis, routing state, and worker controls
@@ -284,9 +291,9 @@ dispatcher task
 
 `IncrementalQueryService` owns query registration and lifecycle management. It
 spawns a dispatcher task on the node's Tokio runtime. The dispatcher owns the
-registry, while each async query worker owns its circuit. Circuit build
-and priming use a blocking job, but the dispatcher still waits for registration
-to finish before accepting the next command.
+registry, while each async query worker owns its circuit. Circuit build and
+priming run in a separate task, so unregister, apply and shutdown are not held up
+by a slow registration. Shutdown waits for pending builds and rejects them.
 
 Live WAL application reaches the dispatcher task through the same
 command channel, but it enters from the internal side rather than the node side.

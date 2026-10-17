@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -373,6 +373,43 @@ impl BlockedQuery {
     }
 }
 
+type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
+
+// Finishes a registration on the dispatcher once its circuit has been built.
+type Built = Box<dyn FnOnce(&mut IncrementalQueryServiceInner) + Send>;
+
+// Builds a circuit on a blocking thread and removes its storage if that fails.
+async fn prepare_query<C: Circuit>(
+    storage_path: PathBuf,
+    prepare: impl FnOnce(&Path) -> Result<(C, worker::Rows)> + Send + 'static,
+) -> Result<(C, worker::Rows)> {
+    let build_path = storage_path.clone();
+    let result = tokio::task::spawn_blocking(move || prepare(&build_path))
+        .await
+        .context("Incremental query registration task panicked")
+        .and_then(|result| result);
+    let error = match result {
+        Ok(prepared) => return Ok(prepared),
+        Err(error) => error,
+    };
+    // The preparation task has finished unwinding before storage can be removed.
+    let cleanup =
+        tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        })
+        .await
+        .context("Incremental query registration cleanup task panicked")
+        .and_then(|result| result.map_err(Error::from));
+    Err(match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => error.context(format!(
+            "Incremental query registration cleanup failed: {cleanup:#}"
+        )),
+    })
+}
+
 struct IncrementalQueryServiceInner {
     pool: Option<RuntimePool>,
     next_query_id: u64,
@@ -384,6 +421,10 @@ struct IncrementalQueryServiceInner {
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
     completions: mpsc::UnboundedReceiver<Completion>,
+    // Build tasks report finished circuits here, so registration never blocks the dispatcher.
+    built: mpsc::UnboundedSender<Built>,
+    builds: mpsc::UnboundedReceiver<Built>,
+    pending_builds: usize,
 }
 
 impl IncrementalQueryServiceInner {
@@ -393,6 +434,7 @@ impl IncrementalQueryServiceInner {
         options: IncrementalQueryOptions,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
+        let (built, builds) = mpsc::unbounded_channel();
         Self {
             pool: None,
             next_query_id: 1,
@@ -402,6 +444,9 @@ impl IncrementalQueryServiceInner {
             options,
             completed,
             completions,
+            built,
+            builds,
+            pending_builds: 0,
         }
     }
 
@@ -433,18 +478,10 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                 }
+                Some(built) = self.builds.recv() => built(&mut self),
                 command = receiver.recv() => match command {
                     Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
-                        let result = if self.cancel.is_cancelled() {
-                            Err(anyhow!("Incremental query service stopped"))
-                        } else {
-                            self.register(*plan, tx_key, initial_triples).await
-                        };
-                        if let Err(Ok(subscription)) = response.send(result) {
-                            if let Some(query) = self.queries.get(&subscription.handle) {
-                                query.control.terminate(None);
-                            }
-                        }
+                        self.start_registration(*plan, tx_key, initial_triples, response).await;
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
                         match self.queries.get_mut(&handle) {
@@ -465,6 +502,12 @@ impl IncrementalQueryServiceInner {
         }
         receiver.close();
         self.cancel.cancel();
+        // Builds cannot be interrupted; each finishes into a stopped query that retires below.
+        while self.pending_builds > 0 {
+            if let Some(built) = self.builds.recv().await {
+                built(&mut self);
+            }
+        }
         for query in self.queries.values() {
             query.control.terminate(None);
         }
@@ -553,74 +596,97 @@ impl IncrementalQueryServiceInner {
         }
     }
 
-    async fn prepare_query<C: Circuit>(
-        &self,
+    fn finish_registration<C: Circuit>(
+        &mut self,
         handle: IncrementalQueryHandle,
-        prepare: impl FnOnce(&std::path::Path) -> Result<(C, worker::Rows)> + Send + 'static,
-    ) -> Result<(C, worker::Rows)> {
-        let storage_path = self.query_storage_path(handle);
-        let result = tokio::task::spawn_blocking(move || prepare(&storage_path))
-            .await
-            .context("Incremental query registration task panicked")
-            .and_then(|result| result);
-        let error = match result {
-            Ok(prepared) => return Ok(prepared),
-            Err(error) => error,
+        tx_key: TxKey,
+        prepared: Result<(C, worker::Rows)>,
+        response: Registration,
+    ) {
+        self.pending_builds -= 1;
+        let result = match prepared {
+            Ok((circuit, rows)) => {
+                let subscription = self.install(handle, circuit, tx_key, rows);
+                if self.cancel.is_cancelled() {
+                    // Shutdown began during the build; retirement destroys the circuit.
+                    self.queries[&handle].control.terminate(None);
+                    Err(anyhow!("Incremental query service stopped"))
+                } else {
+                    Ok(subscription)
+                }
+            }
+            Err(error) => Err(error),
         };
-        // The preparation task has finished unwinding before storage can be removed.
-        let storage_path = self.query_storage_path(handle);
-        let cleanup =
-            tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            })
-            .await
-            .context("Incremental query registration cleanup task panicked")
-            .and_then(|result| result.map_err(Error::from));
-        Err(match cleanup {
-            Ok(()) => error,
-            Err(cleanup) => error.context(format!(
-                "Incremental query registration cleanup failed: {cleanup:#}"
-            )),
-        })
+        if let Err(Ok(subscription)) = response.send(result) {
+            if let Some(query) = self.queries.get(&subscription.handle) {
+                query.control.terminate(None);
+            }
+        }
     }
 
-    async fn register(
+    fn spawn_build<C: Circuit>(
+        &mut self,
+        handle: IncrementalQueryHandle,
+        tx_key: TxKey,
+        response: Registration,
+        prepare: impl FnOnce(&Path) -> Result<(C, worker::Rows)> + Send + 'static,
+    ) {
+        self.pending_builds += 1;
+        let storage_path = self.query_storage_path(handle);
+        let built = self.built.clone();
+        tokio::spawn(async move {
+            let prepared = prepare_query(storage_path, prepare).await;
+            // The dispatcher keeps the receiver until every pending build has reported.
+            let _ = built.send(Box::new(move |inner: &mut IncrementalQueryServiceInner| {
+                inner.finish_registration(handle, tx_key, prepared, response)
+            }));
+        });
+    }
+
+    // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
+    async fn pool(&mut self) -> Result<RuntimePool> {
+        if let Some(pool) = &self.pool {
+            return Ok(pool.clone());
+        }
+        let config = self.options.config;
+        let pool = tokio::task::spawn_blocking(move || {
+            RuntimePool::start(
+                PoolConfig::with_threads(config.threads.get())
+                    .with_merger_threads(config.merger_threads.get().into())
+                    .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                    .with_cache_mib(config.cache_mib.get()),
+            )
+        })
+        .await
+        .context("Incremental runtime pool startup task panicked")??;
+        self.pool = Some(pool.clone());
+        Ok(pool)
+    }
+
+    async fn start_registration(
         &mut self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<IncrementalQuerySubscription> {
-        // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
-        let pool = match &self.pool {
-            Some(pool) => pool.clone(),
-            None => {
-                let config = self.options.config;
-                let pool = tokio::task::spawn_blocking(move || {
-                    RuntimePool::start(
-                        PoolConfig::with_threads(config.threads.get())
-                            .with_merger_threads(config.merger_threads.get().into())
-                            .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
-                            .with_cache_mib(config.cache_mib.get()),
-                    )
-                })
-                .await
-                .context("Incremental runtime pool startup task panicked")??;
-                self.pool = Some(pool.clone());
-                pool
+        response: Registration,
+    ) {
+        if self.cancel.is_cancelled() {
+            let _ = response.send(Err(anyhow!("Incremental query service stopped")));
+            return;
+        }
+        let pool = match self.pool().await {
+            Ok(pool) => pool,
+            Err(error) => {
+                let _ = response.send(Err(error));
+                return;
             }
         };
         let handle = self.allocate_query_id();
-        // Registration remains serialized, but DBSP construction and priming stay off async threads.
-        let (circuit, rows) = self
-            .prepare_query(handle, move |storage_path| {
-                let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
-                let rows = circuit.step_blocking(initial_triples)?;
-                Ok((circuit, rows))
-            })
-            .await?;
-        Ok(self.install(handle, circuit, tx_key, rows))
+        self.spawn_build(handle, tx_key, response, move |storage_path| {
+            let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
+            let rows = circuit.step_blocking(initial_triples)?;
+            Ok((circuit, rows))
+        });
     }
 
     fn apply_batch(&self, batch: Arc<Batch>) -> Vec<BlockedQuery> {
@@ -776,6 +842,21 @@ mod tests {
             .unwrap()
     }
 
+    async fn register_inline(
+        inner: &mut IncrementalQueryServiceInner,
+        plan: IncrementalQueryPlan,
+        tx_key: TxKey,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> IncrementalQuerySubscription {
+        let (response, result) = oneshot::channel();
+        inner
+            .start_registration(plan, tx_key, triples, response)
+            .await;
+        let built = inner.builds.recv().await.unwrap();
+        built(inner);
+        result.await.unwrap().unwrap()
+    }
+
     async fn delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Result<IncrementalQueryDelta> {
@@ -797,14 +878,20 @@ mod tests {
             },
         );
         let basis = test_tx_key_with_tx_id(1);
-        let mut first = inner
-            .register(single_pattern_plan(), basis, vec![name_triple(42, "Alice")])
-            .await
-            .unwrap();
-        let mut second = inner
-            .register(single_pattern_plan(), basis, vec![name_triple(42, "Alice")])
-            .await
-            .unwrap();
+        let mut first = register_inline(
+            &mut inner,
+            single_pattern_plan(),
+            basis,
+            vec![name_triple(42, "Alice")],
+        )
+        .await;
+        let mut second = register_inline(
+            &mut inner,
+            single_pattern_plan(),
+            basis,
+            vec![name_triple(42, "Alice")],
+        )
+        .await;
         let pool = inner.pool.as_ref().unwrap().clone();
         assert_eq!(pool.stats().registered_circuits, 2);
         assert_eq!(pool.stats().foreground_threads, 2);
