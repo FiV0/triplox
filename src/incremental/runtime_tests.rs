@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 struct Probe {
     started: mpsc::UnboundedSender<i64>,
-    release: Option<sync_mpsc::Receiver<()>>,
+    release: Option<mpsc::UnboundedReceiver<()>>,
     panic: bool,
     storage: PathBuf,
     dropped: sync_mpsc::Sender<bool>,
@@ -16,11 +16,11 @@ impl Circuit for Probe {
         true
     }
 
-    fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+    async fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
         let seq = batch.triples()[0].0.attribute;
         let _ = self.started.send(seq);
-        if let Some(release) = &self.release {
-            let _ = release.recv();
+        if let Some(release) = &mut self.release {
+            let _ = release.recv().await;
         }
         assert!(!self.panic, "injected circuit panic");
         Ok(vec![(vec![DataType::Long(seq)], 1)])
@@ -51,15 +51,14 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(capacity: usize, steps: usize) -> Self {
-        Self::with_overflow(capacity, steps, IncrementalOverflow::Terminate)
+    fn new(capacity: usize) -> Self {
+        Self::with_overflow(capacity, IncrementalOverflow::Terminate)
     }
 
-    fn with_overflow(capacity: usize, steps: usize, overflow: IncrementalOverflow) -> Self {
+    fn with_overflow(capacity: usize, overflow: IncrementalOverflow) -> Self {
         let storage = tempfile::tempdir().unwrap();
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
-            Handle::current(),
             CancellationToken::new(),
             IncrementalQueryOptions {
                 config: IncrementalConfig {
@@ -67,7 +66,6 @@ impl Fixture {
                     ..IncrementalConfig::default()
                 },
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
-                max_concurrent_steps: NonZeroUsize::new(steps).unwrap(),
                 ..IncrementalQueryOptions::default()
             },
         );
@@ -80,7 +78,7 @@ impl Fixture {
 
     fn query(
         &mut self,
-        release: Option<sync_mpsc::Receiver<()>>,
+        release: Option<mpsc::UnboundedReceiver<()>>,
         panic: bool,
     ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
         let handle = self.inner.allocate_query_id();
@@ -182,8 +180,8 @@ async fn next(query: &mut IncrementalQuerySubscription) -> Result<IncrementalQue
 
 #[tokio::test]
 async fn slow_query_preserves_fifo_while_other_query_advances() {
-    let mut fixture = Fixture::new(8, 2);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(8);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
     let (mut fast, mut fast_steps) = fixture.query(None, false);
     let first = fixture.apply(1);
@@ -208,36 +206,30 @@ async fn slow_query_preserves_fifo_while_other_query_advances() {
 }
 
 #[tokio::test]
-async fn shared_semaphore_limits_simultaneous_applies() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release_a, gate_a) = sync_mpsc::channel();
-    let (release_b, gate_b) = sync_mpsc::channel();
-    let (mut a, mut steps_a) = fixture.query(Some(gate_a), false);
-    let (mut b, mut steps_b) = fixture.query(Some(gate_b), false);
-    fixture.apply(1);
-    let a_first =
-        tokio::select! { _ = started(&mut steps_a) => true, _ = started(&mut steps_b) => false };
-    assert_eq!(fixture.inner.steps.available_permits(), 0);
-    if a_first {
-        assert!(steps_b.try_recv().is_err());
-        release_a.send(()).unwrap();
-        assert_eq!(started(&mut steps_b).await, 1);
-        release_b.send(()).unwrap();
-    } else {
-        assert!(steps_a.try_recv().is_err());
-        release_b.send(()).unwrap();
-        assert_eq!(started(&mut steps_a).await, 1);
-        release_a.send(()).unwrap();
+async fn service_does_not_throttle_steps() {
+    let mut fixture = Fixture::new(4);
+    let mut queries = vec![];
+    for _ in 0..3 {
+        let (release, gate) = mpsc::unbounded_channel();
+        let (query, steps) = fixture.query(Some(gate), false);
+        queries.push((release, query, steps));
     }
-    next(&mut a).await.unwrap();
-    next(&mut b).await.unwrap();
+    fixture.apply(1);
+    // Every step starts before any is released; limiting concurrency is the pool's job.
+    for (_, _, steps) in &mut queries {
+        assert_eq!(started(steps).await, 1);
+    }
+    for (release, query, _) in &mut queries {
+        release.send(()).unwrap();
+        next(query).await.unwrap();
+    }
     fixture.finish().await;
 }
 
 #[tokio::test]
 async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
-    let mut fixture = Fixture::new(1, 2);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(1);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
     fixture.apply(1);
@@ -264,8 +256,8 @@ async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
 
 #[tokio::test]
 async fn backpressure_blocks_delivery_without_terminating() {
-    let mut fixture = Fixture::with_overflow(1, 2, IncrementalOverflow::Backpressure);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::with_overflow(1, IncrementalOverflow::Backpressure);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
     fixture.apply(1);
@@ -304,8 +296,8 @@ async fn backpressure_blocks_delivery_without_terminating() {
 
 #[tokio::test]
 async fn backpressure_delivery_ends_when_query_stops() {
-    let mut fixture = Fixture::with_overflow(1, 1, IncrementalOverflow::Backpressure);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::with_overflow(1, IncrementalOverflow::Backpressure);
+    let (release, gate) = mpsc::unbounded_channel();
     let (slow, mut slow_steps) = fixture.query(Some(gate), false);
     fixture.apply(1);
     started(&mut slow_steps).await;
@@ -326,16 +318,15 @@ async fn backpressure_delivery_ends_when_query_stops() {
 }
 
 #[tokio::test]
-async fn full_output_releases_permit_and_input_overflow_delivers_error() {
-    let mut fixture = Fixture::new(1, 1);
-    let (release, gate) = sync_mpsc::channel();
+async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
+    let mut fixture = Fixture::new(1);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
     for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut slow_steps).await, seq);
         release.send(()).unwrap();
-        // With one permit, this also proves output delivery does not retain the permit.
         next(&mut healthy).await.unwrap();
     }
     fixture.apply(1000);
@@ -353,7 +344,7 @@ async fn full_output_releases_permit_and_input_overflow_delivers_error() {
 
 #[tokio::test]
 async fn full_output_can_resume_without_termination() {
-    let mut fixture = Fixture::new(4, 1);
+    let mut fixture = Fixture::new(4);
     let (mut query, mut steps) = fixture.query(None, false);
     for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
         fixture.apply(seq);
@@ -374,7 +365,7 @@ async fn full_output_can_resume_without_termination() {
 
 #[tokio::test]
 async fn panic_retires_only_affected_circuit() {
-    let mut fixture = Fixture::new(4, 1);
+    let mut fixture = Fixture::new(4);
     let (mut failing, _) = fixture.query(None, true);
     let (mut healthy, _) = fixture.query(None, false);
     fixture.apply(1);
@@ -392,7 +383,7 @@ async fn panic_retires_only_affected_circuit() {
 
 #[tokio::test]
 async fn disconnect_retires_without_another_transaction() {
-    let mut fixture = Fixture::new(1, 1);
+    let mut fixture = Fixture::new(1);
     let (query, _) = fixture.query(None, false);
     let handle = query.handle;
     drop(query);
@@ -401,38 +392,9 @@ async fn disconnect_retires_without_another_transaction() {
 }
 
 #[tokio::test]
-async fn cancellation_while_waiting_for_permit_does_not_apply() {
-    let mut fixture = Fixture::new(2, 1);
-    let permit = fixture.inner.steps.clone().acquire_owned().await.unwrap();
-    let (query, mut steps) = fixture.query(None, false);
-    fixture.apply(1);
-    let registered = &fixture.inner.queries[&query.handle];
-    // Wait for the worker to consume the batch while the only permit is held.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while registered.inbox.capacity() != registered.inbox.max_capacity() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("worker should consume the batch and wait for a permit");
-    assert!(matches!(
-        steps.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
-    fixture.inner.queries[&query.handle].control.terminate(None);
-    assert_eq!(fixture.retire().await, query.handle);
-    assert!(matches!(
-        steps.try_recv(),
-        Err(mpsc::error::TryRecvError::Disconnected)
-    ));
-    drop(permit);
-    fixture.finish().await;
-}
-
-#[tokio::test]
 async fn unregister_waits_for_apply_without_blocking_dispatch() {
-    let mut fixture = Fixture::new(4, 2);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(4);
+    let (release, gate) = mpsc::unbounded_channel();
     let (query, mut steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
     fixture.apply(1);
@@ -486,8 +448,8 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
 
 #[tokio::test]
 async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(4);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut query, mut steps) = fixture.query(Some(gate), false);
     fixture.apply(1);
     started(&mut steps).await;
@@ -515,8 +477,8 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
 
 #[tokio::test]
 async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing() {
-    let mut fixture = Fixture::new(4, 2);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(4);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut query, mut steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
     fixture.apply(1);
@@ -565,8 +527,8 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
 
 #[tokio::test]
 async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release, gate) = sync_mpsc::channel();
+    let mut fixture = Fixture::new(4);
+    let (release, gate) = mpsc::unbounded_channel();
     let (mut query, mut steps) = fixture.query(Some(gate), false);
     fixture.apply(1);
     started(&mut steps).await;
@@ -594,7 +556,7 @@ async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
 
 #[tokio::test]
 async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
-    let mut fixture = Fixture::new(4, 1);
+    let mut fixture = Fixture::new(4);
     let (query, _) = fixture.query(None, false);
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let (service, dispatcher, _storage) = fixture.start();
@@ -626,7 +588,7 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
 
 #[tokio::test]
 async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
-    let mut fixture = Fixture::new(4, 1);
+    let mut fixture = Fixture::new(4);
     let (mut query, _) = fixture.query(None, false);
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
@@ -652,7 +614,7 @@ async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
 
 #[tokio::test]
 async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
-    let mut fixture = Fixture::new(4, 1);
+    let mut fixture = Fixture::new(4);
     let (mut query, _) = fixture.query(None, false);
     let (mut healthy, _) = fixture.query(None, false);
     let storage_path = fixture.inner.query_storage_path(query.handle);
@@ -701,7 +663,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
 
 #[tokio::test]
 async fn registration_panics_remove_storage_after_unwinding() {
-    let mut fixture = Fixture::new(1, 1);
+    let mut fixture = Fixture::new(1);
     for panic_during_build in [true, false] {
         let handle = fixture.inner.allocate_query_id();
         let (dropped, observed) = sync_mpsc::channel();
@@ -718,7 +680,7 @@ async fn registration_panics_remove_storage_after_unwinding() {
                     storage: storage.to_path_buf(),
                     dropped,
                 };
-                let rows = probe.apply(&Batch::single(
+                let rows = futures::executor::block_on(probe.apply(&Batch::single(
                     *crate::bootstrap::BOOTSTRAP_TX_KEY,
                     vec![Tup2(
                         EncodedTriple {
@@ -728,7 +690,7 @@ async fn registration_panics_remove_storage_after_unwinding() {
                         },
                         1,
                     )],
-                ))?;
+                )))?;
                 Ok((probe, rows))
             })
             .await
