@@ -1602,8 +1602,7 @@ checksum = "46c4cf71a36b46dcfc00e5014c0c20ccad2b1b6a008304d7d57d2749b2d41b3d"
 [[package]]
 name = "dbsp"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ec1476f32ece0aff8f9668e90bc8fbb5a40f9aa9997b7f4fa05492cc0f93859"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1908,7 +1907,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1988,8 +1987,7 @@ dependencies = [
 [[package]]
 name = "feldera-buffer-cache"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b9d8fe051bc5ac8a9ddacabc0f59ceeda7f89a8c83da2b4780dc2675e64f625"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "enum-map",
  "feldera-types",
@@ -2001,8 +1999,7 @@ dependencies = [
 [[package]]
 name = "feldera-ir"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f2800e02c88b6b016c9ef7e1a3420604a345a2746b49183d1022c7c7d175fa5"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "serde",
  "serde_json",
@@ -2013,8 +2010,7 @@ dependencies = [
 [[package]]
 name = "feldera-macros"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ab234cfb960173ee4fa514676422a9c011a37e5f4a0b44c963b94849a01aa5"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -2025,8 +2021,7 @@ dependencies = [
 [[package]]
 name = "feldera-modular-bloom"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02139d104294754efa1aadd0fff21ba33e3a07e8eaa56a8f7f80b6f704840b5d"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -2034,8 +2029,7 @@ dependencies = [
 [[package]]
 name = "feldera-samply"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e549e80bc2d59d3c6b04d4ed6e9255936c572458bfa0f323d2b13d46c3f8e71b"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "crossbeam",
  "feldera-size-of",
@@ -2069,8 +2063,7 @@ dependencies = [
 [[package]]
 name = "feldera-storage"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5137d6473635b31aae26f14969f776a2bd65892d4d73ed9e531b32c7c8609219"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -2094,8 +2087,7 @@ dependencies = [
 [[package]]
 name = "feldera-types"
 version = "0.358.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7979793eec8502c0dac9ecfb431afe34c33b3f4ddc50e93672c426e25a5c22e9"
+source = "git+https://github.com/FiV0/feldera?rev=5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514#5f3bab93ce34ad9c6cc215f3d44fe89e9ccf2514"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2830,7 +2822,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2863,7 +2855,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -3522,7 +3514,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4204,7 +4196,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.43",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -4243,9 +4235,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4623,7 +4615,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4693,7 +4685,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5376,7 +5368,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5386,7 +5378,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6286,7 +6278,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6302,7 +6294,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-future",
  "windows-link 0.1.3",
  "windows-numerics",
@@ -6314,7 +6306,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -6326,21 +6318,8 @@ dependencies = [
  "windows-implement",
  "windows-interface",
  "windows-link 0.1.3",
- "windows-result 0.3.4",
- "windows-strings 0.4.2",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
+ "windows-result",
+ "windows-strings",
 ]
 
 [[package]]
@@ -6349,7 +6328,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
  "windows-threading",
 ]
@@ -6394,7 +6373,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
 ]
 
@@ -6408,30 +6387,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-result"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
-dependencies = [
- "windows-link 0.2.1",
-]
-
-[[package]]
 name = "windows-strings"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
  "windows-link 0.1.3",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link 0.2.1",
 ]
 
 [[package]]

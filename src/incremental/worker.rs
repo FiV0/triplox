@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io::ErrorKind;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -6,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Context, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use futures::FutureExt;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxKey;
 
@@ -18,11 +19,17 @@ use crate::ops::DataType;
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
 
 pub(super) trait Circuit: Send + 'static {
-    fn apply(&mut self, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<Rows>;
+    fn apply(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> impl Future<Output = Result<Rows>> + Send;
 }
 
 impl Circuit for QueryCircuit {
-    fn apply(&mut self, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<Rows> {
+    fn apply(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> impl Future<Output = Result<Rows>> + Send {
         self.apply(triples)
     }
 }
@@ -67,21 +74,17 @@ pub(super) struct Worker<C> {
     pub inbox: mpsc::Receiver<Arc<Batch>>,
     pub sender: mpsc::Sender<IncrementalQueryDelta>,
     pub control: Arc<Control>,
-    pub steps: Arc<Semaphore>,
 }
 
 impl<C: Circuit> Worker<C> {
     pub async fn run(self) -> Result<()> {
         let Self {
-            circuit,
+            mut circuit,
             storage_path,
             mut inbox,
             sender,
             control,
-            steps,
         } = self;
-        // Only blocking jobs touch the circuit, including destruction after a panic.
-        let circuit = Arc::new(Mutex::new(Some(circuit)));
         let execution = async {
             loop {
                 let batch = tokio::select! {
@@ -90,31 +93,8 @@ impl<C: Circuit> Worker<C> {
                     _ = sender.closed() => break,
                     batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
                 };
-                let permit = tokio::select! {
-                    biased;
-                    _ = control.stop.cancelled() => break,
-                    _ = sender.closed() => break,
-                    permit = steps.clone().acquire_owned() => permit?,
-                };
-                let tx_key = batch.tx_key;
-                let job_circuit = circuit.clone();
-                let stop = control.stop.clone();
-                let rows = tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    if stop.is_cancelled() {
-                        return Ok(None);
-                    }
-                    job_circuit
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .apply(batch.triples.clone())
-                        .map(Some)
-                })
-                .await
-                .context("Incremental query apply task panicked")??;
-                let Some(rows) = rows else { break };
+                // A started step always finishes; stopping takes effect between steps.
+                let rows = circuit.apply(batch.triples.clone()).await?;
                 if control.stop.is_cancelled() {
                     break;
                 }
@@ -124,7 +104,7 @@ impl<C: Circuit> Worker<C> {
                 tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,
-                    result = sender.send(IncrementalQueryDelta { tx_key, rows }) => {
+                    result = sender.send(IncrementalQueryDelta { tx_key: batch.tx_key, rows }) => {
                         if result.is_err() { break; }
                     }
                 }
@@ -139,11 +119,8 @@ impl<C: Circuit> Worker<C> {
         control.terminate(error.map(Termination::Failed));
         drop(inbox);
         drop(sender);
+        // Circuit destruction waits on the pool, so it runs on a blocking thread before storage removal.
         tokio::task::spawn_blocking(move || {
-            let circuit = circuit
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
             drop(circuit);
             match std::fs::remove_dir_all(&storage_path) {
                 Ok(()) => Ok(()),
