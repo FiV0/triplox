@@ -1,5 +1,5 @@
 ---
-title: Java API
+title: Java Client
 description: The Triplox Java client.
 ---
 

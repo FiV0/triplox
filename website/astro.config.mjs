@@ -8,6 +8,12 @@ import starlightThemeBlack from 'starlight-theme-black';
 
 export default defineConfig({
   site: 'https://triplox.xyz',
+  redirects: {
+    '/apis/overview': '/clients/overview',
+    '/apis/clojure': '/clients/clojure',
+    '/apis/rust': '/clients/rust',
+    '/apis/java': '/clients/java',
+  },
   markdown: {
     remarkPlugins: [remarkMath],
     rehypePlugins: [rehypeKatex],
@@ -109,13 +115,13 @@ export default defineConfig({
           ],
         },
         {
-          label: 'APIs',
+          label: 'Clients',
           collapsed: true,
           items: [
-            { label: 'Overview', slug: 'apis/overview' },
-            { label: 'Clojure', slug: 'apis/clojure' },
-            { label: 'Rust', slug: 'apis/rust' },
-            { label: 'Java', slug: 'apis/java' },
+            { label: 'Overview', slug: 'clients/overview' },
+            { label: 'Clojure', slug: 'clients/clojure' },
+            { label: 'Rust', slug: 'clients/rust' },
+            { label: 'Java', slug: 'clients/java' },
           ],
         },
         {

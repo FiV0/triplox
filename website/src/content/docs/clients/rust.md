@@ -1,5 +1,5 @@
 ---
-title: Rust API
+title: Rust Client
 description: The Triplox Rust client.
 ---
 

@@ -7,7 +7,7 @@ Transaction data is how data of a transaction is represented in Triplox.
 Triplox uses transaction-data forms inspired by [Datomic](https://docs.datomic.com/transactions/transaction-data-reference.html).
 It purely concerns the transaction data constructs and not the semantics of a Triplox transaction.
 We will explain every concept via [EDN](https://github.com/edn-format/edn) syntax used
-by the [Clojure client](/apis/clojure/). The Java and Rust clients also support
+by the [Clojure client](/clients/clojure/). The Java and Rust clients also support
 the EDN syntax as strings, but they both also have explicit typed constructors for the transaction data.
 Every transaction data construct gets in the end translated to a [Datom](/getting-started/concepts/#datom) or a set of Datoms.
 The Datom is the most important concept to understand if you wish to understand transaction data.

@@ -1,5 +1,5 @@
 ---
-title: APIs Overview
+title: Clients Overview
 description: The core methods every Triplox client API exposes.
 ---
 
@@ -41,4 +41,4 @@ way to have one incremental query on the server that pushes its changes to multi
 
 TODO: Describe HTTP/2 connection and multiplexing
 
-See the language-specific pages ([Clojure](/apis/clojure/), [Rust](/apis/rust/), [Java](/apis/java/)) for the exact signatures and idioms of each language. If you want to build a new client, the wire format and endpoints are documented in the [protocol doc](https://github.com/FiV0/triplox/blob/main/design/PROTOCOL.md).
+See the language-specific pages ([Clojure](/clients/clojure/), [Rust](/clients/rust/), [Java](/clients/java/)) for the exact signatures and idioms of each language. If you want to build a new client, the wire format and endpoints are documented in the [protocol doc](https://github.com/FiV0/triplox/blob/main/design/PROTOCOL.md).

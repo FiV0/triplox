@@ -1,5 +1,5 @@
 ---
-title: Clojure API
+title: Clojure Client
 description: The Triplox Clojure client.
 ---
 

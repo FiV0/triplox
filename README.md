@@ -86,9 +86,9 @@ the [incremental tutorial](https://github.com/FiV0/triplox-incremental-tutorial)
 
 ### Clients
 
-- [Rust](https://triplox.xyz/apis/rust/)
-- [Clojure](https://triplox.xyz/apis/clojure/)
-- [Java](https://triplox.xyz/apis/java/)
+- [Rust](https://triplox.xyz/clients/rust/)
+- [Clojure](https://triplox.xyz/clients/clojure/)
+- [Java](https://triplox.xyz/clients/java/)
 - Go (TODO)
 - Python (TODO)
 - TS/Cljs (TODO)
