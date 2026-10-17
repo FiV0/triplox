@@ -5,15 +5,13 @@ use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::thread;
 use std::time::Duration;
 
 use crate::partition::tx_eid_from_tx_id;
 use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, PoolConfig, RuntimePool, ZWeight};
 use slatedb::object_store::ObjectStore;
-use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -41,7 +39,6 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 struct IncrementalQueryOptions {
     config: IncrementalConfig,
     inbox_capacity: NonZeroUsize,
-    max_concurrent_steps: NonZeroUsize,
     retire_timeout: Duration,
 }
 
@@ -50,8 +47,6 @@ impl IncrementalQueryOptions {
         Self {
             config,
             inbox_capacity: NonZeroUsize::new(256).unwrap(),
-            // Steps run on `threads` pool threads; more permits only add parked blocking threads.
-            max_concurrent_steps: config.threads,
             retire_timeout: Duration::from_secs(10),
         }
     }
@@ -187,6 +182,7 @@ impl IncrementalQueryService {
         )
     }
 
+    // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
     fn new_with_options(
         storage_root: PathBuf,
         cancel: CancellationToken,
@@ -196,26 +192,9 @@ impl IncrementalQueryService {
         options: IncrementalQueryOptions,
     ) -> Self {
         let cancel = cancel.child_token();
-        let inner_cancel = cancel.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
-        thread::Builder::new()
-            .name("tpx-iq-service".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_name("tpx-iq-worker")
-                    .enable_all()
-                    .build()
-                    .expect("incremental query runtime should start");
-                let inner = IncrementalQueryServiceInner::new(
-                    storage_root,
-                    runtime.handle().clone(),
-                    inner_cancel,
-                    options,
-                );
-                runtime.block_on(inner.run(receiver));
-            })
-            .expect("incremental query service thread should start");
+        let inner = IncrementalQueryServiceInner::new(storage_root, cancel.clone(), options);
+        tokio::spawn(inner.run(receiver));
 
         Self {
             commands: sender,
@@ -399,11 +378,8 @@ struct IncrementalQueryServiceInner {
     next_query_id: u64,
     storage_root: PathBuf,
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
-    runtime: Handle,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
-    // This is held to give to newly created workers.
-    steps: Arc<Semaphore>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
@@ -413,7 +389,6 @@ struct IncrementalQueryServiceInner {
 impl IncrementalQueryServiceInner {
     fn new(
         storage_root: PathBuf,
-        runtime: Handle,
         cancel: CancellationToken,
         options: IncrementalQueryOptions,
     ) -> Self {
@@ -423,10 +398,8 @@ impl IncrementalQueryServiceInner {
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
-            runtime,
             cancel,
             options,
-            steps: Arc::new(Semaphore::new(options.max_concurrent_steps.get())),
             completed,
             completions,
         }
@@ -506,15 +479,13 @@ impl IncrementalQueryServiceInner {
             }
         }
         if let Some(pool) = self.pool.take() {
-            let result = self
-                .runtime
-                .spawn_blocking(move || {
-                    pool.shutdown()
-                        .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
-                })
-                .await
-                .context("Incremental runtime pool shutdown task panicked")
-                .and_then(|result| result);
+            let result = tokio::task::spawn_blocking(move || {
+                pool.shutdown()
+                    .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
+            })
+            .await
+            .context("Incremental runtime pool shutdown task panicked")
+            .and_then(|result| result);
             if cleanup.is_ok() {
                 cleanup = result;
             }
@@ -559,10 +530,9 @@ impl IncrementalQueryServiceInner {
             inbox,
             sender: sender.clone(),
             control: control.clone(),
-            steps: self.steps.clone(),
         };
         let completed = self.completed.clone();
-        self.runtime.spawn(async move {
+        tokio::spawn(async move {
             let cleanup = worker.run().await;
             let _ = completed.send(Completion { handle, cleanup });
         });
@@ -589,9 +559,7 @@ impl IncrementalQueryServiceInner {
         prepare: impl FnOnce(&std::path::Path) -> Result<(C, worker::Rows)> + Send + 'static,
     ) -> Result<(C, worker::Rows)> {
         let storage_path = self.query_storage_path(handle);
-        let result = self
-            .runtime
-            .spawn_blocking(move || prepare(&storage_path))
+        let result = tokio::task::spawn_blocking(move || prepare(&storage_path))
             .await
             .context("Incremental query registration task panicked")
             .and_then(|result| result);
@@ -601,9 +569,8 @@ impl IncrementalQueryServiceInner {
         };
         // The preparation task has finished unwinding before storage can be removed.
         let storage_path = self.query_storage_path(handle);
-        let cleanup = self
-            .runtime
-            .spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
+        let cleanup =
+            tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error),
@@ -630,28 +597,26 @@ impl IncrementalQueryServiceInner {
             Some(pool) => pool.clone(),
             None => {
                 let config = self.options.config;
-                let pool = self
-                    .runtime
-                    .spawn_blocking(move || {
-                        RuntimePool::start(
-                            PoolConfig::with_threads(config.threads.get())
-                                .with_merger_threads(config.merger_threads.get().into())
-                                .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
-                                .with_cache_mib(config.cache_mib.get()),
-                        )
-                    })
-                    .await
-                    .context("Incremental runtime pool startup task panicked")??;
+                let pool = tokio::task::spawn_blocking(move || {
+                    RuntimePool::start(
+                        PoolConfig::with_threads(config.threads.get())
+                            .with_merger_threads(config.merger_threads.get().into())
+                            .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                            .with_cache_mib(config.cache_mib.get()),
+                    )
+                })
+                .await
+                .context("Incremental runtime pool startup task panicked")??;
                 self.pool = Some(pool.clone());
                 pool
             }
         };
         let handle = self.allocate_query_id();
-        // Registration remains serialized, but DBSP construction and destruction stay off async threads.
+        // Registration remains serialized, but DBSP construction and priming stay off async threads.
         let (circuit, rows) = self
             .prepare_query(handle, move |storage_path| {
                 let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
-                let rows = circuit.step(initial_triples)?;
+                let rows = circuit.step_blocking(initial_triples)?;
                 Ok((circuit, rows))
             })
             .await?;
@@ -820,18 +785,11 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn steps_are_limited_to_pool_threads() {
-        let options = IncrementalQueryOptions::for_config(small_pool_config());
-        assert_eq!(options.max_concurrent_steps.get(), 2);
-    }
-
     #[tokio::test]
     async fn pooled_queries_share_workers_and_retire_independently() {
         let dir = tempfile::tempdir().unwrap();
         let mut inner = IncrementalQueryServiceInner::new(
             dir.path().into(),
-            Handle::current(),
             CancellationToken::new(),
             IncrementalQueryOptions {
                 config: small_pool_config(),
@@ -1004,7 +962,6 @@ mod tests {
             Duration::from_millis(10),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
-                max_concurrent_steps: NonZeroUsize::MIN,
                 ..IncrementalQueryOptions::default()
             },
         );

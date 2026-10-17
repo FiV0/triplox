@@ -552,14 +552,25 @@ impl QueryCircuit {
         })
     }
 
-    // Priming always steps: the first step can emit rows without input, like a global count of 0.
-    pub(super) fn step(
+    // The step runs on the circuit's pool thread; awaiting it holds no caller thread.
+    async fn step(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
-        self.handle.transaction().map_err(anyhow::Error::from)?;
+        self.handle
+            .transaction_async()
+            .await
+            .map_err(anyhow::Error::from)?;
         decode_output_rows(&self.output.concat())
+    }
+
+    // Priming always steps, even when the initial input is empty.
+    pub(super) fn step_blocking(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        futures::executor::block_on(self.step(triples))
     }
 
     pub(super) fn matches(&self, batch: &Batch) -> bool {
@@ -570,7 +581,7 @@ impl QueryCircuit {
 
     // Applies a transaction after priming, copying only the triples the plan's attributes can match.
     // Once priming has stepped, an empty input changes nothing, so the step is skipped.
-    pub(super) fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
+    pub(super) async fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
         let triples = self
             .attribute_ids
             .iter()
@@ -580,7 +591,7 @@ impl QueryCircuit {
         if triples.is_empty() {
             return Ok(Vec::new());
         }
-        self.step(triples)
+        self.step(triples).await
     }
 }
 
@@ -732,7 +743,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.step(batch).unwrap(), expected, "{query}");
+                assert_eq!(circuit.step_blocking(batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -771,7 +782,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.step(batch).unwrap();
+            let mut actual = circuit.step_blocking(batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -797,7 +808,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.step(batch).unwrap(), expected);
+            assert_eq!(circuit.step_blocking(batch).unwrap(), expected);
         }
     }
 
@@ -815,7 +826,7 @@ mod tests {
 
         let mut circuit = build_query_circuit(plan, &storage_path);
         let priming_rows = circuit
-            .step(vec![
+            .step_blocking(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
@@ -870,14 +881,17 @@ mod tests {
         let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
 
         assert_eq!(
-            circuit.step(vec![]).unwrap(),
+            circuit.step_blocking(vec![]).unwrap(),
             vec![(vec![DataType::Long(0)], 1)]
         );
         // An unrelated transaction leaves the primed count unchanged.
         let batch = Batch::single(tx_key, vec![name.clone()]);
-        assert_eq!(circuit.apply(&batch).unwrap(), vec![]);
+        assert_eq!(
+            futures::executor::block_on(circuit.apply(&batch)).unwrap(),
+            vec![]
+        );
         let batch = Batch::single(tx_key, vec![name, age]);
-        let mut rows = circuit.apply(&batch).unwrap();
+        let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
         rows.sort_by_key(|(_, weight)| *weight);
         assert_eq!(
             rows,
