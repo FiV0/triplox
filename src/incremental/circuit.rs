@@ -544,13 +544,25 @@ impl QueryCircuit {
 
     // Applies one weighted triple batch and returns the decoded query result delta.
     // The first batch is the initial snapshot, so its delta is the whole query result.
-    pub(super) fn apply(
+    // The step runs on the circuit's pool thread; awaiting it holds no caller thread.
+    pub(super) async fn apply(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
-        self.handle.transaction().map_err(anyhow::Error::from)?;
+        self.handle
+            .transaction_async()
+            .await
+            .map_err(anyhow::Error::from)?;
         decode_output_rows(&self.output.concat())
+    }
+
+    // Blocks the calling thread until `apply` completes, for registration on a blocking thread.
+    pub(super) fn apply_blocking(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        futures::executor::block_on(self.apply(triples))
     }
 }
 
@@ -702,7 +714,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+                assert_eq!(circuit.apply_blocking(batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -741,7 +753,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.apply(batch).unwrap();
+            let mut actual = circuit.apply_blocking(batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -767,7 +779,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.apply(batch).unwrap(), expected);
+            assert_eq!(circuit.apply_blocking(batch).unwrap(), expected);
         }
     }
 
@@ -785,7 +797,7 @@ mod tests {
 
         let mut circuit = build_query_circuit(plan, &storage_path);
         let priming_rows = circuit
-            .apply(vec![
+            .apply_blocking(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
