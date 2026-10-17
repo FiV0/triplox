@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
 
-use crate::config::IncrementalConfig;
+use crate::config::{IncrementalConfig, IncrementalOverflow};
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
@@ -39,22 +39,27 @@ const SUBSCRIPTION_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy)]
 struct IncrementalQueryOptions {
-    runtime: IncrementalConfig,
+    config: IncrementalConfig,
     inbox_capacity: NonZeroUsize,
     max_concurrent_steps: NonZeroUsize,
     retire_timeout: Duration,
 }
 
-impl Default for IncrementalQueryOptions {
-    fn default() -> Self {
+impl IncrementalQueryOptions {
+    fn for_config(config: IncrementalConfig) -> Self {
         Self {
-            runtime: IncrementalConfig::Dedicated,
+            config,
             inbox_capacity: NonZeroUsize::new(256).unwrap(),
-            max_concurrent_steps: thread::available_parallelism()
-                .unwrap_or(NonZeroUsize::MIN)
-                .div_ceil(NonZeroUsize::new(2).unwrap()),
+            // Steps run on `threads` pool threads; more permits only add parked blocking threads.
+            max_concurrent_steps: config.threads,
             retire_timeout: Duration::from_secs(10),
         }
+    }
+}
+
+impl Default for IncrementalQueryOptions {
+    fn default() -> Self {
+        Self::for_config(IncrementalConfig::default())
     }
 }
 
@@ -124,7 +129,7 @@ enum IncrementalCommand {
     },
     ApplyBatch {
         batch: Arc<Batch>,
-        response: oneshot::Sender<()>,
+        response: oneshot::Sender<Vec<BlockedQuery>>,
     },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
@@ -160,7 +165,7 @@ impl IncrementalQueryService {
             cdc_object_path,
             cdc_object_store,
             cdc_poll_interval,
-            IncrementalConfig::Dedicated,
+            IncrementalConfig::default(),
         )
     }
 
@@ -170,7 +175,7 @@ impl IncrementalQueryService {
         cdc_object_path: String,
         cdc_object_store: Arc<dyn ObjectStore>,
         cdc_poll_interval: Duration,
-        runtime: IncrementalConfig,
+        config: IncrementalConfig,
     ) -> Self {
         Self::new_with_options(
             storage_root,
@@ -178,10 +183,7 @@ impl IncrementalQueryService {
             cdc_object_path,
             cdc_object_store,
             cdc_poll_interval,
-            IncrementalQueryOptions {
-                runtime,
-                ..IncrementalQueryOptions::default()
-            },
+            IncrementalQueryOptions::for_config(config),
         )
     }
 
@@ -310,14 +312,18 @@ impl IncrementalQueryService {
     }
 
     async fn apply_batch(&self, batch: Batch) -> Result<()> {
+        let batch = Arc::new(batch);
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::ApplyBatch {
-                batch: Arc::new(batch),
+                batch: batch.clone(),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")
+        let blocked = result.await.context("Incremental query service stopped")?;
+        // Waiting here rather than in the dispatcher keeps unregister and shutdown responsive.
+        futures::future::join_all(blocked.into_iter().map(BlockedQuery::deliver)).await;
+        Ok(())
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -368,6 +374,24 @@ struct RegisteredQuery {
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
     // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
     unregister: Option<oneshot::Sender<Result<()>>>,
+}
+
+/// A query whose full inbox still has to receive the current batch under backpressure.
+struct BlockedQuery {
+    batch: Arc<Batch>,
+    inbox: mpsc::Sender<Arc<Batch>>,
+    stop: CancellationToken,
+}
+
+impl BlockedQuery {
+    async fn deliver(self) {
+        // A closed inbox means the worker exited; the dispatcher retires it.
+        tokio::select! {
+            biased;
+            _ = self.stop.cancelled() => {}
+            _ = self.inbox.send(self.batch) => {}
+        }
+    }
 }
 
 struct IncrementalQueryServiceInner {
@@ -459,8 +483,7 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                     Some(IncrementalCommand::ApplyBatch { batch, response }) => {
-                        self.apply_batch(batch);
-                        let _ = response.send(());
+                        let _ = response.send(self.apply_batch(batch));
                     }
                     Some(IncrementalCommand::Shutdown { response }) => { shutdown = Some(response); break; }
                     None => break,
@@ -602,34 +625,32 @@ impl IncrementalQueryServiceInner {
         tx_key: TxKey,
         initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
-        if self.pool.is_none() {
-            if let IncrementalConfig::Pooled {
-                threads,
-                merger_threads,
-                cache_mib,
-            } = self.options.runtime
-            {
-                self.pool = Some(
-                    self.runtime
-                        .spawn_blocking(move || {
-                            RuntimePool::start(
-                                PoolConfig::with_threads(threads.get())
-                                    .with_merger_threads(merger_threads.get().into())
-                                    .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
-                                    .with_cache_mib(cache_mib.get()),
-                            )
-                        })
-                        .await
-                        .context("Incremental runtime pool startup task panicked")??,
-                );
+        // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
+        let pool = match &self.pool {
+            Some(pool) => pool.clone(),
+            None => {
+                let config = self.options.config;
+                let pool = self
+                    .runtime
+                    .spawn_blocking(move || {
+                        RuntimePool::start(
+                            PoolConfig::with_threads(config.threads.get())
+                                .with_merger_threads(config.merger_threads.get().into())
+                                .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                                .with_cache_mib(config.cache_mib.get()),
+                        )
+                    })
+                    .await
+                    .context("Incremental runtime pool startup task panicked")??;
+                self.pool = Some(pool.clone());
+                pool
             }
-        }
-        let pool = self.pool.clone();
+        };
         let handle = self.allocate_query_id();
         // Registration remains serialized, but DBSP construction and destruction stay off async threads.
         let (circuit, rows) = self
             .prepare_query(handle, move |storage_path| {
-                let mut circuit = QueryCircuit::build_with_pool(plan, storage_path, pool)?;
+                let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
                 let rows = circuit.step(initial_triples)?;
                 Ok((circuit, rows))
             })
@@ -637,7 +658,8 @@ impl IncrementalQueryServiceInner {
         Ok(self.install(handle, circuit, tx_key, rows))
     }
 
-    fn apply_batch(&self, batch: Arc<Batch>) {
+    fn apply_batch(&self, batch: Arc<Batch>) -> Vec<BlockedQuery> {
+        let mut blocked = vec![];
         for query in self.queries.values() {
             if query.control.stop.is_cancelled() {
                 continue;
@@ -649,19 +671,27 @@ impl IncrementalQueryServiceInner {
             let Some(batch) = batch.after(query.basis.tx_id) else {
                 continue;
             };
-            match query.inbox.try_send(batch) {
+            match query.inbox.try_send(batch.clone()) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(batch)) => {
-                    query
-                        .control
-                        .terminate(Some(Termination::Lagged(SubscriptionLagged {
-                            tx_key: batch.tx_key,
-                            capacity: self.options.inbox_capacity.get(),
-                        })));
-                }
+                Err(mpsc::error::TrySendError::Full(_)) => match self.options.config.overflow {
+                    IncrementalOverflow::Terminate => {
+                        query
+                            .control
+                            .terminate(Some(Termination::Lagged(SubscriptionLagged {
+                                tx_key: batch.tx_key,
+                                capacity: self.options.inbox_capacity.get(),
+                            })));
+                    }
+                    IncrementalOverflow::Backpressure => blocked.push(BlockedQuery {
+                        batch: batch.clone(),
+                        inbox: query.inbox.clone(),
+                        stop: query.control.stop.clone(),
+                    }),
+                },
                 Err(mpsc::error::TrySendError::Closed(_)) => query.control.terminate(None),
             }
         }
+        blocked
     }
 }
 
@@ -751,23 +781,13 @@ mod tests {
             .is_some()
     }
 
-    fn pooled_config() -> IncrementalConfig {
-        IncrementalConfig::Pooled {
+    fn small_pool_config() -> IncrementalConfig {
+        IncrementalConfig {
             threads: NonZeroUsize::new(2).unwrap(),
             merger_threads: std::num::NonZeroU16::MIN,
             cache_mib: NonZeroUsize::new(16).unwrap(),
+            ..IncrementalConfig::default()
         }
-    }
-
-    fn service_at_with_runtime(dir: &Path, config: IncrementalConfig) -> IncrementalQueryService {
-        IncrementalQueryService::new_with_runtime(
-            dir.to_path_buf(),
-            CancellationToken::new(),
-            "/test_pool".into(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-            config,
-        )
     }
 
     fn service_at(dir: &Path) -> IncrementalQueryService {
@@ -800,6 +820,12 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn steps_are_limited_to_pool_threads() {
+        let options = IncrementalQueryOptions::for_config(small_pool_config());
+        assert_eq!(options.max_concurrent_steps.get(), 2);
+    }
+
     #[tokio::test]
     async fn pooled_queries_share_workers_and_retire_independently() {
         let dir = tempfile::tempdir().unwrap();
@@ -808,7 +834,7 @@ mod tests {
             Handle::current(),
             CancellationToken::new(),
             IncrementalQueryOptions {
-                runtime: pooled_config(),
+                config: small_pool_config(),
                 ..Default::default()
             },
         );
@@ -904,73 +930,67 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
-        for config in [IncrementalConfig::Dedicated, pooled_config()] {
-            let dir = tempfile::tempdir().unwrap();
-            let service = service_at_with_runtime(dir.path(), config);
-            let error = service
-                .register_prepared_query(
-                    aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
-                    test_tx_key_with_tx_id(1),
-                    vec![name_triple(42, "Alice")],
-                )
-                .await
-                .unwrap_err();
-            assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
-            assert!(!dir.path().join("query-1").exists());
-            service.shutdown().await.unwrap();
-        }
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_at(dir.path());
+        let error = service
+            .register_prepared_query(
+                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+                test_tx_key_with_tx_id(1),
+                vec![name_triple(42, "Alice")],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
+        assert!(!dir.path().join("query-1").exists());
+        service.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn live_aggregate_error_removes_only_the_affected_subscription() {
-        for config in [IncrementalConfig::Dedicated, pooled_config()] {
-            let dir = tempfile::tempdir().unwrap();
-            let service = service_at_with_runtime(dir.path(), config);
-            let mut aggregate = register(
-                &service,
-                aggregate_plan(
-                    "[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]",
-                ),
-                vec![],
-            )
-            .await;
-            let mut names = register(&service, single_pattern_plan(), vec![]).await;
-            delta(&mut aggregate).await.unwrap();
-            service
-                .apply_batch(Batch::single(
-                    test_tx_key_with_tx_id(2),
-                    vec![age_triple(42, 10)],
-                ))
-                .await
-                .unwrap();
-            service
-                .apply_batch(Batch::single(
-                    test_tx_key_with_tx_id(3),
-                    vec![name_triple(43, "Alice")],
-                ))
-                .await
-                .unwrap();
-            assert!(delta(&mut aggregate)
-                .await
-                .unwrap()
-                .rows
-                .contains(&(vec![DataType::Long(10)], 1)));
-            assert!(delta(&mut aggregate)
-                .await
-                .unwrap_err()
-                .downcast_ref::<circuit::AggregateError>()
-                .is_some());
-            assert!(aggregate.deltas.recv().await.is_none());
-            delta(&mut names).await.unwrap();
-            let tx_key = test_tx_key_with_tx_id(4);
-            service
-                .apply_batch(Batch::single(tx_key, vec![name_triple(44, "Bob")]))
-                .await
-                .unwrap();
-            assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
-            service.shutdown().await.unwrap();
-            assert!(!dir.path().join("query-1").exists());
-        }
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_at(dir.path());
+        let mut aggregate = register(
+            &service,
+            aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
+            vec![],
+        )
+        .await;
+        let mut names = register(&service, single_pattern_plan(), vec![]).await;
+        delta(&mut aggregate).await.unwrap();
+        service
+            .apply_batch(Batch::single(
+                test_tx_key_with_tx_id(2),
+                vec![age_triple(42, 10)],
+            ))
+            .await
+            .unwrap();
+        service
+            .apply_batch(Batch::single(
+                test_tx_key_with_tx_id(3),
+                vec![name_triple(43, "Alice")],
+            ))
+            .await
+            .unwrap();
+        assert!(delta(&mut aggregate)
+            .await
+            .unwrap()
+            .rows
+            .contains(&(vec![DataType::Long(10)], 1)));
+        assert!(delta(&mut aggregate)
+            .await
+            .unwrap_err()
+            .downcast_ref::<circuit::AggregateError>()
+            .is_some());
+        assert!(aggregate.deltas.recv().await.is_none());
+        delta(&mut names).await.unwrap();
+        let tx_key = test_tx_key_with_tx_id(4);
+        service
+            .apply_batch(Batch::single(tx_key, vec![name_triple(44, "Bob")]))
+            .await
+            .unwrap();
+        assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
+        service.shutdown().await.unwrap();
+        assert!(!dir.path().join("query-1").exists());
     }
 
     #[tokio::test]
