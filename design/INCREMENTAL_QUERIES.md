@@ -272,7 +272,7 @@ IncrementalQueryService::register_query
     sends Register to the dedicated service thread
     starts the CDC loop after Register returns, if not already running
 
-triplox-incremental-query thread
+tpx-iq-service thread
     builds one QueryCircuit for the plan
     primes it with the initial triples
     queues the non-empty priming result at the registration basis
@@ -301,7 +301,7 @@ Tokio CDC task
     converts datoms to weighted EncodedTriple tuples
     sends ApplyTriples to IncrementalQueryService
 
-triplox-incremental-query thread
+tpx-iq-service thread
     loops over registered queries
     skips transactions at or before each query basis
     enqueues a shared transaction batch into each relevant query's input queue

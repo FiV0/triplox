@@ -173,11 +173,11 @@ impl IncrementalQueryService {
         let inner_cancel = cancel.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
         thread::Builder::new()
-            .name("triplox-incremental-query".to_string())
+            .name("tpx-iq-service".to_string())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
-                    .thread_name("triplox-iq-worker")
+                    .thread_name("tpx-iq-worker")
                     .enable_all()
                     .build()
                     .expect("incremental query runtime should start");
