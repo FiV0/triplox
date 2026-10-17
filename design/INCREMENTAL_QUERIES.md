@@ -455,16 +455,17 @@ returns retains its runtime resources and storage.
 
 ## Threading and Tuning Knobs
 
-Internal defaults are provided by `IncrementalQueryOptions`; there are no new
-TOML settings:
+The DBSP pool is configured under `[incremental]`: `threads` (default: half of
+`available_parallelism()`, rounded up), `merger_threads` (default 1) and
+`cache_mib` (default 256). Other internal defaults are provided by
+`IncrementalQueryOptions`:
 
 - Each input queue holds 256 WAL batches, plus at most one batch already
   taken by its worker. Overflow terminates that subscription.
 - `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
   backpressure to its own worker.
-- `max_concurrent_steps` defaults to half of `available_parallelism()`, rounded
-  up, with a minimum of one. A shared semaphore bounds outstanding live apply
-  jobs; waiting for output holds no permit.
+- `max_concurrent_steps` equals the DBSP pool's `threads`. A shared semaphore
+  bounds outstanding live apply jobs; waiting for output holds no permit.
 - `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
 - The service-owned Tokio runtime has two pools:
   - **Async pool: 2 threads** (`worker_threads(2)`), shared by all query workers.
@@ -482,8 +483,9 @@ TOML settings:
   on either async thread. The job holds its permit through queueing and execution,
   then releases it so another worker can proceed.
 
-  DBSP also owns one runtime worker thread per circuit. The semaphore limits
-  outstanding apply jobs, not the total thread count.
+  Circuits run on one shared DBSP runtime pool, started with the first query.
+  Each circuit is pinned to one of its `threads` foreground threads, and an apply
+  job parks its blocking thread until the step has run there.
 - WAL polling uses `cdc_poll_interval_us` for remote nodes (default 200ms) and a
   fixed 10ms for local and memory nodes.
 

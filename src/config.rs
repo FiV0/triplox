@@ -17,17 +17,39 @@ pub struct Config {
     pub incremental: IncrementalConfig,
 }
 
-/// DBSP resources for incremental queries; storage and CDC settings are independent.
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(tag = "runtime", rename_all = "lowercase", deny_unknown_fields)]
-pub enum IncrementalConfig {
+/// The DBSP runtime pool shared by all incremental queries; storage and CDC settings are independent.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IncrementalConfig {
+    /// Foreground pool threads, which run every circuit step.
+    pub threads: NonZeroUsize,
+    pub merger_threads: NonZeroU16,
+    pub cache_mib: NonZeroUsize,
+    pub overflow: IncrementalOverflow,
+}
+
+impl Default for IncrementalConfig {
+    fn default() -> Self {
+        Self {
+            threads: std::thread::available_parallelism()
+                .unwrap_or(NonZeroUsize::MIN)
+                .div_ceil(NonZeroUsize::new(2).unwrap()),
+            merger_threads: NonZeroU16::MIN,
+            cache_mib: NonZeroUsize::new(256).unwrap(),
+            overflow: IncrementalOverflow::default(),
+        }
+    }
+}
+
+/// What happens when an incremental query's input queue is full.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IncrementalOverflow {
+    /// Terminate the lagging subscription so other queries keep advancing.
     #[default]
-    Dedicated,
-    Pooled {
-        threads: NonZeroUsize,
-        merger_threads: NonZeroU16,
-        cache_mib: NonZeroUsize,
-    },
+    Terminate,
+    /// Pause CDC until the query has room, so the slowest query paces all others.
+    Backpressure,
 }
 
 #[cfg(feature = "kafka")]
@@ -228,22 +250,27 @@ mod tests {
     #[test]
     fn incremental_pool_requires_positive_resource_budgets() {
         let config: IncrementalConfig =
-            toml::from_str("runtime = 'pooled'\nthreads = 2\nmerger_threads = 1\ncache_mib = 4096")
-                .unwrap();
-        assert!(
-            matches!(config, IncrementalConfig::Pooled { cache_mib, .. } if cache_mib.get() == 4096)
-        );
+            toml::from_str("threads = 2\nmerger_threads = 1\ncache_mib = 4096").unwrap();
+        assert_eq!(config.threads.get(), 2);
+        assert_eq!(config.cache_mib.get(), 4096);
         for field in ["threads", "merger_threads", "cache_mib"] {
-            let valid = "runtime = 'pooled'\nthreads = 1\nmerger_threads = 1\ncache_mib = 1";
-            assert!(toml::from_str::<IncrementalConfig>(
-                &valid.replace(&format!("{field} = 1"), &format!("{field} = 0"))
-            )
-            .is_err());
+            assert!(toml::from_str::<IncrementalConfig>(&format!("{field} = 0")).is_err());
         }
-        assert!(toml::from_str::<IncrementalConfig>(
-            "runtime = 'pooled'\nthreads = 1\nmerger_threads = 65536\ncache_mib = 4096"
-        )
-        .is_err());
+        assert!(toml::from_str::<IncrementalConfig>("merger_threads = 65536").is_err());
+    }
+
+    #[test]
+    fn incremental_config_defaults_unset_fields() {
+        let config: IncrementalConfig = toml::from_str("threads = 3").unwrap();
+        let defaults = IncrementalConfig::default();
+        assert_eq!(config.threads.get(), 3);
+        assert_eq!(config.merger_threads, defaults.merger_threads);
+        assert_eq!(config.cache_mib, defaults.cache_mib);
+        assert_eq!(config.overflow, IncrementalOverflow::Terminate);
+        let config: IncrementalConfig = toml::from_str("overflow = 'backpressure'").unwrap();
+        assert_eq!(config.overflow, IncrementalOverflow::Backpressure);
+        assert!(toml::from_str::<IncrementalConfig>("overflow = 'drop'").is_err());
+        assert!(toml::from_str::<IncrementalConfig>("runtime = 'pooled'").is_err());
     }
 
     #[test]

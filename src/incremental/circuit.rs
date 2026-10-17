@@ -465,7 +465,7 @@ fn decode_output_rows(
         .collect()
 }
 
-// All circuits use the same process RSS budget, based on capacity rather than free memory.
+// The runtime pool's process RSS budget, based on capacity rather than free memory.
 pub(super) static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
@@ -504,9 +504,7 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     )
     .map_err(anyhow::Error::from)?;
 
-    Ok(CircuitConfig::with_workers(1)
-        .with_max_rss_bytes(*MAX_RSS_BYTES)
-        .with_storage(Some(storage)))
+    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
 }
 
 pub(super) struct QueryCircuit {
@@ -517,15 +515,11 @@ pub(super) struct QueryCircuit {
 }
 
 impl QueryCircuit {
-    // Builds a DBSP circuit for one incremental query plan.
-    pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        Self::build_with_pool(plan, storage_path, None)
-    }
-
-    pub(super) fn build_with_pool(
+    // Builds a DBSP circuit for one incremental query plan on a shared runtime pool.
+    pub(super) fn build(
         plan: IncrementalQueryPlan,
         storage_path: &Path,
-        pool: Option<dbsp::RuntimePool>,
+        pool: dbsp::RuntimePool,
     ) -> Result<Self> {
         let mut attribute_ids = plan
             .leaf_patterns()
@@ -534,10 +528,7 @@ impl QueryCircuit {
             .collect::<Vec<_>>();
         attribute_ids.sort_unstable();
         attribute_ids.dedup();
-        let mut config = storage_circuit_config(storage_path)?;
-        if let Some(pool) = pool {
-            config = config.with_max_rss_bytes(None).with_runtime_pool(pool);
-        }
+        let config = storage_circuit_config(storage_path)?.with_runtime_pool(pool);
         let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
@@ -596,7 +587,8 @@ impl QueryCircuit {
 #[cfg(test)]
 mod tests {
     use dbsp::{
-        utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
+        utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, PoolConfig, RootCircuit, Runtime,
+        RuntimePool, ZSetHandle, ZWeight,
     };
     use edn::kw;
     use edn::query::ToVariable;
@@ -649,6 +641,11 @@ mod tests {
             Runtime::init_circuit(storage_circuit_config(storage.path()).unwrap(), constructor)
                 .unwrap();
         (circuit, handles, storage)
+    }
+
+    fn build_query_circuit(plan: IncrementalQueryPlan, storage_path: &Path) -> QueryCircuit {
+        let pool = RuntimePool::start(PoolConfig::with_threads(1).with_cache_mib(16)).unwrap();
+        QueryCircuit::build(plan, storage_path, pool).unwrap()
     }
 
     fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(EncodedRow, ZWeight)> {
@@ -718,7 +715,7 @@ mod tests {
                        [?e :age ?age])]",
         ] {
             let storage = tempfile::tempdir().unwrap();
-            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let mut circuit = build_query_circuit(query_plan(query), storage.path());
             let row = vec![DataType::Long(100)];
             let name = triple(100, NAME, "Alice".into());
             let first = triple(101, FOLLOWS, 100_i64.into());
@@ -748,7 +745,7 @@ mod tests {
                              (or-join [?e]
                                [?e :age ?owner]
                                [?e :name ?owner])]";
-        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let mut circuit = build_query_circuit(query_plan(query), storage.path());
         let first = triple(101, FOLLOWS, 100_i64.into());
         let second = triple(102, FOLLOWS, 100_i64.into());
         let age = triple(100, AGE, 30_i64.into());
@@ -788,7 +785,7 @@ mod tests {
                              (not-join [?e]
                                [?e :follows ?friend])]";
         let storage = tempfile::tempdir().unwrap();
-        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let mut circuit = build_query_circuit(query_plan(query), storage.path());
         let row = vec![DataType::Long(100)];
         let name = triple(100, NAME, "Alice".into());
         let first = triple(100, FOLLOWS, 101_i64.into());
@@ -816,7 +813,7 @@ mod tests {
                      [?e :age ?age]]",
         );
 
-        let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
+        let mut circuit = build_query_circuit(plan, &storage_path);
         let priming_rows = circuit
             .step(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
@@ -845,7 +842,7 @@ mod tests {
               :where [[?e :name ?name]
                       [?e :age ?age]]}",
         );
-        let circuit = QueryCircuit::build(plan, storage.path()).unwrap();
+        let circuit = build_query_circuit(plan, storage.path());
         let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         assert!(!circuit.matches(&Batch::single(tx_key, vec![])));
         assert!(!circuit.matches(&Batch::single(
@@ -867,7 +864,7 @@ mod tests {
             "{:find [(count ?age)]
               :where [[?e :age ?age]]}",
         );
-        let mut circuit = QueryCircuit::build(plan, storage.path()).unwrap();
+        let mut circuit = build_query_circuit(plan, storage.path());
         let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         let name = Tup2(triple(42, NAME, "Alice".into()), 1);
         let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
