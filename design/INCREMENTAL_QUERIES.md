@@ -62,7 +62,7 @@ modules:
   streams.
 
 `src/incremental.rs` owns registered query handles, channels, per-query circuit
-instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
+instances, and the dispatcher task. `src/incremental/cdc.rs` scans the
 triples at the registration tx-key and feeds decoded SlateDB WAL transactions to the
 service.
 
@@ -269,10 +269,10 @@ IncrementalQueryService::register_query
     captures the latest indexed TxKey and schema from the indexer
     plans the query
     scans the initial triples
-    sends Register to the dedicated service thread
+    sends Register to the dispatcher task
     starts the CDC loop after Register returns, if not already running
 
-tpx-iq-service thread
+dispatcher task
     builds one QueryCircuit for the plan
     primes it with the initial triples
     queues the non-empty priming result at the registration basis
@@ -281,13 +281,13 @@ tpx-iq-service thread
     returns an IncrementalQuerySubscription
 ```
 
-`IncrementalQueryService` owns query registration and lifecycle management. Its
-service thread runs a dispatcher on a service-owned Tokio runtime. The dispatcher
-owns the registry, while each async query worker owns its circuit. Circuit build
+`IncrementalQueryService` owns query registration and lifecycle management. It
+spawns a dispatcher task on the node's Tokio runtime. The dispatcher owns the
+registry, while each async query worker owns its circuit. Circuit build
 and priming use a blocking job, but the dispatcher still waits for registration
 to finish before accepting the next command.
 
-Live WAL application reaches the dedicated service thread through the same
+Live WAL application reaches the dispatcher task through the same
 command channel, but it enters from the internal side rather than the node side.
 A spawned CDC task forwards triples as they arrive through WAL decoding.
 It drives circuits by calling `apply_triples` on a clone of the same
@@ -301,7 +301,7 @@ Tokio CDC task
     converts datoms to weighted EncodedTriple tuples
     sends ApplyTriples to IncrementalQueryService
 
-tpx-iq-service thread
+dispatcher task
     loops over registered queries
     skips transactions at or before each query basis
     enqueues a shared transaction batch into each relevant query's input queue
@@ -309,9 +309,9 @@ tpx-iq-service thread
 
 async query worker
     receives transactions in FIFO order
-    acquires a shared execution permit
-    applies one transaction on the runtime's blocking pool
-    releases the permit
+    appends one transaction to its circuit's input
+    awaits transaction_async while the circuit's pool thread runs the step
+    decodes the output
     sends non-empty IncrementalQueryDelta values to its subscription
 ```
 
@@ -323,11 +323,11 @@ separate channel so they do not keep the service command channel alive.
 FIFO consumer and at most one apply in flight; different queries advance
 independently. Registration-basis filtering happens before enqueueing, so WAL
 history already included in a snapshot cannot overflow a new query's inbox.
-Shared `Arc` batches avoid deep copies during fan-out. Each blocking apply makes
-the owned copy required by DBSP.
+Shared `Arc` batches avoid deep copies during fan-out. Each apply makes the owned
+copy required by DBSP.
 
-A full result channel pauses only that query's worker, after releasing its
-execution permit. If its input queue fills, the dispatcher stops routing to that
+A full result channel pauses only that query's worker. If its input queue fills,
+the dispatcher stops routing to that
 query and terminates it with a lag error. Pending inputs are discarded.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
@@ -438,7 +438,7 @@ Unregister and shutdown wait up to 10 seconds and return an explicit
 waiting for the dispatcher; shutdown uses one deadline for both CDC and worker
 cleanup and requests cleanup even if CDC exhausts that deadline.
 
-Timeouts only stop the caller's wait. The service runtime and retiring workers
+Timeouts only stop the caller's wait. The dispatcher and retiring workers
 remain alive until in-flight applies and cleanup finish. Storage stays in place
 until circuit destruction completes, and late cleanup failures are logged.
 There are no execution timeouts or forced circuit kills; a circuit that never
@@ -457,28 +457,19 @@ The DBSP pool is configured under `[incremental]`: `threads` (default: half of
   taken by its worker. Overflow terminates that subscription.
 - `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
   backpressure to its own worker.
-- `max_concurrent_steps` equals the DBSP pool's `threads`. A shared semaphore
-  bounds outstanding live apply jobs; waiting for output holds no permit.
 - `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
-- The service-owned Tokio runtime has two pools:
-  - **Async pool: 2 threads** (`worker_threads(2)`), shared by all query workers.
-    Waiting for input, a permit, or an apply result frees the thread to run other
-    workers.
-  - **Blocking (sync) pool: up to 512 threads**, Tokio's default limit. Threads
-    are created on demand to run synchronous jobs submitted via `spawn_blocking`;
-    jobs queue when all 512 threads are busy.
+- The dispatcher and query workers are tasks on the node's Tokio runtime; the
+  service owns no threads. Circuits run on one shared DBSP runtime pool, started
+  with the first query. Each circuit is pinned to one of its `threads` foreground
+  threads, which queue ready circuits and so alone bound concurrent steps.
 
-  **Apply scheduling:** the shared semaphore provides `max_concurrent_steps`
-  permits. Each worker acquires a permit, then calls `spawn_blocking` to submit
-  an apply job to the blocking pool. The following `.await` suspends the query
-  worker if the job is still pending, freeing its current async thread to run
-  other tasks. When the job finishes, Tokio schedules the query worker to resume
-  on either async thread. The job holds its permit through queueing and execution,
-  then releases it so another worker can proceed.
+  **Apply scheduling:** a worker appends a transaction to its circuit's input and
+  awaits `DBSPHandle::transaction_async`. The await holds no thread while the
+  pool runs the step; the worker then decodes the output on the node runtime.
 
-  Circuits run on one shared DBSP runtime pool, started with the first query.
-  Each circuit is pinned to one of its `threads` foreground threads, and an apply
-  job parks its blocking thread until the step has run there.
+  Blocking threads (`spawn_blocking`) are used only for lifecycle work that waits
+  on the pool: pool start, circuit build and priming, circuit destruction with
+  storage removal, and pool shutdown.
 - WAL polling uses `cdc_poll_interval_us` for remote nodes (default 200ms) and a
   fixed 10ms for local and memory nodes.
 
