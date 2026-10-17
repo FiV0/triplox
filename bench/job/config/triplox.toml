@@ -16,9 +16,10 @@ path = "/var/lib/triplox/log/log"
 host = "0.0.0.0"
 port = 5490
 
-# Share one DBSP runtime across all incremental subscriptions instead of one per query.
+# DBSP runtime pool shared by all incremental subscriptions.
 [incremental]
-runtime = "pooled"
-threads = 2
+threads = 8
 merger_threads = 1
 cache_mib = 4096
+# Bulk loading outpaces view maintenance; pause CDC instead of terminating lagging views.
+overflow = "backpressure"

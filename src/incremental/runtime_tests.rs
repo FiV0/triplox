@@ -48,12 +48,20 @@ struct Fixture {
 
 impl Fixture {
     fn new(capacity: usize, steps: usize) -> Self {
+        Self::with_overflow(capacity, steps, IncrementalOverflow::Terminate)
+    }
+
+    fn with_overflow(capacity: usize, steps: usize, overflow: IncrementalOverflow) -> Self {
         let storage = tempfile::tempdir().unwrap();
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
             Handle::current(),
             CancellationToken::new(),
             IncrementalQueryOptions {
+                config: IncrementalConfig {
+                    overflow,
+                    ..IncrementalConfig::default()
+                },
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
                 max_concurrent_steps: NonZeroUsize::new(steps).unwrap(),
                 ..IncrementalQueryOptions::default()
@@ -93,10 +101,10 @@ impl Fixture {
         (subscription, events)
     }
 
-    fn apply(&mut self, seq: i64) -> TxKey {
+    fn batch(seq: i64) -> Arc<Batch> {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
-        self.inner.apply_triples(Arc::new(Batch {
+        Arc::new(Batch {
             tx_key,
             triples: vec![Tup2(
                 EncodedTriple {
@@ -106,8 +114,13 @@ impl Fixture {
                 },
                 1,
             )],
-        }));
-        tx_key
+        })
+    }
+
+    fn apply(&mut self, seq: i64) -> TxKey {
+        let batch = Self::batch(seq);
+        assert!(self.inner.apply_triples(batch.clone()).is_empty());
+        batch.tx_key
     }
 
     async fn retire(&mut self) -> IncrementalQueryHandle {
@@ -245,6 +258,75 @@ async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
     assert!(slow.deltas.recv().await.is_none());
     let fourth = fixture.apply(4);
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, fourth);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn backpressure_blocks_delivery_without_terminating() {
+    let mut fixture = Fixture::with_overflow(1, 2, IncrementalOverflow::Backpressure);
+    let (release, gate) = sync_mpsc::channel();
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
+    let (mut healthy, _) = fixture.query(None, false);
+    fixture.apply(1);
+    started(&mut slow_steps).await;
+    next(&mut healthy).await.unwrap();
+    fixture.apply(2);
+    next(&mut healthy).await.unwrap();
+    let third = Fixture::batch(3);
+    let blocked = fixture.inner.apply_triples(third.clone());
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(next(&mut healthy).await.unwrap().tx_key, third.tx_key);
+    assert!(!fixture.inner.queries[&slow.handle]
+        .control
+        .stop
+        .is_cancelled());
+    let mut delivery = std::pin::pin!(futures::future::join_all(
+        blocked
+            .into_iter()
+            .map(|query| query.deliver(third.clone()))
+    ));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), delivery)
+        .await
+        .unwrap();
+    for seq in 1..=3 {
+        if seq > 1 {
+            assert_eq!(started(&mut slow_steps).await, seq);
+            release.send(()).unwrap();
+        }
+        assert_eq!(
+            next(&mut slow).await.unwrap().rows,
+            vec![(vec![DataType::Long(seq)], 1)]
+        );
+    }
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn backpressure_delivery_ends_when_query_stops() {
+    let mut fixture = Fixture::with_overflow(1, 1, IncrementalOverflow::Backpressure);
+    let (release, gate) = sync_mpsc::channel();
+    let (slow, mut slow_steps) = fixture.query(Some(gate), false);
+    fixture.apply(1);
+    started(&mut slow_steps).await;
+    fixture.apply(2);
+    let third = Fixture::batch(3);
+    let blocked = fixture.inner.apply_triples(third.clone());
+    assert_eq!(blocked.len(), 1);
+    fixture.inner.queries[&slow.handle].control.terminate(None);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        futures::future::join_all(
+            blocked
+                .into_iter()
+                .map(|query| query.deliver(third.clone())),
+        ),
+    )
+    .await
+    .unwrap();
+    release.send(()).unwrap();
+    assert_eq!(fixture.retire().await, slow.handle);
     fixture.finish().await;
 }
 
