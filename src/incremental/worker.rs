@@ -28,8 +28,54 @@ impl Circuit for QueryCircuit {
 }
 
 pub(super) struct Batch {
+    /// Key of the last transaction in the batch.
     pub tx_key: TxKey,
     pub triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    /// Transaction id of each triple, parallel to `triples`.
+    tx_ids: Vec<i64>,
+    /// The smallest of `tx_ids`, so a batch entirely after a basis is shared without a scan.
+    first_tx_id: i64,
+}
+
+impl Batch {
+    pub fn new(
+        tx_key: TxKey,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        tx_ids: Vec<i64>,
+    ) -> Self {
+        let first_tx_id = tx_ids.iter().copied().min().unwrap_or(tx_key.tx_id);
+        Self {
+            tx_key,
+            triples,
+            tx_ids,
+            first_tx_id,
+        }
+    }
+
+    /// A batch holding a single transaction.
+    #[cfg(test)]
+    pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
+        let tx_ids = vec![tx_key.tx_id; triples.len()];
+        Self::new(tx_key, triples, tx_ids)
+    }
+
+    /// The transactions of this batch after `basis`, or `None` if there are none.
+    pub fn after(self: &Arc<Self>, basis: i64) -> Option<Arc<Self>> {
+        if self.tx_key.tx_id <= basis {
+            return None;
+        }
+        if self.first_tx_id > basis {
+            return Some(self.clone());
+        }
+        let (triples, tx_ids) = self
+            .triples
+            .iter()
+            .zip(&self.tx_ids)
+            .filter(|(_, &tx_id)| tx_id > basis)
+            .map(|(triple, &tx_id)| (triple.clone(), tx_id))
+            .unzip();
+        Some(Arc::new(Self::new(self.tx_key, triples, tx_ids)))
+    }
 }
 
 pub(super) struct Control {
@@ -158,5 +204,50 @@ impl<C: Circuit> Worker<C> {
         })
         .await
         .context("Incremental query cleanup task panicked")?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triple(attribute: i64, entity: u8) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: vec![entity],
+                attribute,
+                value: vec![],
+            },
+            1,
+        )
+    }
+
+    fn entities(batch: &Batch) -> Vec<u8> {
+        let mut entities = batch
+            .triples
+            .iter()
+            .map(|Tup2(triple, _)| triple.entity[0])
+            .collect::<Vec<_>>();
+        entities.sort_unstable();
+        entities
+    }
+
+    #[test]
+    fn batch_after_keeps_only_later_transactions() {
+        let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        tx_key.tx_id = 3;
+        let batch = Arc::new(Batch::new(
+            tx_key,
+            vec![triple(2, 1), triple(1, 2), triple(2, 3), triple(1, 4)],
+            vec![1, 2, 3, 3],
+        ));
+
+        assert!(Arc::ptr_eq(&batch.after(0).unwrap(), &batch));
+        assert!(batch.after(3).is_none());
+        let after_first = batch.after(1).unwrap();
+        assert_eq!(after_first.tx_key, tx_key);
+        assert_eq!(entities(&after_first), vec![2, 3, 4]);
+        let after_second = batch.after(2).unwrap();
+        assert_eq!(entities(&after_second), vec![3, 4]);
     }
 }
