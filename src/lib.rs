@@ -11,6 +11,7 @@ mod inc_query;
 mod incremental;
 mod index;
 mod indexer;
+mod indexer_runtime;
 mod iterator;
 #[cfg(feature = "kafka")]
 pub(crate) mod kafka_log;

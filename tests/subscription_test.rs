@@ -18,11 +18,18 @@ use triplox::TransactionResult;
 const NAMES_QUERY: &str = "[:find ?name :where [?e :name ?name]]";
 
 async fn next_delta(sub: &mut triplox::subscription::Subscription) -> triplox::subscription::Delta {
-    tokio::time::timeout(Duration::from_secs(10), sub.next())
-        .await
-        .expect("a delta within 10s")
-        .expect("the stream yields a delta")
-        .expect("the delta is Ok")
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let delta = sub.next().await?;
+            if !delta.as_ref().is_ok_and(|delta| delta.rows.is_empty()) {
+                return Some(delta);
+            }
+        }
+    })
+    .await
+    .expect("a delta within 10s")
+    .expect("the stream yields a delta")
+    .expect("the delta is Ok")
 }
 
 fn add_name(entity: &'static str, name: &'static str) -> Vec<TxOp> {
@@ -123,7 +130,7 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
     assert_eq!(sub.tx_key(), None);
     let registration = sub.registration_tx_key();
 
-    // Drain: one delta per transaction, none dropped.
+    // Drain: deltas may cover several transactions, but none are dropped.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     while seen.len() < names.len() {
         let previous = sub.tx_key();
@@ -184,12 +191,15 @@ async fn subscription_deltas_match_standard_query() {
         TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
     };
 
-    // Three query-affecting transactions -> three deltas; accumulate signed weights.
+    // Transactions sharing a WAL file share a delta; accumulate up to the last one.
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
-    for _ in 0..3 {
+    loop {
         let delta = next_delta(&mut sub).await;
         for (row, weight) in &delta.rows {
             *counts.entry(format!("{row:?}")).or_default() += *weight;
+        }
+        if delta.tx_key == last_basis {
+            break;
         }
     }
     let reconstructed: BTreeSet<String> = counts
@@ -253,6 +263,12 @@ async fn shutdown_ends_live_subscription_and_drains_server() {
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
 
+    let priming = tokio::time::timeout(Duration::from_secs(2), sub.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(priming.rows.is_empty());
     token.cancel();
 
     let next = tokio::time::timeout(Duration::from_secs(2), sub.next())
