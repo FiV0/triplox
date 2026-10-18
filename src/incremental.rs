@@ -567,7 +567,7 @@ impl IncrementalQueryServiceInner {
         let (circuit, rows) = self
             .prepare_query(handle, move |storage_path| {
                 let mut circuit = QueryCircuit::build(plan, storage_path)?;
-                let rows = circuit.apply(initial_triples)?;
+                let rows = circuit.step(initial_triples)?;
                 Ok((circuit, rows))
             })
             .await?;
@@ -886,7 +886,7 @@ mod tests {
                     name_triple(2, "Bob"),
                     name_triple(3, "Cara"),
                 ],
-                vec![(1, 0), (2, 1), (3, 2)],
+                vec![1, 2, 3],
             ))
             .await
             .unwrap();
