@@ -21,7 +21,9 @@ use crate::kafka_log::KafkaLog;
 use crate::log::{subscribe_on, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{QueryArg, TxOp};
-use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
+use crate::slate::{
+    in_memory_slate_with_write_runtime, local_slate, remote_slate, SlateComponents,
+};
 use edn::query::ParsedQuery;
 use slatedb::config::{FlushOptions, FlushType};
 use tokio_util::sync::CancellationToken;
@@ -115,7 +117,7 @@ impl<L: TxLog> Node<L> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let indexer_runtime = IndexerRuntime::start().await.unwrap();
-        let slate = in_memory_slate().await;
+        let slate = in_memory_slate_with_write_runtime(indexer_runtime.handle()).await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
@@ -180,7 +182,7 @@ impl Node<FileLog> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
-        let slate = local_slate(&db_path).await;
+        let slate = local_slate(&db_path, indexer_runtime.handle()).await;
         if let Some(parent) = log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -209,17 +211,7 @@ impl Node<FileLog> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::create_dir_all(&storage.cache_path)?;
-        let cache_path = storage.cache_path.join("cache");
-        let slate = remote_slate(
-            &storage.endpoint,
-            &storage.bucket,
-            &storage.access_key,
-            &storage.secret_key,
-            &storage.region,
-            &cache_path,
-            Duration::from_micros(storage.wal_flush_interval_us.get()),
-        )
-        .await?;
+        let slate = remote_slate(storage, indexer_runtime.handle()).await?;
         Self::from_slate_and_log(
             slate,
             log_path,
@@ -239,17 +231,7 @@ impl Node<KafkaLog> {
     ) -> Result<Self, Error> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(&storage.cache_path)?;
-        let cache_path = storage.cache_path.join("cache");
-        let slate = remote_slate(
-            &storage.endpoint,
-            &storage.bucket,
-            &storage.access_key,
-            &storage.secret_key,
-            &storage.region,
-            &cache_path,
-            Duration::from_micros(storage.wal_flush_interval_us.get()),
-        )
-        .await?;
+        let slate = remote_slate(storage, indexer_runtime.handle()).await?;
         let log = Arc::new(KafkaLog::new(&log.bootstrap_servers, log.topic.clone()).await?);
         Self::from_slate_and_tx_log(
             slate,
@@ -266,6 +248,7 @@ impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
         let incremental_result = self.incremental.shutdown().await;
         self.cancel.cancel();
+        // SlateDB closes through its batch-writer, so the indexer runtime has to outlive it.
         let db_result = self.slate.db.close().await.map_err(Error::from);
         let indexer_result = self.indexer_runtime.shutdown().await;
 
@@ -486,6 +469,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec![vec![DataType::String("bob".to_string())]]);
+    }
+
+    // The indexer and SlateDB's batch-writer run on tpx-indexer, so indexing needs no shared-runtime thread.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_indexing_progresses_while_shared_runtime_is_blocked() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        let waiter = node.indexer.read().await.tx_waiter();
+        let tx_key = node
+            .submit_tx(vec![TxOp::Add {
+                entity: "bob".into(),
+                attribute: kw!(:name),
+                value: "bob".into(),
+            }])
+            .await
+            .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(futures::executor::block_on(waiter.await_tx(tx_key)));
+        });
+        // Blocks the test's only runtime thread until the tx is indexed.
+        let completion = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("indexing waited on the shared runtime")
+            .unwrap();
+        assert!(matches!(completion.outcome, TxOutcome::Committed));
     }
 
     #[tokio::test]
