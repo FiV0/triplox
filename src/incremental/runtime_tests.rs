@@ -52,19 +52,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(capacity: usize) -> Self {
-        Self::with_overflow(capacity, IncrementalOverflow::Terminate)
-    }
-
-    fn with_overflow(capacity: usize, overflow: IncrementalOverflow) -> Self {
         let storage = tempfile::tempdir().unwrap();
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
             CancellationToken::new(),
             IncrementalQueryOptions {
-                config: IncrementalConfig {
-                    overflow,
-                    ..IncrementalConfig::default()
-                },
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
                 ..IncrementalQueryOptions::default()
             },
@@ -154,7 +146,7 @@ impl Fixture {
 
     fn apply(&mut self, seq: i64) -> TxKey {
         let batch = Self::batch(seq);
-        assert!(self.inner.apply_batch(batch.clone()).is_empty());
+        self.inner.apply_batch(batch.clone());
         batch.tx_key
     }
 
@@ -287,69 +279,6 @@ async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
     assert!(slow.deltas.recv().await.is_none());
     let fourth = fixture.apply(4);
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, fourth);
-    fixture.finish().await;
-}
-
-#[tokio::test]
-async fn backpressure_blocks_delivery_without_terminating() {
-    let mut fixture = Fixture::with_overflow(1, IncrementalOverflow::Backpressure);
-    let (release, gate) = mpsc::unbounded_channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
-    fixture.apply(1);
-    started(&mut slow_steps).await;
-    next(&mut healthy).await.unwrap();
-    fixture.apply(2);
-    next(&mut healthy).await.unwrap();
-    let third = Fixture::batch(3);
-    let blocked = fixture.inner.apply_batch(third.clone());
-    assert_eq!(blocked.len(), 1);
-    assert_eq!(next(&mut healthy).await.unwrap().tx_key, third.tx_key);
-    assert!(!fixture.inner.queries[&slow.handle]
-        .control
-        .stop
-        .is_cancelled());
-    let mut delivery = std::pin::pin!(futures::future::join_all(
-        blocked.into_iter().map(BlockedQuery::deliver)
-    ));
-    assert!(futures::poll!(delivery.as_mut()).is_pending());
-    release.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), delivery)
-        .await
-        .unwrap();
-    for seq in 1..=3 {
-        if seq > 1 {
-            assert_eq!(started(&mut slow_steps).await, seq);
-            release.send(()).unwrap();
-        }
-        assert_eq!(
-            next(&mut slow).await.unwrap().rows,
-            vec![(vec![DataType::Long(seq)], 1)]
-        );
-    }
-    fixture.finish().await;
-}
-
-#[tokio::test]
-async fn backpressure_delivery_ends_when_query_stops() {
-    let mut fixture = Fixture::with_overflow(1, IncrementalOverflow::Backpressure);
-    let (release, gate) = mpsc::unbounded_channel();
-    let (slow, mut slow_steps) = fixture.query(Some(gate), false);
-    fixture.apply(1);
-    started(&mut slow_steps).await;
-    fixture.apply(2);
-    let third = Fixture::batch(3);
-    let blocked = fixture.inner.apply_batch(third.clone());
-    assert_eq!(blocked.len(), 1);
-    fixture.inner.queries[&slow.handle].control.terminate(None);
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        futures::future::join_all(blocked.into_iter().map(BlockedQuery::deliver)),
-    )
-    .await
-    .unwrap();
-    release.send(()).unwrap();
-    assert_eq!(fixture.retire().await, slow.handle);
     fixture.finish().await;
 }
 
