@@ -15,9 +15,10 @@ use crate::incremental::{
     IncrementalQueryHandle, IncrementalQueryService, IncrementalQuerySubscription,
 };
 use crate::indexer::{latest_tx_key_from_sdb, Indexer, TxOutcome, DEFAULT_TX_COMPLETION_CAPACITY};
+use crate::indexer_runtime::IndexerRuntime;
 #[cfg(feature = "kafka")]
 use crate::kafka_log::KafkaLog;
-use crate::log::{subscribe, TxLog, TxLogReader, TxLogWriter};
+use crate::log::{subscribe_on, TxLog, TxLogReader, TxLogWriter};
 use crate::memory_log::MemoryLog;
 use crate::ops::{QueryArg, TxOp};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
@@ -40,6 +41,7 @@ pub struct Node<L: TxLog> {
     pub(crate) slate: SlateComponents,
     cancel: CancellationToken,
     incremental: IncrementalQueryService,
+    indexer_runtime: IndexerRuntime,
 }
 
 impl<L: TxLog> Node<L> {
@@ -50,6 +52,7 @@ impl<L: TxLog> Node<L> {
         log: Arc<L>,
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
+        indexer_runtime: IndexerRuntime,
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
@@ -78,7 +81,13 @@ impl<L: TxLog> Node<L> {
             None => None,
         };
 
-        let cancel = subscribe(log.clone(), after_tx_id, indexer.clone()).await;
+        let cancel = subscribe_on(
+            indexer_runtime.handle(),
+            log.clone(),
+            after_tx_id,
+            indexer.clone(),
+        )
+        .await;
         let incremental = IncrementalQueryService::new(
             incremental_storage_path,
             cancel.clone(),
@@ -98,12 +107,14 @@ impl<L: TxLog> Node<L> {
             slate,
             cancel,
             incremental,
+            indexer_runtime,
         })
     }
 }
 
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
+        let indexer_runtime = IndexerRuntime::start().await.unwrap();
         let slate = in_memory_slate().await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
@@ -116,7 +127,13 @@ impl Node<MemoryLog> {
         let log = Arc::new(MemoryLog::new(Box::new(clock::SystemClock)));
         log.ensure_bootstrap_record().await.unwrap();
 
-        let cancel = subscribe(log.clone(), Some(bootstrap_tx_key.tx_id), indexer.clone()).await;
+        let cancel = subscribe_on(
+            indexer_runtime.handle(),
+            log.clone(),
+            Some(bootstrap_tx_key.tx_id),
+            indexer.clone(),
+        )
+        .await;
         let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
@@ -134,6 +151,7 @@ impl Node<MemoryLog> {
             slate,
             cancel,
             incremental,
+            indexer_runtime,
         }
     }
 }
@@ -145,12 +163,21 @@ impl Node<FileLog> {
         log_file: &Path,
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
+        indexer_runtime: IndexerRuntime,
     ) -> Result<Self, Error> {
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
-        Self::from_slate_and_tx_log(slate, log, incremental_storage_path, cdc_poll_interval).await
+        Self::from_slate_and_tx_log(
+            slate,
+            log,
+            incremental_storage_path,
+            cdc_poll_interval,
+            indexer_runtime,
+        )
+        .await
     }
 
     pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
+        let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
         let slate = local_slate(&db_path).await;
@@ -165,6 +192,7 @@ impl Node<FileLog> {
             log_path,
             storage_path.join("dbsp"),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
+            indexer_runtime,
         )
         .await
     }
@@ -173,6 +201,7 @@ impl Node<FileLog> {
         storage: &RemoteStorageConfig,
         log_path: &Path,
     ) -> Result<Self, Error> {
+        let indexer_runtime = IndexerRuntime::start().await?;
         if let Some(parent) = log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -196,6 +225,7 @@ impl Node<FileLog> {
             log_path,
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
+            indexer_runtime,
         )
         .await
     }
@@ -207,6 +237,7 @@ impl Node<KafkaLog> {
         storage: &RemoteStorageConfig,
         log: &KafkaLogConfig,
     ) -> Result<Self, Error> {
+        let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(&storage.cache_path)?;
         let cache_path = storage.cache_path.join("cache");
         let slate = remote_slate(
@@ -225,6 +256,7 @@ impl Node<KafkaLog> {
             log,
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
+            indexer_runtime,
         )
         .await
     }
@@ -235,15 +267,24 @@ impl<L: TxLog> Node<L> {
         let incremental_result = self.incremental.shutdown().await;
         self.cancel.cancel();
         let db_result = self.slate.db.close().await.map_err(Error::from);
+        let indexer_result = self.indexer_runtime.shutdown().await;
 
-        match (incremental_result, db_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(incremental_err), Err(db_err)) => Err(anyhow::anyhow!(
-                "Incremental query shutdown failed: {:#}; SlateDB close failed: {:#}",
-                incremental_err,
-                db_err
-            )),
+        let mut errors = [
+            ("Incremental query shutdown failed", incremental_result),
+            ("SlateDB close failed", db_result),
+            ("Indexer runtime shutdown failed", indexer_result),
+        ]
+        .into_iter()
+        .filter_map(|(context, result)| result.err().map(|err| (context, err)))
+        .collect::<Vec<_>>();
+        match errors.len() {
+            0 => Ok(()),
+            1 => Err(errors.pop().unwrap().1),
+            _ => Err(anyhow::anyhow!(errors
+                .iter()
+                .map(|(context, err)| format!("{context}: {err:#}"))
+                .collect::<Vec<_>>()
+                .join("; "))),
         }
     }
 
