@@ -42,7 +42,8 @@ saying it is out of scope, it is just out of scope for now.
 
 A query starts at the latest visible database value captured during
 registration. A non-empty delta is emitted if the priming of the circuit produces results;
-later deltas describe changes from subsequent transactions.
+each later delta describes the changes from the previous delta's `TxKey` up to its own,
+which may span several transactions.
 
 ---
 
@@ -63,7 +64,7 @@ modules:
 
 `src/incremental.rs` owns registered query handles, channels, per-query circuit
 instances, and the dispatcher task. `src/incremental/cdc.rs` scans the
-triples at the registration tx-key and feeds decoded SlateDB WAL transactions to the
+triples at the registration tx-key and feeds decoded SlateDB WAL files to the
 service.
 
 ### Fact input and relation streams
@@ -297,37 +298,37 @@ by a slow registration. Shutdown waits for pending builds and rejects them.
 Live WAL application reaches the dispatcher task through the same
 command channel, but it enters from the internal side rather than the node side.
 A spawned CDC task forwards triples as they arrive through WAL decoding.
-It drives circuits by calling `apply_triples` on a clone of the same
-`IncrementalQueryService` handle, which forwards an `ApplyTriples` command over
+It drives circuits by calling `apply_batch` on a clone of the same
+`IncrementalQueryService` handle, which forwards an `ApplyBatch` command over
 the same channel:
 
 ```text
 Tokio CDC task
-    reads one WAL transaction
+    reads one WAL file
     decodes it to datoms using the node schema
-    converts datoms to weighted EncodedTriple tuples
-    sends ApplyTriples to IncrementalQueryService
+    converts datoms to weighted EncodedTriple tuples tagged with their tx id
+    sends ApplyBatch to IncrementalQueryService
 
 dispatcher task
     loops over registered queries
-    skips transactions at or before each query basis
-    enqueues a shared transaction batch into each relevant query's input queue
-    acknowledges ApplyTriples after fan-out
+    drops the transactions at or before each query basis
+    enqueues the shared batch (or its trimmed remainder) into each relevant query's input queue
+    acknowledges ApplyBatch after fan-out
 
 async query worker
-    receives transactions in FIFO order
-    appends the transaction's triples with its patterns' attributes to its circuit's input
+    receives batches in FIFO order
+    appends the batch's triples with its patterns' attributes to its circuit's input
     awaits transaction_async while the circuit's pool thread runs the step,
         unless no triple had one of those attributes
     decodes the output
     sends non-empty IncrementalQueryDelta values to its subscription
 ```
 
-Tokio channels carry commands into the dispatcher, transaction batches into
+Tokio channels carry commands into the dispatcher, WAL batches into
 workers, and results back to subscribers. Workers report cleanup completion on a
 separate channel so they do not keep the service command channel alive.
 
-`ApplyTriples` acknowledges routing, not circuit completion. Each query has one
+`ApplyBatch` acknowledges routing, not circuit completion. Each query has one
 FIFO consumer and at most one apply in flight; different queries advance
 independently. Registration-basis filtering happens before enqueueing, so WAL
 history already included in a snapshot cannot overflow a new query's inbox.
@@ -342,7 +343,8 @@ query and terminates it with a lag error. Pending inputs are discarded.
 
 `IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
 circuit step. The first delta is the non-empty priming result at the registration
-basis; later deltas describe transactions after that basis. A priming failure
+basis; later deltas describe the WAL batches after that basis, each carrying
+the `TxKey` of the last transaction it covers. A priming failure
 rejects registration. A live failure removes only the affected query.
 
 A separate terminal channel prevents a full output queue from hiding an error.
@@ -352,12 +354,12 @@ over buffered results. Both become terminal `QueryError` frames on the wire.
 Registration is serialized against the application of CDC changes by a registration gate owned
 by `IncrementalQueryService`. `register_query` holds the gate across its whole
 body (basis capture, initial db capture, and the `Register` round-trip), and the
-CDC loop holds the same gate around each `apply_triples`. This makes the
+CDC loop holds the same gate around each `apply_batch`. This makes the
 snapshot/register cutover atomic with respect to CDC application: a transaction
 after the registration basis cannot be consumed by the global CDC loop before the
 new query is present in the service registry. The cutover boundary itself is the
 registration `TxKey` — the global CDC loop reads the WAL from the beginning and
-each query skips transactions at or before its own `tx_id`.
+each query drops the transactions at or before its own `tx_id`.
 
 ---
 
@@ -382,9 +384,11 @@ but before that query has been inserted into the incremental service. Without
 that barrier, the new query could miss a future transaction.
 
 The transaction basis may be in the middle of WAL availability. This is normal:
-the CDC loop may later read a WAL file containing both transactions at or before
-the registration basis and transactions after it. Each registered query filters
-CDC transactions by transaction basis so it skips entries at or before its
+transactions that are indexed but not yet flushed share a WAL file with the
+transactions that follow them, so the CDC loop may later read a WAL file
+containing both transactions at or before the registration basis and
+transactions after it. Every triple in a batch carries its transaction id, and
+the dispatcher trims such a batch for that query so it skips entries at or before its
 registration basis and applies later ones.
 
 ---
@@ -392,8 +396,8 @@ registration basis and applies later ones.
 ## CDC Flow
 
 The node has one CDC loop for all incremental queries. It uses SlateDB
-`WalReader` through Triplox's `CdcStream` helper. The loop decodes WAL entries
-into transaction-sized batches, extracts EAV datoms using the current node
+`WalReader` through Triplox's `CdcStream` helper. The loop turns each WAL file
+into one batch, extracts EAV datoms using the current node
 schema (future optimizations should apply decoding more fine-grained per query),
 and then routes the weighted triple delta through the incremental query
 service. It does not wait on the writer indexer before applying a WAL entry;
@@ -406,23 +410,28 @@ The CDC cursor is the WAL read-position marker. It contains the WAL file id
 where reading should resume and the last SlateDB row sequence that should be
 skipped because it has already been read. In the current writer-node
 implementation this cursor is in-memory state owned by the live `CdcStream`;
-it lets the stream park on `next_transaction().await`, reopen the current WAL
-file when needed, and continue without rereading earlier rows.
+it lets the stream park on `next_batch().await` and continue with the next
+WAL file without rereading earlier rows.
 
 This CDC cursor is currently not saved anywhere persistently. If a node
 crashes the query needs to be registered anew and populated anew.
 
-For each transaction:
+For each WAL file:
 
-1. `CdcStream` yields one grouped WAL transaction.
+1. `CdcStream` yields all rows of the file after the cursor as one batch.
 2. EAV entries are decoded into datoms.
-3. Transaction metadata is converted into a `TxKey` when possible.
-4. Datoms become a weighted batch of encoded triples.
-5. The incremental service enqueues the batch for queries with an earlier
-   registration basis, terminating any query whose input queue overflows.
+3. The last transaction's metadata becomes the batch `TxKey`.
+4. Datoms become a weighted batch of encoded triples, each tagged with its
+   transaction id.
+5. The incremental service enqueues the batch, trimmed to the transactions after
+   each query's registration basis, terminating any query whose input queue overflows.
 6. CDC continues after routing; workers independently apply their queued batches
    and send non-empty result deltas.
 7. The live stream cursor advances as rows are read, independently of worker progress.
+
+Each circuit takes one step per WAL file rather than per transaction. This is
+cheaper, but coarser: a fact added and retracted within one WAL file cancels out
+and produces no delta.
 
 ---
 
@@ -463,7 +472,7 @@ The DBSP pool is configured under `[incremental]`: `threads` (default: half of
 `cache_mib` (default 256). Other internal defaults are provided by
 `IncrementalQueryOptions`:
 
-- Each input queue holds 256 transactions, plus at most one transaction already
+- Each input queue holds 256 WAL batches, plus at most one batch already
   taken by its worker. Overflow terminates that subscription.
 - `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
   backpressure to its own worker.
@@ -516,9 +525,6 @@ save a lot of space in the incremental circuits.
 - Cost-based join ordering beyond the shared-variable heuristic.
 - Batching and scheduling policies for many active queries.
 - Storage cleanup and compaction policies for long-running query traces.
-- CDC currently applies one WAL transaction at a time. Future batching could
-  coalesce multiple WAL transactions, but that would change delta granularity
-  and basis reporting semantics.
 - DBSP storage is file-backed per query. Cache sizing, storage roots,
   compaction, and checkpoint/restore policy are future operational controls.
 

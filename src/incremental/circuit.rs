@@ -859,12 +859,12 @@ mod tests {
             vec![(vec![DataType::Long(0)], 1)]
         );
         // Without :age triples the step is skipped, and the count of 0 must survive it.
-        let batch = Batch::new(tx_key, vec![name.clone()]);
+        let batch = Batch::single(tx_key, vec![name.clone()]);
         assert_eq!(
             futures::executor::block_on(circuit.apply(&batch)).unwrap(),
             vec![]
         );
-        let batch = Batch::new(tx_key, vec![name, age]);
+        let batch = Batch::single(tx_key, vec![name, age]);
         let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
         rows.sort_by_key(|(_, weight)| *weight);
         assert_eq!(

@@ -19,15 +19,39 @@ use crate::ops::DataType;
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
 
 pub(super) struct Batch {
+    /// Key of the last transaction in the batch.
     pub tx_key: TxKey,
-    // Sorted by attribute, so each attribute's triples are contiguous.
+    /// Sorted by attribute, so each attribute's triples are contiguous.
     triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    /// Transaction id of each triple, parallel to `triples`.
+    tx_ids: Vec<i64>,
+    /// The smallest of `tx_ids`, so a batch entirely after a basis is shared without a scan.
+    first_tx_id: i64,
 }
 
 impl Batch {
-    pub fn new(tx_key: TxKey, mut triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
-        triples.sort_unstable_by_key(|Tup2(triple, _)| triple.attribute);
-        Self { tx_key, triples }
+    pub fn new(
+        tx_key: TxKey,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        tx_ids: Vec<i64>,
+    ) -> Self {
+        let first_tx_id = tx_ids.iter().copied().min().unwrap_or(tx_key.tx_id);
+        let mut rows = triples.into_iter().zip(tx_ids).collect::<Vec<_>>();
+        rows.sort_unstable_by_key(|(Tup2(triple, _), _)| triple.attribute);
+        let (triples, tx_ids) = rows.into_iter().unzip();
+        Self {
+            tx_key,
+            triples,
+            tx_ids,
+            first_tx_id,
+        }
+    }
+
+    /// A batch holding a single transaction.
+    #[cfg(test)]
+    pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
+        let tx_ids = vec![tx_key.tx_id; triples.len()];
+        Self::new(tx_key, triples, tx_ids)
     }
 
     pub fn triples(&self) -> &[Tup2<EncodedTriple, ZWeight>] {
@@ -42,6 +66,24 @@ impl Batch {
             .triples
             .partition_point(|Tup2(triple, _)| triple.attribute <= attribute);
         &self.triples[start..end]
+    }
+
+    /// The transactions of this batch after `basis`, or `None` if there are none.
+    pub fn after(self: &Arc<Self>, basis: i64) -> Option<Arc<Self>> {
+        if self.tx_key.tx_id <= basis {
+            return None;
+        }
+        if self.first_tx_id > basis {
+            return Some(self.clone());
+        }
+        let (triples, tx_ids) = self
+            .triples
+            .iter()
+            .zip(&self.tx_ids)
+            .filter(|(_, &tx_id)| tx_id > basis)
+            .map(|(triple, &tx_id)| (triple.clone(), tx_id))
+            .unzip();
+        Some(Arc::new(Self::new(self.tx_key, triples, tx_ids)))
     }
 }
 
@@ -169,26 +211,48 @@ mod tests {
         )
     }
 
+    fn entities(batch: &Batch, attribute: i64) -> Vec<u8> {
+        let mut entities = batch
+            .attribute_triples(attribute)
+            .iter()
+            .map(|Tup2(triple, _)| triple.entity[0])
+            .collect::<Vec<_>>();
+        entities.sort_unstable();
+        entities
+    }
+
     #[test]
     fn batch_returns_each_attributes_triples() {
-        let batch = Batch::new(
+        let batch = Batch::single(
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             vec![triple(3, 1), triple(1, 2), triple(3, 3), triple(2, 4)],
         );
-        let entities = |attribute| {
-            let mut entities = batch
-                .attribute_triples(attribute)
-                .iter()
-                .map(|Tup2(triple, _)| triple.entity[0])
-                .collect::<Vec<_>>();
-            entities.sort_unstable();
-            entities
-        };
 
-        assert_eq!(entities(1), vec![2]);
-        assert_eq!(entities(2), vec![4]);
-        assert_eq!(entities(3), vec![1, 3]);
-        assert!(entities(0).is_empty());
-        assert!(entities(4).is_empty());
+        assert_eq!(entities(&batch, 1), vec![2]);
+        assert_eq!(entities(&batch, 2), vec![4]);
+        assert_eq!(entities(&batch, 3), vec![1, 3]);
+        assert!(entities(&batch, 0).is_empty());
+        assert!(entities(&batch, 4).is_empty());
+    }
+
+    #[test]
+    fn batch_after_keeps_only_later_transactions() {
+        let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        tx_key.tx_id = 3;
+        let batch = Arc::new(Batch::new(
+            tx_key,
+            vec![triple(2, 1), triple(1, 2), triple(2, 3), triple(1, 4)],
+            vec![1, 2, 3, 3],
+        ));
+
+        assert!(Arc::ptr_eq(&batch.after(0).unwrap(), &batch));
+        assert!(batch.after(3).is_none());
+        let after_first = batch.after(1).unwrap();
+        assert_eq!(after_first.tx_key, tx_key);
+        assert_eq!(entities(&after_first, 1), vec![2, 4]);
+        assert_eq!(entities(&after_first, 2), vec![3]);
+        let after_second = batch.after(2).unwrap();
+        assert_eq!(entities(&after_second, 1), vec![4]);
+        assert_eq!(entities(&after_second, 2), vec![3]);
     }
 }

@@ -127,7 +127,7 @@ impl Fixture {
     fn batch(seq: i64) -> Arc<Batch> {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
-        Arc::new(Batch::new(
+        Arc::new(Batch::single(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -142,7 +142,7 @@ impl Fixture {
 
     fn apply(&mut self, seq: i64) -> TxKey {
         let batch = Self::batch(seq);
-        self.inner.apply_triples(batch.clone());
+        self.inner.apply_batch(batch.clone());
         batch.tx_key
     }
 
@@ -382,8 +382,8 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     tx_key.tx_id += 2;
     let (response, applied) = oneshot::channel();
     commands
-        .send(IncrementalCommand::ApplyTriples {
-            batch: Arc::new(Batch::new(
+        .send(IncrementalCommand::ApplyBatch {
+            batch: Arc::new(Batch::single(
                 tx_key,
                 vec![Tup2(
                     EncodedTriple {
@@ -460,7 +460,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
     service
-        .apply_triples(
+        .apply_batch(Batch::single(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -470,7 +470,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
                 },
                 1,
             )],
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
@@ -599,7 +599,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     tx_key.tx_id += 1;
     tokio::time::timeout(
         Duration::from_secs(5),
-        service.apply_triples(
+        service.apply_batch(Batch::single(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -609,7 +609,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
                 },
                 1,
             )],
-        ),
+        )),
     )
     .await
     .unwrap()
@@ -639,7 +639,7 @@ async fn unregister_is_not_blocked_by_registration() {
         .unwrap();
     let batch = Fixture::batch(1);
     service
-        .apply_triples(batch.tx_key, batch.triples().to_vec())
+        .apply_batch(Batch::single(batch.tx_key, batch.triples().to_vec()))
         .await
         .unwrap();
     assert_eq!(next(&mut registered).await.unwrap().tx_key, batch.tx_key);
