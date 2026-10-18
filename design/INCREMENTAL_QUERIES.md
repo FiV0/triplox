@@ -316,8 +316,9 @@ dispatcher task
 
 async query worker
     receives transactions in FIFO order
-    appends one transaction to its circuit's input
-    awaits transaction_async while the circuit's pool thread runs the step
+    appends the transaction's triples with its patterns' attributes to its circuit's input
+    awaits transaction_async while the circuit's pool thread runs the step,
+        unless no triple had one of those attributes
     decodes the output
     sends non-empty IncrementalQueryDelta values to its subscription
 ```
@@ -330,8 +331,10 @@ separate channel so they do not keep the service command channel alive.
 FIFO consumer and at most one apply in flight; different queries advance
 independently. Registration-basis filtering happens before enqueueing, so WAL
 history already included in a snapshot cannot overflow a new query's inbox.
-Shared `Arc` batches avoid deep copies during fan-out. Each apply makes the owned
-copy required by DBSP.
+Shared `Arc` batches avoid deep copies during fan-out. A batch is sorted by
+attribute once, and each apply copies only its query's attributes' triples, the
+owned input DBSP requires. A query with none of them skips the step: after the
+always-stepped priming, an empty input cannot change its result.
 
 A full result channel pauses only that query's worker. If its input queue fills,
 the dispatcher stops routing to that

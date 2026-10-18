@@ -12,8 +12,8 @@ struct Probe {
 }
 
 impl Circuit for Probe {
-    async fn apply(&mut self, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<worker::Rows> {
-        let seq = triples[0].0.attribute;
+    async fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+        let seq = batch.triples()[0].0.attribute;
         let _ = self.started.send(seq);
         if let Some(release) = &mut self.release {
             let _ = release.recv().await;
@@ -127,9 +127,9 @@ impl Fixture {
     fn batch(seq: i64) -> Arc<Batch> {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
-        Arc::new(Batch {
+        Arc::new(Batch::new(
             tx_key,
-            triples: vec![Tup2(
+            vec![Tup2(
                 EncodedTriple {
                     entity: vec![],
                     attribute: seq,
@@ -137,7 +137,7 @@ impl Fixture {
                 },
                 1,
             )],
-        })
+        ))
     }
 
     fn apply(&mut self, seq: i64) -> TxKey {
@@ -383,9 +383,9 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     let (response, applied) = oneshot::channel();
     commands
         .send(IncrementalCommand::ApplyTriples {
-            batch: Arc::new(Batch {
+            batch: Arc::new(Batch::new(
                 tx_key,
-                triples: vec![Tup2(
+                vec![Tup2(
                     EncodedTriple {
                         entity: vec![],
                         attribute: 2,
@@ -393,7 +393,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
                     },
                     1,
                 )],
-            }),
+            )),
             response,
         })
         .unwrap();
@@ -639,7 +639,7 @@ async fn unregister_is_not_blocked_by_registration() {
         .unwrap();
     let batch = Fixture::batch(1);
     service
-        .apply_triples(batch.tx_key, batch.triples.clone())
+        .apply_triples(batch.tx_key, batch.triples().to_vec())
         .await
         .unwrap();
     assert_eq!(next(&mut registered).await.unwrap().tx_key, batch.tx_key);
@@ -690,14 +690,7 @@ async fn registration_panics_remove_storage_after_unwinding() {
                 storage: storage.to_path_buf(),
                 dropped,
             };
-            let rows = futures::executor::block_on(probe.apply(vec![Tup2(
-                EncodedTriple {
-                    entity: vec![],
-                    attribute: 1,
-                    value: vec![],
-                },
-                1,
-            )]))?;
+            let rows = futures::executor::block_on(probe.apply(&Fixture::batch(1)))?;
             Ok((probe, rows))
         })
         .await

@@ -18,25 +18,41 @@ use crate::ops::DataType;
 
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
 
-pub(super) trait Circuit: Send + 'static {
-    fn apply(
-        &mut self,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> impl Future<Output = Result<Rows>> + Send;
+pub(super) struct Batch {
+    pub tx_key: TxKey,
+    // Sorted by attribute, so each attribute's triples are contiguous.
+    triples: Vec<Tup2<EncodedTriple, ZWeight>>,
 }
 
-impl Circuit for QueryCircuit {
-    fn apply(
-        &mut self,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> impl Future<Output = Result<Rows>> + Send {
-        self.apply(triples)
+impl Batch {
+    pub fn new(tx_key: TxKey, mut triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
+        triples.sort_unstable_by_key(|Tup2(triple, _)| triple.attribute);
+        Self { tx_key, triples }
+    }
+
+    pub fn triples(&self) -> &[Tup2<EncodedTriple, ZWeight>] {
+        &self.triples
+    }
+
+    pub fn attribute_triples(&self, attribute: i64) -> &[Tup2<EncodedTriple, ZWeight>] {
+        let start = self
+            .triples
+            .partition_point(|Tup2(triple, _)| triple.attribute < attribute);
+        let end = self
+            .triples
+            .partition_point(|Tup2(triple, _)| triple.attribute <= attribute);
+        &self.triples[start..end]
     }
 }
 
-pub(super) struct Batch {
-    pub tx_key: TxKey,
-    pub triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+pub(super) trait Circuit: Send + 'static {
+    fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
+}
+
+impl Circuit for QueryCircuit {
+    fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send {
+        self.apply(batch)
+    }
 }
 
 pub(super) struct Control {
@@ -94,7 +110,7 @@ impl<C: Circuit> Worker<C> {
                     batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
                 };
                 // A started step always finishes; stopping takes effect between steps.
-                let rows = circuit.apply(batch.triples.clone()).await?;
+                let rows = circuit.apply(&batch).await?;
                 if control.stop.is_cancelled() {
                     break;
                 }
@@ -135,5 +151,44 @@ impl<C: Circuit> Worker<C> {
         })
         .await
         .context("Incremental query cleanup task panicked")?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triple(attribute: i64, entity: u8) -> Tup2<EncodedTriple, ZWeight> {
+        Tup2(
+            EncodedTriple {
+                entity: vec![entity],
+                attribute,
+                value: vec![],
+            },
+            1,
+        )
+    }
+
+    #[test]
+    fn batch_returns_each_attributes_triples() {
+        let batch = Batch::new(
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            vec![triple(3, 1), triple(1, 2), triple(3, 3), triple(2, 4)],
+        );
+        let entities = |attribute| {
+            let mut entities = batch
+                .attribute_triples(attribute)
+                .iter()
+                .map(|Tup2(triple, _)| triple.entity[0])
+                .collect::<Vec<_>>();
+            entities.sort_unstable();
+            entities
+        };
+
+        assert_eq!(entities(1), vec![2]);
+        assert_eq!(entities(2), vec![4]);
+        assert_eq!(entities(3), vec![1, 3]);
+        assert!(entities(0).is_empty());
+        assert!(entities(4).is_empty());
     }
 }

@@ -298,7 +298,7 @@ impl IncrementalQueryService {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::ApplyTriples {
-                batch: Arc::new(Batch { tx_key, triples }),
+                batch: Arc::new(Batch::new(tx_key, triples)),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -667,7 +667,7 @@ impl IncrementalQueryServiceInner {
         let handle = self.allocate_query_id();
         self.spawn_build(handle, tx_key, response, move |storage_path| {
             let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
-            let rows = circuit.apply_blocking(initial_triples)?;
+            let rows = circuit.step_blocking(initial_triples)?;
             Ok((circuit, rows))
         });
     }
@@ -883,10 +883,10 @@ mod tests {
         assert!(!inner.query_storage_path(first.handle).exists());
         let mut old = name_triple(42, "Alice");
         old.1 = -1;
-        inner.apply_triples(Arc::new(Batch {
-            tx_key: test_tx_key_with_tx_id(2),
-            triples: vec![old, name_triple(42, "Bob")],
-        }));
+        inner.apply_triples(Arc::new(Batch::new(
+            test_tx_key_with_tx_id(2),
+            vec![old, name_triple(42, "Bob")],
+        )));
         let rows = delta(&mut second).await.unwrap().rows;
         assert!(rows.contains(&(vec![DataType::String("Alice".into())], -1)));
         assert!(rows.contains(&(vec![DataType::String("Bob".into())], 1)));

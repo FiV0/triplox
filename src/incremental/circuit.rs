@@ -18,6 +18,7 @@ use edn::query::Variable;
 pub(super) use aggregates::AggregateError;
 use aggregates::{aggregate_find_stream, decode_aggregate_output, AggregateOutput};
 
+use super::worker::Batch;
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
@@ -510,6 +511,8 @@ pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
     output: OutputHandle<dbsp::typed_batch::SpineSnapshot<OutputZSet>>,
+    // The sorted, distinct attributes of the plan's patterns; no other triple can match.
+    attributes: Vec<i64>,
 }
 
 impl QueryCircuit {
@@ -519,6 +522,13 @@ impl QueryCircuit {
         storage_path: &Path,
         pool: dbsp::RuntimePool,
     ) -> Result<Self> {
+        let mut attributes = plan
+            .leaf_patterns()
+            .iter()
+            .map(|pattern| pattern.attribute)
+            .collect::<Vec<_>>();
+        attributes.sort_unstable();
+        attributes.dedup();
         let config = storage_circuit_config(storage_path)?.with_runtime_pool(pool);
         let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
@@ -539,13 +549,13 @@ impl QueryCircuit {
             handle,
             input,
             output,
+            attributes,
         })
     }
 
-    // Applies one weighted triple batch and returns the decoded query result delta.
-    // The first batch is the initial snapshot, so its delta is the whole query result.
+    // Steps the circuit on one weighted triple batch and returns the decoded query result delta.
     // The step runs on the circuit's pool thread; awaiting it holds no caller thread.
-    pub(super) async fn apply(
+    async fn step(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
@@ -557,12 +567,28 @@ impl QueryCircuit {
         decode_output_rows(&self.output.concat())
     }
 
-    // Blocks the calling thread until `apply` completes, for registration on a blocking thread.
-    pub(super) fn apply_blocking(
+    // Applies a transaction after priming, copying only the triples the plan's attributes can match.
+    // Once priming has stepped, an empty input changes nothing, so the step is skipped.
+    pub(super) async fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
+        let triples = self
+            .attributes
+            .iter()
+            .flat_map(|attribute| batch.attribute_triples(*attribute))
+            .cloned()
+            .collect::<Vec<_>>();
+        if triples.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.step(triples).await
+    }
+
+    // Blocks the calling thread until `step` completes, for registration on a blocking thread.
+    // Priming always steps: the first step can emit rows without input, like a global count of 0.
+    pub(super) fn step_blocking(
         &mut self,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        futures::executor::block_on(self.apply(triples))
+        futures::executor::block_on(self.step(triples))
     }
 }
 
@@ -714,7 +740,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.apply_blocking(batch).unwrap(), expected, "{query}");
+                assert_eq!(circuit.step_blocking(batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -753,7 +779,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.apply_blocking(batch).unwrap();
+            let mut actual = circuit.step_blocking(batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -779,7 +805,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.apply_blocking(batch).unwrap(), expected);
+            assert_eq!(circuit.step_blocking(batch).unwrap(), expected);
         }
     }
 
@@ -797,7 +823,7 @@ mod tests {
 
         let mut circuit = build_query_circuit(plan, &storage_path);
         let priming_rows = circuit
-            .apply_blocking(vec![
+            .step_blocking(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
@@ -814,6 +840,37 @@ mod tests {
         assert!(storage_path.exists());
         assert!(!storage_path.join("stale").exists());
         assert!(path_has_entries(&storage_path));
+    }
+
+    #[test]
+    fn query_circuit_applies_only_its_attributes() {
+        let storage = tempfile::tempdir().unwrap();
+        let plan = query_plan(
+            "[:find (count ?age)
+              :where [?e :age ?age]]",
+        );
+        let mut circuit = build_query_circuit(plan, storage.path());
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        let name = Tup2(triple(42, NAME, "Alice".into()), 1);
+        let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
+
+        assert_eq!(
+            circuit.step_blocking(vec![]).unwrap(),
+            vec![(vec![DataType::Long(0)], 1)]
+        );
+        // Without :age triples the step is skipped, and the count of 0 must survive it.
+        let batch = Batch::new(tx_key, vec![name.clone()]);
+        assert_eq!(
+            futures::executor::block_on(circuit.apply(&batch)).unwrap(),
+            vec![]
+        );
+        let batch = Batch::new(tx_key, vec![name, age]);
+        let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
+        rows.sort_by_key(|(_, weight)| *weight);
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(0)], -1), (vec![DataType::Long(1)], 1)]
+        );
     }
 
     #[test]
