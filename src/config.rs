@@ -25,7 +25,6 @@ pub struct IncrementalConfig {
     pub threads: NonZeroUsize,
     pub merger_threads: NonZeroU16,
     pub cache_mib: NonZeroUsize,
-    pub overflow: IncrementalOverflow,
 }
 
 impl Default for IncrementalConfig {
@@ -36,20 +35,8 @@ impl Default for IncrementalConfig {
                 .div_ceil(NonZeroUsize::new(2).unwrap()),
             merger_threads: NonZeroU16::MIN,
             cache_mib: NonZeroUsize::new(256).unwrap(),
-            overflow: IncrementalOverflow::default(),
         }
     }
-}
-
-/// What happens when an incremental query's input queue is full.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum IncrementalOverflow {
-    /// Terminate the lagging subscription so other queries keep advancing.
-    #[default]
-    Terminate,
-    /// Pause CDC until the query has room, so the slowest query paces all others.
-    Backpressure,
 }
 
 #[cfg(feature = "kafka")]
@@ -266,10 +253,8 @@ mod tests {
         assert_eq!(config.threads.get(), 3);
         assert_eq!(config.merger_threads, defaults.merger_threads);
         assert_eq!(config.cache_mib, defaults.cache_mib);
-        assert_eq!(config.overflow, IncrementalOverflow::Terminate);
-        let config: IncrementalConfig = toml::from_str("overflow = 'backpressure'").unwrap();
-        assert_eq!(config.overflow, IncrementalOverflow::Backpressure);
-        assert!(toml::from_str::<IncrementalConfig>("overflow = 'drop'").is_err());
+        // A full input queue always terminates the lagging subscription; there is no setting.
+        assert!(toml::from_str::<IncrementalConfig>("overflow = 'terminate'").is_err());
         assert!(toml::from_str::<IncrementalConfig>("runtime = 'pooled'").is_err());
     }
 

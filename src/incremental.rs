@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
 
-use crate::config::{IncrementalConfig, IncrementalOverflow};
+use crate::config::IncrementalConfig;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
 use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
@@ -124,7 +124,7 @@ enum IncrementalCommand {
     },
     ApplyBatch {
         batch: Arc<Batch>,
-        response: oneshot::Sender<Vec<BlockedQuery>>,
+        response: oneshot::Sender<()>,
     },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
@@ -298,10 +298,7 @@ impl IncrementalQueryService {
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        let blocked = result.await.context("Incremental query service stopped")?;
-        // Waiting here rather than in the dispatcher keeps unregister and shutdown responsive.
-        futures::future::join_all(blocked.into_iter().map(BlockedQuery::deliver)).await;
-        Ok(())
+        result.await.context("Incremental query service stopped")
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -352,24 +349,6 @@ struct RegisteredQuery {
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
     // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
     unregister: Option<oneshot::Sender<Result<()>>>,
-}
-
-/// A query whose full inbox still has to receive its part of the current batch under backpressure.
-struct BlockedQuery {
-    inbox: mpsc::Sender<Arc<Batch>>,
-    stop: CancellationToken,
-    batch: Arc<Batch>,
-}
-
-impl BlockedQuery {
-    async fn deliver(self) {
-        // A closed inbox means the worker exited; the dispatcher retires it.
-        tokio::select! {
-            biased;
-            _ = self.stop.cancelled() => {}
-            _ = self.inbox.send(self.batch) => {}
-        }
-    }
 }
 
 type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
@@ -492,7 +471,8 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                     Some(IncrementalCommand::ApplyBatch { batch, response }) => {
-                        let _ = response.send(self.apply_batch(batch));
+                        self.apply_batch(batch);
+                        let _ = response.send(());
                     }
                     Some(IncrementalCommand::Shutdown { response }) => { shutdown = Some(response); break; }
                     None => break,
@@ -688,8 +668,7 @@ impl IncrementalQueryServiceInner {
         });
     }
 
-    fn apply_batch(&self, batch: Arc<Batch>) -> Vec<BlockedQuery> {
-        let mut blocked = vec![];
+    fn apply_batch(&self, batch: Arc<Batch>) {
         for query in self.queries.values() {
             if query.control.stop.is_cancelled() {
                 continue;
@@ -703,25 +682,17 @@ impl IncrementalQueryServiceInner {
             };
             match query.inbox.try_send(batch) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(batch)) => match self.options.config.overflow {
-                    IncrementalOverflow::Terminate => {
-                        query
-                            .control
-                            .terminate(Some(Termination::Lagged(SubscriptionLagged {
-                                tx_key: batch.tx_key,
-                                capacity: self.options.inbox_capacity.get(),
-                            })));
-                    }
-                    IncrementalOverflow::Backpressure => blocked.push(BlockedQuery {
-                        inbox: query.inbox.clone(),
-                        stop: query.control.stop.clone(),
-                        batch,
-                    }),
-                },
+                Err(mpsc::error::TrySendError::Full(batch)) => {
+                    query
+                        .control
+                        .terminate(Some(Termination::Lagged(SubscriptionLagged {
+                            tx_key: batch.tx_key,
+                            capacity: self.options.inbox_capacity.get(),
+                        })));
+                }
                 Err(mpsc::error::TrySendError::Closed(_)) => query.control.terminate(None),
             }
         }
-        blocked
     }
 }
 
@@ -816,7 +787,6 @@ mod tests {
             threads: NonZeroUsize::new(2).unwrap(),
             merger_threads: std::num::NonZeroU16::MIN,
             cache_mib: NonZeroUsize::new(16).unwrap(),
-            ..IncrementalConfig::default()
         }
     }
 
