@@ -22,6 +22,7 @@ use crate::memory_log::MemoryLog;
 use crate::ops::{QueryArg, TxOp};
 use crate::slate::{in_memory_slate, local_slate, remote_slate, SlateComponents};
 use edn::query::ParsedQuery;
+use slatedb::config::{FlushOptions, FlushType};
 use tokio_util::sync::CancellationToken;
 
 pub use crate::db_value::DB;
@@ -296,6 +297,17 @@ impl<L: TxLog> Node<L> {
     ) -> Result<(), Error> {
         self.incremental.unregister(handle).await
     }
+
+    /// Flush the WAL to object storage. Writer-only.
+    pub(crate) async fn flush_db(&self) -> Result<(), Error> {
+        self.slate
+            .db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::Wal,
+            })
+            .await?;
+        Ok(())
+    }
 }
 
 impl<L: TxLog> SubmitNode for Node<L> {
@@ -372,7 +384,6 @@ mod tests {
     use edn::kw;
     use edn::Keyword;
     use regex::Regex;
-    use slatedb::config::{FlushOptions, FlushType};
     use triplox_client::transaction::TransactionResult;
 
     /// Define common test attributes (name, age, email, follows) through the standard tx path.

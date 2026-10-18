@@ -104,6 +104,12 @@
     {:tx-id (.txId b)
      :system-time (.systemTime b)}))
 
+(defn ^:no-doc flush-db!
+  "Flush the writer's WAL. Internal."
+  [conn]
+  (.flushDb ^TriploxNode conn)
+  nil)
+
 (defn ^:no-doc dbsp-q [conn query timeout-ms & args]
   (with-open [sub (apply subscribe conn query args)]
     (take! sub (or timeout-ms 5000))))

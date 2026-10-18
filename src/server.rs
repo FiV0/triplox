@@ -8,6 +8,7 @@
 //! - `POST /db/subscribe`      — Stream incremental query deltas
 //! - `POST /tx/submit`         — Submit a fire-and-forget transaction
 //! - `POST /tx/execute`        — Execute a transaction and wait for indexing
+//! - `POST /db/flush`          — Flush the writer's WAL (internal)
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -274,6 +275,17 @@ async fn execute_tx<L: TxLog + 'static>(
     Ok(ok_response(body))
 }
 
+async fn flush_db<L: TxLog + 'static>(
+    State(state): State<Arc<Server<L>>>,
+) -> Result<Response, ApiError> {
+    state
+        .node
+        .flush_db()
+        .await
+        .map_err(|e| ApiError::internal(ErrorCode::InternalError, e.to_string()))?;
+    Ok(ok_response(Vec::new()))
+}
+
 async fn subscribe<L: TxLog + 'static>(
     State(state): State<Arc<Server<L>>>,
     body: Bytes,
@@ -431,6 +443,8 @@ fn build_router<L: TxLog + 'static>(state: Arc<Server<L>>) -> Router {
         .route("/db/subscribe", post(subscribe::<L>))
         .route("/tx/submit", post(submit_tx::<L>))
         .route("/tx/execute", post(execute_tx::<L>))
+        // Writer-only; a future reader node should reject this like the tx routes.
+        .route("/db/flush", post(flush_db::<L>))
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_MESSAGE_SIZE as usize))
         .with_state(state)
 }
@@ -833,5 +847,17 @@ mod tests {
             }
             other => panic!("expected open frame, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn flush_db_returns_ok() {
+        let node = Arc::new(Node::memory_node().await);
+        node.execute_tx(crate::schema::test_schema_tx())
+            .await
+            .expect("schema tx");
+        let server = Arc::new(Server::new(node));
+
+        let resp = flush_db(State(server)).await.expect("flush should succeed");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

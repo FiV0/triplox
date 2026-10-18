@@ -113,6 +113,13 @@ public class TriploxNode implements AutoCloseable {
     }
 
     /**
+     * Internal: flush the writer's WAL. Not part of the public API; may change or be removed.
+     */
+    public void flushDb() throws IOException {
+        postBinary("/db/flush", new byte[0]);
+    }
+
+    /**
      * Register an incremental query and stream its result deltas.
      *
      * <p>Subscribes at the latest indexed basis. A non-empty initial result is
