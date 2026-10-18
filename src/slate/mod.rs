@@ -9,12 +9,14 @@ use slatedb::config::{
 use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slatedb::db_cache::{DbCache, SplitCache};
 use slatedb::object_store::aws::AmazonS3Builder;
+use slatedb::object_store::client::SpawnedReqwestConnector;
 use slatedb::object_store::local::LocalFileSystem;
 use slatedb::object_store::{memory::InMemory, ObjectStore};
 use slatedb::Db;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 use crate::util::random_string;
 
@@ -22,6 +24,17 @@ pub const DEFAULT_BLOCK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_META_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 pub const DEFAULT_RANGE_STATS_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_LOCAL_WAL_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+const OBJECT_STORE_IO_THREADS: usize = 2;
+
+// Drives all S3 HTTP I/O, so a pooled connection doesn't depend on the runtime that opened it.
+static OBJECT_STORE_IO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(OBJECT_STORE_IO_THREADS)
+        .thread_name("tpx-io")
+        .enable_all()
+        .build()
+        .expect("failed to start the object store I/O runtime")
+});
 
 const GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const GC_MIN_AGE: Duration = Duration::from_secs(5 * 60);
@@ -176,6 +189,9 @@ pub async fn remote_slate(
         .with_secret_access_key(secret_key)
         .with_region(region)
         .with_allow_http(true) // TODO: make configurable for production use
+        .with_http_connector(SpawnedReqwestConnector::new(
+            OBJECT_STORE_IO_RUNTIME.handle().clone(),
+        ))
         .build()
         .expect("failed to build S3 object store");
 
