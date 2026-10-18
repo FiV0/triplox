@@ -19,5 +19,5 @@ port = 5490
 # DBSP runtime pool shared by all incremental subscriptions.
 [incremental]
 threads = 8
-merger_threads = 1
+merger_threads = 2
 cache_mib = 4096

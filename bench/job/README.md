@@ -194,7 +194,7 @@ The config sets a 100 ms CDC poll interval (server default: 200 ms); it only
 affects `triplox-incremental`, since the CDC loop starts with the first
 subscription. Incremental subscriptions share a pooled DBSP runtime from
 [FiV0/feldera PR #1](https://github.com/FiV0/feldera/pull/1) with eight foreground
-workers, one merger worker, and a 4 GiB shared cache.
+workers, two merger workers, and a 4 GiB shared cache.
 `JOB_TRIPLOX_IMAGE` overrides the server image for infrastructure diagnostics;
 container inspection records the actual image IDs. Rebuild the default image
 when the checkout changes.
