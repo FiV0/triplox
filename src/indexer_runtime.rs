@@ -15,6 +15,8 @@ impl IndexerRuntime {
     pub(crate) async fn start() -> Result<Self> {
         let stop = CancellationToken::new();
         let thread_stop = stop.clone();
+        // Stops the thread if startup fails or this future is dropped before handing it over.
+        let startup_guard = stop.clone().drop_guard();
         let (started, handle) = oneshot::channel();
         let thread = std::thread::Builder::new()
             .name("tpx-indexer".to_owned())
@@ -38,6 +40,7 @@ impl IndexerRuntime {
             .await
             .context("Indexer thread exited during startup")?
             .context("Failed to build the indexer runtime")?;
+        startup_guard.disarm();
         Ok(Self {
             handle,
             stop,
