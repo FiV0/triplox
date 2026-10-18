@@ -15,23 +15,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
+use crate::incremental::worker::Batch;
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
 use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
 use crate::schema::Schema;
-use crate::slate::cdc::{CdcCursor, CdcStream};
+use crate::slate::cdc::{datoms_from_cdc_batch, CdcCursor, CdcStream};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
 use crate::transaction::TxKey;
 
-pub(crate) fn datoms_to_tuples(
-    datoms: &[Datom],
+pub(crate) fn datoms_to_tuples<'a>(
+    datoms: impl IntoIterator<Item = &'a Datom>,
     schema: &Schema,
 ) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>> {
-    // Triplox transaction semantics currently guarantee that the tuples going
-    // into the circuit form a set, so this conversion does not consolidate.
+    // A batch can repeat a triple across transactions; the circuit's Z-set input consolidates it.
     datoms
-        .iter()
+        .into_iter()
         .map(|datom| {
             let (attribute, _) = schema
                 .get_attribute(&datom.attribute)
@@ -50,6 +50,42 @@ pub(crate) fn datoms_to_tuples(
             ))
         })
         .collect::<Result<Vec<_>>>()
+}
+
+/// Recover the `TxKey` of the last transaction in CDC-streamed datoms.
+pub(crate) fn tx_key_from_datoms<'a>(datoms: impl IntoIterator<Item = &'a Datom>) -> Result<TxKey> {
+    datoms
+        .into_iter()
+        .filter_map(|datom| match &datom.value {
+            DataType::Instant(instant)
+                if datom.attribute == kw!(:db/txInstant)
+                    && extract_partition(datom.entity) == TX_PARTITION =>
+            {
+                Some(TxKey {
+                    tx_id: extract_counter(datom.entity),
+                    system_time: *instant,
+                })
+            }
+            _ => None,
+        })
+        .max_by_key(|tx_key| tx_key.tx_id)
+        .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction key"))
+}
+
+/// Build one circuit batch from the datoms of a WAL file, each paired with its tx entity id.
+fn batch_from_datoms(datoms: &[(i64, Datom)], schema: &Schema) -> Result<Batch> {
+    let tx_ids: Vec<i64> = datoms
+        .iter()
+        .map(|(tx_eid, _)| extract_counter(*tx_eid))
+        .collect();
+    // WAL rows are in seq order and every transaction is a single write.
+    debug_assert!(tx_ids.is_sorted(), "CDC batch transactions out of order");
+    let datoms = || datoms.iter().map(|(_, datom)| datom);
+    Ok(Batch {
+        tx_key: tx_key_from_datoms(datoms())?,
+        triples: datoms_to_tuples(datoms(), schema)?,
+        tx_ids,
+    })
 }
 
 pub(crate) fn spawn_cdc_loop(
@@ -82,43 +118,22 @@ async fn run_cdc_loop(
     poll_interval: Duration,
 ) -> Result<()> {
     let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
+    let mut stream = CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel);
 
-    while let Some(tx) = stream.next_transaction().await? {
+    while let Some(batch) = stream.next_batch().await? {
         let schema = indexer.read().await.metadata().schema.clone();
-        let datoms = crate::slate::cdc::datoms_from_cdc_transaction(&tx, &schema)?;
+        let datoms = datoms_from_cdc_batch(&batch.entries, &schema)?;
         if datoms.is_empty() {
             continue;
         }
-        let tx_key = tx_key_from_datoms(&datoms)?;
-        let tuples = datoms_to_tuples(&datoms, &schema)?;
+        let batch = batch_from_datoms(&datoms, &schema)?;
         let _registration_guard = registration_gate.lock().await;
-        service.apply_triples(tx_key, tuples).await?;
-        // The registration gate is released before polling the next WAL transaction.
+        service.apply_batch(batch).await?;
+        // The registration gate is released before polling the next WAL file.
     }
 
     info!("Incremental query CDC stream exited normally");
     Ok(())
-}
-
-/// Recover the `TxKey` for a CDC-streamed transaction from its datoms.
-pub(crate) fn tx_key_from_datoms(datoms: &[Datom]) -> Result<TxKey> {
-    datoms
-        .iter()
-        .find_map(|datom| match &datom.value {
-            DataType::Instant(instant)
-                if datom.attribute == kw!(:db/txInstant)
-                    && extract_partition(datom.entity) == TX_PARTITION =>
-            {
-                Some(TxKey {
-                    tx_id: extract_counter(datom.entity),
-                    system_time: *instant,
-                })
-            }
-            _ => None,
-        })
-        .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction key"))
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -566,6 +581,29 @@ mod tests {
             TxKey {
                 tx_id: 42,
                 system_time: instant,
+            }
+        );
+    }
+
+    #[test]
+    fn tx_key_from_datoms_picks_last_transaction() {
+        let tx_instant = |tx_id, instant| Datom {
+            entity: tx_eid_from_tx_id(tx_id),
+            attribute: kw!(:db/txInstant),
+            value: DataType::Instant(instant),
+            op: DatomOp::Assert,
+        };
+        let later = st_from_unix_epoch(456);
+        let datoms = [
+            tx_instant(43, later),
+            tx_instant(42, st_from_unix_epoch(123)),
+        ];
+
+        assert_eq!(
+            tx_key_from_datoms(&datoms).unwrap(),
+            TxKey {
+                tx_id: 43,
+                system_time: later,
             }
         );
     }

@@ -119,7 +119,7 @@ enum IncrementalCommand {
         handle: IncrementalQueryHandle,
         response: oneshot::Sender<Result<()>>,
     },
-    ApplyTriples {
+    ApplyBatch {
         batch: Arc<Batch>,
         response: oneshot::Sender<()>,
     },
@@ -285,15 +285,11 @@ impl IncrementalQueryService {
             .context("Incremental query service stopped")?
     }
 
-    pub(crate) async fn apply_triples(
-        &self,
-        tx_key: TxKey,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<()> {
+    async fn apply_batch(&self, batch: Batch) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
-            .send(IncrementalCommand::ApplyTriples {
-                batch: Arc::new(Batch { tx_key, triples }),
+            .send(IncrementalCommand::ApplyBatch {
+                batch: Arc::new(batch),
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -436,8 +432,8 @@ impl IncrementalQueryServiceInner {
                             _ => { let _ = response.send(Err(anyhow!("Unknown incremental query handle: {handle:?}"))); }
                         }
                     }
-                    Some(IncrementalCommand::ApplyTriples { batch, response }) => {
-                        self.apply_triples(batch);
+                    Some(IncrementalCommand::ApplyBatch { batch, response }) => {
+                        self.apply_batch(batch);
                         let _ = response.send(());
                     }
                     Some(IncrementalCommand::Shutdown { response }) => { shutdown = Some(response); break; }
@@ -578,7 +574,7 @@ impl IncrementalQueryServiceInner {
         Ok(self.install(handle, circuit, tx_key, rows))
     }
 
-    fn apply_triples(&self, batch: Arc<Batch>) {
+    fn apply_batch(&self, batch: Arc<Batch>) {
         for query in self.queries.values() {
             if query.control.stop.is_cancelled() {
                 continue;
@@ -587,12 +583,12 @@ impl IncrementalQueryServiceInner {
                 query.control.terminate(None);
                 continue;
             }
-            if batch.tx_key.tx_id <= query.basis.tx_id {
+            let Some(batch) = batch.after(query.basis.tx_id) else {
                 continue;
-            }
-            match query.inbox.try_send(batch.clone()) {
+            };
+            match query.inbox.try_send(batch) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Full(batch)) => {
                     query
                         .control
                         .terminate(Some(Termination::Lagged(SubscriptionLagged {
@@ -753,7 +749,7 @@ mod tests {
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
         service
-            .apply_triples(tx_key, vec![name_triple(43, "Bob")])
+            .apply_batch(Batch::single(tx_key, vec![name_triple(43, "Bob")]))
             .await
             .unwrap();
         assert_eq!(
@@ -795,11 +791,17 @@ mod tests {
         let mut names = register(&service, single_pattern_plan(), vec![]).await;
         delta(&mut aggregate).await.unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)])
+            .apply_batch(Batch::single(
+                test_tx_key_with_tx_id(2),
+                vec![age_triple(42, 10)],
+            ))
             .await
             .unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")])
+            .apply_batch(Batch::single(
+                test_tx_key_with_tx_id(3),
+                vec![name_triple(43, "Alice")],
+            ))
             .await
             .unwrap();
         assert!(delta(&mut aggregate)
@@ -816,7 +818,7 @@ mod tests {
         delta(&mut names).await.unwrap();
         let tx_key = test_tx_key_with_tx_id(4);
         service
-            .apply_triples(tx_key, vec![name_triple(44, "Bob")])
+            .apply_batch(Batch::single(tx_key, vec![name_triple(44, "Bob")]))
             .await
             .unwrap();
         assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
@@ -846,19 +848,72 @@ mod tests {
             .unwrap();
         for seq in 1..=1000 {
             service
-                .apply_triples(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")])
+                .apply_batch(Batch::single(
+                    test_tx_key_with_tx_id(seq),
+                    vec![name_triple(seq, "old")],
+                ))
                 .await
                 .unwrap();
         }
         assert!(query.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(1001);
         service
-            .apply_triples(tx_key, vec![name_triple(1001, "new")])
+            .apply_batch(Batch::single(tx_key, vec![name_triple(1001, "new")]))
             .await
             .unwrap();
         assert_eq!(delta(&mut query).await.unwrap().tx_key, tx_key);
         service.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn batch_straddling_basis_applies_only_later_transactions() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_at(dir.path());
+        let mut before = service
+            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0), vec![])
+            .await
+            .unwrap();
+        let mut inside = service
+            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(2), vec![])
+            .await
+            .unwrap();
+        let tx_key = test_tx_key_with_tx_id(3);
+        service
+            .apply_batch(Batch {
+                tx_key,
+                triples: vec![
+                    name_triple(1, "Alice"),
+                    name_triple(2, "Bob"),
+                    name_triple(3, "Cara"),
+                ],
+                tx_ids: vec![1, 2, 3],
+            })
+            .await
+            .unwrap();
+
+        let mut whole = delta(&mut before).await.unwrap();
+        whole.rows.sort_by_key(|row| format!("{:?}", row));
+        assert_eq!(
+            whole,
+            IncrementalQueryDelta {
+                tx_key,
+                rows: vec![
+                    (vec![DataType::String("Alice".into())], 1),
+                    (vec![DataType::String("Bob".into())], 1),
+                    (vec![DataType::String("Cara".into())], 1),
+                ],
+            }
+        );
+        assert_eq!(
+            delta(&mut inside).await.unwrap(),
+            IncrementalQueryDelta {
+                tx_key,
+                rows: vec![(vec![DataType::String("Cara".into())], 1)],
+            }
+        );
+        service.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn dropping_last_service_handle_cleans_up_queries() {
         let dir = tempfile::tempdir().unwrap();
@@ -890,7 +945,7 @@ mod tests {
             })
             .unwrap();
         service
-            .apply_triples(test_tx_key_with_tx_id(2), vec![])
+            .apply_batch(Batch::single(test_tx_key_with_tx_id(2), vec![]))
             .await
             .unwrap();
         service.shutdown().await.unwrap();
@@ -1010,7 +1065,7 @@ mod tests {
         let apply = tokio::spawn(async move {
             let _registration_guard = applying_service.registration_gate.lock().await;
             applying_service
-                .apply_triples(apply_tx_key, vec![name_triple(43, "Bob")])
+                .apply_batch(Batch::single(apply_tx_key, vec![name_triple(43, "Bob")]))
                 .await
         });
         tokio::task::yield_now().await;

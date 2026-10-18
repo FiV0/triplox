@@ -28,8 +28,40 @@ impl Circuit for QueryCircuit {
 }
 
 pub(super) struct Batch {
+    /// Key of the last transaction in the batch.
     pub tx_key: TxKey,
     pub triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    /// Transaction id of each triple, ascending and parallel to `triples`.
+    pub tx_ids: Vec<i64>,
+}
+
+impl Batch {
+    /// A batch holding a single transaction.
+    #[cfg(test)]
+    pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
+        let tx_ids = vec![tx_key.tx_id; triples.len()];
+        Self {
+            tx_key,
+            triples,
+            tx_ids,
+        }
+    }
+
+    /// The transactions of this batch after `basis`, or `None` if there are none.
+    pub fn after(self: &Arc<Self>, basis: i64) -> Option<Arc<Self>> {
+        if self.tx_key.tx_id <= basis {
+            return None;
+        }
+        let start = self.tx_ids.partition_point(|&tx_id| tx_id <= basis);
+        if start == 0 {
+            return Some(self.clone());
+        }
+        Some(Arc::new(Self {
+            tx_key: self.tx_key,
+            triples: self.triples[start..].to_vec(),
+            tx_ids: self.tx_ids[start..].to_vec(),
+        }))
+    }
 }
 
 pub(super) struct Control {
