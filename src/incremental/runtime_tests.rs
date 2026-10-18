@@ -640,6 +640,9 @@ async fn unregister_is_not_blocked_by_registration() {
         .unwrap()
         .unwrap()
         .unwrap();
+    let priming = next(&mut registered).await.unwrap();
+    assert!(priming.rows.is_empty());
+    assert_eq!(priming.tx_key, registered.tx_key);
     let batch = Fixture::batch(1);
     service
         .apply_batch(Batch::single(batch.tx_key, batch.triples().to_vec()))
