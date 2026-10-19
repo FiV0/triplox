@@ -18,9 +18,11 @@ use edn::query::Variable;
 pub(super) use aggregates::AggregateError;
 use aggregates::{aggregate_find_stream, decode_aggregate_output, AggregateOutput};
 
+use super::worker::Batch;
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
+use crate::incremental::row::{append_value, row_from_values, row_value, select_values, RowValues};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 use crate::query::{FindPlan, Projection};
@@ -53,23 +55,18 @@ fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedR
         return None;
     }
 
-    Some(
-        pattern
-            .pattern_vars
-            .iter()
-            .filter_map(|var| {
-                if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var)
-                {
-                    Some(triple.entity.clone())
-                } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
-                {
-                    Some(triple.value.clone())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    )
+    Some(row_from_values(pattern.pattern_vars.iter().filter_map(
+        |var| {
+            if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var) {
+                Some(triple.entity.as_slice())
+            } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
+            {
+                Some(triple.value.as_slice())
+            } else {
+                None
+            }
+        },
+    )))
 }
 
 // Finds the positions of selected variables in a row variable order.
@@ -86,10 +83,7 @@ fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
 
 // Selects row values at the requested positions.
 fn select_row_positions(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
-    positions
-        .iter()
-        .map(|position| row[*position].clone())
-        .collect()
+    select_values(row, positions)
 }
 
 #[derive(Clone)]
@@ -100,13 +94,11 @@ enum RowSource {
 
 // Merges joined left and right rows into the planned output row order.
 fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> EncodedRow {
-    sources
-        .iter()
-        .map(|source| match source {
-            RowSource::Left(position) => left[*position].clone(),
-            RowSource::Right(position) => right[*position].clone(),
-        })
-        .collect()
+    let (left, right) = (RowValues::new(left), RowValues::new(right));
+    row_from_values(sources.iter().map(|source| match source {
+        RowSource::Left(position) => left.get(*position),
+        RowSource::Right(position) => right.get(*position),
+    }))
 }
 
 // Joins incoming and pattern streams using their planned row layouts.
@@ -216,9 +208,10 @@ fn update_expression_bindings(
     variable_positions: &[(Variable, usize)],
     bindings: &mut HashMap<Variable, DataType>,
 ) {
+    let values = RowValues::new(row);
     for (variable, position) in variable_positions {
-        let value =
-            DataType::decode(&row[*position]).expect("incremental expression value should decode");
+        let value = DataType::decode(values.get(*position))
+            .expect("incremental expression value should decode");
         if let Some(binding) = bindings.get_mut(variable) {
             *binding = value;
         } else {
@@ -268,7 +261,7 @@ fn apply_function_stream(
             stream.filter(move |row| {
                 let mut bindings = bindings.borrow_mut();
                 evaluate_row_expression(row, &variable_positions, &mut bindings, &expr).is_some_and(
-                    |result| result.encode().as_slice() == row[output_position].as_slice(),
+                    |result| result.encode().as_slice() == row_value(row, output_position),
                 )
             })
         }
@@ -277,9 +270,7 @@ fn apply_function_stream(
             stream.flat_map(move |row| {
                 let result =
                     evaluate_row_expression(row, &variable_positions, &mut bindings, &expr)?;
-                let mut output = row.clone();
-                output.push(result.encode());
-                Some(output)
+                Some(append_value(row, &result.encode()))
             })
         }
     }
@@ -427,9 +418,10 @@ fn project_find_stream(
 
     // TODO: After find every position is an AggregateOutput. This should likely be named differently.
     where_stream.stream.map(move |row| {
-        select_row_positions(row, &find_positions)
-            .into_iter()
-            .map(AggregateOutput::Value)
+        let values = RowValues::new(row);
+        find_positions
+            .iter()
+            .map(|position| AggregateOutput::Value(values.get(*position).to_vec()))
             .collect()
     })
 }
@@ -447,7 +439,9 @@ fn query_find_stream(
 }
 
 // Decodes a DBSP output batch into user-facing values and signed weights.
-fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>> {
+fn decode_output_rows(
+    batch: &impl IndexedZSetReader<Key = OutputRow, Val = ()>,
+) -> Result<Vec<(Vec<DataType>, isize)>> {
     batch
         .iter()
         .map(|(row, (), weight)| {
@@ -462,8 +456,8 @@ fn decode_output_rows(batch: &OutputZSet) -> Result<Vec<(Vec<DataType>, isize)>>
         .collect()
 }
 
-// All circuits use the same process RSS budget, based on capacity rather than free memory.
-static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
+// The runtime pool's process RSS budget, based on capacity rather than free memory.
+pub(super) static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     let total_memory = system.total_memory();
@@ -501,26 +495,37 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
     )
     .map_err(anyhow::Error::from)?;
 
-    Ok(CircuitConfig::with_workers(1)
-        .with_max_rss_bytes(*MAX_RSS_BYTES)
-        .with_storage(Some(storage)))
+    Ok(CircuitConfig::with_workers(1).with_storage(Some(storage)))
 }
 
 pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
-    output: OutputHandle<OutputZSet>,
+    output: OutputHandle<dbsp::typed_batch::SpineSnapshot<OutputZSet>>,
+    // The sorted, distinct attributes of the plan's patterns; no other triple can match.
+    attributes: Vec<i64>,
 }
 
 impl QueryCircuit {
-    // Builds a DBSP circuit for one incremental query plan.
-    pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        let config = storage_circuit_config(storage_path)?;
+    // Builds a DBSP circuit for one incremental query plan on a shared runtime pool.
+    pub(super) fn build(
+        plan: IncrementalQueryPlan,
+        storage_path: &Path,
+        pool: dbsp::RuntimePool,
+    ) -> Result<Self> {
+        let mut attributes = plan
+            .leaf_patterns()
+            .iter()
+            .map(|pattern| pattern.attribute)
+            .collect::<Vec<_>>();
+        attributes.sort_unstable();
+        attributes.dedup();
+        let config = storage_circuit_config(storage_path)?.with_runtime_pool(pool);
         let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
             let where_stream = query_where_stream(&input, &plan);
             let stream = query_find_stream(where_stream, &plan.find_plan);
-            Ok((handle, stream.output()))
+            Ok((handle, stream.accumulate_output()))
         })
         .map_err(anyhow::Error::from)?;
 
@@ -535,25 +540,54 @@ impl QueryCircuit {
             handle,
             input,
             output,
+            attributes,
         })
     }
 
-    // Applies one weighted triple batch and returns the decoded query result delta.
-    // The first batch is the initial snapshot, so its delta is the whole query result.
-    pub(super) fn apply(
+    // Steps the circuit on one weighted triple batch and returns the decoded query result delta.
+    // The step runs on the circuit's pool thread; awaiting it holds no caller thread.
+    async fn step(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
-        self.handle.transaction().map_err(anyhow::Error::from)?;
-        decode_output_rows(&self.output.consolidate())
+        self.handle
+            .transaction_async()
+            .await
+            .map_err(anyhow::Error::from)?;
+        decode_output_rows(&self.output.concat())
+    }
+
+    // Applies a transaction after priming, copying only the triples the plan's attributes can match.
+    // Once priming has stepped, an empty input changes nothing, so the step is skipped.
+    pub(super) async fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
+        let triples = self
+            .attributes
+            .iter()
+            .flat_map(|attribute| batch.attribute_triples(*attribute))
+            .cloned()
+            .collect::<Vec<_>>();
+        if triples.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.step(triples).await
+    }
+
+    // Blocks the calling thread until `step` completes, for registration on a blocking thread.
+    // Priming always steps: the first step can emit rows without input, like a global count of 0.
+    pub(super) fn step_blocking(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        futures::executor::block_on(self.step(triples))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use dbsp::{
-        utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, ZSetHandle, ZWeight,
+        utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, PoolConfig, RootCircuit, Runtime,
+        RuntimePool, ZSetHandle, ZWeight,
     };
     use edn::kw;
     use edn::query::ToVariable;
@@ -566,6 +600,7 @@ mod tests {
         TYPE_ATTR_ID as TYPE,
     };
     use crate::inc_query::{IncrementalQueryPlan, PatternSlot};
+    use crate::incremental::row::row_to_vecs;
     use crate::ops::{DataType, Entid};
 
     fn build_pattern_circuit(
@@ -608,11 +643,16 @@ mod tests {
         (circuit, handles, storage)
     }
 
-    fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(EncodedRow, ZWeight)> {
+    fn build_query_circuit(plan: IncrementalQueryPlan, storage_path: &Path) -> QueryCircuit {
+        let pool = RuntimePool::start(PoolConfig::with_threads(1).with_cache_mib(16)).unwrap();
+        QueryCircuit::build(plan, storage_path, pool).unwrap()
+    }
+
+    fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(Vec<Vec<u8>>, ZWeight)> {
         let mut rows = output
             .consolidate()
             .iter()
-            .map(|(row, (), weight)| (row, weight))
+            .map(|(row, (), weight)| (row_to_vecs(&row), weight))
             .collect::<Vec<_>>();
         rows.sort();
         rows
@@ -675,7 +715,7 @@ mod tests {
                        [?e :age ?age])]",
         ] {
             let storage = tempfile::tempdir().unwrap();
-            let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+            let mut circuit = build_query_circuit(query_plan(query), storage.path());
             let row = vec![DataType::Long(100)];
             let name = triple(100, NAME, "Alice".into());
             let first = triple(101, FOLLOWS, 100_i64.into());
@@ -692,7 +732,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+                assert_eq!(circuit.step_blocking(batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -705,7 +745,7 @@ mod tests {
                              (or-join [?e]
                                [?e :age ?owner]
                                [?e :name ?owner])]";
-        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let mut circuit = build_query_circuit(query_plan(query), storage.path());
         let first = triple(101, FOLLOWS, 100_i64.into());
         let second = triple(102, FOLLOWS, 100_i64.into());
         let age = triple(100, AGE, 30_i64.into());
@@ -731,7 +771,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.apply(batch).unwrap();
+            let mut actual = circuit.step_blocking(batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -745,7 +785,7 @@ mod tests {
                              (not-join [?e]
                                [?e :follows ?friend])]";
         let storage = tempfile::tempdir().unwrap();
-        let mut circuit = QueryCircuit::build(query_plan(query), storage.path()).unwrap();
+        let mut circuit = build_query_circuit(query_plan(query), storage.path());
         let row = vec![DataType::Long(100)];
         let name = triple(100, NAME, "Alice".into());
         let first = triple(100, FOLLOWS, 101_i64.into());
@@ -757,7 +797,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.apply(batch).unwrap(), expected);
+            assert_eq!(circuit.step_blocking(batch).unwrap(), expected);
         }
     }
 
@@ -773,9 +813,9 @@ mod tests {
                      [?e :age ?age]]",
         );
 
-        let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
+        let mut circuit = build_query_circuit(plan, &storage_path);
         let priming_rows = circuit
-            .apply(vec![
+            .step_blocking(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
@@ -792,6 +832,37 @@ mod tests {
         assert!(storage_path.exists());
         assert!(!storage_path.join("stale").exists());
         assert!(path_has_entries(&storage_path));
+    }
+
+    #[test]
+    fn query_circuit_applies_only_its_attributes() {
+        let storage = tempfile::tempdir().unwrap();
+        let plan = query_plan(
+            "[:find (count ?age)
+              :where [?e :age ?age]]",
+        );
+        let mut circuit = build_query_circuit(plan, storage.path());
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        let name = Tup2(triple(42, NAME, "Alice".into()), 1);
+        let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
+
+        assert_eq!(
+            circuit.step_blocking(vec![]).unwrap(),
+            vec![(vec![DataType::Long(0)], 1)]
+        );
+        // Without :age triples the step is skipped, and the count of 0 must survive it.
+        let batch = Batch::single(tx_key, vec![name.clone()]);
+        assert_eq!(
+            futures::executor::block_on(circuit.apply(&batch)).unwrap(),
+            vec![]
+        );
+        let batch = Batch::single(tx_key, vec![name, age]);
+        let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
+        rows.sort_by_key(|(_, weight)| *weight);
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(0)], -1), (vec![DataType::Long(1)], 1)]
+        );
     }
 
     #[test]

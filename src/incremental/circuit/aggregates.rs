@@ -10,6 +10,7 @@ use dbsp::{
 };
 
 use crate::codec::{Decode, Encode};
+use crate::incremental::row::{row_from_values, row_value};
 use crate::incremental::EncodedRow;
 use crate::numeric::NumericValue;
 use crate::ops::DataType;
@@ -459,7 +460,12 @@ fn validate_comparable_aggregate(
     input_position: usize,
 ) -> AggregateStream {
     let family_count = grouped
-        .map_index(move |(group, row)| (group.clone(), comparable_family(&row[input_position])))
+        .map_index(move |(group, row)| {
+            (
+                group.clone(),
+                comparable_family(row_value(row, input_position)),
+            )
+        })
         .distinct_count();
     aggregate.join_index(&family_count, |group, value, family_count| {
         let value = if *family_count == 1 {
@@ -485,7 +491,7 @@ fn aggregate_stream(
         }),
 
         AggregateFunc::CountDistinct => grouped
-            .map_index(move |(group, row)| (group.clone(), row[input_position].clone()))
+            .map_index(move |(group, row)| (group.clone(), row_value(row, input_position).to_vec()))
             .distinct_count()
             .map_index(|(group, count)| {
                 (
@@ -496,7 +502,10 @@ fn aggregate_stream(
 
         AggregateFunc::Sum => grouped
             .map_index(move |(group, row)| {
-                (group.clone(), DbspSum::from_encoded(&row[input_position]))
+                (
+                    group.clone(),
+                    DbspSum::from_encoded(row_value(row, input_position)),
+                )
             })
             .aggregate_linear(|value| value.clone())
             .map_index(|(group, sum)| (group.clone(), sum.encode_result())),
@@ -505,7 +514,7 @@ fn aggregate_stream(
             .map_index(move |(group, row)| {
                 (
                     group.clone(),
-                    DbspAverage::from_encoded(&row[input_position]),
+                    DbspAverage::from_encoded(row_value(row, input_position)),
                 )
             })
             .aggregate_linear(|value| value.clone())
@@ -515,7 +524,7 @@ fn aggregate_stream(
             let values = grouped.map_index(move |(group, row)| {
                 (
                     group.clone(),
-                    ComparableValue::from_encoded(&row[input_position], true),
+                    ComparableValue::from_encoded(row_value(row, input_position), true),
                 )
             });
             let minimum = values
@@ -530,7 +539,7 @@ fn aggregate_stream(
             let values = grouped.map_index(move |(group, row)| {
                 (
                     group.clone(),
-                    ComparableValue::from_encoded(&row[input_position], false),
+                    ComparableValue::from_encoded(row_value(row, input_position), false),
                 )
             });
             let maximum = values
@@ -567,7 +576,7 @@ pub(super) fn aggregate_find_stream(
 
     let combined = if plan.group_key_indices.is_empty() {
         // Seed the empty group so global aggregates produce a row for empty input.
-        let singleton = OrdZSet::from_keys((), vec![Tup2(Vec::<Vec<u8>>::new(), 1)]);
+        let singleton = OrdZSet::from_keys((), vec![Tup2(row_from_values(std::iter::empty()), 1)]);
         let mut combined = grouped
             .circuit()
             .add_source(ConstantGenerator::new(singleton))
@@ -613,7 +622,7 @@ pub(super) fn aggregate_find_stream(
             .iter()
             .map(|projection| match projection {
                 Projection::GroupVar(group_position) => {
-                    AggregateOutput::Value(group[*group_position].clone())
+                    AggregateOutput::Value(row_value(group, *group_position).to_vec())
                 }
                 Projection::Aggregate(_, _) => {
                     let value = aggregate_values[aggregate_position].clone();

@@ -6,6 +6,14 @@ Version 0.1
 
 The `transact_tx_inner` pipeline processes a set of transaction operations into committed datoms. A cloned `PartitionMap` isolates counter mutations so they are only applied on successful commit.
 
+## Threads
+
+Indexing never waits on the shared `tpx-rt-worker` runtime, which serves HTTP and incremental queries:
+
+- `tpx-indexer` runs a current-thread runtime with the log subscriber loop and SlateDB's batch-writer (`DbBuilder::with_write_runtime`), so a commit is a task switch on one thread. Every SlateDB write and `Db::close` go through it, so `Node::close` stops it last.
+- `tpx-io` drives all S3 HTTP I/O (`SpawnedReqwestConnector`), so pooled connections don't tie the indexer to the runtime that opened them.
+- SlateDB's memtable flusher, compactor and GC stay on the shared runtime. Writes only wait on them under backpressure.
+
 ---
 
 ## Pipeline Stages

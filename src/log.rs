@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -92,7 +93,9 @@ async fn catch_up_transactions<L: TxLogReader, S: Subscriber + 'static>(
     }
 }
 
-pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
+// Runs the subscriber loop as a task on `runtime`.
+pub(crate) async fn subscribe_on<L: TxLogReader, S: Subscriber + 'static>(
+    runtime: &Handle,
     log: Arc<L>,
     after_tx_id: Option<TxId>,
     subscriber: Arc<tokio::sync::RwLock<S>>,
@@ -102,7 +105,7 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     let token = CancellationToken::new();
     let task_token = token.clone();
 
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         let mut last_tx_id = after_tx_id;
         info!("Starting subscriber, after tx id: {:?}", last_tx_id);
 
@@ -154,6 +157,15 @@ pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
     });
 
     token
+}
+
+#[cfg(test)]
+pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
+    log: Arc<L>,
+    after_tx_id: Option<TxId>,
+    subscriber: Arc<tokio::sync::RwLock<S>>,
+) -> CancellationToken {
+    subscribe_on(&Handle::current(), log, after_tx_id, subscriber).await
 }
 
 pub trait TxLogReader: Send + Sync + 'static {
