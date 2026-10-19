@@ -44,7 +44,7 @@ short-lived `rc` container before the server starts. The launcher requires the
 systemd limits to succeed. The direct Clojure command only samples RSS; it does not
 install these operating-system limits.
 
-The server uses eight pooled DBSP foreground workers, one merger worker, and a
+The server uses eight pooled DBSP foreground workers, two merger workers, and a
 **4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap
 on total circuit state. The runtime comes from the `runtime-pooling` branch of
 [FiV0/feldera](https://github.com/FiV0/feldera/tree/runtime-pooling), pinned at
@@ -54,7 +54,7 @@ the benchmark sizes it explicitly:
 ```toml
 [incremental]
 threads = 8
-merger_threads = 1
+merger_threads = 2
 cache_mib = 4096
 ```
 
