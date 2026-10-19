@@ -71,7 +71,7 @@ def benchmark(args, benchmark_args):
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     metadata = {
-        "runtime": "pooled", "foreground_threads": 8, "merger_threads": 1,
+        "runtime": "pooled", "foreground_threads": 8, "merger_threads": 2,
         "shared_cache_mib": 4096, "cdc_poll_ms": 200,
         "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
         "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
@@ -115,7 +115,7 @@ def benchmark(args, benchmark_args):
             'wal_flush_interval_us=100\n'
             f'[log]\ntype="file"\npath={json.dumps(str(directory / "log" / "log"))}\n'
             f'[server]\nhost="127.0.0.1"\nport={port}\n'
-            '[incremental]\nthreads=8\nmerger_threads=1\ncache_mib=4096\n')
+            '[incremental]\nthreads=8\nmerger_threads=2\ncache_mib=4096\n')
         temporary = directory / "tmp"
         temporary.mkdir()
         environment = {**os.environ, "TOKIO_WORKER_THREADS": "2", "TMPDIR": str(temporary),
