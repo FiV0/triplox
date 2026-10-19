@@ -44,17 +44,16 @@ short-lived `rc` container before the server starts. The launcher requires the
 systemd limits to succeed. The direct Clojure command only samples RSS; it does not
 install these operating-system limits.
 
-The server uses two pooled DBSP foreground workers, one merger worker, and a
+The server uses eight pooled DBSP foreground workers, one merger worker, and a
 **4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap
 on total circuit state. The runtime comes from the `runtime-pooling` branch of
 [FiV0/feldera](https://github.com/FiV0/feldera/tree/runtime-pooling), pinned at
-`c77ca264ceb90fbe0dfbc3d25de919cd5c59f5eb`. Ordinary Triplox configurations continue
-to use dedicated runtimes unless configured explicitly:
+`c77ca264ceb90fbe0dfbc3d25de919cd5c59f5eb`. All incremental queries share this pool;
+the benchmark sizes it explicitly:
 
 ```toml
 [incremental]
-runtime = "pooled"
-threads = 2
+threads = 8
 merger_threads = 1
 cache_mib = 4096
 ```
