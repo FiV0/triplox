@@ -1910,6 +1910,15 @@ mod tests {
         incremental_delta(delta)
     }
 
+    async fn take_empty_initial_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        let delta = recv_incremental_delta(subscription).await;
+        assert_eq!(delta.tx_key, subscription.tx_key);
+        assert!(delta.rows.is_empty());
+        delta
+    }
+
     async fn take_priming_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
@@ -2008,10 +2017,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.tx_key, expected_basis);
-        assert!(matches!(
-            subscription.deltas.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
+        take_empty_initial_delta(&mut subscription).await;
     }
 
     #[tokio::test]
@@ -2121,6 +2127,7 @@ mod tests {
             )
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let future_basis = match node
             .execute_tx(vec![TxOp::Add {
                 entity: EntityRef::Id(100),
@@ -2155,6 +2162,7 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let basis = match node
             .execute_tx(vec![TxOp::Add {
                 entity: EntityRef::Id(100),
@@ -2239,6 +2247,7 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let basis = match node
             .execute_tx(vec![
                 TxOp::Add {
@@ -2331,6 +2340,7 @@ mod tests {
             )
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let mut rows = Vec::new();
 
         execute_and_flush(
@@ -2397,6 +2407,7 @@ mod tests {
             ), &[])
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let mut rows = Vec::new();
 
         execute_and_flush(
@@ -2473,6 +2484,7 @@ mod tests {
             ), &[])
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let mut rows = Vec::new();
 
         execute_and_flush(
@@ -2870,6 +2882,7 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
+        take_empty_initial_delta(&mut subscription).await;
         let handle = subscription.handle;
 
         node.unregister_incremental_query(handle).await.unwrap();
