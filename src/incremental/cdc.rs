@@ -52,9 +52,11 @@ pub(crate) fn datoms_to_tuples(
         .collect::<Result<Vec<_>>>()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
+    cursor: CdcCursor,
     indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
@@ -64,6 +66,7 @@ pub(crate) fn spawn_cdc_loop(
     tokio::spawn(run_cdc_loop(
         object_path,
         object_store,
+        cursor,
         indexer,
         service,
         registration_gate,
@@ -72,9 +75,11 @@ pub(crate) fn spawn_cdc_loop(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
+    cursor: CdcCursor,
     indexer: Arc<RwLock<Indexer>>,
     service: IncrementalQueryService,
     registration_gate: Arc<Mutex<()>>,
@@ -82,8 +87,7 @@ async fn run_cdc_loop(
     poll_interval: Duration,
 ) -> Result<()> {
     let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream =
-        CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel).await?;
+    let mut stream = CdcStream::new(wal_reader, cursor, poll_interval, cancel).await?;
 
     while let Some(tx) = stream.next_transaction().await? {
         let schema = indexer.read().await.metadata().schema.clone();
@@ -527,6 +531,7 @@ mod tests {
         let result = run_cdc_loop(
             slate.object_path,
             slate.object_store,
+            CdcCursor::default(),
             indexer,
             service,
             Arc::new(Mutex::new(())),
