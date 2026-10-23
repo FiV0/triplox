@@ -60,7 +60,7 @@ You can find an example of how to implement views for Clojure in the [incrementa
 
 ### Incremental query evaluation
 
-Once a circuit is primed, we can start listening to changes. For this we use SlateDB's [Change Data Capture](https://slatedb.io/docs/design/change-data-capture/) with which we are tailing WAL files (here we mean WAL files from SlateDB not our external log) as they appear on object storage. A WAL file might contain many transactions. We apply all changes from one WAL file in one go to the circuits, so a delta can cover several transactions and carries the `TxKey` of the last one. Applying every transaction separately would be heavier, so the tradeoff is speed vs granularity. If a fact was added and later retracted and this addition and retraction happens to reside in the same WAL file, you won't see any delta changes in the output, as the two changes cancel each other out when constructing the changes for that WAL file.
+Once a circuit is primed, we can start listening to changes. For this we use SlateDB's [Change Data Capture](https://slatedb.io/docs/design/change-data-capture/) with which we are tailing WAL files (here we mean WAL files from SlateDB not our external log) as they appear on object storage. A WAL file might contain many transactions. We apply all changes from one WAL file in one go to the circuits, so a delta can cover several transactions and carries the `TxKey` of the last one. If a fact was added and later retracted and this addition and retraction happens to reside in the same WAL file, you won't see any delta changes in the output, as the two changes cancel each other out when constructing the changes for that WAL file.
 
 ### Example
 
