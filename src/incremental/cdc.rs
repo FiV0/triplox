@@ -74,15 +74,19 @@ pub(crate) fn tx_key_from_datoms<'a>(datoms: impl IntoIterator<Item = &'a Datom>
 
 /// Build one circuit batch from the datoms of a WAL file, each paired with its tx entity id.
 fn batch_from_datoms(datoms: &[(i64, Datom)], schema: &Schema) -> Result<Batch> {
-    let tx_ids: Vec<i64> = datoms
-        .iter()
-        .map(|(tx_eid, _)| extract_counter(*tx_eid))
-        .collect();
+    // WAL datoms are grouped by transaction in ascending order.
+    let mut txs: Vec<(i64, usize)> = Vec::new();
+    for (start, (tx_eid, _)) in datoms.iter().enumerate() {
+        let tx_id = extract_counter(*tx_eid);
+        if txs.last().is_none_or(|&(last, _)| last != tx_id) {
+            txs.push((tx_id, start));
+        }
+    }
     let datoms = || datoms.iter().map(|(_, datom)| datom);
     Ok(Batch::new(
         tx_key_from_datoms(datoms())?,
         datoms_to_tuples(datoms(), schema)?,
-        tx_ids,
+        txs,
     ))
 }
 

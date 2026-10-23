@@ -886,7 +886,7 @@ mod tests {
                     name_triple(2, "Bob"),
                     name_triple(3, "Cara"),
                 ],
-                vec![1, 2, 3],
+                vec![(1, 0), (2, 1), (3, 2)],
             ))
             .await
             .unwrap();

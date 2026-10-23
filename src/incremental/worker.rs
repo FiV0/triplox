@@ -31,32 +31,28 @@ pub(super) struct Batch {
     /// Key of the last transaction in the batch.
     pub tx_key: TxKey,
     pub triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    /// Transaction id of each triple, parallel to `triples`.
-    tx_ids: Vec<i64>,
-    /// The smallest of `tx_ids`, so a batch entirely after a basis is shared without a scan.
-    first_tx_id: i64,
+    /// `(tx_id, start)` of each transaction's triples, strictly increasing in both.
+    txs: Vec<(i64, usize)>,
 }
 
 impl Batch {
     pub fn new(
         tx_key: TxKey,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-        tx_ids: Vec<i64>,
+        txs: Vec<(i64, usize)>,
     ) -> Self {
-        let first_tx_id = tx_ids.iter().copied().min().unwrap_or(tx_key.tx_id);
+        debug_assert!(txs.is_sorted_by(|a, b| a.0 < b.0 && a.1 < b.1));
         Self {
             tx_key,
             triples,
-            tx_ids,
-            first_tx_id,
+            txs,
         }
     }
 
     /// A batch holding a single transaction.
     #[cfg(test)]
     pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
-        let tx_ids = vec![tx_key.tx_id; triples.len()];
-        Self::new(tx_key, triples, tx_ids)
+        Self::new(tx_key, triples, vec![(tx_key.tx_id, 0)])
     }
 
     /// The transactions of this batch after `basis`, or `None` if there are none.
@@ -64,17 +60,20 @@ impl Batch {
         if self.tx_key.tx_id <= basis {
             return None;
         }
-        if self.first_tx_id > basis {
+        let first = self.txs.partition_point(|&(tx_id, _)| tx_id <= basis);
+        if first == 0 {
             return Some(self.clone());
         }
-        let (triples, tx_ids) = self
-            .triples
+        let &(_, start) = self.txs.get(first)?;
+        let txs = self.txs[first..]
             .iter()
-            .zip(&self.tx_ids)
-            .filter(|(_, &tx_id)| tx_id > basis)
-            .map(|(triple, &tx_id)| (triple.clone(), tx_id))
-            .unzip();
-        Some(Arc::new(Self::new(self.tx_key, triples, tx_ids)))
+            .map(|&(tx_id, offset)| (tx_id, offset - start))
+            .collect();
+        Some(Arc::new(Self::new(
+            self.tx_key,
+            self.triples[start..].to_vec(),
+            txs,
+        )))
     }
 }
 
@@ -239,7 +238,7 @@ mod tests {
         let batch = Arc::new(Batch::new(
             tx_key,
             vec![triple(2, 1), triple(1, 2), triple(2, 3), triple(1, 4)],
-            vec![1, 2, 3, 3],
+            vec![(1, 0), (2, 1), (3, 2)],
         ));
 
         assert!(Arc::ptr_eq(&batch.after(0).unwrap(), &batch));
