@@ -418,10 +418,6 @@ For each WAL file:
    and send non-empty result deltas.
 7. The live stream cursor advances as rows are read, independently of worker progress.
 
-Each circuit takes one step per WAL file rather than per transaction. This is
-cheaper, but coarser: a fact added and retracted within one WAL file cancels out
-and produces no delta.
-
 ---
 
 ## Subscription Lifecycle
