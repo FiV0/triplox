@@ -558,6 +558,12 @@ impl QueryCircuit {
         decode_output_rows(&self.output.consolidate())
     }
 
+    pub(super) fn matches(&self, batch: &Batch) -> bool {
+        self.attribute_ids
+            .iter()
+            .any(|attribute| !batch.attribute_triples(*attribute).is_empty())
+    }
+
     // Applies a transaction after priming, copying only the triples the plan's attributes can match.
     // Once priming has stepped, an empty input changes nothing, so the step is skipped.
     pub(super) fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
@@ -816,6 +822,29 @@ mod tests {
         assert!(storage_path.exists());
         assert!(!storage_path.join("stale").exists());
         assert!(path_has_entries(&storage_path));
+    }
+
+    #[test]
+    fn query_circuit_matches_only_its_attributes() {
+        let storage = tempfile::tempdir().unwrap();
+        let plan = query_plan(
+            "{:find [?name ?age]
+              :where [[?e :name ?name]
+                      [?e :age ?age]]}",
+        );
+        let circuit = QueryCircuit::build(plan, storage.path()).unwrap();
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        assert!(!circuit.matches(&Batch::single(tx_key, vec![])));
+        assert!(!circuit.matches(&Batch::single(
+            tx_key,
+            vec![Tup2(triple(42, TYPE, "person".into()), 1)],
+        )));
+        for attribute in [NAME, AGE] {
+            assert!(circuit.matches(&Batch::single(
+                tx_key,
+                vec![Tup2(triple(42, attribute, 30_i64.into()), 1)],
+            )));
+        }
     }
 
     #[test]

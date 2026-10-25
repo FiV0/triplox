@@ -12,6 +12,10 @@ struct Probe {
 }
 
 impl Circuit for Probe {
+    fn matches(&self, _batch: &Batch) -> bool {
+        true
+    }
+
     fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
         let seq = batch.triples()[0].0.attribute;
         let _ = self.started.send(seq);
