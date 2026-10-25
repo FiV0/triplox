@@ -327,7 +327,7 @@ independently. Registration-basis filtering happens before enqueueing, so WAL
 history already included in a snapshot cannot overflow a new query's inbox.
 Shared `Arc` batches avoid deep copies during fan-out. A batch is sorted by
 attribute once, and each blocking apply copies only its query's attributes'
-triples, the owned input DBSP requires. A query with none of them skips the step:
+triples. A query with none of them skips the step:
 after the always-stepped priming, an empty input cannot change its result.
 
 A full result channel pauses only that query's worker, after releasing its
