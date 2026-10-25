@@ -19,7 +19,7 @@ use crate::incremental::worker::Batch;
 use crate::incremental::{EncodedTriple, IncrementalQueryService};
 use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
-use crate::partition::{extract_counter, extract_partition, TX_PARTITION};
+use crate::partition::extract_counter;
 use crate::schema::Schema;
 use crate::slate::cdc::{datoms_from_cdc_batch, CdcCursor, CdcStream};
 use crate::slate::DEFAULT_SCAN_OPTIONS;
@@ -52,24 +52,25 @@ pub(crate) fn datoms_to_tuples<'a>(
         .collect::<Result<Vec<_>>>()
 }
 
-/// Recover the `TxKey` of the last transaction in CDC-streamed datoms.
-pub(crate) fn tx_key_from_datoms<'a>(datoms: impl IntoIterator<Item = &'a Datom>) -> Result<TxKey> {
+/// Recover the `TxKey` of transaction `tx_eid` from its `:db/txInstant` datom.
+pub(crate) fn tx_key_from_datoms<'a>(
+    tx_eid: i64,
+    datoms: impl IntoIterator<Item = &'a Datom>,
+) -> Result<TxKey> {
     datoms
         .into_iter()
-        .filter_map(|datom| match &datom.value {
+        .find_map(|datom| match &datom.value {
             DataType::Instant(instant)
-                if datom.attribute == kw!(:db/txInstant)
-                    && extract_partition(datom.entity) == TX_PARTITION =>
+                if datom.entity == tx_eid && datom.attribute == kw!(:db/txInstant) =>
             {
                 Some(TxKey {
-                    tx_id: extract_counter(datom.entity),
+                    tx_id: extract_counter(tx_eid),
                     system_time: *instant,
                 })
             }
             _ => None,
         })
-        .max_by_key(|tx_key| tx_key.tx_id)
-        .ok_or_else(|| anyhow::anyhow!("CDC transaction datoms missing transaction key"))
+        .ok_or_else(|| anyhow!("CDC transaction {tx_eid} missing :db/txInstant"))
 }
 
 /// Build one circuit batch from the datoms of a WAL file, each paired with its tx entity id.
@@ -82,10 +83,15 @@ fn batch_from_datoms(datoms: &[(i64, Datom)], schema: &Schema) -> Result<Batch> 
             txs.push((tx_id, start));
         }
     }
-    let datoms = || datoms.iter().map(|(_, datom)| datom);
+    // The batch key is the last transaction's, so it matches `txs.last()`.
+    let &(_, last_start) = txs
+        .last()
+        .ok_or_else(|| anyhow!("CDC batch has no datoms"))?;
+    let last = &datoms[last_start..];
+    let tx_key = tx_key_from_datoms(last[0].0, last.iter().map(|(_, datom)| datom))?;
     Ok(Batch::new(
-        tx_key_from_datoms(datoms())?,
-        datoms_to_tuples(datoms(), schema)?,
+        tx_key,
+        datoms_to_tuples(datoms.iter().map(|(_, datom)| datom), schema)?,
         txs,
     ))
 }
@@ -316,7 +322,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::clock::st_from_unix_epoch;
+    use crate::clock::{st_from_unix_epoch, Instant};
     use crate::inc_query::test_support::{query_plan, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
@@ -555,6 +561,15 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    fn tx_instant(tx_id: i64, instant: Instant) -> Datom {
+        Datom {
+            entity: tx_eid_from_tx_id(tx_id),
+            attribute: kw!(:db/txInstant),
+            value: DataType::Instant(instant),
+            op: DatomOp::Assert,
+        }
+    }
+
     #[test]
     fn tx_key_from_datoms_extracts_transaction_key() {
         let instant = st_from_unix_epoch(123);
@@ -568,15 +583,10 @@ mod tests {
                 value: DataType::Long(42),
                 op: DatomOp::Assert,
             },
-            Datom {
-                entity: tx_eid,
-                attribute: kw!(:db/txInstant),
-                value: DataType::Instant(instant),
-                op: DatomOp::Assert,
-            },
+            tx_instant(42, instant),
         ];
 
-        let tx_key = tx_key_from_datoms(&datoms).unwrap();
+        let tx_key = tx_key_from_datoms(tx_eid, &datoms).unwrap();
 
         assert_eq!(
             tx_key,
@@ -588,42 +598,33 @@ mod tests {
     }
 
     #[test]
-    fn tx_key_from_datoms_picks_last_transaction() {
-        let tx_instant = |tx_id, instant| Datom {
-            entity: tx_eid_from_tx_id(tx_id),
-            attribute: kw!(:db/txInstant),
-            value: DataType::Instant(instant),
-            op: DatomOp::Assert,
-        };
+    fn tx_key_from_datoms_ignores_other_transactions() {
+        let datoms = [tx_instant(43, st_from_unix_epoch(456))];
+
+        let err = tx_key_from_datoms(tx_eid_from_tx_id(42), &datoms).unwrap_err();
+
+        assert!(err.to_string().contains(":db/txInstant"));
+    }
+
+    #[test]
+    fn batch_key_is_last_transaction() {
         let later = st_from_unix_epoch(456);
         let datoms = [
-            tx_instant(43, later),
             tx_instant(42, st_from_unix_epoch(123)),
-        ];
+            tx_instant(43, later),
+        ]
+        .map(|datom| (datom.entity, datom));
 
+        let batch = batch_from_datoms(&datoms, &crate::schema::bootstrap_schema()).unwrap();
+
+        assert_eq!(batch.triples.len(), 2);
         assert_eq!(
-            tx_key_from_datoms(&datoms).unwrap(),
+            batch.tx_key,
             TxKey {
                 tx_id: 43,
                 system_time: later,
             }
         );
-    }
-
-    #[test]
-    fn tx_key_from_datoms_errors_without_transaction_key() {
-        let datoms = [Datom {
-            entity: 42,
-            attribute: kw!(:name),
-            value: DataType::String("Alice".to_string()),
-            op: DatomOp::Assert,
-        }];
-
-        let err = tx_key_from_datoms(&datoms).unwrap_err();
-
-        assert!(err
-            .to_string()
-            .contains("CDC transaction datoms missing transaction key"));
     }
 
     #[test]
