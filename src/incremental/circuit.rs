@@ -511,20 +511,19 @@ pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
     output: OutputHandle<OutputZSet>,
-    // The sorted, distinct attributes of the plan's patterns; no other triple can match.
-    attributes: Vec<i64>,
+    attribute_ids: Vec<i64>,
 }
 
 impl QueryCircuit {
     // Builds a DBSP circuit for one incremental query plan.
     pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
-        let mut attributes = plan
+        let mut attribute_ids = plan
             .leaf_patterns()
             .iter()
             .map(|pattern| pattern.attribute)
             .collect::<Vec<_>>();
-        attributes.sort_unstable();
-        attributes.dedup();
+        attribute_ids.sort_unstable();
+        attribute_ids.dedup();
         let config = storage_circuit_config(storage_path)?;
         let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
@@ -545,7 +544,7 @@ impl QueryCircuit {
             handle,
             input,
             output,
-            attributes,
+            attribute_ids,
         })
     }
 
@@ -563,7 +562,7 @@ impl QueryCircuit {
     // Once priming has stepped, an empty input changes nothing, so the step is skipped.
     pub(super) fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
         let triples = self
-            .attributes
+            .attribute_ids
             .iter()
             .flat_map(|attribute| batch.attribute_triples(*attribute))
             .cloned()
