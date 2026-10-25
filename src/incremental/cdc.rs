@@ -75,24 +75,18 @@ pub(crate) fn tx_key_from_datoms<'a>(
 
 /// Build one circuit batch from the datoms of a WAL file, each paired with its tx entity id.
 fn batch_from_datoms(datoms: &[(i64, Datom)], schema: &Schema) -> Result<Batch> {
-    // WAL datoms are grouped by transaction in ascending order.
-    let mut txs: Vec<(i64, usize)> = Vec::new();
-    for (start, (tx_eid, _)) in datoms.iter().enumerate() {
-        let tx_id = extract_counter(*tx_eid);
-        if txs.last().is_none_or(|&(last, _)| last != tx_id) {
-            txs.push((tx_id, start));
-        }
-    }
-    // The batch key is the last transaction's, so it matches `txs.last()`.
-    let &(_, last_start) = txs
+    let tx_ids = datoms
+        .iter()
+        .map(|(tx_eid, _)| extract_counter(*tx_eid))
+        .collect();
+    let &(last_tx_eid, _) = datoms
         .last()
         .ok_or_else(|| anyhow!("CDC batch has no datoms"))?;
-    let last = &datoms[last_start..];
-    let tx_key = tx_key_from_datoms(last[0].0, last.iter().map(|(_, datom)| datom))?;
+    let tx_key = tx_key_from_datoms(last_tx_eid, datoms.iter().map(|(_, datom)| datom))?;
     Ok(Batch::new(
         tx_key,
         datoms_to_tuples(datoms.iter().map(|(_, datom)| datom), schema)?,
-        txs,
+        tx_ids,
     ))
 }
 
@@ -608,7 +602,7 @@ mod tests {
 
         let batch = batch_from_datoms(&datoms, &crate::schema::bootstrap_schema()).unwrap();
 
-        assert_eq!(batch.triples.len(), 2);
+        assert_eq!(batch.triples().len(), 2);
         assert_eq!(
             batch.tx_key,
             TxKey {

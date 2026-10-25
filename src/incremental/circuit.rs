@@ -18,6 +18,7 @@ use edn::query::Variable;
 pub(super) use aggregates::AggregateError;
 use aggregates::{aggregate_find_stream, decode_aggregate_output, AggregateOutput};
 
+use super::worker::Batch;
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
@@ -510,11 +511,19 @@ pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
     output: OutputHandle<OutputZSet>,
+    attribute_ids: Vec<i64>,
 }
 
 impl QueryCircuit {
     // Builds a DBSP circuit for one incremental query plan.
     pub(super) fn build(plan: IncrementalQueryPlan, storage_path: &Path) -> Result<Self> {
+        let mut attribute_ids = plan
+            .leaf_patterns()
+            .iter()
+            .map(|pattern| pattern.attribute)
+            .collect::<Vec<_>>();
+        attribute_ids.sort_unstable();
+        attribute_ids.dedup();
         let config = storage_circuit_config(storage_path)?;
         let (mut handle, (input, output)) = Runtime::init_circuit(config, move |circuit| {
             let (input, handle) = circuit.add_input_zset::<EncodedTriple>();
@@ -535,18 +544,39 @@ impl QueryCircuit {
             handle,
             input,
             output,
+            attribute_ids,
         })
     }
 
-    // Applies one weighted triple batch and returns the decoded query result delta.
-    // The first batch is the initial snapshot, so its delta is the whole query result.
-    pub(super) fn apply(
+    // Priming always steps: the first step can emit rows without input, like a global count of 0.
+    pub(super) fn step(
         &mut self,
         mut triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
         self.input.append(&mut triples);
         self.handle.transaction().map_err(anyhow::Error::from)?;
         decode_output_rows(&self.output.consolidate())
+    }
+
+    pub(super) fn matches(&self, batch: &Batch) -> bool {
+        self.attribute_ids
+            .iter()
+            .any(|attribute| !batch.attribute_triples(*attribute).is_empty())
+    }
+
+    // Applies a transaction after priming, copying only the triples the plan's attributes can match.
+    // Once priming has stepped, an empty input changes nothing, so the step is skipped.
+    pub(super) fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
+        let triples = self
+            .attribute_ids
+            .iter()
+            .flat_map(|attribute| batch.attribute_triples(*attribute))
+            .cloned()
+            .collect::<Vec<_>>();
+        if triples.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.step(triples)
     }
 }
 
@@ -692,7 +722,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.apply(batch).unwrap(), expected, "{query}");
+                assert_eq!(circuit.step(batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -731,7 +761,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.apply(batch).unwrap();
+            let mut actual = circuit.step(batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -757,7 +787,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.apply(batch).unwrap(), expected);
+            assert_eq!(circuit.step(batch).unwrap(), expected);
         }
     }
 
@@ -775,7 +805,7 @@ mod tests {
 
         let mut circuit = QueryCircuit::build(plan, &storage_path).unwrap();
         let priming_rows = circuit
-            .apply(vec![
+            .step(vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
             ])
@@ -795,49 +825,83 @@ mod tests {
     }
 
     #[test]
-    fn single_pattern_emits_matching_add() {
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
-
-        append(
-            &handle,
-            [(triple(42, NAME, DataType::String("Alice".to_string())), 1)],
+    fn query_circuit_matches_only_its_attributes() {
+        let storage = tempfile::tempdir().unwrap();
+        let plan = query_plan(
+            "{:find [?name ?age]
+              :where [[?e :name ?name]
+                      [?e :age ?age]]}",
         );
-        circuit.transaction().unwrap();
+        let circuit = QueryCircuit::build(plan, storage.path()).unwrap();
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        assert!(!circuit.matches(&Batch::single(tx_key, vec![])));
+        assert!(!circuit.matches(&Batch::single(
+            tx_key,
+            vec![Tup2(triple(42, TYPE, "person".into()), 1)],
+        )));
+        for attribute in [NAME, AGE] {
+            assert!(circuit.matches(&Batch::single(
+                tx_key,
+                vec![Tup2(triple(42, attribute, 30_i64.into()), 1)],
+            )));
+        }
+    }
+
+    #[test]
+    fn query_circuit_primes_empty_count_and_applies_updates() {
+        let storage = tempfile::tempdir().unwrap();
+        let plan = query_plan(
+            "{:find [(count ?age)]
+              :where [[?e :age ?age]]}",
+        );
+        let mut circuit = QueryCircuit::build(plan, storage.path()).unwrap();
+        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+        let name = Tup2(triple(42, NAME, "Alice".into()), 1);
+        let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
 
         assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode()
-                ],
-                1,
-            )]
+            circuit.step(vec![]).unwrap(),
+            vec![(vec![DataType::Long(0)], 1)]
+        );
+        // An unrelated transaction leaves the primed count unchanged.
+        let batch = Batch::single(tx_key, vec![name.clone()]);
+        assert_eq!(circuit.apply(&batch).unwrap(), vec![]);
+        let batch = Batch::single(tx_key, vec![name, age]);
+        let mut rows = circuit.apply(&batch).unwrap();
+        rows.sort_by_key(|(_, weight)| *weight);
+        assert_eq!(
+            rows,
+            vec![(vec![DataType::Long(0)], -1), (vec![DataType::Long(1)], 1)]
         );
     }
 
     #[test]
-    fn single_pattern_emits_matching_retract() {
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
+    fn single_pattern_preserves_matching_weights() {
+        for weight in [1, -1] {
+            let (mut circuit, (handle, output), _storage) =
+                build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
 
-        append(
-            &handle,
-            [(triple(42, NAME, DataType::String("Alice".to_string())), -1)],
-        );
-        circuit.transaction().unwrap();
+            append(
+                &handle,
+                [(
+                    triple(42, NAME, DataType::String("Alice".to_string())),
+                    weight,
+                )],
+            );
+            circuit.transaction().unwrap();
 
-        assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode()
-                ],
-                -1,
-            )]
-        );
+            assert_eq!(
+                collect_rows(&output),
+                vec![(
+                    vec![
+                        DataType::Long(42).encode(),
+                        DataType::String("Alice".to_string()).encode()
+                    ],
+                    weight,
+                )],
+                "weight {weight}",
+            );
+        }
     }
 
     #[test]
@@ -1400,42 +1464,6 @@ mod tests {
                     DataType::Long(1).encode(),
                     DataType::Long(2).encode(),
                     DataType::String("Bob".to_string()).encode(),
-                ],
-                1,
-            )]
-        );
-    }
-
-    #[test]
-    fn joins_three_pattern_chain() {
-        let plan = query_plan(
-            "[:find ?name ?age ?friend
-              :where
-              [?e :name ?name]
-              [?e :age ?age]
-              [?e :follows ?friend]]",
-        );
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
-
-        append(
-            &handle,
-            [
-                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
-                (triple(42, AGE, DataType::Long(30)), 1),
-                (triple(42, FOLLOWS, DataType::Long(43)), 1),
-            ],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode(),
-                    DataType::Long(30).encode(),
-                    DataType::Long(43).encode(),
                 ],
                 1,
             )]

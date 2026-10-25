@@ -12,8 +12,12 @@ struct Probe {
 }
 
 impl Circuit for Probe {
-    fn apply(&mut self, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<worker::Rows> {
-        let seq = triples[0].0.attribute;
+    fn matches(&self, _batch: &Batch) -> bool {
+        true
+    }
+
+    fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+        let seq = batch.triples()[0].0.attribute;
         let _ = self.started.send(seq);
         if let Some(release) = &self.release {
             let _ = release.recv();
@@ -638,14 +642,17 @@ async fn registration_panics_remove_storage_after_unwinding() {
                     storage: storage.to_path_buf(),
                     dropped,
                 };
-                let rows = probe.apply(vec![Tup2(
-                    EncodedTriple {
-                        entity: vec![],
-                        attribute: 1,
-                        value: vec![],
-                    },
-                    1,
-                )])?;
+                let rows = probe.apply(&Batch::single(
+                    *crate::bootstrap::BOOTSTRAP_TX_KEY,
+                    vec![Tup2(
+                        EncodedTriple {
+                            entity: vec![],
+                            attribute: 1,
+                            value: vec![],
+                        },
+                        1,
+                    )],
+                ))?;
                 Ok((probe, rows))
             })
             .await
