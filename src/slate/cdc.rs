@@ -30,7 +30,6 @@ impl Default for CdcCursor {
 
 /// All RowEntries of one WAL file after the cursor, in seq order.
 pub struct CdcBatch {
-    pub wal_id: u64,
     pub entries: Vec<RowEntry>,
 }
 
@@ -99,10 +98,7 @@ impl CdcStream {
             // Empty files are fencing markers or fully behind the cursor.
             if let Some(last) = entries.last() {
                 self.cursor.last_seq = last.seq;
-                return Ok(Some(CdcBatch {
-                    wal_id: file.id,
-                    entries,
-                }));
+                return Ok(Some(CdcBatch { entries }));
             }
         }
     }
@@ -235,10 +231,20 @@ mod tests {
             batches.push(batch);
         }
 
-        assert!(batches.len() >= 3);
-        // Batches follow WAL file order and seqs increase across them.
+        // One batch per flushed WAL file, in write order.
+        let keys: Vec<Vec<&[u8]>> = batches
+            .iter()
+            .map(|batch| batch.entries.iter().map(|e| e.key.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                vec![b"k1".as_ref()],
+                vec![b"k2".as_ref()],
+                vec![b"k3".as_ref()]
+            ]
+        );
         for window in batches.windows(2) {
-            assert!(window[0].wal_id < window[1].wal_id);
             assert!(window[0].entries.last().unwrap().seq < window[1].entries[0].seq);
         }
 
@@ -330,15 +336,14 @@ mod tests {
         let mut resumed_stream = CdcStream::new(
             wal_reader,
             CdcCursor {
-                wal_id: batch.wal_id,
                 last_seq: cursor_seq,
+                ..CdcCursor::default()
             },
             Duration::from_millis(10),
             cancel,
         );
 
         let resumed_batch = resumed_stream.next_batch().await.unwrap().unwrap();
-        assert_eq!(resumed_batch.wal_id, batch.wal_id);
         let keys: Vec<&[u8]> = resumed_batch
             .entries
             .iter()
