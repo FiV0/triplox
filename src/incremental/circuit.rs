@@ -819,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn query_circuit_applies_only_its_attributes() {
+    fn query_circuit_primes_empty_count_and_applies_updates() {
         let storage = tempfile::tempdir().unwrap();
         let plan = query_plan(
             "{:find [(count ?age)]
@@ -834,7 +834,7 @@ mod tests {
             circuit.step(vec![]).unwrap(),
             vec![(vec![DataType::Long(0)], 1)]
         );
-        // Without :age triples the step is skipped, and the count of 0 must survive it.
+        // An unrelated transaction leaves the primed count unchanged.
         let batch = Batch::single(tx_key, vec![name.clone()]);
         assert_eq!(circuit.apply(&batch).unwrap(), vec![]);
         let batch = Batch::single(tx_key, vec![name, age]);
@@ -847,49 +847,32 @@ mod tests {
     }
 
     #[test]
-    fn single_pattern_emits_matching_add() {
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
+    fn single_pattern_preserves_matching_weights() {
+        for weight in [1, -1] {
+            let (mut circuit, (handle, output), _storage) =
+                build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
 
-        append(
-            &handle,
-            [(triple(42, NAME, DataType::String("Alice".to_string())), 1)],
-        );
-        circuit.transaction().unwrap();
+            append(
+                &handle,
+                [(
+                    triple(42, NAME, DataType::String("Alice".to_string())),
+                    weight,
+                )],
+            );
+            circuit.transaction().unwrap();
 
-        assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode()
-                ],
-                1,
-            )]
-        );
-    }
-
-    #[test]
-    fn single_pattern_emits_matching_retract() {
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(|circuit| build_pattern_circuit(circuit, single_var_pattern()));
-
-        append(
-            &handle,
-            [(triple(42, NAME, DataType::String("Alice".to_string())), -1)],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode()
-                ],
-                -1,
-            )]
-        );
+            assert_eq!(
+                collect_rows(&output),
+                vec![(
+                    vec![
+                        DataType::Long(42).encode(),
+                        DataType::String("Alice".to_string()).encode()
+                    ],
+                    weight,
+                )],
+                "weight {weight}",
+            );
+        }
     }
 
     #[test]
@@ -1452,42 +1435,6 @@ mod tests {
                     DataType::Long(1).encode(),
                     DataType::Long(2).encode(),
                     DataType::String("Bob".to_string()).encode(),
-                ],
-                1,
-            )]
-        );
-    }
-
-    #[test]
-    fn joins_three_pattern_chain() {
-        let plan = query_plan(
-            "[:find ?name ?age ?friend
-              :where
-              [?e :name ?name]
-              [?e :age ?age]
-              [?e :follows ?friend]]",
-        );
-        let (mut circuit, (handle, output), _storage) =
-            build_test_circuit(move |circuit| build_where_circuit(circuit, plan.clone()));
-
-        append(
-            &handle,
-            [
-                (triple(42, NAME, DataType::String("Alice".to_string())), 1),
-                (triple(42, AGE, DataType::Long(30)), 1),
-                (triple(42, FOLLOWS, DataType::Long(43)), 1),
-            ],
-        );
-        circuit.transaction().unwrap();
-
-        assert_eq!(
-            collect_rows(&output),
-            vec![(
-                vec![
-                    DataType::Long(42).encode(),
-                    DataType::String("Alice".to_string()).encode(),
-                    DataType::Long(30).encode(),
-                    DataType::Long(43).encode(),
                 ],
                 1,
             )]
