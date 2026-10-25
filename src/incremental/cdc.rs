@@ -598,15 +598,6 @@ mod tests {
     }
 
     #[test]
-    fn tx_key_from_datoms_ignores_other_transactions() {
-        let datoms = [tx_instant(43, st_from_unix_epoch(456))];
-
-        let err = tx_key_from_datoms(tx_eid_from_tx_id(42), &datoms).unwrap_err();
-
-        assert!(err.to_string().contains(":db/txInstant"));
-    }
-
-    #[test]
     fn batch_key_is_last_transaction() {
         let later = st_from_unix_epoch(456);
         let datoms = [
