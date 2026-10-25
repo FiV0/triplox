@@ -377,8 +377,7 @@ The transaction basis may be in the middle of WAL availability. This is normal:
 transactions that are indexed but not yet flushed share a WAL file with the
 transactions that follow them, so the CDC loop may later read a WAL file
 containing both transactions at or before the registration basis and
-transactions after it. Every triple in a batch carries its transaction id, and
-the dispatcher trims such a batch for that query so it skips entries at or before its
+transactions after it. The dispatcher trims such a batch for that query so it skips entries at or before its
 registration basis and applies later ones.
 
 ---
