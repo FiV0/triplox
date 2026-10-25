@@ -93,9 +93,9 @@ impl Fixture {
     fn apply(&mut self, seq: i64) -> TxKey {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
-        self.inner.apply_triples(Arc::new(Batch {
+        self.inner.apply_batch(Arc::new(Batch::single(
             tx_key,
-            triples: vec![Tup2(
+            vec![Tup2(
                 EncodedTriple {
                     entity: vec![],
                     attribute: seq,
@@ -103,7 +103,7 @@ impl Fixture {
                 },
                 1,
             )],
-        }));
+        )));
         tx_key
     }
 
@@ -379,10 +379,10 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     tx_key.tx_id += 2;
     let (response, applied) = oneshot::channel();
     commands
-        .send(IncrementalCommand::ApplyTriples {
-            batch: Arc::new(Batch {
+        .send(IncrementalCommand::ApplyBatch {
+            batch: Arc::new(Batch::single(
                 tx_key,
-                triples: vec![Tup2(
+                vec![Tup2(
                     EncodedTriple {
                         entity: vec![],
                         attribute: 2,
@@ -390,7 +390,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
                     },
                     1,
                 )],
-            }),
+            )),
             response,
         })
         .unwrap();
@@ -457,7 +457,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
     service
-        .apply_triples(
+        .apply_batch(Batch::single(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -467,7 +467,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
                 },
                 1,
             )],
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
@@ -596,7 +596,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     tx_key.tx_id += 1;
     tokio::time::timeout(
         Duration::from_secs(5),
-        service.apply_triples(
+        service.apply_batch(Batch::single(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -606,7 +606,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
                 },
                 1,
             )],
-        ),
+        )),
     )
     .await
     .unwrap()

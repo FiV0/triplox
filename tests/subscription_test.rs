@@ -123,7 +123,7 @@ async fn subscription_loses_no_deltas_under_slow_consumer() {
     assert_eq!(sub.tx_key(), None);
     let registration = sub.registration_tx_key();
 
-    // Drain: one delta per transaction, none dropped.
+    // Drain: deltas may cover several transactions, but none are dropped.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     while seen.len() < names.len() {
         let previous = sub.tx_key();
@@ -184,12 +184,15 @@ async fn subscription_deltas_match_standard_query() {
         TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
     };
 
-    // Three query-affecting transactions -> three deltas; accumulate signed weights.
+    // Transactions sharing a WAL file share a delta; accumulate up to the last one.
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
-    for _ in 0..3 {
+    loop {
         let delta = next_delta(&mut sub).await;
         for (row, weight) in &delta.rows {
             *counts.entry(format!("{row:?}")).or_default() += *weight;
+        }
+        if delta.tx_key == last_basis {
+            break;
         }
     }
     let reconstructed: BTreeSet<String> = counts

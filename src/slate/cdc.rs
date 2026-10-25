@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use slatedb::{RowEntry, ValueDeletable, WalFile, WalFileIterator, WalReader};
+use slatedb::{RowEntry, ValueDeletable, WalFile, WalReader};
 use tokio_util::sync::CancellationToken;
 
 use crate::codec;
@@ -11,8 +11,8 @@ use crate::schema::Schema;
 
 /// Tracks the CDC stream position.
 ///
+/// `wal_id` is the next WAL file to read.
 /// `last_seq` is the exclusive lower bound for rows yielded by the stream.
-/// `wal_id` is the WAL file currently being read, or the next WAL id to discover.
 #[derive(Debug, Clone)]
 pub struct CdcCursor {
     pub wal_id: u64,
@@ -28,19 +28,16 @@ impl Default for CdcCursor {
     }
 }
 
-/// A single CDC transaction: all RowEntries sharing one seq number.
-pub struct CdcTransaction {
-    pub seq: u64,
+/// All RowEntries of one WAL file after the cursor, in seq order.
+pub struct CdcBatch {
     pub entries: Vec<RowEntry>,
 }
 
-/// Streams CDC transactions from WAL, resumable via cursor.
-/// Blocks (async) until a new transaction is available or the cancel token is triggered.
+/// Streams CDC batches from WAL, one per WAL file, resumable via cursor.
+/// Blocks (async) until a new WAL file is available or the cancel token is triggered.
 pub struct CdcStream {
     wal_reader: WalReader,
     wal_files: VecDeque<WalFile>,
-    current_iter: Option<WalFileIterator>,
-    buffered: Option<RowEntry>,
     cursor: CdcCursor,
     poll_interval: Duration,
     cancel: CancellationToken,
@@ -52,144 +49,70 @@ impl CdcStream {
     /// - `cursor`: Use `CdcCursor::default()` to start from the beginning.
     /// - `poll_interval`: How often to poll for new WAL files when caught up.
     /// - `cancel`: Trigger to stop blocking and return `Ok(None)`.
-    pub async fn new(
+    pub fn new(
         wal_reader: WalReader,
         cursor: CdcCursor,
         poll_interval: Duration,
         cancel: CancellationToken,
-    ) -> Result<Self, slatedb::Error> {
-        let wal_files: VecDeque<WalFile> = wal_reader.list(cursor.wal_id..).await?.into();
-
-        let mut stream = CdcStream {
+    ) -> Self {
+        CdcStream {
             wal_reader,
-            wal_files,
-            current_iter: None,
-            buffered: None,
+            wal_files: VecDeque::new(),
             cursor,
             poll_interval,
             cancel,
-        };
-
-        // Open the first WAL file's iterator.
-        stream.advance_to_next_file().await?;
-
-        Ok(stream)
-    }
-
-    /// Return the next transaction. Blocks until data is available.
-    /// Returns `Ok(None)` only when the cancel token is triggered.
-    pub async fn next_transaction(&mut self) -> Result<Option<CdcTransaction>, slatedb::Error> {
-        // Get the first entry for this transaction.
-        let first = match self.next_entry().await? {
-            Some(entry) => entry,
-            None => return Ok(None), // cancelled
-        };
-
-        let seq = first.seq;
-        let mut entries = vec![first];
-
-        // Accumulate entries with the same seq inside the current WAL file.
-        loop {
-            match self.next_entry_in_current_file().await? {
-                Some(entry) if entry.seq == seq => {
-                    entries.push(entry);
-                }
-                Some(entry) => {
-                    // Different seq — buffer for next call.
-                    self.buffered = Some(entry);
-                    break;
-                }
-                None => {
-                    // WAL files are immutable and transactions do not cross file
-                    // boundaries, so EOF completes the current transaction.
-                    break;
-                }
-            }
-        }
-
-        self.cursor.last_seq = seq;
-        Ok(Some(CdcTransaction { seq, entries }))
-    }
-
-    /// Get the next entry, either from the buffer or by reading from WAL files.
-    /// Skips entries with seq <= cursor.last_seq (already processed).
-    /// Blocks (polls) when no data is available. Returns None if cancelled.
-    async fn next_entry(&mut self) -> Result<Option<RowEntry>, slatedb::Error> {
-        // Return buffered entry first.
-        if let Some(entry) = self.buffered.take() {
-            return Ok(Some(entry));
-        }
-
-        loop {
-            if let Some(entry) = self.next_entry_in_current_file().await? {
-                return Ok(Some(entry));
-            }
-
-            // Current file exhausted — try next file.
-            if self.advance_to_next_file().await? {
-                continue;
-            }
-
-            // No more files — poll for the current cursor WAL or later.
-            loop {
-                let new_files: VecDeque<WalFile> =
-                    self.wal_reader.list(self.cursor.wal_id..).await?.into();
-
-                if !new_files.is_empty() {
-                    self.wal_files = new_files;
-                    self.advance_to_next_file().await?;
-                    break;
-                }
-
-                // Wait for a newly visible immutable WAL file or cancellation.
-                tokio::select! {
-                    _ = tokio::time::sleep(self.poll_interval) => continue,
-                    _ = self.cancel.cancelled() => return Ok(None),
-                }
-            }
         }
     }
 
-    /// Get the next entry from the already-open WAL file.
-    /// Returns None when that immutable file is exhausted.
-    async fn next_entry_in_current_file(&mut self) -> Result<Option<RowEntry>, slatedb::Error> {
-        let Some(ref mut iter) = self.current_iter else {
-            return Ok(None);
-        };
-
+    /// Read the entries of `file` that come after the cursor.
+    async fn read_entries(&self, file: &WalFile) -> Result<Vec<RowEntry>, slatedb::Error> {
+        let mut iter = file.iterator().await?;
+        let mut entries = Vec::new();
         while let Some(entry) = iter.next().await? {
             if entry.seq > self.cursor.last_seq {
-                return Ok(Some(entry));
+                entries.push(entry);
             }
         }
-
-        self.cursor.wal_id += 1;
-        self.current_iter = None;
-        Ok(None)
+        Ok(entries)
     }
 
-    /// Pop the next WAL file from the queue and open its iterator.
-    /// Returns true if a new file was opened, false if queue is empty.
-    async fn advance_to_next_file(&mut self) -> Result<bool, slatedb::Error> {
-        if let Some(file) = self.wal_files.pop_front() {
-            self.cursor.wal_id = file.id;
-            self.current_iter = Some(file.iterator().await?);
-            Ok(true)
-        } else {
-            self.current_iter = None;
-            Ok(false)
+    /// Return the next non-empty WAL file as a batch. Blocks until one is available.
+    /// Returns `Ok(None)` only when the cancel token is triggered.
+    pub async fn next_batch(&mut self) -> Result<Option<CdcBatch>, slatedb::Error> {
+        loop {
+            let Some(file) = self.wal_files.pop_front() else {
+                let files = self.wal_reader.list(self.cursor.wal_id..).await?;
+                if files.is_empty() {
+                    // Wait for a newly visible immutable WAL file or cancellation.
+                    tokio::select! {
+                        _ = tokio::time::sleep(self.poll_interval) => {}
+                        _ = self.cancel.cancelled() => return Ok(None),
+                    }
+                }
+                self.wal_files = files.into();
+                continue;
+            };
+
+            let entries = self.read_entries(&file).await?;
+            self.cursor.wal_id = file.id + 1;
+            // Empty files are fencing markers or fully behind the cursor.
+            if let Some(last) = entries.last() {
+                self.cursor.last_seq = last.seq;
+                return Ok(Some(CdcBatch { entries }));
+            }
         }
     }
 }
 
-/// Extract Datoms from a CDC transaction by decoding EAV-prefix index keys.
+/// Extract Datoms from a CDC batch by decoding EAV-prefix index keys.
+/// Each datom is paired with the tx entity id stored in its key.
 /// Skips non-EAV keys and tombstone entries.
-pub fn datoms_from_cdc_transaction(
-    tx: &CdcTransaction,
+pub fn datoms_from_cdc_batch(
+    entries: &[RowEntry],
     schema: &Schema,
-) -> Result<Vec<Datom>, anyhow::Error> {
+) -> Result<Vec<(i64, Datom)>, anyhow::Error> {
     let mut datoms = Vec::new();
-    for entry in &tx.entries {
+    for entry in entries {
         if entry.key.first() != Some(&codec::EAV) {
             continue;
         }
@@ -197,7 +120,7 @@ pub fn datoms_from_cdc_transaction(
             continue;
         }
 
-        let (entity_dt, attribute_id, value, _tx_eid, op_byte) =
+        let (entity_dt, attribute_id, value, tx_eid, op_byte) =
             eav_key_to_parts(entry.key.clone())?;
 
         let entity = match entity_dt {
@@ -223,12 +146,15 @@ pub fn datoms_from_cdc_transaction(
             other => return Err(anyhow::anyhow!("Unknown op byte: {}", other)),
         };
 
-        datoms.push(Datom {
-            entity,
-            attribute,
-            value,
-            op,
-        });
+        datoms.push((
+            tx_eid,
+            Datom {
+                entity,
+                attribute,
+                value,
+                op,
+            },
+        ));
     }
     Ok(datoms)
 }
@@ -236,7 +162,7 @@ pub fn datoms_from_cdc_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slatedb::config::{FlushOptions, FlushType};
+    use slatedb::config::{FlushOptions, FlushType, Settings};
     use slatedb::object_store::memory::InMemory;
     use slatedb::{Db, ValueDeletable};
     use std::sync::Arc;
@@ -267,56 +193,15 @@ mod tests {
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        let result = stream.next_transaction().await.unwrap();
+        let result = stream.next_batch().await.unwrap();
         assert!(result.is_none());
         db.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_single_transaction() {
-        let (db, object_store) = setup_db("/test_single").await;
-
-        db.put(b"k1", b"v1").await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_single", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
-
-        // Collect all entries across transactions.
-        let mut all_entries = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            all_entries.extend(tx.entries);
-        }
-
-        // Verify the entries contain our keys and values.
-        let kv_pairs: Vec<(&[u8], &[u8])> = all_entries
-            .iter()
-            .filter_map(|e| match &e.value {
-                ValueDeletable::Value(v) => Some((e.key.as_ref(), v.as_ref())),
-                _ => None,
-            })
-            .collect();
-        assert!(kv_pairs.contains(&(b"k1".as_ref(), b"v1".as_ref())));
-        assert!(kv_pairs.contains(&(b"k2".as_ref(), b"v2".as_ref())));
-        db.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_multiple_transactions() {
+    async fn test_multiple_wal_files() {
         let (db, object_store) = setup_db("/test_multi").await;
 
         // First batch.
@@ -339,36 +224,52 @@ mod tests {
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        let mut txs = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            txs.push(tx);
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next_batch().await.unwrap() {
+            batches.push(batch);
         }
 
-        assert!(txs.len() >= 3);
-        // Seqs should be strictly increasing.
-        for window in txs.windows(2) {
-            assert!(window[0].seq < window[1].seq);
+        // One batch per flushed WAL file, in write order.
+        let keys: Vec<Vec<&[u8]>> = batches
+            .iter()
+            .map(|batch| batch.entries.iter().map(|e| e.key.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                vec![b"k1".as_ref()],
+                vec![b"k2".as_ref()],
+                vec![b"k3".as_ref()]
+            ]
+        );
+        for window in batches.windows(2) {
+            assert!(window[0].entries.last().unwrap().seq < window[1].entries[0].seq);
         }
 
         db.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_filtering_by_cursor() {
-        let (db, object_store) = setup_db("/test_filter").await;
+    async fn test_wal_file_with_many_writes_is_one_batch() {
+        let object_store: Arc<dyn slatedb::object_store::ObjectStore> = Arc::new(InMemory::new());
+        // Without periodic flushes only the explicit flush cuts a WAL file.
+        let db = Db::builder("/test_one_batch", object_store.clone())
+            .with_settings(Settings {
+                flush_interval: None,
+                ..Settings::default()
+            })
+            .build()
+            .await
+            .unwrap();
 
         db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
         db.put(b"k2", b"v2").await.unwrap();
+        db.put(b"k3", b"v3").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        // First, read all to find the first transaction's seq.
-        let wal_reader = WalReader::new("/test_filter", object_store.clone());
+        let wal_reader = WalReader::new("/test_one_batch", object_store);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stream = CdcStream::new(
@@ -376,31 +277,84 @@ mod tests {
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        let tx1 = stream.next_transaction().await.unwrap().unwrap();
+        let batch = stream.next_batch().await.unwrap().unwrap();
+        let keys: Vec<&[u8]> = batch.entries.iter().map(|e| e.key.as_ref()).collect();
+        assert_eq!(keys, vec![b"k1".as_ref(), b"k2".as_ref(), b"k3".as_ref()]);
+        let values: Vec<&[u8]> = batch
+            .entries
+            .iter()
+            .map(|entry| match &entry.value {
+                ValueDeletable::Value(value) => value.as_ref(),
+                other => panic!("expected a value, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(values, vec![b"v1".as_ref(), b"v2".as_ref(), b"v3".as_ref()]);
+        assert!(batch.entries.windows(2).all(|w| w[0].seq < w[1].seq));
+        assert!(stream.next_batch().await.unwrap().is_none());
+        db.close().await.unwrap();
+    }
 
-        // Now create a new stream starting after tx1's seq.
-        let wal_reader2 = WalReader::new("/test_filter", object_store);
-        let cancel2 = CancellationToken::new();
-        cancel2.cancel();
-        let mut stream2 = CdcStream::new(
-            wal_reader2,
+    #[tokio::test]
+    async fn test_cdc_cursor_inside_wal_file() {
+        let object_store: Arc<dyn slatedb::object_store::ObjectStore> = Arc::new(InMemory::new());
+        // Keep writes on both sides of the cursor in the same WAL file.
+        let db = Db::builder("/test_cursor_inside_wal", object_store.clone())
+            .with_settings(Settings {
+                flush_interval: None,
+                ..Settings::default()
+            })
+            .build()
+            .await
+            .unwrap();
+
+        db.put(b"k1", b"v1").await.unwrap();
+        db.put(b"k2", b"v2").await.unwrap();
+        db.put(b"k3", b"v3").await.unwrap();
+        db.put(b"k4", b"v4").await.unwrap();
+        db.flush_with_options(flush_opts()).await.unwrap();
+
+        let wal_reader = WalReader::new("/test_cursor_inside_wal", object_store.clone());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stream = CdcStream::new(
+            wal_reader,
+            CdcCursor::default(),
+            Duration::from_millis(10),
+            cancel,
+        );
+
+        let batch = stream.next_batch().await.unwrap().unwrap();
+        assert_eq!(batch.entries.len(), 4);
+        let cursor_seq = batch.entries[1].seq;
+
+        // Resume after the second write, without skipping the rest of its WAL file.
+        let wal_reader = WalReader::new("/test_cursor_inside_wal", object_store);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut resumed_stream = CdcStream::new(
+            wal_reader,
             CdcCursor {
-                wal_id: 0,
-                last_seq: tx1.seq,
+                last_seq: cursor_seq,
+                ..CdcCursor::default()
             },
             Duration::from_millis(10),
-            cancel2,
-        )
-        .await
-        .unwrap();
+            cancel,
+        );
 
-        let tx2 = stream2.next_transaction().await.unwrap().unwrap();
-        // tx2's seq should be greater than tx1's.
-        assert!(tx2.seq > tx1.seq);
+        let resumed_batch = resumed_stream.next_batch().await.unwrap().unwrap();
+        let keys: Vec<&[u8]> = resumed_batch
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect();
+        assert_eq!(keys, vec![b"k3".as_ref(), b"k4".as_ref()]);
+        assert!(resumed_batch
+            .entries
+            .iter()
+            .all(|entry| entry.seq > cursor_seq));
+        assert!(resumed_stream.next_batch().await.unwrap().is_none());
 
         db.close().await.unwrap();
     }
@@ -422,14 +376,12 @@ mod tests {
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        // Collect all entries across transactions.
+        // Collect all entries across batches.
         let mut all_entries = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            all_entries.extend(tx.entries);
+        while let Some(batch) = stream.next_batch().await.unwrap() {
+            all_entries.extend(batch.entries);
         }
 
         // Should have a tombstone entry.
@@ -458,11 +410,9 @@ mod tests {
             },
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        let result = stream.next_transaction().await.unwrap();
+        let result = stream.next_batch().await.unwrap();
         assert!(result.is_none());
         db.close().await.unwrap();
     }
@@ -494,109 +444,10 @@ mod tests {
             },
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
-
-        let result = stream.next_transaction().await.unwrap();
-        assert!(result.is_none(), "expected no transactions after cursor");
-        db.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_cdc_cursor_skips_existing_transactions() {
-        let (db, object_store) = setup_db("/test_cursor_skips_existing").await;
-
-        // Before cursor.
-        db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let current_seq = db.status().durable_seq;
-
-        // After cursor.
-        db.put(b"k3", b"v3").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k4", b"v4").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_cursor_skips_existing", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: current_seq,
-            },
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
-
-        let mut txs = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(
-                tx.seq > current_seq,
-                "tx.seq {} should be > cursor seq {}",
-                tx.seq,
-                current_seq
-            );
-            txs.push(tx);
-        }
-        assert!(
-            txs.len() >= 2,
-            "expected at least 2 post-cursor transactions, got {}",
-            txs.len()
         );
-        db.close().await.unwrap();
-    }
 
-    #[tokio::test]
-    async fn test_cdc_cursor_from_zero_reads_later_transactions() {
-        let (db, object_store) = setup_db("/test_cursor_from_zero").await;
-
-        // Cursor on empty-ish DB.
-        let current_seq = db.status().durable_seq;
-
-        // All transactions after cursor.
-        db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_cursor_from_zero", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: current_seq,
-            },
-            Duration::from_millis(10),
-            cancel,
-        )
-        .await
-        .unwrap();
-
-        let mut txs = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            assert!(
-                tx.seq > current_seq,
-                "tx.seq {} should be > cursor seq {}",
-                tx.seq,
-                current_seq
-            );
-            txs.push(tx);
-        }
-        assert!(
-            txs.len() >= 2,
-            "expected at least 2 transactions, got {}",
-            txs.len()
-        );
+        let result = stream.next_batch().await.unwrap();
+        assert!(result.is_none(), "expected no batches after cursor");
         db.close().await.unwrap();
     }
 
@@ -624,9 +475,7 @@ mod tests {
                 },
                 Duration::from_millis(10),
                 cancel,
-            )
-            .await
-            .unwrap();
+            );
 
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -634,13 +483,13 @@ mod tests {
                 db.flush_with_options(flush_opts()).await.unwrap();
             });
 
-            let tx = stream
-                .next_transaction()
+            let batch = stream
+                .next_batch()
                 .await
                 .unwrap()
                 .expect("stream should poll the cursor WAL id after an empty initial list");
 
-            assert!(tx.entries.iter().any(|entry| {
+            assert!(batch.entries.iter().any(|entry| {
                 entry.key.as_ref() == b"k1"
                     && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v1")
             }));
@@ -671,9 +520,7 @@ mod tests {
                 },
                 Duration::from_millis(10),
                 cancel,
-            )
-            .await
-            .unwrap();
+            );
 
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -686,29 +533,29 @@ mod tests {
                 cancel_clone.cancel();
             });
 
-            let mut txs = Vec::new();
-            while let Some(tx) = stream.next_transaction().await.unwrap() {
+            let mut batches = Vec::new();
+            while let Some(batch) = stream.next_batch().await.unwrap() {
                 assert!(
-                    tx.seq > current_seq,
-                    "tx.seq {} should be > cursor seq {}",
-                    tx.seq,
+                    batch.entries[0].seq > current_seq,
+                    "batch seq {} should be > cursor seq {}",
+                    batch.entries[0].seq,
                     current_seq
                 );
-                txs.push(tx);
+                batches.push(batch);
             }
             assert!(
-                txs.len() >= 2,
-                "expected at least 2 live transactions, got {}",
-                txs.len()
+                batches.len() >= 2,
+                "expected at least 2 live batches, got {}",
+                batches.len()
             );
-            assert!(txs.iter().any(|tx| {
-                tx.entries.iter().any(|entry| {
+            assert!(batches.iter().any(|batch| {
+                batch.entries.iter().any(|entry| {
                     entry.key.as_ref() == b"k3"
                         && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v3")
                 })
             }));
-            assert!(txs.iter().any(|tx| {
-                tx.entries.iter().any(|entry| {
+            assert!(batches.iter().any(|batch| {
+                batch.entries.iter().any(|entry| {
                     entry.key.as_ref() == b"k4"
                         && matches!(&entry.value, ValueDeletable::Value(value) if value.as_ref() == b"v4")
                 })
@@ -719,15 +566,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation() {
+    async fn test_cdc_cursor_yields_live_batch_without_cancellation() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (db, object_store) = setup_db("/test_cursor_wal_file_eof").await;
+            let (db, object_store) = setup_db("/test_cursor_live_batch").await;
 
             db.put(b"k1", b"v1").await.unwrap();
             db.flush_with_options(flush_opts()).await.unwrap();
 
             let current_seq = db.status().durable_seq;
-            let wal_reader = WalReader::new("/test_cursor_wal_file_eof", object_store);
+            let wal_reader = WalReader::new("/test_cursor_live_batch", object_store);
             let cancel = CancellationToken::new();
             let mut stream = CdcStream::new(
                 wal_reader,
@@ -737,9 +584,7 @@ mod tests {
                 },
                 Duration::from_millis(10),
                 cancel,
-            )
-            .await
-            .unwrap();
+            );
 
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -747,19 +592,17 @@ mod tests {
                 db.flush_with_options(flush_opts()).await.unwrap();
             });
 
-            let tx = stream
-                .next_transaction()
+            let batch = stream
+                .next_batch()
                 .await
                 .unwrap()
-                .expect("transaction at WAL file EOF should be yielded without cancellation");
+                .expect("live batch should be yielded without cancellation");
 
-            assert!(tx.seq > current_seq);
-            assert_eq!(tx.entries.len(), 1);
+            assert!(batch.entries[0].seq > current_seq);
+            assert_eq!(batch.entries.len(), 1);
         })
         .await
-        .expect(
-            "test_cdc_cursor_yields_transaction_at_wal_file_eof_without_cancellation timed out",
-        );
+        .expect("test_cdc_cursor_yields_live_batch_without_cancellation timed out");
     }
 
     #[tokio::test]
@@ -789,9 +632,7 @@ mod tests {
                 },
                 Duration::from_millis(10),
                 cancel,
-            )
-            .await
-            .unwrap();
+            );
 
             // Spawn background task to write more then cancel.
             tokio::spawn(async move {
@@ -802,28 +643,28 @@ mod tests {
                 cancel_clone.cancel();
             });
 
-            let mut txs = Vec::new();
-            while let Some(tx) = stream.next_transaction().await.unwrap() {
+            let mut batches = Vec::new();
+            while let Some(batch) = stream.next_batch().await.unwrap() {
                 assert!(
-                    tx.seq > current_seq,
-                    "tx.seq {} should be > cursor seq {}",
-                    tx.seq,
+                    batch.entries[0].seq > current_seq,
+                    "batch seq {} should be > cursor seq {}",
+                    batch.entries[0].seq,
                     current_seq
                 );
-                txs.push(tx);
+                batches.push(batch);
             }
             // Should see both k2 (already there) and k3 (arrived live).
             assert!(
-                txs.len() >= 2,
-                "expected at least 2 transactions (pre-stream + live), got {}",
-                txs.len()
+                batches.len() >= 2,
+                "expected at least 2 batches (pre-stream + live), got {}",
+                batches.len()
             );
         })
         .await
         .expect("test_cdc_cursor_reads_existing_and_live_transactions timed out");
     }
 
-    // --- datoms_from_cdc_transaction tests (Node-based) ---
+    // --- datoms_from_cdc_batch tests (Node-based) ---
 
     use crate::memory_log::MemoryLog;
     use crate::node::{Node, SubmitNode};
@@ -840,6 +681,7 @@ mod tests {
         node
     }
 
+    /// Datoms of every transaction in the WAL, grouped by tx entity in tx order.
     async fn collect_cdc_datoms(node: &Node<MemoryLog>) -> Vec<Vec<Datom>> {
         // Flush WAL to object store so CdcStream can read it.
         node.slate
@@ -862,18 +704,15 @@ mod tests {
             CdcCursor::default(),
             Duration::from_millis(10),
             cancel,
-        )
-        .await
-        .unwrap();
+        );
 
-        let mut all_tx_datoms = Vec::new();
-        while let Some(tx) = stream.next_transaction().await.unwrap() {
-            let datoms = datoms_from_cdc_transaction(&tx, &schema).unwrap();
-            if !datoms.is_empty() {
-                all_tx_datoms.push(datoms);
+        let mut by_tx: BTreeMap<i64, Vec<Datom>> = BTreeMap::new();
+        while let Some(batch) = stream.next_batch().await.unwrap() {
+            for (tx_eid, datom) in datoms_from_cdc_batch(&batch.entries, &schema).unwrap() {
+                by_tx.entry(tx_eid).or_default().push(datom);
             }
         }
-        all_tx_datoms
+        by_tx.into_values().collect()
     }
 
     fn transactions_with_entity(datoms: &[Vec<Datom>], entity: i64) -> Vec<Vec<&Datom>> {
