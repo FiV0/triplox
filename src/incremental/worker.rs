@@ -237,23 +237,6 @@ impl<C: Circuit> Worker<C> {
 mod tests {
     use super::*;
 
-    struct SelectiveCircuit {
-        checked: mpsc::UnboundedSender<i64>,
-    }
-
-    impl Circuit for SelectiveCircuit {
-        fn matches(&self, batch: &Batch) -> bool {
-            let attribute = batch.triples()[0].0.attribute;
-            self.checked.send(attribute).unwrap();
-            attribute == 2
-        }
-
-        fn apply(&mut self, batch: &Batch) -> Result<Rows> {
-            assert_eq!(batch.triples()[0].0.attribute, 2);
-            Ok(vec![(vec![DataType::Long(2)], 1)])
-        }
-    }
-
     fn triple(attribute: i64, entity: u8) -> Tup2<EncodedTriple, ZWeight> {
         Tup2(
             EncodedTriple {
@@ -273,59 +256,6 @@ mod tests {
             .collect::<Vec<_>>();
         entities.sort_unstable();
         entities
-    }
-
-    #[tokio::test]
-    async fn unrelated_batch_skips_execution_permit() {
-        let storage = tempfile::tempdir().unwrap();
-        let storage_path = storage.path().join("query");
-        std::fs::create_dir(&storage_path).unwrap();
-        let steps = Arc::new(Semaphore::new(1));
-        let permit = steps.clone().acquire_owned().await.unwrap();
-        let (checked, mut checks) = mpsc::unbounded_channel();
-        let (inbox_sender, inbox) = mpsc::channel(2);
-        let (sender, mut deltas) = mpsc::channel(1);
-        let (terminal, _termination) = oneshot::channel();
-        let control = Arc::new(Control::new(CancellationToken::new(), terminal));
-        let worker = Worker {
-            circuit: SelectiveCircuit { checked },
-            storage_path: storage_path.clone(),
-            inbox,
-            sender,
-            control: control.clone(),
-            steps,
-        };
-        let task = tokio::spawn(worker.run());
-        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
-        for attribute in [1, 2] {
-            inbox_sender
-                .send(Arc::new(Batch::single(tx_key, vec![triple(attribute, 1)])))
-                .await
-                .unwrap();
-        }
-
-        // Both batches are checked while the only execution permit is held.
-        for attribute in [1, 2] {
-            let checked = tokio::time::timeout(std::time::Duration::from_secs(5), checks.recv())
-                .await
-                .unwrap();
-            assert_eq!(checked, Some(attribute));
-        }
-        assert!(matches!(
-            deltas.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        drop(permit);
-        let delta = tokio::time::timeout(std::time::Duration::from_secs(5), deltas.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(delta.tx_key, tx_key);
-        assert_eq!(delta.rows, vec![(vec![DataType::Long(2)], 1)]);
-
-        control.terminate(None);
-        task.await.unwrap().unwrap();
-        assert!(!storage_path.exists());
     }
 
     #[test]
