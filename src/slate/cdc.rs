@@ -205,43 +205,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_single_transaction() {
-        let (db, object_store) = setup_db("/test_single").await;
-
-        db.put(b"k1", b"v1").await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_single", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor::default(),
-            Duration::from_millis(10),
-            cancel,
-        );
-
-        // Collect all entries across batches.
-        let mut all_entries = Vec::new();
-        while let Some(batch) = stream.next_batch().await.unwrap() {
-            all_entries.extend(batch.entries);
-        }
-
-        // Verify the entries contain our keys and values.
-        let kv_pairs: Vec<(&[u8], &[u8])> = all_entries
-            .iter()
-            .filter_map(|e| match &e.value {
-                ValueDeletable::Value(v) => Some((e.key.as_ref(), v.as_ref())),
-                _ => None,
-            })
-            .collect();
-        assert!(kv_pairs.contains(&(b"k1".as_ref(), b"v1".as_ref())));
-        assert!(kv_pairs.contains(&(b"k2".as_ref(), b"v2".as_ref())));
-        db.close().await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_multiple_wal_files() {
         let (db, object_store) = setup_db("/test_multi").await;
 
@@ -313,23 +276,40 @@ mod tests {
         let batch = stream.next_batch().await.unwrap().unwrap();
         let keys: Vec<&[u8]> = batch.entries.iter().map(|e| e.key.as_ref()).collect();
         assert_eq!(keys, vec![b"k1".as_ref(), b"k2".as_ref(), b"k3".as_ref()]);
+        let values: Vec<&[u8]> = batch
+            .entries
+            .iter()
+            .map(|entry| match &entry.value {
+                ValueDeletable::Value(value) => value.as_ref(),
+                other => panic!("expected a value, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(values, vec![b"v1".as_ref(), b"v2".as_ref(), b"v3".as_ref()]);
         assert!(batch.entries.windows(2).all(|w| w[0].seq < w[1].seq));
         assert!(stream.next_batch().await.unwrap().is_none());
         db.close().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_filtering_by_cursor() {
-        let (db, object_store) = setup_db("/test_filter").await;
+    async fn test_cdc_cursor_inside_wal_file() {
+        let object_store: Arc<dyn slatedb::object_store::ObjectStore> = Arc::new(InMemory::new());
+        // Keep writes on both sides of the cursor in the same WAL file.
+        let db = Db::builder("/test_cursor_inside_wal", object_store.clone())
+            .with_settings(Settings {
+                flush_interval: None,
+                ..Settings::default()
+            })
+            .build()
+            .await
+            .unwrap();
 
         db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
         db.put(b"k2", b"v2").await.unwrap();
+        db.put(b"k3", b"v3").await.unwrap();
+        db.put(b"k4", b"v4").await.unwrap();
         db.flush_with_options(flush_opts()).await.unwrap();
 
-        // First, read the first batch to find its last seq.
-        let wal_reader = WalReader::new("/test_filter", object_store.clone());
+        let wal_reader = WalReader::new("/test_cursor_inside_wal", object_store.clone());
         let cancel = CancellationToken::new();
         cancel.cancel();
         let mut stream = CdcStream::new(
@@ -339,25 +319,37 @@ mod tests {
             cancel,
         );
 
-        let batch1 = stream.next_batch().await.unwrap().unwrap();
-        let batch1_seq = batch1.entries.last().unwrap().seq;
+        let batch = stream.next_batch().await.unwrap().unwrap();
+        assert_eq!(batch.entries.len(), 4);
+        let cursor_seq = batch.entries[1].seq;
 
-        // Now create a new stream starting after batch1's seq.
-        let wal_reader2 = WalReader::new("/test_filter", object_store);
-        let cancel2 = CancellationToken::new();
-        cancel2.cancel();
-        let mut stream2 = CdcStream::new(
-            wal_reader2,
+        // Resume after the second write, without skipping the rest of its WAL file.
+        let wal_reader = WalReader::new("/test_cursor_inside_wal", object_store);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut resumed_stream = CdcStream::new(
+            wal_reader,
             CdcCursor {
-                wal_id: 0,
-                last_seq: batch1_seq,
+                wal_id: batch.wal_id,
+                last_seq: cursor_seq,
             },
             Duration::from_millis(10),
-            cancel2,
+            cancel,
         );
 
-        let batch2 = stream2.next_batch().await.unwrap().unwrap();
-        assert!(batch2.entries.iter().all(|entry| entry.seq > batch1_seq));
+        let resumed_batch = resumed_stream.next_batch().await.unwrap().unwrap();
+        assert_eq!(resumed_batch.wal_id, batch.wal_id);
+        let keys: Vec<&[u8]> = resumed_batch
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect();
+        assert_eq!(keys, vec![b"k3".as_ref(), b"k4".as_ref()]);
+        assert!(resumed_batch
+            .entries
+            .iter()
+            .all(|entry| entry.seq > cursor_seq));
+        assert!(resumed_stream.next_batch().await.unwrap().is_none());
 
         db.close().await.unwrap();
     }
@@ -451,99 +443,6 @@ mod tests {
 
         let result = stream.next_batch().await.unwrap();
         assert!(result.is_none(), "expected no batches after cursor");
-        db.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_cdc_cursor_skips_existing_transactions() {
-        let (db, object_store) = setup_db("/test_cursor_skips_existing").await;
-
-        // Before cursor.
-        db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let current_seq = db.status().durable_seq;
-
-        // After cursor.
-        db.put(b"k3", b"v3").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k4", b"v4").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_cursor_skips_existing", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: current_seq,
-            },
-            Duration::from_millis(10),
-            cancel,
-        );
-
-        let mut batches = Vec::new();
-        while let Some(batch) = stream.next_batch().await.unwrap() {
-            assert!(
-                batch.entries[0].seq > current_seq,
-                "batch seq {} should be > cursor seq {}",
-                batch.entries[0].seq,
-                current_seq
-            );
-            batches.push(batch);
-        }
-        assert!(
-            batches.len() >= 2,
-            "expected at least 2 post-cursor batches, got {}",
-            batches.len()
-        );
-        db.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_cdc_cursor_from_zero_reads_later_transactions() {
-        let (db, object_store) = setup_db("/test_cursor_from_zero").await;
-
-        // Cursor on empty-ish DB.
-        let current_seq = db.status().durable_seq;
-
-        // All transactions after cursor.
-        db.put(b"k1", b"v1").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-        db.put(b"k2", b"v2").await.unwrap();
-        db.flush_with_options(flush_opts()).await.unwrap();
-
-        let wal_reader = WalReader::new("/test_cursor_from_zero", object_store);
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let mut stream = CdcStream::new(
-            wal_reader,
-            CdcCursor {
-                wal_id: 0,
-                last_seq: current_seq,
-            },
-            Duration::from_millis(10),
-            cancel,
-        );
-
-        let mut batches = Vec::new();
-        while let Some(batch) = stream.next_batch().await.unwrap() {
-            assert!(
-                batch.entries[0].seq > current_seq,
-                "batch seq {} should be > cursor seq {}",
-                batch.entries[0].seq,
-                current_seq
-            );
-            batches.push(batch);
-        }
-        assert!(
-            batches.len() >= 2,
-            "expected at least 2 batches, got {}",
-            batches.len()
-        );
         db.close().await.unwrap();
     }
 
