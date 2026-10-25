@@ -61,9 +61,9 @@ impl Batch {
         let start = self
             .triples
             .partition_point(|Tup2(triple, _)| triple.attribute < attribute);
-        let end = self
-            .triples
-            .partition_point(|Tup2(triple, _)| triple.attribute <= attribute);
+        let end = start
+            + self.triples[start..]
+                .partition_point(|Tup2(triple, _)| triple.attribute <= attribute);
         &self.triples[start..end]
     }
 
