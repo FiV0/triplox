@@ -16,17 +16,19 @@ Where clauses can express complex logic through triple patterns, negation (Not),
 
 ## Index Types
 
-To enable efficient queries from different perspectives, Triplox maintains five different index views of the same data: **EAV** (Entity-Attribute-Value), **AVE** (Attribute-Value-Entity), **AEV** (Attribute-Entity-Value), **AE** (Attribute-Entity), and **AV** (Attribute-Value).
+Triplox maintains three general indexes: **EAV** (Entity-Attribute-Value), **AVE** (Attribute-Value-Entity), and **AEV** (Attribute-Entity-Value). A fourth index, **VAE** (Value-Attribute-Entity), contains only unique attributes and supports uniqueness checks, lookup refs, and identity upserts. Each index stores transaction versions and assertion/retraction flags.
 
 Each index orders the data differently, optimizing for specific query patterns. For example, EAV is ideal when you know the entity and want to look up its attributes, while AVE is perfect when searching for entities by a specific attribute-value combination.
 
-This multi-index strategy represents a classic database trade-off: write amplification (storing data in five different ways) in exchange for read performance (always having an optimized index for your query pattern). The query compiler automatically selects the best index based on which parts of your query pattern are known versus unknown.
+Distinct entities for an attribute are enumerated from AEV; distinct values are enumerated from AVE. These candidate scans seek past each emitted prefix, skipping the remaining triples and transaction versions in that group. They ignore temporal visibility, so candidates can include absent facts; a later full-triple check enforces the query snapshot. Separate AE and AV indexes are not stored.
+
+The query engine selects an index based on which parts of the pattern are bound. Candidate-count estimates use physical key counts, including transaction versions, rather than distinct entity or value counts.
 
 ---
 
 ## Indexer
 
-The indexer is the write-side component responsible for transforming transaction data into queryable structures. It subscribes to the log to receive transactions asynchronously and materializes them across all five index views simultaneously.
+The indexer is the write-side component responsible for transforming transaction data into queryable structures. It subscribes to the log to receive transactions asynchronously and materializes them across EAV, AVE, and AEV, plus VAE for unique attributes, in one storage batch.
 
 The indexer takes incoming transaction operations, determines how they affect each index view, and writes the appropriate key-value pairs to storage. This process ensures that no matter what kind of query you run later, there's always an optimized index available to serve it efficiently.
 

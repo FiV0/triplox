@@ -9,7 +9,8 @@ use slatedb::{DbMetadataOps, DbReadOps};
 use crate::codec;
 use crate::db_value::DB;
 use crate::index::IndexType;
-use crate::iterator::slate_iterator::{Extractor, Index, SlateIterator};
+use crate::iterator::distinct_prefix_iterator::DistinctPrefixIterator;
+use crate::iterator::slate_iterator::{Extractor, Index};
 use crate::iterator::temporal_filter_iterator::TemporalFilterIterator;
 use crate::query::binding_bag::{BindingBag, BindingRow};
 use crate::query::exec_pattern::{ExecPattern, PatternId, Proposal};
@@ -101,9 +102,9 @@ where
 
     fn index_type(position: TriplePosition, other_resolved: bool) -> IndexType {
         match (position, other_resolved) {
-            (TriplePosition::Entity, false) => IndexType::AE,
+            (TriplePosition::Entity, false) => IndexType::AEV,
             (TriplePosition::Entity, true) => IndexType::AVE,
-            (TriplePosition::Value, false) => IndexType::AV,
+            (TriplePosition::Value, false) => IndexType::AVE,
             (TriplePosition::Value, true) => IndexType::AEV,
         }
     }
@@ -116,42 +117,31 @@ where
         Ok(usize::try_from(count)?)
     }
 
-    fn create_iterator(
-        &self,
-        prefix: Bytes,
-        index_type: IndexType,
-        extractor: Extractor,
-    ) -> Result<Box<dyn Index>> {
-        match index_type {
-            IndexType::AE | IndexType::AV => Ok(Box::new(SlateIterator::new(
-                &prefix,
-                self.db.sdb(),
-                self.db.handle().clone(),
-                extractor,
-                Arc::clone(self.db.range_stats()),
-            )?)),
-            IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
-                Ok(Box::new(TemporalFilterIterator::new(
-                    &prefix,
-                    self.db.sdb(),
-                    self.db.handle().clone(),
-                    extractor,
-                    self.db.as_of(),
-                    Arc::clone(self.db.range_stats()),
-                )?))
-            }
-        }
+    fn temporal_iterator(&self, prefix: Bytes, extractor: Extractor) -> Result<Box<dyn Index>> {
+        Ok(Box::new(TemporalFilterIterator::new(
+            &prefix,
+            self.db.sdb(),
+            self.db.handle().clone(),
+            extractor,
+            self.db.as_of(),
+            Arc::clone(self.db.range_stats()),
+        )?))
     }
 
-    // serves to iterate AE/AV indexes
     fn attr_var_iterator(&self, index_type: IndexType) -> Result<Box<dyn Index>> {
         ensure!(
-            matches!(index_type, IndexType::AE | IndexType::AV),
-            "Component iterator requires an AE or AV index"
+            matches!(index_type, IndexType::AEV | IndexType::AVE),
+            "Component iterator requires an AEV or AVE index"
         );
-        let prefix = Bytes::from(self.base_prefix(index_type)?);
+        let prefix = self.base_prefix(index_type)?;
         let extractor: Extractor = Box::new(move |key| make_extractor(1, index_type)(key));
-        self.create_iterator(prefix, index_type, extractor)
+        Ok(Box::new(DistinctPrefixIterator::new(
+            &prefix,
+            self.db.sdb(),
+            self.db.handle().clone(),
+            extractor,
+            Arc::clone(self.db.range_stats()),
+        )?))
     }
 
     // serves to iterate AVE/AEV indexes
@@ -164,7 +154,7 @@ where
         let prefix_len = prefix.len();
         let extractor: Extractor =
             Box::new(move |key| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX));
-        self.create_iterator(prefix, index_type, extractor)
+        self.temporal_iterator(prefix, extractor)
     }
 
     fn candidate_extensions(
@@ -240,8 +230,7 @@ where
                 let prefix_len = prefix.len();
                 let extractor: Extractor =
                     Box::new(move |key| key.slice(prefix_len..key.len() - codec::TX_EID_OP_SUFFIX));
-                let mut iterator =
-                    self.create_iterator(Bytes::from(prefix), index_type, extractor)?;
+                let mut iterator = self.temporal_iterator(Bytes::from(prefix), extractor)?;
                 let mut candidates = Vec::new();
                 while let Some(value) = iterator.get_value()? {
                     candidates.push(vec![value]);
@@ -256,7 +245,7 @@ where
     // We can optimize and refactor once things stabilize. It will very likely change anyway when
     // we introduce a columnar trie.
 
-    // Partial two-variable checks use additive candidates; the full pair is validated later.
+    // Partial checks use atemporal candidates; the full pair is validated later.
     fn validate(&self, input: &BindingBag) -> Result<BindingBag> {
         let is_bound = |variable| input.column_indexes.contains_key(variable);
 
@@ -276,8 +265,7 @@ where
                 prefix.extend_from_slice(entity);
                 let extractor: Extractor =
                     Box::new(move |key| make_extractor(2, IndexType::AEV)(key));
-                let mut iterator =
-                    self.create_iterator(Bytes::from(prefix), IndexType::AEV, extractor)?;
+                let mut iterator = self.temporal_iterator(Bytes::from(prefix), extractor)?;
                 let has_match = if iterator.has_next() {
                     iterator.seek(value.clone())?;
                     iterator.get_value()?.as_ref() == Some(value)
@@ -304,8 +292,7 @@ where
                 prefix.extend_from_slice(value);
                 let extractor: Extractor =
                     Box::new(move |key| make_extractor(2, IndexType::AVE)(key));
-                let mut iterator =
-                    self.create_iterator(Bytes::from(prefix), IndexType::AVE, extractor)?;
+                let mut iterator = self.temporal_iterator(Bytes::from(prefix), extractor)?;
                 let mut matches = vec![false; input.rows.len()];
                 for (expected, row_indexes) in groups {
                     if !iterator.has_next() {
@@ -338,8 +325,7 @@ where
                 prefix.extend_from_slice(entity);
                 let extractor: Extractor =
                     Box::new(move |key| make_extractor(2, IndexType::AEV)(key));
-                let mut iterator =
-                    self.create_iterator(Bytes::from(prefix), IndexType::AEV, extractor)?;
+                let mut iterator = self.temporal_iterator(Bytes::from(prefix), extractor)?;
                 let mut matches = vec![false; input.rows.len()];
                 for (expected, row_indexes) in groups {
                     if !iterator.has_next() {
@@ -367,7 +353,7 @@ where
                         .push(row_index);
                 }
 
-                let mut iterator = self.attr_var_iterator(IndexType::AE)?;
+                let mut iterator = self.attr_var_iterator(IndexType::AEV)?;
                 let mut matches = vec![false; input.rows.len()];
                 for (expected, row_indexes) in groups {
                     if !iterator.has_next() {
@@ -399,7 +385,7 @@ where
                         .push(row_index);
                 }
 
-                let mut iterator = self.attr_var_iterator(IndexType::AV)?;
+                let mut iterator = self.attr_var_iterator(IndexType::AVE)?;
                 let mut matches = vec![false; input.rows.len()];
                 for (expected, row_indexes) in groups {
                     if !iterator.has_next() {
@@ -601,7 +587,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use anyhow::Result;
     use bytes::Bytes;
@@ -615,6 +601,7 @@ mod tests {
     use crate::partition::tx_eid_from_tx_id;
     use crate::query::binding_bag::BindingBag;
     use crate::query::exec_pattern::{ExecPattern, Proposal};
+    use crate::query::execute_query;
     use crate::query::test_support::db_at_tx_id;
     use crate::slate::in_memory_slate;
 
@@ -660,16 +647,21 @@ mod tests {
         ave.push(op);
         slate.put(&ave, b"").await?;
 
-        if op == codec::ADD {
-            let mut ae = vec![codec::AE];
-            ae.extend_from_slice(&attribute);
-            ae.extend_from_slice(&entity);
-            slate.put(&ae, b"").await?;
+        Ok(())
+    }
 
-            let mut av = vec![codec::AV];
-            av.extend_from_slice(&attribute);
-            av.extend_from_slice(&value);
-            slate.put(&av, b"").await?;
+    async fn insert_candidate_history(slate: &Db) -> Result<()> {
+        for (entity, value, tx, op) in [
+            (1, "alice", 10, codec::ADD),
+            (1, "ally", 10, codec::ADD),
+            (1, "alice", 20, codec::RETRACT),
+            (1, "alice", 30, codec::ADD),
+            (2, "alice", 10, codec::ADD),
+            (2, "alice", 20, codec::RETRACT),
+            (3, "orphan", 20, codec::RETRACT),
+            (4, "future", 30, codec::ADD),
+        ] {
+            insert_version(slate, NAME, entity, &value.into(), tx, op).await?;
         }
         Ok(())
     }
@@ -884,6 +876,169 @@ mod tests {
         assert_eq!(proposals[0].proposer(), Some(7));
         assert_eq!(proposals[0].count(), expected);
         assert_eq!(proposals[1], proposals[0]);
+
+        for (variable, index) in [("?e", codec::AEV), ("?v", codec::AVE)] {
+            let mut prefix = vec![index];
+            prefix.extend_from_slice(&codec::encode_i64_bytes(NAME));
+            let expected = usize::try_from(
+                runtime.block_on(
+                    components
+                        .range_stats
+                        .estimate_key_count_with_prefix(&prefix),
+                )?,
+            )?;
+            assert!(expected > 0);
+            let mut proposals = vec![Proposal::default()];
+            pattern.count(&BindingBag::unit(), &[variable.to_var()], &mut proposals)?;
+            assert_eq!(proposals[0].count(), expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_candidates_are_atemporal_and_preserve_input_multiplicity() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        runtime.block_on(insert_candidate_history(components.db.as_ref()))?;
+        let input = binding_bag(&["?outer"], vec![vec![encoded(DataType::Long(90))]; 2]);
+        for as_of in [9, 10, 20, 30] {
+            let (entity, value) = variables("?e", "?v");
+            let pattern = TriplePattern::new(
+                7,
+                entity,
+                NAME,
+                value,
+                db_at_tx_id(&components, runtime.handle(), HashMap::new(), as_of),
+            )?;
+            for (variable, values) in [
+                (
+                    "?e",
+                    vec![
+                        DataType::Long(4),
+                        DataType::Long(3),
+                        DataType::Long(2),
+                        DataType::Long(1),
+                    ],
+                ),
+                (
+                    "?v",
+                    vec![
+                        "alice".into(),
+                        "ally".into(),
+                        "future".into(),
+                        "orphan".into(),
+                    ],
+                ),
+            ] {
+                let added = [variable.to_var()];
+                let mut layout = input.variables.clone();
+                layout.extend_from_slice(&added);
+                let proposed = pattern.join(&input, &added, &layout)?;
+                let expected: Vec<_> = input
+                    .rows
+                    .iter()
+                    .flat_map(|row| {
+                        values
+                            .iter()
+                            .map(move |value| vec![row[0].clone(), encoded(value.clone())])
+                    })
+                    .collect();
+                assert_eq!(proposed.rows, expected, "{variable} at {as_of}");
+                assert_eq!(pattern.validate(&proposed)?, proposed);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn queries_filter_projected_candidates_at_snapshot_boundaries() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let components = runtime.block_on(in_memory_slate());
+        runtime.block_on(insert_candidate_history(components.db.as_ref()))?;
+        for (as_of, expected) in [
+            (9, vec![]),
+            (10, vec![(1, "alice"), (1, "ally"), (2, "alice")]),
+            (20, vec![(1, "ally")]),
+            (30, vec![(1, "alice"), (1, "ally"), (4, "future")]),
+        ] {
+            let db = db_at_tx_id(
+                &components,
+                runtime.handle(),
+                HashMap::from([(edn::kw!(:name), NAME)]),
+                as_of,
+            );
+            for (query, rows) in [
+                (
+                    "{:find [?e ?v]
+                      :where [[?e :name ?v]]}",
+                    expected
+                        .iter()
+                        .map(|(e, v)| vec![DataType::Long(*e), (*v).into()])
+                        .collect::<HashSet<_>>(),
+                ),
+                (
+                    "{:find [?e]
+                      :where [[?e :name _]]}",
+                    expected
+                        .iter()
+                        .map(|(e, _)| vec![DataType::Long(*e)])
+                        .collect(),
+                ),
+                (
+                    "{:find [?v]
+                      :where [[_ :name ?v]]}",
+                    expected.iter().map(|(_, v)| vec![(*v).into()]).collect(),
+                ),
+                (
+                    r#"{:find [?e]
+                       :where [[?e :name _]
+                               (not [?e :name "alice"])]}"#,
+                    expected
+                        .iter()
+                        .filter(|(e, _)| !expected.contains(&(*e, "alice")))
+                        .map(|(e, _)| vec![DataType::Long(*e)])
+                        .collect(),
+                ),
+                (
+                    "{:find [?e ?other ?v]
+                      :where [[?e :name ?v]
+                              [?other :name ?v]]}",
+                    expected
+                        .iter()
+                        .flat_map(|(e, v)| {
+                            expected.iter().filter(move |(_, other)| other == v).map(
+                                move |(other, _)| {
+                                    vec![DataType::Long(*e), DataType::Long(*other), (*v).into()]
+                                },
+                            )
+                        })
+                        .collect(),
+                ),
+            ] {
+                let actual = execute_query(&edn::parse::parse_query(query)?, &[], db.clone())?;
+                assert_eq!(
+                    actual.into_iter().collect::<HashSet<_>>(),
+                    rows,
+                    "{query} at {as_of}"
+                );
+            }
+            let (entity, value) = variables("?e", "?v");
+            let pattern = TriplePattern::new(7, entity, NAME, value, db)?;
+            for (first, second) in [("?e", "?v"), ("?v", "?e")] {
+                let candidates =
+                    pattern.join(&BindingBag::unit(), &[first.to_var()], &[first.to_var()])?;
+                let result = pattern.join(
+                    &candidates,
+                    &[second.to_var()],
+                    &["?e".to_var(), "?v".to_var()],
+                )?;
+                let expected: HashSet<_> = expected
+                    .iter()
+                    .map(|(e, v)| vec![encoded(DataType::Long(*e)), encoded((*v).into())])
+                    .collect();
+                assert_eq!(result.rows.into_iter().collect::<HashSet<_>>(), expected);
+            }
+        }
         Ok(())
     }
 

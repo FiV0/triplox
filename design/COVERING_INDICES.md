@@ -7,18 +7,16 @@ transaction log replay is needed for temporal queries.
 
 ## Index Key Layouts
 
-Five indices are maintained. The three **full indices** (EAVT, AVET, AEVT)
-contain all components of the (E, A, V) triple plus the transaction entity ID T
-and an operation flag. The two **partial indices** (AE, AV) omit one triple
-component and are atemporal — they carry neither T nor op.
+Three general indexes contain all components of the (E, A, V) triple plus the
+transaction entity ID T and an operation flag. VAE stores the same components
+for unique attributes only. There are no stored AE or AV indexes.
 
-| Index | Key components |
-|-------|----------------|
-| EAVT  | E, A, V, T, op |
-| AVET  | A, V, E, T, op |
-| AEVT  | A, E, V, T, op |
-| AE    | A, E           |
-| AV    | A, V           |
+| Index | Key components | Attributes |
+|-------|----------------|------------|
+| EAVT  | E, A, V, T, op | All        |
+| AVET  | A, V, E, T, op | All        |
+| AEVT  | A, E, V, T, op | All        |
+| VAET  | V, A, E, T, op | Unique only |
 
 - **T** is the transaction entity ID (tx_eid), stored using descending i64
   encoding so that **newest transactions sort first** within each logical key
@@ -29,19 +27,17 @@ See `ENCODING.md` for byte-level encoding details.
 
 ### Write path
 
-- **Assert (add)**: write to all 5 indices. Full indices receive the key with
-  `op = added`. Partial indices receive just the (A, E) or (A, V) key. For
-  cardinality one attributes, additions also result in retractions of the
-  superseded triples.
-- **Retract**: write key with `op = retracted` to the 3 full indices only. The
-  partial indices (AE, AV) are not updated.
+- **Assert (add)**: write to EAV, AVE, and AEV with `op = added`, and to VAE
+  if the attribute is unique. For cardinality one attributes, additions also
+  result in retractions of the superseded triples.
+- **Retract**: write to the same indexes with `op = retracted`.
 
 Each operation carries a distinct T in the full indices, so adds and retracts for
 the same (E, A, V) triple are always distinct keys.
 
 ## Temporal Filtering (As-Of Queries)
 
-### Full indices (EAVT, AVET, AEVT)
+### Full indices (EAVT, AVET, AEVT, VAET)
 
 The **logical key** is everything minus T and op — the (E, A, V) components in
 index order. Because T is stored in descending order, keys within a logical
@@ -59,53 +55,41 @@ To resolve the current state at a given time `as_of`:
 Grouping is local: all versions of the same triple are adjacent in the sorted
 key space, so no buffering or hash tables are needed.
 
-### Partial indices (AE, AV)
+### Distinct candidate scans
 
-AE and AV are **2-component** indices that omit V and E respectively. They are
-atemporal: they carry no T or op, and retractions are never written to them.
-Once an (A, E) or (A, V) pair is asserted, it remains in the index permanently.
+When only the attribute is bound, a triple pattern needs distinct entities or
+values for its first variable. These projections use the full indexes:
 
-This is necessary because per-entity retraction resolution is impossible in
-these indices — the missing component (E or V) is needed to distinguish which
-assertion a retraction cancels. For example, if E1 and E2 both have
-`(:name, "alice")`, they map to the same AV key `(:name, "alice")`. A retraction
-for E1 cannot be recorded without also affecting E2.
+| Candidate | Source | Prefix skipped after emission |
+|-----------|--------|-------------------------------|
+| Entity    | AEV    | Index, A, E                   |
+| Value     | AVE    | Index, A, V                   |
 
-Because AE and AV are purely additive, they may **over-propose**, i.e. they can
-report values or entities that have actually been retracted. This is safe
-because every variable proposed by a 2-component index is validated by a
-3-component index at a later join level. Each triple pattern `[?e :attr ?v]`
-contributes a 2-component extender at the first variable's level (AE or AV) and
-a 3-component extender at the second variable's level (AEV, AVE, or EAVT)
-because one variable plus the constant attribute are now bound, all three key
-components are determined. Any spurious proposal from AE/AV is filtered out when
-the 3-component extender finds no matching entry.
+The iterator reads the first key under the attribute prefix and extracts its
+first component. To advance, it seeks to the lexicographic successor of the
+attribute-plus-component prefix. This skips all remaining triples and temporal
+versions in the group without reading and deduplicating them individually.
+Prefix-free component encodings make this safe for variable-length values too.
 
-#### Role of AE/AV in WCOJ
+These scans are **atemporal**: they ignore T and op. Candidates may include
+retracted facts, assertions newer than the query snapshot, and prefixes that
+only occur in retractions. Partial validation uses the same scans. Once both
+entity and value are known, the full index scan resolves temporal visibility
+and removes absent triples. These extra candidates do not change final query
+results.
 
-The Worst-Case Optimal Join (WCOJ) algorithm assigns one **join level** per
-query variable. At each level, **extenders** propose candidate values for that
-variable, and other extenders intersect (filter) the proposals.
+Wildcard positions become hidden variables before planning, so patterns such
+as `[?e :name _]` still receive full temporal validation before projection.
 
-Without AE/AV, the first-level proposal must scan a 3-component index and
-deduplicate the extracted component across all trailing components. The partial
-indices avoid this overhead by providing a pre-projected view.
+Candidate-count estimates come from the corresponding AEV or AVE range
+statistics. They estimate physical keys, including versions and retractions,
+not distinct candidates. This can affect proposer selection; exact distinct
+counts would require additional statistics or scanning.
 
-#### Alternative: Eliminating Separate AE/AV Indices
-
-Instead of maintaining 5 indices, AE scans can be performed against the **AEV**
-index and AV scans against the **AVE** index by seeking over the underlying 3-component
-indices. This is a tradeoff between space amplification and iteration speed.
-
-This is viable and may be the right choice if write amplification proves to be
-the bottleneck.
-
-#### Wildcards
-
-Wildcard patterns like `[?e :name _]` compile to a single-variable query. If the
-wildcard position is discarded, AE (or AV) becomes the sole extender with no
-3-component validation. This means wildcard patterns need to be compiled against
-the full indices or wildcards be replaced with dummy variables.
+This replaces the former additive AE/AV indexes, reducing index writes and
+storage in exchange for seeks during candidate enumeration. This experimental
+change includes no migration or cleanup of old AE/AV entries. The remaining
+index prefixes retain their byte values.
 
 ## History Queries
 
@@ -128,6 +112,6 @@ and `v3` over its lifetime.
 
 When iterating over these values only one of them will be an assertion at the latest valid transaction.
 The remaining ones will be retractions. So even if we iterate over these values in the joins, in an `as-of`
-query only one value will appear. A similar pattern holds for the other indices (forgetting partial indices AV/AE).
+query only one value will appear. A similar pattern holds for temporal scans of the other full indexes. Distinct candidate scans do not resolve temporal visibility.
 
 In case an attribute has cardinality many no retractions are added and all versions will be visible as required.
