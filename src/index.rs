@@ -5,8 +5,6 @@ pub enum IndexType {
     AVE,
     AEV,
     VAE,
-    AE,
-    AV,
 }
 
 pub(crate) fn remove_index_type(bytes: bytes::Bytes) -> bytes::Bytes {

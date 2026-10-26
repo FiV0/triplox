@@ -88,9 +88,6 @@ fn check_position(position: usize, index: IndexType) {
         IndexType::EAV | IndexType::AVE | IndexType::AEV | IndexType::VAE => {
             assert!(position < 3, "Position must be less than 3");
         }
-        IndexType::AE | IndexType::AV => {
-            assert!(position < 2, "Position must be less than 2");
-        }
     }
 }
 
@@ -166,21 +163,6 @@ pub fn make_extractor<T: GetSlice + AsRef<[u8]>>(
                     total_length - codec::TX_EID_OP_SUFFIX,
                 ),
             },
-            // AE/AV are atemporal — no T+op suffix
-            IndexType::AE => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
-                1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
-            },
-            IndexType::AV => match position {
-                0 => (
-                    codec::CODEC_LENGTH,
-                    codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-                ),
-                1.. => (codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH, total_length),
-            },
         };
         bytes.get_slice(start, end)
     }
@@ -223,14 +205,6 @@ pub fn prefix_extractor<T: GetSlice + AsRef<[u8]>>(
                         - codec::TX_EID_OP_SUFFIX
                 }
                 2.. => total_length - codec::ENTITY_LENGTH - codec::TX_EID_OP_SUFFIX,
-            },
-            IndexType::AE => match position {
-                0 => codec::CODEC_LENGTH,
-                1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
-            },
-            IndexType::AV => match position {
-                0 => codec::CODEC_LENGTH,
-                1.. => codec::CODEC_LENGTH + codec::ATTRIBUTE_LENGTH,
             },
         };
         bytes.get_slice(0, end)
