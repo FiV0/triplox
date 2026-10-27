@@ -101,8 +101,7 @@ impl TxLogWriter for MemoryLog {
 mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, MockClock};
-    use crate::log::test_support::subscribe;
-    use crate::log::MockSubscriber;
+    use crate::log::{subscribe, MockSubscriber};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::RwLock;
