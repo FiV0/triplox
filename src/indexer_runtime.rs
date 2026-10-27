@@ -23,9 +23,10 @@ impl IndexerRuntime {
         let thread = std::thread::Builder::new()
             .name("tpx-indexer".to_owned())
             .spawn(move || {
-                // No IO driver: S3 I/O has its own runtime, everything else uses timers or blocking threads.
+                // S3 I/O has its own runtime, but SlateDB spawns read tasks on the caller's runtime,
+                // so an object store or log doing network I/O here must not panic for lack of a driver.
                 let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_time()
+                    .enable_all()
                     .build()
                 {
                     Ok(runtime) => runtime,
