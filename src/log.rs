@@ -159,15 +159,6 @@ pub(crate) async fn subscribe_on<L: TxLogReader, S: Subscriber + 'static>(
     token
 }
 
-#[cfg(test)]
-pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
-    log: Arc<L>,
-    after_tx_id: Option<TxId>,
-    subscriber: Arc<tokio::sync::RwLock<S>>,
-) -> CancellationToken {
-    subscribe_on(&Handle::current(), log, after_tx_id, subscriber).await
-}
-
 pub trait TxLogReader: Send + Sync + 'static {
     /// Read up to `limit` records written after `after_tx_id`.
     /// `None` means from the beginning. `Some(id)` means records strictly after `id`.
@@ -210,7 +201,26 @@ impl Subscriber for MockSubscriber {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use tokio::runtime::Handle;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{subscribe_on, Subscriber, TxId, TxLogReader};
+
+    pub(crate) async fn subscribe<L: TxLogReader, S: Subscriber + 'static>(
+        log: Arc<L>,
+        after_tx_id: Option<TxId>,
+        subscriber: Arc<tokio::sync::RwLock<S>>,
+    ) -> CancellationToken {
+        subscribe_on(&Handle::current(), log, after_tx_id, subscriber).await
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::subscribe;
     use super::*;
     use crate::clock::{st_from_unix_epoch, SystemClock};
     use crate::memory_log::MemoryLog;

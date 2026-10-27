@@ -624,7 +624,8 @@ mod unit_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::{subscribe, MockSubscriber};
+    use crate::log::test_support::subscribe;
+    use crate::log::MockSubscriber;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::RwLock;

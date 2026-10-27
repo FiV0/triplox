@@ -148,7 +148,8 @@ impl TxLogWriter for FileLog {
 mod tests {
     use super::*;
     use crate::clock::{st_from_unix_epoch, MockClock};
-    use crate::log::{subscribe, MockSubscriber};
+    use crate::log::test_support::subscribe;
+    use crate::log::MockSubscriber;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::RwLock;
