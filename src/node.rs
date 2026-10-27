@@ -248,7 +248,9 @@ impl<L: TxLog> Node<L> {
     pub async fn close(self) -> Result<(), Error> {
         let incremental_result = self.incremental.shutdown().await;
         self.cancel.cancel();
-        // SlateDB closes through its batch-writer, so the indexer runtime has to outlive it.
+        // SlateDB's batch-writer runs on the indexer runtime, and db.close() waits
+        // for that task to finish flushing and shut down. Keep the runtime running
+        // until db.close() completes.
         let db_result = self.slate.db.close().await.map_err(Error::from);
         let indexer_result = self.indexer_runtime.shutdown().await;
 
