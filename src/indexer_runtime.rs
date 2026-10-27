@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 /// so a commit is a local task switch. A current-thread runtime only runs inside `block_on`, which
 /// is why the thread is spawned by hand rather than via `new_multi_thread().worker_threads(1)`.
 pub(crate) struct IndexerRuntime {
-    handle: Handle,
+    pub(crate) handle: Handle,
     stop: CancellationToken,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -51,10 +51,6 @@ impl IndexerRuntime {
         })
     }
 
-    pub(crate) fn handle(&self) -> &Handle {
-        &self.handle
-    }
-
     // Drops the tasks still on the runtime and joins the thread.
     pub(crate) async fn shutdown(mut self) -> Result<()> {
         self.stop.cancel();
@@ -84,7 +80,7 @@ mod tests {
     async fn tasks_run_on_the_indexer_thread() {
         let runtime = IndexerRuntime::start().await.unwrap();
         let name = runtime
-            .handle()
+            .handle
             .spawn(async { std::thread::current().name().map(str::to_owned) })
             .await
             .unwrap();
@@ -96,7 +92,7 @@ mod tests {
     async fn drop_stops_the_runtime_and_its_tasks() {
         let runtime = IndexerRuntime::start().await.unwrap();
         let (sender, dropped) = oneshot::channel::<()>();
-        runtime.handle().spawn(async move {
+        runtime.handle.spawn(async move {
             let _sender = sender;
             std::future::pending::<()>().await
         });

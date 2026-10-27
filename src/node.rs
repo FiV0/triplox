@@ -84,7 +84,7 @@ impl<L: TxLog> Node<L> {
         };
 
         let cancel = subscribe_on(
-            indexer_runtime.handle(),
+            &indexer_runtime.handle,
             log.clone(),
             after_tx_id,
             indexer.clone(),
@@ -117,7 +117,7 @@ impl<L: TxLog> Node<L> {
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
         let indexer_runtime = IndexerRuntime::start().await.unwrap();
-        let slate = in_memory_slate_with_write_runtime(indexer_runtime.handle()).await;
+        let slate = in_memory_slate_with_write_runtime(&indexer_runtime.handle).await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
         let bootstrap_tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         let indexer = Arc::new(tokio::sync::RwLock::new(Indexer::new(
@@ -130,7 +130,7 @@ impl Node<MemoryLog> {
         log.ensure_bootstrap_record().await.unwrap();
 
         let cancel = subscribe_on(
-            indexer_runtime.handle(),
+            &indexer_runtime.handle,
             log.clone(),
             Some(bootstrap_tx_key.tx_id),
             indexer.clone(),
@@ -182,7 +182,7 @@ impl Node<FileLog> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
-        let slate = local_slate(&db_path, indexer_runtime.handle()).await;
+        let slate = local_slate(&db_path, &indexer_runtime.handle).await;
         if let Some(parent) = log_path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -211,7 +211,7 @@ impl Node<FileLog> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::create_dir_all(&storage.cache_path)?;
-        let slate = remote_slate(storage, indexer_runtime.handle()).await?;
+        let slate = remote_slate(storage, &indexer_runtime.handle).await?;
         Self::from_slate_and_log(
             slate,
             log_path,
@@ -231,7 +231,7 @@ impl Node<KafkaLog> {
     ) -> Result<Self, Error> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(&storage.cache_path)?;
-        let slate = remote_slate(storage, indexer_runtime.handle()).await?;
+        let slate = remote_slate(storage, &indexer_runtime.handle).await?;
         let log = Arc::new(KafkaLog::new(&log.bootstrap_servers, log.topic.clone()).await?);
         Self::from_slate_and_tx_log(
             slate,
