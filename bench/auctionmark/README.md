@@ -37,12 +37,22 @@ configuration, JSON results, and local database files remain in
 `target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
 The default client timeout is 600 seconds, configurable with `--timeout`.
 
-The measured application scope (server and JVM) has a 1.75-core CPU quota and
-7424 MiB memory limit. RustFS has a separate 0.25-core quota and 768 MiB limit, for
-a combined two cores and 8 GiB. Swapping is disabled. Bucket creation uses a small
-short-lived `rc` container before the server starts. The launcher requires the
-systemd limits to succeed. The direct Clojure command only samples RSS; it does not
-install these operating-system limits.
+Triplox runs in its own systemd scope with a 1.75-core CPU quota and **12 GiB hard
+memory limit**. The JVM client has a separate scope with a two-core quota and
+2 GiB memory limit; its heap remains capped at 768 MiB. RustFS has a separate
+0.25-core quota and 768 MiB memory limit. The total memory allowance is 14.75 GiB
+(15,104 MiB), which is also the launcher's combined sampled RSS threshold.
+Swapping is disabled in all three scopes/containers. Bucket creation uses a small
+short-lived `rc` container before the server starts. The launcher requires both
+systemd scopes to succeed. The direct Clojure command only samples RSS; it does
+not install these operating-system limits.
+
+DBSP's process RSS pressure threshold is 75% of the smaller of host RAM and the
+tightest detected cgroup memory limit, including parent cgroups. With at least
+12 GiB of host RAM and no tighter parent limit, the server's 12 GiB scope sets
+this threshold to **9 GiB**. This is a soft pressure threshold for the whole
+Triplox process; the kernel enforces the 12 GiB hard limit. The server log records
+the detected threshold as `DBSP process RSS budget` in bytes.
 
 The server uses eight pooled DBSP foreground workers, two merger workers, and a
 **4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap

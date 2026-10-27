@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a disposable RustFS-backed benchmark with a combined two-core/8 GiB budget."""
+"""Run a disposable RustFS-backed benchmark with separate server and client limits."""
 import argparse
 import datetime
 import hashlib
@@ -76,7 +76,9 @@ def benchmark(args, benchmark_args):
         "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
         "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
         "server_sha256": digest,
-        "application_cpu_quota": 1.75, "application_memory_mib": 7424,
+        "server_cpu_quota": 1.75, "server_memory_mib": 12288,
+        "client_cpu_quota": 2.0, "client_memory_mib": 2048,
+        "combined_memory_mib": 15104,
         "rustfs_cpu_quota": 0.25, "rustfs_memory_mib": 768,
         "revision": output("git", "-C", str(REPO), "rev-parse", "HEAD"),
         "dirty": bool(output("git", "-C", str(REPO), "status", "--porcelain")),
@@ -121,13 +123,22 @@ def benchmark(args, benchmark_args):
         environment = {**os.environ, "TOKIO_WORKER_THREADS": "2", "TMPDIR": str(temporary),
                        "AUCTIONMARK_ENVIRONMENT": json.dumps(metadata)}
         with (directory / "server.log").open("w") as log:
-            server = subprocess.Popen([str(binary), str(config)], stdout=log, stderr=log,
+            server_command = ["systemd-run", "--user", "--scope", "--quiet",
+                              "-p", "CPUQuota=175%", "-p", "MemoryMax=12G",
+                              "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
+                              "nice", "-n", "10", str(binary), str(config)]
+            server = subprocess.Popen(server_command, stdout=log, stderr=log,
                                       env=environment, start_new_session=True)
             wait_port(port, server)
-            command = ["clojure", "-J-Xmx768m", "-J-XX:ActiveProcessorCount=2", "-M:sync",
+            command = ["systemd-run", "--user", "--scope", "--quiet",
+                       "-p", "CPUQuota=200%", "-p", "MemoryMax=2G",
+                       "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
+                       "nice", "-n", "10",
+                       "clojure", "-J-Xmx768m", "-J-XX:ActiveProcessorCount=2", "-M:sync",
                        *benchmark_args, "--host", "127.0.0.1", "--port", str(port),
                        "--server-pid", str(server.pid), "--storage-pid", rustfs_pid,
-                       "--memory-mib", "8192", "--output", str(directory / "report.json")]
+                       "--memory-mib", str(metadata["combined_memory_mib"]),
+                       "--output", str(directory / "report.json")]
             client = subprocess.Popen(command, cwd=BENCH, env=environment, start_new_session=True)
             result = client.wait(timeout=args.timeout)
             metadata["exit_code"] = result
@@ -157,19 +168,10 @@ def main():
     parser.add_argument("--server-binary", default=str(Path(os.getenv("CARGO_TARGET_DIR", REPO / "target")) / "release" / "triplox"))
     parser.add_argument("--output-dir", default=str(REPO / "target" / "auctionmark-sync" / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
     parser.add_argument("--timeout", type=int, default=600, help="Client timeout in seconds")
-    parser.add_argument("--inside-scope", action="store_true", help=argparse.SUPPRESS)
     args, remaining = parser.parse_known_args()
     if remaining[:1] == ["--"]:
         remaining = remaining[1:]
-    if args.inside_scope:
-        return benchmark(args, remaining)
-    # Docker's daemon applies its own separate 0.25-core/768 MiB container limit.
-    command = ["systemd-run", "--user", "--scope", "--quiet", "-p", "CPUQuota=175%",
-               "-p", "MemoryMax=7424M", "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
-               "nice", "-n", "10", sys.executable, str(Path(__file__).resolve()),
-               "--inside-scope", "--server-binary", args.server_binary,
-               "--output-dir", args.output_dir, "--timeout", str(args.timeout), "--", *remaining]
-    return subprocess.call(command)
+    return benchmark(args, remaining)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,41 @@ use rand::RngExt;
 
 use crate::{codec, index::IndexType};
 
+#[cfg(target_os = "linux")]
+fn cgroup_v2_memory_limit(root: &std::path::Path, membership: &str) -> Option<u64> {
+    let group = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))?;
+    let relative = std::path::Path::new(group.strip_prefix('/')?);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    root.join(relative)
+        .ancestors()
+        .take_while(|path| path.starts_with(root))
+        .filter_map(|path| std::fs::read_to_string(path.join("memory.max")).ok())
+        .filter_map(|limit| limit.trim().parse::<u64>().ok())
+        .min()
+}
+
+pub(crate) fn cgroup_memory_limit(detected: Option<u64>) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // sysinfo reads the mount root; systemd scopes can have tighter nested limits.
+        let nested = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|membership| {
+                cgroup_v2_memory_limit(std::path::Path::new("/sys/fs/cgroup"), &membership)
+            });
+        detected.into_iter().chain(nested).min()
+    }
+    #[cfg(not(target_os = "linux"))]
+    detected
+}
+
 pub(crate) fn rss_budget(total_memory: u64, cgroup_memory: Option<u64>) -> Option<u64> {
     let memory = cgroup_memory.map_or(total_memory, |limit| limit.min(total_memory));
     let budget = memory / 4 * 3;
@@ -256,4 +291,54 @@ pub fn next_prefix(prefix: &[u8]) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn nested_scope_sets_rss_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let scope = root.path().join("user.slice/server.scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::write(root.path().join("memory.max"), "max\n").unwrap();
+        std::fs::write(scope.join("memory.max"), (12_u64 << 30).to_string()).unwrap();
+
+        let limit = cgroup_v2_memory_limit(root.path(), "0::/user.slice/server.scope\n");
+        assert_eq!(limit, Some(12 << 30));
+        assert_eq!(rss_budget(32 << 30, limit), Some(9 << 30));
+        assert_eq!(rss_budget(8 << 30, limit), Some(6 << 30));
+    }
+
+    #[test]
+    fn tighter_parent_limit_applies_to_unlimited_child() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("user.slice");
+        let scope = parent.join("server.scope");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::write(parent.join("memory.max"), (8_u64 << 30).to_string()).unwrap();
+        std::fs::write(scope.join("memory.max"), "max\n").unwrap();
+
+        assert_eq!(
+            cgroup_v2_memory_limit(root.path(), "0::/user.slice/server.scope\n"),
+            Some(8 << 30)
+        );
+        std::fs::write(scope.join("memory.max"), (12_u64 << 30).to_string()).unwrap();
+        assert_eq!(
+            cgroup_v2_memory_limit(root.path(), "0::/user.slice/server.scope\n"),
+            Some(8 << 30)
+        );
+    }
+
+    #[test]
+    fn unlimited_or_unavailable_cgroup_uses_host_budget() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("memory.max"), "max\n").unwrap();
+        assert_eq!(cgroup_v2_memory_limit(root.path(), "0::/\n"), None);
+        assert_eq!(cgroup_v2_memory_limit(root.path(), "1:memory:/\n"), None);
+        assert_eq!(cgroup_v2_memory_limit(root.path(), "0::/../\n"), None);
+        assert_eq!(rss_budget(16 << 30, None), Some(12 << 30));
+        assert_eq!(rss_budget(0, None), None);
+    }
 }
