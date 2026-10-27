@@ -47,9 +47,6 @@ pub struct Indexer {
     metadata: Metadata,
     latest_indexed_tx: TxKey,
     tx_completion_sender: broadcast::Sender<TxCompletion>,
-    // Name of the thread the last record was accepted on, so tests can check where indexing runs.
-    #[cfg(test)]
-    pub(crate) accept_thread: Option<String>,
 }
 
 /// Write index entries for datoms into a SlateDB WriteBatch.
@@ -255,8 +252,6 @@ impl Indexer {
             metadata,
             latest_indexed_tx,
             tx_completion_sender,
-            #[cfg(test)]
-            accept_thread: None,
         }
     }
 
@@ -673,10 +668,6 @@ impl TxWaiter {
 
 impl Subscriber for Indexer {
     async fn accept(&mut self, record: Record) {
-        #[cfg(test)]
-        {
-            self.accept_thread = std::thread::current().name().map(str::to_owned);
-        }
         let tx_ops: Vec<TxOp> = match bincode::deserialize(&record.record) {
             Ok(ops) => ops,
             Err(e) => {

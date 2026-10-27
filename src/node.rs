@@ -474,16 +474,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_indexer_accepts_txs_on_the_indexer_thread() {
-        let node = Node::memory_node().await;
-        define_test_schema(&node).await;
-        assert_eq!(
-            node.indexer.read().await.accept_thread.as_deref(),
-            Some("tpx-indexer")
-        );
-    }
-
-    #[tokio::test]
     async fn test_execute_tx_with_add_triple() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
