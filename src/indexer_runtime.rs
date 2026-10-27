@@ -4,7 +4,9 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// A dedicated `tpx-indexer` thread running a current-thread runtime, so indexing never queues
-/// behind tasks on the shared runtime.
+/// behind tasks on the shared runtime. The indexer and SlateDB's batch-writer share this thread,
+/// so a commit is a local task switch. A current-thread runtime only runs inside `block_on`, which
+/// is why the thread is spawned by hand rather than via `new_multi_thread().worker_threads(1)`.
 pub(crate) struct IndexerRuntime {
     handle: Handle,
     stop: CancellationToken,
