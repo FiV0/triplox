@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context, Error, Result};
 use dbsp::{utils::Tup2, PoolConfig, RuntimePool, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
@@ -399,10 +399,9 @@ struct IncrementalQueryServiceInner {
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
     completions: mpsc::UnboundedReceiver<Completion>,
-    // Build tasks report finished circuits here, so registration never blocks the dispatcher.
-    built: mpsc::UnboundedSender<Built>,
-    builds: mpsc::UnboundedReceiver<Built>,
-    pending_builds: usize,
+    // Circuit builds in flight, so registration never blocks the dispatcher.
+    // The registration gate admits one at a time, but the dispatcher does not rely on it.
+    builds: JoinSet<Built>,
 }
 
 impl IncrementalQueryServiceInner {
@@ -412,7 +411,6 @@ impl IncrementalQueryServiceInner {
         options: IncrementalQueryOptions,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
-        let (built, builds) = mpsc::unbounded_channel();
         Self {
             pool: None,
             next_query_id: 1,
@@ -422,9 +420,7 @@ impl IncrementalQueryServiceInner {
             options,
             completed,
             completions,
-            built,
-            builds,
-            pending_builds: 0,
+            builds: JoinSet::new(),
         }
     }
 
@@ -456,7 +452,7 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                 }
-                Some(built) = self.builds.recv() => built(&mut self),
+                Some(built) = self.builds.join_next() => self.finish_build(built),
                 command = receiver.recv() => match command {
                     Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
                         self.start_registration(*plan, tx_key, initial_triples, response).await;
@@ -482,10 +478,8 @@ impl IncrementalQueryServiceInner {
         receiver.close();
         self.cancel.cancel();
         // Builds cannot be interrupted; each finishes into a stopped query that retires below.
-        while self.pending_builds > 0 {
-            if let Some(built) = self.builds.recv().await {
-                built(&mut self);
-            }
+        while let Some(built) = self.builds.join_next().await {
+            self.finish_build(built);
         }
         for query in self.queries.values() {
             query.control.terminate(None);
@@ -582,7 +576,6 @@ impl IncrementalQueryServiceInner {
         prepared: Result<(C, worker::Rows)>,
         response: Registration,
     ) {
-        self.pending_builds -= 1;
         let result = match prepared {
             Ok((circuit, rows)) => {
                 let subscription = self.install(handle, circuit, tx_key, rows);
@@ -603,6 +596,14 @@ impl IncrementalQueryServiceInner {
         }
     }
 
+    // A build task fails to join only if it panicked outside prepare_query, which drops its registration.
+    fn finish_build(&mut self, built: Result<Built, JoinError>) {
+        match built {
+            Ok(built) => built(self),
+            Err(error) => warn!("Incremental query build task failed: {error}"),
+        }
+    }
+
     fn spawn_build<C: Circuit>(
         &mut self,
         handle: IncrementalQueryHandle,
@@ -610,15 +611,12 @@ impl IncrementalQueryServiceInner {
         response: Registration,
         prepare: impl FnOnce(&Path) -> Result<(C, worker::Rows)> + Send + 'static,
     ) {
-        self.pending_builds += 1;
         let storage_path = self.query_storage_path(handle);
-        let built = self.built.clone();
-        tokio::spawn(async move {
+        self.builds.spawn(async move {
             let prepared = prepare_query(storage_path, prepare).await;
-            // The dispatcher keeps the receiver until every pending build has reported.
-            let _ = built.send(Box::new(move |inner: &mut IncrementalQueryServiceInner| {
+            Box::new(move |inner: &mut IncrementalQueryServiceInner| {
                 inner.finish_registration(handle, tx_key, prepared, response)
-            }));
+            }) as Built
         });
     }
 
@@ -821,7 +819,7 @@ mod tests {
         inner
             .start_registration(plan, tx_key, triples, response)
             .await;
-        let built = inner.builds.recv().await.unwrap();
+        let built = inner.builds.join_next().await.unwrap().unwrap();
         built(inner);
         result.await.unwrap().unwrap()
     }
