@@ -292,8 +292,10 @@ dispatcher task
 `IncrementalQueryService` owns query registration and lifecycle management. It
 spawns a dispatcher task on the node's Tokio runtime. The dispatcher owns the
 registry, while each async query worker owns its circuit. Circuit build and
-priming run in a separate task, so unregister, apply and shutdown are not held up
-by a slow registration. Shutdown waits for pending builds and rejects them.
+priming run in a build task on a blocking thread, so the dispatcher keeps serving
+unregister and shutdown during a slow registration. The CDC loop still waits on
+the registration gate. On shutdown, the dispatcher waits for each pending build,
+then tears the circuit down and fails that registration.
 
 Live WAL application reaches the dispatcher task through the same
 command channel, but it enters from the internal side rather than the node side.
