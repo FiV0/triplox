@@ -1,25 +1,29 @@
 # Semantics
 
-**Version**: 0.1
+Version: 0.1
 
 ---
 
-The document tries to clarify some high-level semantics of Triplox. The semantics mainly concern transactions and queries.
+This document tries to clarify some high-level semantics of Triplox. Semantics are the rules for what an operation means. The semantics in this document are mostly about transactions and queries.
 
 
 ## Transactions
 
-Although we try to stick quite close to Datomic's transaction semantics, the difference in architecture and also quite specific
-internals about for example schema changes and evolution make it quite hard to be completely compatible with Datomic.
+We try to keep the transaction semantics of Triplox close to those of Datomic. But it is hard to be fully compatible with Datomic.
+The architecture of the two systems is different. Some internals are also very specific, for example schema changes and schema evolution.
+A schema defines the attributes and their types. Schema evolution is how a schema changes over time.
 
-Things to clarify:
-- Schema updates. Does the data need to be moved to the new type or not? Does it check that the new type is correctly applied throughout?
-- What should the recommended approach for schema evolution be?
+These questions are still open:
+- If a schema update changes a type, is it necessary to move the data to the new type?
+- Does Triplox make sure that the new type applies correctly everywhere?
+- Which approach to schema evolution do we recommend?
 
 
 ## Queries
 
-The main thing to clarify is the bag vs set semantics discussion. Consider the following example from XTDB:
+The main point to clarify for queries is bag semantics versus set semantics. A tuple is one row in a query result.
+Bag semantics lets a result hold duplicate tuples. Set semantics removes duplicate tuples from a result.
+The example that follows comes from XTDB:
 ```clj
   (xt/submit-tx node
                 [[::xt/put {:xt/id :person-1
@@ -49,8 +53,9 @@ The main thing to clarify is the bag vs set semantics discussion. Consider the f
                    [?d :department/name   ?dept]]})
   ;; => #{["IT deparment" 200.0]}
 ```
-XTDB has bag semantics, so the unification with `?domain` in the first example kind of "leaks" into the aggregate.
-In Datomic you would write the query as
+XTDB uses bag semantics. Thus, in the first query, the unification with `?domain` "leaks" into the aggregate.
+Unification binds a variable to one value across clauses. An aggregate such as `sum` combines many values.
+In Datomic, you write the query like this:
 ```clj
 {:find [?dept (sum ?salary)]
  :with [?e]
@@ -59,10 +64,11 @@ In Datomic you would write the query as
          [?d :department/name   ?dept]
          [?d :department/domain ?domain]]}
 ```
-Datomic will always deduplicate tuples that only differ in the domain (It doesn't matter if you have one or multiple
-domains under you department belt, the salary only gets counted once). The last clause doesn't matter except for
-the check that the department has a domain. This then also brings us directly to the crux of the issue. What about semi-joins
-that are an existence filter. For example
+Datomic always removes duplicate tuples that differ only in the domain. The number of domains for a department does not matter.
+The salary counts only once. The last clause does not change the result, except that it keeps only departments that have a domain.
+This brings us to the core of the problem. What about semi-joins that are existence filters?
+
+A semi-join keeps tuples that match the other side. An existence filter only tests that a match exists. For example:
 ```clj
 ;; Schema:
 ;;   :person/skill           cardinality/many, ref or keyword
@@ -73,10 +79,12 @@ that are an existence filter. For example
          [?e :person/skill ?skill]
          [?company :company/required-skill ?skill]]}
 ```
-The query tries to compute the salaries of people that have a required company skill. If a person has multiple skills that
-the company requires, the salary gets counted multiple times under bag semantics. Every join is kind of forced to become a
-cardinality multiplying join. Can this be avoided?
+The query tries to compute the salaries of the people who have a skill that the company requires.
+If a person has two or more skills that the company requires, the sum under bag semantics includes that salary more than once.
+In effect, bag semantics forces every join to multiply the number of tuples in the result.
+Can we prevent this?
 
 ### Incremental queries
 
-Set semantics will require some more distinct calls (which are expensive) then bag semantics.
+An incremental query updates its result after data changes. For incremental queries, set semantics needs more distinct calls than bag semantics.
+A distinct call removes duplicate tuples. Distinct calls are expensive.

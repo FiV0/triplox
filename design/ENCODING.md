@@ -1,15 +1,15 @@
 # Triplox Storage Encoding Specification
 
-**Version**: 0.1
-**Status**: Design
+Version: 0.1
+Status: Design
 
 ---
 
 ## 1. Overview
 
-Triplox uses a custom binary encoding for all data stored in SlateDB. The encoding is order-preserving and prefix-free: `memcmp(encode(a), encode(b))` matches the logical ordering of `a` and `b`. This enables predicate evaluation directly on encoded bytes without deserialization.
+Triplox uses a custom binary encoding for all data that it stores in SlateDB. The encoding is order-preserving (the bytes sort in the same order as the values). The encoding is also prefix-free (no encoded value is the start of another). Thus, `memcmp(encode(a), encode(b))` matches the logical order of `a` and `b`. Triplox can evaluate predicates (conditions on values) directly on the encoded bytes. Decoding the bytes first is not necessary.
 
-All encode/decode functions are implemented in `src/codec.rs`.
+All encode and decode functions are in `src/codec.rs`.
 
 ---
 
@@ -17,11 +17,11 @@ All encode/decode functions are implemented in `src/codec.rs`.
 
 ### 2.1 Endianness
 
-Big-endian throughout. Lexicographic byte comparison matches numeric comparison for unsigned values.
+All encodings use big-endian byte order (the most significant byte comes first). For unsigned values, a lexicographic byte comparison (byte by byte, from the left) gives the same result as a numeric comparison.
 
 ### 2.2 Encode/Decode Traits
 
-A single `Encode`/`Decode` trait pair, defined in `src/codec.rs`:
+The file `src/codec.rs` defines one `Encode`/`Decode` trait pair:
 
 ```rust
 pub trait Encode {
@@ -33,16 +33,15 @@ pub trait Decode: Sized {
 }
 ```
 
-- `encode` returns the complete encoded byte vector.
-- `decode` takes a byte slice and returns the decoded value.
+The `encode` function returns the full encoded value as a byte vector. The `decode` function takes a byte slice and returns the decoded value.
 
-For tagged `DataType` values, `decode` reads the type tag and delegates to the appropriate type-specific decoding.
+For tagged `DataType` values, `decode` reads the type tag (a 1-byte code for the type of the value). Then it uses the decode logic for that type.
 
-Since triplox owns both the traits and `DataType`, there are no orphan-rule issues — both can be defined in the same crate.
+Because triplox owns both the traits and `DataType`, the orphan rule (Rust forbids impls of foreign traits for foreign types) causes no problems. We can define both in the same crate.
 
 ### 2.3 Encoding Primitives
 
-The traits delegate to standalone encoding primitives for the actual byte manipulation:
+The traits use standalone encoding primitives (small functions that do the byte operations). The table that follows lists them:
 
 ```
 ┌────────────────────┬──────────────────────────────────────────────────────────────┐
@@ -64,51 +63,51 @@ pub struct DecodeError {
 }
 ```
 
-A single error type for all decoding failures.
+One error type, `DecodeError`, covers all decoding failures.
 
 ### 2.5 Type Tag Policy
 
-All `DataType` values are self-describing: every encoded value is prefixed with a 1-byte type tag. This means decoding never requires schema knowledge — the tag tells the decoder what type follows.
+All `DataType` values are self-describing (the bytes identify their own type). A 1-byte type tag comes before every encoded value. Thus, decoding never requires information from a schema. The tag tells the decoder which type follows.
 
-Structural fields with fixed schemas (e.g., entity IDs, attribute IDs) are **not** tagged — they use untagged encoding since the type is known from context.
+Structural fields with fixed schemas do not have a tag. Examples are entity IDs and attribute IDs (the E and A of an entity-attribute-value triple). These fields use untagged encoding because the context gives their type.
 
 ### 2.6 Type Tag Values
 
-Reuse the wire protocol tags from `design/PROTOCOL.md`:
+The encoding reuses the type tags of the wire protocol (the network message format) from `design/PROTOCOL.md`:
 
-| Tag | Name                                                             | Rust Type                      |
-|-----|------------------------------------------------------------------|--------------------------------|
-| 0   | *(reserved — end-of-composite sentinel)*                         | —                              |
-| 1   | BigInt                                                           | `i128`                         |
-| 2   | Boolean                                                          | `bool`                         |
-| 3   | Bytes                                                            | `Vec<u8>`                      |
-| 4   | Double                                                           | `f64`                          |
-| 5   | Float                                                            | `f32`                          |
-| 6   | Instant                                                          | `DateTime<Utc>` (as i64 micros)|
-| 7   | Long                                                             | `i64`                          |
-| 8   | *(reserved — Ref shares tag 7/Long, differentiated via schema)*  | —                              |
-| 9   | String                                                           | `String`                       |
-| 10  | Uuid                                                             | `Uuid` (16 bytes)              |
-| 11  | Vector                                                           | `Vec<DataType>`                |
-| 12  | Map                                                              | `BTreeMap<String, DataType>`   |
-| 13  | Keyword                                                          | `Keyword`                      |
+| Tag | Name                                                                      | Rust Type                       |
+|-----|---------------------------------------------------------------------------|---------------------------------|
+| 0   | *(reserved: end marker of a composite, a value that holds values)*        | —                               |
+| 1   | BigInt                                                                    | `i128`                          |
+| 2   | Boolean                                                                   | `bool`                          |
+| 3   | Bytes                                                                     | `Vec<u8>`                       |
+| 4   | Double                                                                    | `f64`                           |
+| 5   | Float                                                                     | `f32`                           |
+| 6   | Instant                                                                   | `DateTime<Utc>` (as i64 micros) |
+| 7   | Long                                                                      | `i64`                           |
+| 8   | *(reserved: Ref shares tag 7 with Long, and the schema tells them apart)* | —                               |
+| 9   | String                                                                    | `String`                        |
+| 10  | Uuid                                                                      | `Uuid` (16 bytes)               |
+| 11  | Vector                                                                    | `Vec<DataType>`                 |
+| 12  | Map                                                                       | `BTreeMap<String, DataType>`    |
+| 13  | Keyword                                                                   | `Keyword`                       |
 
 ---
 
 ## 3. Type Encodings
 
-All encodings guarantee: `memcmp(encode(a), encode(b))` equals `DataType::partial_compare(a, b)` for values of the same type.
+For values of the same type, all encodings guarantee that `memcmp(encode(a), encode(b))` equals `DataType::partial_compare(a, b)`.
 
 ### 3.1 Signed Integers: `i64`, `i128`
 
-XOR all value bits, then big-endian bytes. This produces **descending** byte order (largest values sort first).
+The encoding does an XOR on all value bits and then writes the result as big-endian bytes. This gives a descending byte order (the largest values sort first).
 
 ```
 i64:  encoded = (value ^ 0x7FFF_FFFF_FFFF_FFFF).to_be_bytes()       // 8 bytes
 i128: encoded = (value ^ i128::MAX).to_be_bytes()                    // 16 bytes
 ```
 
-XORing with `MAX` flips all bits except the sign bit, mapping the signed range `[MIN, MAX]` to the unsigned range `[UMAX, 0]` — reversing byte order. Big-endian ensures the most significant byte is compared first.
+An XOR with `MAX` flips all bits except the sign bit. This maps the signed range `[MIN, MAX]` to the unsigned range `[UMAX, 0]`, and thus reverses the byte order. The big-endian order makes sure that the comparison starts with the most significant byte.
 
 | Value         | Encoded (hex)              |
 |---------------|----------------------------|
@@ -118,11 +117,11 @@ XORing with `MAX` flips all bits except the sign bit, mapping the signed range `
 | `1`           | `7F FF FF FF FF FF FF FE`  |
 | `i64::MAX`    | `00 00 00 00 00 00 00 00`  |
 
-**Size**: i64 = 8 bytes. i128 = 16 bytes.
+An encoded i64 is 8 bytes. An encoded i128 is 16 bytes.
 
 ### 3.2 Unsigned Integers: `u64`
 
-Big-endian bytes.
+The encoding writes the value as big-endian bytes.
 
 ```
 encoded = value.to_be_bytes()   // 8 bytes
@@ -130,7 +129,7 @@ encoded = value.to_be_bytes()   // 8 bytes
 
 ### 3.3 Floating Point: `f64`, `f32`
 
-IEEE 754 sortable encoding.
+The encoding is the IEEE 754 sortable encoding (a bit transform that makes floats sort as bytes).
 
 ```
 let bits = value.to_bits();
@@ -142,13 +141,13 @@ let sortable = if bits & SIGN_MASK != 0 {
 encoded = sortable.to_be_bytes()
 ```
 
-Where `SIGN_MASK` is `0x8000_0000_0000_0000` for f64, `0x8000_0000` for f32.
+`SIGN_MASK` is `0x8000_0000_0000_0000` for f64 and `0x8000_0000` for f32.
 
-IEEE 754 positive floats are already ordered correctly as unsigned integers. Flipping the sign bit maps them above zero. For negatives, IEEE 754 sorts in reverse order of magnitude, so flipping all bits reverses them into correct ascending order.
+As unsigned integers, positive IEEE 754 floats already sort in the correct order. A flip of the sign bit maps them above zero. For negative values, IEEE 754 sorts in reverse order of magnitude. Thus, a flip of all bits reverses them into the correct ascending order.
 
-**NaN handling**: NaN values sort deterministically (all NaNs cluster together), but `DataType::partial_compare` returns `None` for NaN. Callers handle this at a higher level.
+NaN values always sort the same way, and all NaN values sort next to each other. But `DataType::partial_compare` returns `None` for NaN. Callers handle this case at a higher level.
 
-**Size**: f64 = 8 bytes. f32 = 4 bytes.
+An encoded f64 is 8 bytes. An encoded f32 is 4 bytes.
 
 ### 3.4 Booleans
 
@@ -159,30 +158,30 @@ true  => 0x01   (1 byte)
 
 ### 3.5 Variable-Length Bytes and Strings: Escaped Terminated Encoding
 
-Variable-length data must be **prefix-free**: no encoded value can be a prefix of another. This is required because components are concatenated without length headers.
+Variable-length data must be prefix-free. No encoded value can be a prefix of another encoded value. This is necessary because the encoding concatenates components without length headers.
 
-This uses the same escape scheme as OpenData's `terminated_bytes` module. CockroachDB's `EncodeBytesAscending` uses a different approach (escape byte `0x00`, marker byte `0x12`); the OpenData scheme is simpler — no marker byte, and the escape sequences are straightforward to reason about. Both produce correct lexicographic ordering.
+This encoding uses the same escape scheme (a rule that replaces special bytes with byte pairs) as the `terminated_bytes` module of OpenData. The `EncodeBytesAscending` function of CockroachDB uses a different method, with the escape byte `0x00` and the marker byte `0x12`. The OpenData scheme is simpler. It has no marker byte, and its escape sequences are easy to reason about. Both schemes give the correct lexicographic order.
 
-**Encoding rules**:
+To encode, do these steps:
 
-1. For each byte `b` in the input:
+1. For each byte `b` in the input, write the output that follows:
    - `0x00` → `0x01 0x01`
    - `0x01` → `0x01 0x02`
    - Otherwise → `b`
-2. Append terminator: `0x00`
+2. Append the terminator (the byte that marks the end): `0x00`.
 
-**Decoding rules**:
+To decode, do this step:
 
-1. Read bytes:
-   - `0x00` → terminator, stop
-   - `0x01` → read next byte: `0x01` = literal `0x00`, `0x02` = literal `0x01`, else error
-   - Other → literal byte
+1. Read the bytes one at a time:
+   - `0x00` → the terminator. Stop.
+   - `0x01` → read the next byte. `0x01` is a literal `0x00`, `0x02` is a literal `0x01`, and any other byte is an error.
+   - Other → a literal byte.
 
-The terminator `0x00` is the smallest byte value. When one string is a prefix of another, the shorter string's terminator compares less than any data byte in the longer string, yielding correct ordering.
+The terminator `0x00` is the smallest byte value. If one string is a prefix of another string, the terminator of the shorter string compares less than any data byte in the longer string. This gives the correct order.
 
-**Strings**: Encode as UTF-8 bytes, then apply escaped terminated encoding. UTF-8 never produces `0x00` for non-null characters, so most strings pass through with zero escape expansion.
+For a string, the encoder converts the string to UTF-8 bytes and then applies the escaped terminated encoding. UTF-8 never produces `0x00` for non-null characters. Thus, the encoding adds no escape bytes to most strings.
 
-**Examples**:
+The table that follows gives examples:
 
 | Input              | Encoded                              |
 |--------------------|--------------------------------------|
@@ -194,18 +193,18 @@ The terminator `0x00` is the smallest byte value. When one string is a prefix of
 
 ### 3.6 Instant (`DateTime<Utc>`)
 
-Convert to microseconds since Unix epoch (as `i64`), then apply signed integer encoding (Section 3.1).
+The encoding converts the value to microseconds since the Unix epoch, as an `i64`. Then it applies the signed integer encoding (Section 3.1).
 
 ```
 let micros = datetime.timestamp_micros();
 encode_i64(micros, buf);
 ```
 
-**Size**: 8 bytes.
+An encoded Instant is 8 bytes.
 
 ### 3.7 Uuid
 
-Raw 16 bytes in RFC 4122 layout (network byte order). The `uuid` crate's `as_bytes()` returns them in this order.
+The encoding writes the raw 16 bytes in the RFC 4122 layout (network byte order). The `as_bytes()` function of the `uuid` crate returns the bytes in this order.
 
 ```
 buf.extend_from_slice(uuid.as_bytes());   // 16 bytes
@@ -213,18 +212,18 @@ buf.extend_from_slice(uuid.as_bytes());   // 16 bytes
 
 ### 3.8 Keyword
 
-A `Keyword` has an optional namespace and a name. Encode as two consecutive terminated byte sequences:
+A `Keyword` has an optional namespace (a qualifier that groups related keywords) and a name. The encoding is two consecutive terminated byte sequences:
 
 ```
 Namespaced:   encode_terminated(namespace) + encode_terminated(name)
 Plain:        encode_terminated("")         + encode_terminated(name)
 ```
 
-Plain keywords (empty namespace → just `0x00`) sort before all namespaced keywords.
+A plain keyword has an empty namespace, which encodes as only `0x00`. Thus, plain keywords sort before all namespaced keywords.
 
 ### 3.9 Composite Types
 
-Each element is preceded by a 1-byte type tag (Section 2.6), followed by the encoded payload. The composite is terminated with a `0x00` end marker.
+For each element, the encoding writes a 1-byte type tag (Section 2.6) and then the payload (the encoded bytes of the element). A `0x00` end marker comes after the last element.
 
 ```
 for each element:
@@ -233,21 +232,21 @@ for each element:
 buf.push(0x00);  // end-of-composite
 ```
 
-Tag `0x00` is not assigned to any type, so it serves unambiguously as the end marker. Shorter composites sort before longer ones with the same prefix.
+No type uses tag `0x00`. Thus, a `0x00` in a tag position can only be the end marker. If two composites have the same prefix, the shorter composite sorts first.
 
-Maps encode entries as sorted key-value pairs (BTreeMap guarantees order).
+A Map encodes its entries as key-value pairs in sorted order. BTreeMap guarantees this order.
 
 ### 3.10 Tagged DataType
 
-All `DataType` values are encoded as:
+The encoding of each `DataType` value has this form:
 
 ```
 [type_tag: u8] [payload]
 ```
 
-The payload uses the type-specific encoding from the sections above. The tag makes every value self-describing — the decoder reads the tag byte to determine the type and payload format without external schema knowledge.
+The payload uses the type-specific encoding from Sections 3.1 to 3.9. The tag makes every value self-describing. The decoder reads the tag byte to find the type and the payload format. It does not use information from an external schema.
 
-Within a given attribute, values of the same type share the same tag byte, so the tag does not affect relative ordering — values still sort by payload.
+In one attribute, values of the same type have the same tag byte. Thus, the tag does not change their relative order, and the values still sort by payload.
 
 ---
 

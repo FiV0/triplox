@@ -5,14 +5,19 @@ Version 0.1
 ## Overview
 
 The standard query engine evaluates a parsed query against one immutable
-database basis and returns a complete result. It is separate from the
-incremental query engine described in
-[INCREMENTAL_QUERIES.md](INCREMENTAL_QUERIES.md).
+database basis and returns a complete result. A database basis is the log
+position that a read uses. The standard engine is separate from the
+incremental query engine that [INCREMENTAL_QUERIES.md](INCREMENTAL_QUERIES.md)
+describes.
 
-The engine is row-oriented. It plans a query without opening storage,
-materializes that recursive plan for one database basis, and executes a
-sequence of scopes with stages over a growing `BindingBag`. Nested scopes
-exist for `or`, `or-join`, `not`, and `not-join` evaluation.
+The engine is row-oriented. It plans a query without opening storage. Then it
+materializes that recursive plan for one database basis. Materialization turns
+a plan into runtime objects. Last, the engine executes a sequence of scopes with
+stages over a growing `BindingBag`.
+
+A scope is the set of clauses at one nesting level. A stage is one step that
+adds variables to rows or filters rows. Nested scopes exist to evaluate `or`,
+`or-join`, `not`, and `not-join`.
 
 ```text
 ParsedQuery + QueryArg values + database basis
@@ -42,15 +47,17 @@ ParsedQuery + QueryArg values + database basis
                 QueryResult
 ```
 
-`execute_query` in `src/query.rs` owns this orchestration. The planner and
-runtime implementation live under `src/query/`; final result processing
-remains in `src/query.rs`.
+`execute_query` in `src/query.rs` controls this sequence of steps. The planner
+and the runtime implementation are in `src/query/`. The final result processing
+stays in `src/query.rs`.
 
 ---
 
 ## Execution Value
 
-`BindingBag` is the value passed between stages:
+`BindingBag` is the value that one stage passes to the next. It is a bag (a
+collection that can contain duplicates) of binding rows. A binding row gives
+one value to each variable of the bag.
 
 ```rust
 type BindingRow = Vec<Bytes>;
@@ -62,69 +69,82 @@ struct BindingBag {
 }
 ```
 
-The variable vector is an ordered schema for every row. Construction rejects
-duplicate variables and rows with the wrong arity. Patterns look columns up by
-`Variable`; they do not assume that a row is a prefix of the global query
-order. This is what lets nested patterns preserve unrelated outer columns.
+The variable vector is the ordered column layout for every row. The constructor
+rejects duplicate variables. It also rejects rows with the wrong arity (number
+of columns). Patterns find columns by `Variable`. They do not assume that a row
+is a prefix of the global query order. Because of this, nested patterns can keep
+unrelated outer columns.
 
 Values stay encoded as `Bytes` while they move through storage lookups and
-joins. Only expression patterns and final result processing decode values into
-`DataType`.
+joins. Only expression patterns and the final result processing decode values
+into `DataType`.
 
-In the future the row-oriented `BindingBag` will likely get replaced by a columnar
-trie implementation that is more suited for joining a result set already sitting
-in memory with a pattern that needs to retrieve values from SlateDB via seeks.
-The bottleneck is likely retrieving and seeking through SlateDB iterators. The additional
-cost of keeping variable results sorted in memory will pale in comparison.
+In the future, a columnar trie implementation will probably replace the
+row-oriented `BindingBag`. A trie is a tree that stores shared prefixes one
+time. A columnar trie is a better fit for a join of two inputs. One input is a
+result set that is already in memory. The other input is a pattern that gets
+values from SlateDB through seeks.
+
+The bottleneck is probably the reads and seeks through SlateDB iterators. In
+comparison, the extra cost to keep variable results sorted in memory will be
+small.
 
 ### Relational operations
 
-`BindingBag` provides the operations needed by executable patterns:
+`BindingBag` provides the operations that executable patterns need:
 
-- row selection and one-to-many extension;
-- projection and layout reorder;
-- indexing by a variable subset;
-- natural join;
-- existential semijoin and antijoin;
-- bag union, distinct union, and complete-row deduplication.
+- Row selection and one-to-many extension
+- Projection (keep a subset of columns) and layout reorder
+- Indexing by a variable subset
+- Natural join
+- Existential semijoin and antijoin
+- Bag union (keeps duplicates), distinct union (removes duplicates), and complete-row deduplication.
 
-Natural join keeps the left layout and appends right-only variables. Semijoin
-and antijoin preserve the complete left row and never multiply it.
+A natural join combines rows that agree on all shared variables. It keeps the
+left layout and appends the right-only variables. A semijoin keeps each left row
+that has a match on the right. An antijoin keeps each left row that has no match
+on the right. Semijoin and antijoin keep the complete left row and never
+multiply it.
 
 `BindingBag::unit()` is the zero-column relation with one empty row.
 `BindingBag::empty(variables)` has the requested layout and no rows. These
-values follow the usual relational rules: unit is the identity for natural
-join, while an empty zero-column relation annihilates it.
+values follow the usual relational rules. Unit is the identity for natural join:
+a join with unit gives the other input unchanged. An empty zero-column relation
+annihilates natural join: a join with it gives no rows.
 
 ### Multiplicity
 
-`BindingBag` has bag semantics. A natural join can multiply rows, and projection
-does not implicitly deduplicate them. This multiplicity reaches ordinary
-`:find` projection and aggregation.
+`BindingBag` has bag semantics (duplicate rows stay and count). A natural join
+can multiply rows, and projection does not remove duplicates implicitly. This
+multiplicity (the number of copies of a row) gets to the ordinary `:find`
+projection and aggregation.
 
-Deduplication is explicit at boundaries that require set semantics:
+Deduplication is explicit at the boundaries that require set semantics (each
+distinct row one time):
 
-- `RelationPattern` stores distinct relation rows;
-- each triple pattern produces distinct candidate extensions per input row;
-- `OrPattern` projects branches to their exposed variables before distinct union.
+- `RelationPattern` stores distinct relation rows.
+- Each triple pattern produces distinct candidate extensions for each input row.
+- `OrPattern` projects branches to their exposed variables before the distinct union.
 
-This distinction is important. Duplicate witnesses in a conjunction remain
-observable, while the same complete result produced by two OR branches appears
-once before it is correlated back to the outer input. See
-[SEMANTICS.md](SEMANTICS.md) for the broader bag-versus-set discussion.
+Duplicate witnesses (matches that produce a row) in a conjunction (clauses that
+must all match) stay observable. But if two OR branches produce the same complete
+result, that result appears one time before the engine correlates it back to the
+outer input. For the general discussion of bag and set semantics, see
+[SEMANTICS.md](SEMANTICS.md).
 
 ---
 
 ## Logical Planning
 
-Planning is runtime-independent. `build_logical_plan` consumes owned query data
-and arguments, but it does not construct SlateDB iterators, `ExecPattern` trait
-objects, or runtime stages.
+Planning does not depend on the runtime. `build_logical_plan` consumes owned
+query data and arguments. It does not construct SlateDB iterators, `ExecPattern`
+trait objects, or runtime stages.
 
 ### Descriptors
 
-Every input and where clause is lowered to a descriptor with a stable
-`PatternId`, an ordered variable list, and descriptor-specific data:
+A descriptor is the runtime-free plan record of one clause. The planner lowers
+each input and each where clause to a descriptor. Each descriptor has a stable
+`PatternId`, an ordered variable list, and data that is specific to its kind:
 
 ```text
 Triple(Pattern)
@@ -136,51 +156,56 @@ Not { children }
 ```
 
 Scalar and collection `:in` arguments become relation descriptors. Their
-values remain `DataType` values until materialization encodes them.
+values stay `DataType` values until materialization encodes them.
 
-OR and NOT preserve their recursive structure. Conjunction is represented by
-the stages of a planning scope; there is no separate `AndPattern`.
+OR and NOT keep their recursive structure. The stages of a planning scope
+represent conjunction. There is no separate `AndPattern`.
 
 ### Variable order
 
 The top-level variable order is deterministic:
 
-1. variables supplied through `:in`;
-2. variables introduced by positive triple and OR clauses in query order;
-3. outputs from top-level function clauses, considered after the other
-   top-level positive clauses.
+1. Variables supplied through `:in`.
+2. Variables that positive (not negated) triple and OR clauses introduce, in query order.
+3. Outputs from top-level function clauses. The planner considers these clauses
+   after the other top-level positive clauses.
 
-Each nested scope derives its own relevant order. Correlated incoming variables
-are moved to the front, variables not mentioned in that scope are left out,
-and the top-level order remains the tie-breaker for the rest.
+Each nested scope derives its own order of the relevant variables. Correlated
+incoming variables (variables that the outer scope shares) come first. The order
+leaves out variables that the scope does not mention. For the other variables,
+the top-level order breaks ties.
 
-This is a dependency-aware deterministic order, not a cost-based global
-optimizer.
+This order is deterministic and follows dependencies. It is not a cost-based
+global optimizer.
 
 ### Groundability
 
-Groundability answers which variables a participant can derive from the
-currently bound variable set:
+A participant is a pattern that takes part in a stage. A variable is bound
+when each row already has a value for it. Groundability is the set of variables
+that a participant can derive from the variables that are bound at that point:
 
 | Participant | Groundability |
 |-------------|---------------|
-| Triple | Any unbound entity or value variable in the pattern. One is selected per ordinary stage. |
-| Relation | The next relation variable, provided already-bound relation variables form a prefix of its layout. |
+| Triple | Any unbound entity or value variable in the pattern. The planner selects one for each ordinary stage. |
+| Relation | The next relation variable. This applies only if the already bound relation variables form a prefix of its layout. |
 | Predicate | None. Every referenced variable must already be bound. |
-| Function | Its output when every input is bound and the output is not. |
-| OR | Every missing OR variable, but only if every branch can derive the complete missing set. |
-| NOT | None. All variables in the body, or the declared `not-join` variables, must be supplied by the outer scope. |
+| Function | Its output. This applies only if every input is bound and the output is not bound. |
+| OR | Every missing OR variable. This applies only if every branch can derive the complete set of missing variables. |
+| NOT | None. The outer scope must supply all variables in the body, or the declared `not-join` variables. |
 
-OR groundability computes each branch to a fixed point. A branch may therefore
-derive one variable from another inside the branch. The OR is groundable only
-when every branch can reach the same complete variable set; it never advertises
-a partial union of what different branches can derive.
+For OR groundability, the planner computes each branch to a fixed point (the
+state where no more variables become derivable). Thus, a branch can derive one
+variable from another variable inside the branch. An OR is groundable (able to
+derive its missing variables) only if every branch can get to the same complete
+variable set. The OR never advertises a partial union of the variables that
+different branches can derive.
 
 ### Scope planning and stages
 
-Each `LogicalPlan` owns one scope's descriptors and stages. Composite
-descriptors contain complete child plans, so planning recurses once and the
-result needs no second planning representation:
+Each `LogicalPlan` owns the descriptors and stages of one scope. Composite
+descriptors (OR and NOT descriptors) contain complete child plans. Thus,
+planning recurses one time, and the result needs no second planning
+representation:
 
 ```rust
 struct LogicalPlan {
@@ -209,71 +234,79 @@ enum ParticipantRef {
 ```
 
 The root records `incoming_variables: None`. A nested scope records
-`Some(variables)`, including `Some(vec![])` for an uncorrelated scope. This
-distinction preserves the explicit zero-column incoming relation.
+`Some(variables)`. An uncorrelated scope (it shares no variables with the outer
+scope) records `Some(vec![])`. This difference keeps the explicit zero-column
+incoming relation.
 
-A planning scope is built as follows:
+A proposer is a participant that produces candidate values for a new variable.
+The planner builds a planning scope in these steps:
 
-1. Emit a validation-only stage for any participant already fully bound.
-2. Visit remaining variables in scope order. For each variable, first look for
-   ordinary proposers and then for an OR that can derive the complete missing
-   variable group.
+1. Emit a validation-only stage (it adds no variables) for any participant that
+   is already fully bound.
+2. Visit the remaining variables in scope order. For each variable, look first
+   for ordinary (non-OR) proposers, then for an OR that can derive the complete
+   group of missing variables.
 3. Put every eligible ordinary proposer in that stage, or put the selected OR
-   in the stage as its sole proposer and participant.
-4. Also include unfinished participants that become fully validatable after
-   an ordinary variable is added.
-5. Continue until every participant has been placed.
+   in the stage as its only proposer and participant.
+4. Also include each unfinished participant that becomes fully validatable (all
+   its variables bound) after the stage adds an ordinary variable.
+5. Continue until every participant is placed.
 
-Planning fails if a variable cannot be grounded or a participant cannot be
-placed. A leaf descriptor may participate at several stages as its variables
-become bound. An OR or NOT descriptor participates once in its owning scope.
+If a variable cannot be grounded, or a participant cannot be placed, planning
+fails. A leaf descriptor (not OR and not NOT) can participate in several stages
+as its variables become bound. An OR or NOT descriptor participates one time in
+the scope that owns it.
 
-Planning records the incoming layout for a composite from the previous stage
-layout when the composite proposes, or the current target layout when it
-validates. It then recursively plans each OR branch or NOT child with that
-layout.
+Planning records the incoming layout for a composite descriptor. If the
+composite proposes, this layout is the layout of the previous stage. If the
+composite validates, this layout is the current target layout. Then the planner
+recursively plans each OR branch or NOT child with that layout.
 
-Materialization verifies that proposers are also participants and translates
-their symbolic references into positions in the ordered runtime participant list.
-Only proposing stages may carry proposer positions, and every proposing stage
-must carry at least one. Runtime execution therefore distinguishes patterns
-that may propose from participants that only validate the completed binding.
+Materialization makes sure that proposers are also participants. It translates
+their symbolic references into positions in the ordered list of runtime
+participants. A stage that does not propose must carry no proposer positions.
+Every proposing stage must carry at least one. Thus, runtime execution
+distinguishes the patterns that can propose from the participants that only
+validate the completed binding.
 
 ---
 
 ## Runtime Materialization
 
-`LogicalPlan::materialize` binds one already-planned scope to a shared
-`DB` value and an optional incoming pattern. It:
+`LogicalPlan::materialize` binds one already planned scope to a shared `DB`
+value and to an optional incoming pattern. The method does these tasks:
 
-- resolves fixed attribute idents through the `IdentMap` stored in `DB`;
-- constructs Slate-backed `TriplePattern` values that share the database
-  basis, Tokio handle, and range statistics from `DB`;
-- encodes relation descriptor rows;
-- constructs predicate and function patterns from the existing expression
-  representation;
-- constructs OR and NOT patterns that own their already-planned child scopes;
-- constructs each current-scope runtime pattern once and reuses the same
-  `Arc<dyn ExecPattern>` in every stage;
-- replaces descriptor ids with positions in ordered stage participant lists.
+- It resolves fixed attribute idents (keyword names of attributes) through the `IdentMap` stored in `DB`.
+- It constructs Slate-backed `TriplePattern` values. These values share the
+  database basis, the Tokio handle, and the range statistics from `DB`.
+- It encodes the rows of relation descriptors.
+- It constructs predicate and function patterns from the existing expression
+  representation.
+- It constructs OR and NOT patterns that own their already planned child scopes.
+- It constructs each runtime pattern of the current scope one time, and it
+  reuses the same `Arc<dyn ExecPattern>` in every stage.
+- It replaces descriptor ids with positions in the ordered participant lists of
+  the stages.
 
-The root materializes with no incoming pattern. Nested plans require one and
-check that its ordered variables equal their planned incoming layout.
+The root materializes with no incoming pattern. Nested plans require one. They
+make sure that the ordered variables of that pattern equal their planned
+incoming layout.
 
 ### Incoming relations
 
-`ParticipantRef::Incoming` is logical planning data, not a runtime pattern. On
-each invocation, an `OrPattern` or `NotPattern`:
+`ParticipantRef::Incoming` is logical planning data. It is not a runtime
+pattern. Each time that an `OrPattern` or a `NotPattern` runs, it does these
+steps:
 
-1. projects the current outer `BindingBag` to the planned incoming variables;
-2. wraps that projection in one `RelationPattern`;
-3. passes that same pattern to each child plan's `materialize` method;
-4. resolves every `Incoming` reference while creating concrete stages;
-5. executes those stages from `BindingBag::unit()`.
+1. It projects the current outer `BindingBag` to the planned incoming variables.
+2. It wraps that projection in one `RelationPattern`.
+3. It passes that same pattern to the `materialize` method of each child plan.
+4. It resolves every `Incoming` reference while it creates the concrete stages.
+5. It executes those stages from `BindingBag::unit()`.
 
-OR constructs the projected relation once and shares its `Arc` across every
-branch. `GenericJoinEngine` receives only concrete `Stage` values and never an
-`Incoming` enum variant.
+OR constructs the projected relation one time and shares its `Arc` across all
+branches. `GenericJoinEngine` receives only concrete `Stage` values. It never
+receives an `Incoming` enum variant.
 
 ---
 
@@ -281,7 +314,7 @@ branch. `GenericJoinEngine` receives only concrete `Stage` values and never an
 
 ### Executable patterns
 
-All runtime patterns implement:
+All runtime patterns implement this trait:
 
 ```rust
 trait ExecPattern: Send + Sync {
@@ -304,22 +337,23 @@ trait ExecPattern: Send + Sync {
 }
 ```
 
-`count` is called only on patterns designated as proposers for the stage. Each
-proposer must consider every input row, including with a count of zero. Calling
-`count` on a pattern that cannot propose is a contract error.
+The engine calls `count` only on the patterns that the stage designates as
+proposers. Each proposer must consider every input row, including the rows where
+its count is zero. A call to `count` on a pattern that cannot propose is a
+contract error.
 
-`join` has two modes:
-
-- non-empty `added` extends the input and returns exactly
-  `target_variables`;
-- empty `added` validates or filters rows and must preserve the input layout.
+`join` has two modes. If `added` is not empty, `join` extends the input and
+returns exactly `target_variables`. If `added` is empty, `join` validates or
+filters rows, and it must keep the input layout.
 
 Execution always starts from `BindingBag::unit()`. There is no separate seed
-path for top-level inputs or nested correlations.
+path (a special way to supply the first rows) for top-level inputs or nested
+correlations.
 
 ### Stages
 
-A concrete `Stage` is one checked layout transition:
+A concrete `Stage` is one validated layout transition (a change from the input
+layout to the target layout):
 
 ```rust
 struct Stage {
@@ -330,16 +364,16 @@ struct Stage {
 }
 ```
 
-Its participant ids, proposer positions, added variables, and target
-variables must be unique. Proposer positions are ordered and must refer to
+Its participant ids, proposer positions, added variables, and target variables
+must be unique. Proposer positions are ordered, and they must refer to
 participants in the stage. A stage has proposers if and only if it adds
 variables. At execution time, the target variable set must equal the input
 variables plus the added variables.
 
 ### Proposal selection
 
-For a multi-participant proposing stage, the engine keeps one `Proposal` per
-input row:
+For a proposing stage with more than one participant, the engine keeps one
+`Proposal` for each input row:
 
 ```rust
 struct Proposal {
@@ -349,42 +383,44 @@ struct Proposal {
 ```
 
 The initial value is `(None, usize::MAX)`. A proposer replaces it with its first
-estimate or a strictly cheaper count, including zero. Equal counts retain the
-earlier proposer in participant order. Valid proposer implementations consider
-every row, so zero candidates are represented by a selected proposer with count
-zero rather than by an absent proposer.
+estimate or with a strictly cheaper count. This rule includes a count of zero.
+If two counts are equal, the earlier proposer in participant order stays. Valid
+proposer implementations consider every row. Thus, a row with zero candidates
+has a selected proposer with count zero, not an absent proposer.
 
 ---
 
 ## Stage Execution
 
-`GenericJoinEngine` folds concrete stages over an input `BindingBag`.
+`GenericJoinEngine` folds concrete stages over an input `BindingBag`. That is,
+it applies each stage in turn to the output of the previous stage.
 
 ### Validation-only stage
 
 Every participant receives `join(input, [], input_variables)` in stage order.
-The engine checks that each participant preserves the layout, then reorders the
-result to the stage target layout.
+The engine makes sure that each participant keeps the layout. Then it reorders
+the result to the target layout of the stage.
 
 ### Single-proposer stage
 
-The engine calls the sole proposer’s `join` directly, checks the returned
-layout, and then runs every other participant as a validator. This is also how a
-grouped OR proposes all of its missing variables; OR does not implement a
-proposal count.
+The engine calls `join` on the only proposer directly. It makes sure that the
+returned layout is correct. Then it runs every other participant as a validator
+(a participant that only validates or filters rows). A grouped OR proposes all
+of its missing variables in the same way. OR does not implement a proposal
+count.
 
 ### Multi-participant proposing stage
 
-1. Allocate one empty proposal per input row.
+1. Allocate one empty proposal for each input row.
 2. Ask every designated proposer to count the requested extension.
-3. Group row indexes by winning proposer `PatternId`.
-4. Ask each winner to extend its input shard.
-5. Run every other participant, including losing proposers, as a validator on
-   that extended shard.
+3. Group the row indexes by the `PatternId` of the winning proposer.
+4. Ask each winner to extend its input shard (the input rows that it won).
+5. Run every other participant, including the losing proposers, as a validator
+   on that extended shard.
 6. Bag-union the validated shards in the target layout.
 
-The cheapest proposer is selected independently for every input row. Different
-rows in one stage may therefore be extended by different patterns.
+The engine selects the cheapest proposer independently for every input row.
+Thus, different patterns can extend different rows in one stage.
 
 ---
 
@@ -392,48 +428,54 @@ rows in one stage may therefore be extended by different patterns.
 
 | Pattern | Current behavior |
 |---------|------------------|
-| `RelationPattern` | Wraps a distinct materialized relation. It proposes the next relation-prefix variable and validates bound prefixes existentially. |
-| `TriplePattern` | Proposes entity or value variables from SlateDB indices and validates partial or complete triple bindings at the selected `as_of` basis. |
-| `PredicatePattern` | Never proposes. It decodes referenced columns, evaluates an `Expr`, and filters rows once all variables are bound. |
+| `RelationPattern` | Wraps a distinct materialized relation. It proposes the next relation-prefix variable. It validates bound prefixes existentially (it only looks for one match). |
+| `TriplePattern` | Proposes entity or value variables from SlateDB indices. It validates partial or complete triple bindings at the selected `as_of` basis. |
+| `PredicatePattern` | Never proposes. After all variables are bound, it decodes the referenced columns, evaluates an `Expr`, and filters rows. |
 | `FunctionPattern` | Proposes its single output after all expression inputs are bound. If the output is already bound, it evaluates and compares instead. |
-| `OrPattern` | Executes each branch independently, aligns layouts, distinct-unions branch results, and then joins or semijoins them with the complete outer input. |
-| `NotPattern` | Executes its body with projected outer bindings, projects away `not-join` locals, and antijoins matching bindings from the complete outer input. |
+| `OrPattern` | Executes each branch independently and aligns the layouts. It takes the distinct union of the branch results. Then it joins or semijoins them with the complete outer input. |
+| `NotPattern` | Executes its body with the projected outer bindings. It projects away the `not-join` locals (body variables that are not declared). Then it antijoins the matching bindings from the complete outer input. |
 
 ---
 
 ## Result Processing
 
 After the final stage, the binding layout must equal the planned top-level
-variable order. `execute_query` then:
+variable order. Then `execute_query` does these steps:
 
-1. compiles the relational `:find` specification;
-2. projects rows or accumulates aggregates;
-3. decodes result values into `DataType`;
-4. applies `:order`;
-5. resolves and applies fixed or input-bound `:limit`;
-6. returns `QueryResult`, currently `Vec<Vec<DataType>>`.
+1. It compiles the relational `:find` specification.
+2. It projects rows or accumulates aggregates.
+3. It decodes result values into `DataType`.
+4. It applies `:order`.
+5. It resolves and applies a fixed or input-bound `:limit`.
+6. It returns `QueryResult`, which is currently `Vec<Vec<DataType>>`.
 
-An all-aggregate query seeds one empty group, so aggregates such as `count`
-still produce a result on empty input. A grouped aggregate produces no rows
-when no group exists.
+An all-aggregate query (its `:find` has only aggregates) seeds one empty group.
+Thus, aggregates such as `count` still produce a result for an empty input. If
+no group exists, a grouped aggregate produces no rows.
 
 ---
 
 ## Validation and Error Boundaries
 
-`validate_query` runs before planning. It checks input arity and binding types,
-OR variable agreement, positive binding of predicate and NOT variables,
-function dependencies, aggregate arguments, ordering, and variable limits.
+`validate_query` runs before planning. It validates these properties of the
+query:
 
-Later layers retain defensive checks that should never happen
-if the planner is correct. In most cases these are states which
-are possible to represent in the runtime data structures, but which
-should not happen if everything works correctly.
+- Input arity and binding types
+- OR variable agreement
+- Positive binding of predicate and NOT variables
+- Function dependencies
+- Aggregate arguments
+- Ordering
+- Variable limits.
 
-Storage, decoding, expression-conversion, and contract failures are returned
-through `anyhow::Result` with pattern or stage context. A well-formed runtime
-expression that is not applicable to a row evaluates to no value or false and
-filters that row.
+If the planner is correct, some states do not occur. Later layers keep defensive
+code for these states. In most cases, the runtime data structures can represent
+these states. But if everything works correctly, these states do not occur.
+
+The engine returns storage, decoding, expression-conversion, and contract
+failures through `anyhow::Result`, with pattern or stage context. If a
+well-formed runtime expression does not apply to a row, it evaluates to no value
+or to false. That result filters out the row.
 
 ---
 
@@ -444,8 +486,8 @@ filters that row.
 | `src/query.rs` | Query orchestration, expression lowering, variable order, final projection, aggregation, ordering, and limits. |
 | `src/query_validation.rs` | Validation shared by the standard query entry point. |
 | `src/query/binding_bag.rs` | Row relation and relational operations. |
-| `src/query/plan.rs` | Descriptors, recursive planning, database-basis-dependent materialization, and their tests. |
-| `src/query/exec_pattern.rs` | The main runtime `ExecPattern` contract and helpers for proposals |
+| `src/query/plan.rs` | Descriptors, recursive planning, materialization that depends on the database basis, and their tests. |
+| `src/query/exec_pattern.rs` | The main runtime `ExecPattern` contract, and helpers for proposals. |
 | `src/query/stage.rs` | Concrete executable stages. |
-| `src/query/engine.rs` | `GenericJoinEngine` the main execution loop over `dyn ExecPattern` |
+| `src/query/engine.rs` | `GenericJoinEngine`, the main execution loop over `dyn ExecPattern`. |
 | `src/query/patterns/` | Relation, triple, expression, OR, and NOT runtime patterns. |

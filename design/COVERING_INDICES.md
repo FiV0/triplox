@@ -1,16 +1,20 @@
 # Covering Indices
 
-Triplox uses Datomic-style covering indices that encode the transaction entity
-ID (tx_eid) in every key. Each assertion and retraction produces a distinct key,
-so the full history of every triple is available directly from the indices — no
-transaction log replay is needed for temporal queries.
+Triplox uses covering indices in the style of Datomic. A covering index keeps all
+the data in its keys. A triple is one (entity, attribute, value) fact. Each index
+key contains the transaction entity ID (tx_eid), the entity ID of the transaction.
+
+Each assertion (the addition of a triple) and each retraction (the removal of a
+triple) produces a different key. Thus the indices contain the full history of
+each triple. Temporal queries (queries about past states) do not need a replay of
+the transaction log.
 
 ## Index Key Layouts
 
-Five indices are maintained. The three **full indices** (EAVT, AVET, AEVT)
-contain all components of the (E, A, V) triple plus the transaction entity ID T
-and an operation flag. The two **partial indices** (AE, AV) omit one triple
-component and are atemporal — they carry neither T nor op.
+Triplox keeps five indices. The three full indices (EAVT, AVET, AEVT) contain all
+components of the (E, A, V) triple, the transaction entity ID T, and an operation
+flag (op). The two partial indices (AE, AV) omit one component of the triple. They
+are atemporal, that is, they do not contain T or op.
 
 | Index | Key components |
 |-------|----------------|
@@ -20,104 +24,113 @@ component and are atemporal — they carry neither T nor op.
 | AE    | A, E           |
 | AV    | A, V           |
 
-- **T** is the transaction entity ID (tx_eid), stored using descending i64
-  encoding so that **newest transactions sort first** within each logical key
-  group. This uses the same encoding as entity IDs in the E position.
-- **op** is a flag: *added* or *retracted*.
+T is the transaction entity ID (tx_eid). Triplox stores T with a descending i64
+encoding. Thus the newest transactions sort first in each logical key group (the
+entries with the same E, A, and V). Entity IDs in the E position use the same
+encoding. The op component is a flag with the value *added* or *retracted*.
 
-See `ENCODING.md` for byte-level encoding details.
+Read `ENCODING.md` for the encoding at the byte level.
 
 ### Write path
 
-- **Assert (add)**: write to all 5 indices. Full indices receive the key with
-  `op = added`. Partial indices receive just the (A, E) or (A, V) key. For
-  cardinality one attributes, additions also result in retractions of the
-  superseded triples.
-- **Retract**: write key with `op = retracted` to the 3 full indices only. The
-  partial indices (AE, AV) are not updated.
+An assertion writes to all 5 indices. The full indices get the key with
+`op = added`. The partial indices get only the (A, E) or (A, V) key. An attribute
+with cardinality one has one value for each entity at a time. For these
+attributes, an assertion also causes retractions of the triples that it replaces.
 
-Each operation carries a distinct T in the full indices, so adds and retracts for
-the same (E, A, V) triple are always distinct keys.
+A retraction writes a key with `op = retracted` to the 3 full indices only.
+Triplox does not update the partial indices (AE, AV).
+
+Each operation has a different T in the full indices. Thus an assertion and a
+retraction for the same (E, A, V) triple always have different keys.
 
 ## Temporal Filtering (As-Of Queries)
 
+An as-of query reads the state of the data at a given time `as_of`.
+
 ### Full indices (EAVT, AVET, AEVT)
 
-The **logical key** is everything minus T and op — the (E, A, V) components in
-index order. Because T is stored in descending order, keys within a logical
-group are sorted newest-first.
+The logical key is all of the key except T and op, that is, the (E, A, V)
+components in index order. Triplox stores T in descending order. Thus the keys in
+a logical key group sort newest first.
 
-To resolve the current state at a given time `as_of`:
+To resolve the state at a given time `as_of`, do these steps:
 
-1. For each logical key group, find the first entry where `T <= as_of` (since
-   newest comes first, this is the first entry that falls within the time
-   window).
-2. If `op = added`, the triple is present at `as_of`. If `op = retracted`, it
-   is absent — skip the group.
-3. Advance past the logical key group to the next distinct (E, A, V).
+1. In each logical key group, find the first entry where `T <= as_of`. The newest
+   entry comes first, so this entry is the first one in the time window.
+2. If `op = added`, the triple is present at `as_of`. If `op = retracted`, the
+   triple is absent. Skip the group.
+3. Move past the logical key group to the next different (E, A, V).
 
-Grouping is local: all versions of the same triple are adjacent in the sorted
-key space, so no buffering or hash tables are needed.
+Grouping is local. All versions of the same triple are adjacent in the sorted key
+space. Thus buffers and hash tables are not necessary.
 
 ### Partial indices (AE, AV)
 
-AE and AV are **2-component** indices that omit V and E respectively. They are
-atemporal: they carry no T or op, and retractions are never written to them.
-Once an (A, E) or (A, V) pair is asserted, it remains in the index permanently.
+AE and AV are 2-component indices. AE omits V, and AV omits E. They are atemporal.
+They carry no T or op, and Triplox never writes retractions to them. After an
+assertion writes an (A, E) or (A, V) pair, the pair stays in the index permanently.
 
-This is necessary because per-entity retraction resolution is impossible in
-these indices — the missing component (E or V) is needed to distinguish which
-assertion a retraction cancels. For example, if E1 and E2 both have
-`(:name, "alice")`, they map to the same AV key `(:name, "alice")`. A retraction
-for E1 cannot be recorded without also affecting E2.
+This design is necessary because these indices cannot resolve retractions for each
+entity. To find which assertion a retraction cancels, it is necessary to know the
+missing component (E or V). For example, if E1 and E2 both have
+`(:name, "alice")`, they map to the same AV key `(:name, "alice")`. The index
+cannot record a retraction for E1 without an effect on E2.
 
-Because AE and AV are purely additive, they may **over-propose**, i.e. they can
-report values or entities that have actually been retracted. This is safe
-because every variable proposed by a 2-component index is validated by a
-3-component index at a later join level. Each triple pattern `[?e :attr ?v]`
-contributes a 2-component extender at the first variable's level (AE or AV) and
-a 3-component extender at the second variable's level (AEV, AVE, or EAVT)
-because one variable plus the constant attribute are now bound, all three key
-components are determined. Any spurious proposal from AE/AV is filtered out when
-the 3-component extender finds no matching entry.
+AE and AV only add entries. Thus they can over-propose, that is, they can report
+values or entities that a retraction removed. This is safe because a 3-component
+index validates each variable from a 2-component index at a later join level. A
+join level is the join step for one query variable.
 
-#### Role of AE/AV in WCOJ
+Each triple pattern `[?e :attr ?v]` gives two extenders. An extender proposes or
+filters the values for one variable. At the level of the first variable, the
+pattern gives a 2-component extender (AE or AV). At the level of the second
+variable, it gives a 3-component extender (AEV, AVE, or EAVT). At that level, one
+variable and the constant attribute are bound, so all three key components are
+determined. If the 3-component extender finds no matching entry, it filters out
+the false proposal from AE or AV.
 
-The Worst-Case Optimal Join (WCOJ) algorithm assigns one **join level** per
-query variable. At each level, **extenders** propose candidate values for that
-variable, and other extenders intersect (filter) the proposals.
+#### Role of AE and AV in WCOJ
 
-Without AE/AV, the first-level proposal must scan a 3-component index and
-deduplicate the extracted component across all trailing components. The partial
-indices avoid this overhead by providing a pre-projected view.
+The Worst-Case Optimal Join (WCOJ) algorithm gives each query variable one join
+level. At each level, extenders propose candidate values for that variable. Other
+extenders intersect (filter) the proposals.
 
-#### Alternative: Eliminating Separate AE/AV Indices
+Without AE and AV, the proposal at the first level must scan a 3-component index.
+It must also remove the duplicates of the extracted component across all trailing
+components. The partial indices prevent this cost. They give a pre-projected view,
+that is, a view that already holds only the two components.
 
-Instead of maintaining 5 indices, AE scans can be performed against the **AEV**
-index and AV scans against the **AVE** index by seeking over the underlying 3-component
-indices. This is a tradeoff between space amplification and iteration speed.
+#### Alternative: Remove the Separate AE and AV Indices
 
-This is viable and may be the right choice if write amplification proves to be
-the bottleneck.
+Triplox can do AE scans on the AEV index and AV scans on the AVE index, instead of
+keeping 5 indices. These scans seek over the underlying 3-component indices. This
+is a tradeoff between space amplification (extra storage for the same data) and
+iteration speed.
+
+This option is viable. If write amplification (extra writes for each change)
+becomes the bottleneck, this option can be the right choice.
 
 #### Wildcards
 
-Wildcard patterns like `[?e :name _]` compile to a single-variable query. If the
-wildcard position is discarded, AE (or AV) becomes the sole extender with no
-3-component validation. This means wildcard patterns need to be compiled against
-the full indices or wildcards be replaced with dummy variables.
+A wildcard (`_`) matches any value and binds no variable. A wildcard pattern such
+as `[?e :name _]` compiles to a query with one variable. If the compiler discards
+the wildcard position, AE (or AV) becomes the only extender. Then the query has no
+3-component validation. Thus the compiler must compile wildcard patterns against
+the full indices, or replace the wildcards with dummy variables.
 
 ## History Queries
 
-The full indices (EAVT, AVET, AEVT) support history queries directly. Scan the
-logical key prefix without temporal filtering — every entry is a
-`[e, a, v, t, added]` datom representing a single assertion or retraction. This
-enables Datomic's `as-of`, `since`, and `history` database views.
+The full indices (EAVT, AVET, AEVT) support history queries (queries for all past
+changes) directly. To run a history query, scan the logical key prefix without
+temporal filtering. Each entry is a datom, that is, one `[e, a, v, t, added]`
+record for one assertion or retraction. Thus Triplox can support the `as-of`,
+`since`, and `history` database views of Datomic.
 
-## Seek Behaviour
+## Seek Behavior
 
-Consider an attribute of an entity with cardinality one. That attribute sees 3 different values `v1`, `v2`
-and `v3` over its lifetime.
+Look at an attribute with cardinality one on an entity. Over its lifetime, the
+attribute gets 3 different values: `v1`, `v2`, and `v3`.
 
 ```
 (E1, A1, V1, ...)
@@ -126,8 +139,10 @@ and `v3` over its lifetime.
 (E2, A1, V1, ...)
 ```
 
-When iterating over these values only one of them will be an assertion at the latest valid transaction.
-The remaining ones will be retractions. So even if we iterate over these values in the joins, in an `as-of`
-query only one value will appear. A similar pattern holds for the other indices (forgetting partial indices AV/AE).
+If we iterate over these values, only one of them is an assertion at the latest
+valid transaction. The other values are retractions. Thus, even if we iterate over
+these values in the joins, only one value appears in an `as-of` query. A similar
+pattern holds for the other indices, except for the partial indices AV and AE.
 
-In case an attribute has cardinality many no retractions are added and all versions will be visible as required.
+If an attribute has cardinality many (many values for each entity), Triplox adds
+no retractions. Thus all versions are visible, as required.

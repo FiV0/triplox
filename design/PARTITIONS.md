@@ -4,18 +4,18 @@ Version 0.1
 
 ## Overview
 
-A partition is a logical grouping of entities that occupy a distinct region of the entity ID space. The partition is encoded directly in the upper bits of the entity ID, so entities in the same partition are contiguous in sorted order without any additional indirection.
+An entity ID is the 64-bit number that identifies an entity. A partition is a group of entities with its own range of entity IDs. The upper bits of the entity ID hold the partition. Thus, entities in the same partition are next to each other in sorted order, and no extra level of indirection is necessary.
 
-Partitions serve two purposes:
+Partitions have two purposes:
 
-1. **Index locality** — entities in the same partition are adjacent in E-leading indices (EAVT, AEVT), enabling efficient prefix scans in the storage layer.
-2. **Namespace separation** — schema entities, transaction entities, and user data occupy non-overlapping regions of the ID space, preventing accidental collision.
+1. Index locality. An E-leading index sorts its keys by entity first. Entities in the same partition are adjacent in the E-leading indices (EAVT, AEVT). Thus, the storage layer can do efficient prefix scans (reads of all keys with the same start).
+2. Namespace separation. Schema entities, transaction entities, and user data use ranges of the ID space that do not overlap. This prevents accidental collisions.
 
 ### Guiding principles
 
-- Entity IDs are i64 values everywhere: on the wire, in the indices, and in query results. The partition is not stored separately — it is the upper bits of the entity ID.
-- Queries operate over the full index space. The query engine is partition-unaware; partitions affect physical layout, not logical semantics.
-- There is a single, global allocation counter shared across all partitions (see Section 3).
+- Entity IDs are i64 values everywhere: on the wire, in the indices, and in query results. The system does not store the partition separately. The partition is the upper bits of the entity ID.
+- Queries operate over the full index space. The query engine does not know about partitions. Partitions change the physical layout, not the logical semantics.
+- All partitions share one global allocation counter (see Section 3). This counter supplies the number for each new entity ID.
 
 ---
 
@@ -37,19 +37,19 @@ An entity ID is a 64-bit signed integer with three fields:
 | Partition | 61–42 | 20    | 0 to 1,048,575             |
 | Counter   | 41–0  | 42    | 0 to 4,398,046,511,103     |
 
-Because partition 0 places no bits above the counter, entities in `:db.part/db` have small, readable entity IDs (the raw counter value).
+Because partition 0 sets no bits above the counter, entities in `:db.part/db` have small entity IDs that are easy to read. Each of these IDs is the raw counter value.
 
 ### 1.1 Tempids
 
-A negative entity ID (sign bit = 1) is a **tempid** — a client-side placeholder that is never stored persistently. Within a single transaction, two operations referencing the same negative value refer to the same entity. The system resolves each unique tempid to a fresh permanent ID before writing to the indices.
+A tempid is a temporary entity ID that the client supplies. A negative entity ID (sign bit = 1) is a tempid. It is only a placeholder, and the system never stores it persistently. In one transaction, two operations that use the same negative value refer to the same entity. Before the system writes to the indices, it resolves each unique tempid to a new permanent ID.
 
-**Design note:** The primary tempid mechanism will be string identifiers (e.g. `"my-new-entity"`), following the common convention in Datomic-style systems. Negative integer tempids may be supported as an alternative in a later phase.
+Design note: The primary tempid mechanism will be string identifiers (for example, `"my-new-entity"`). This follows the common convention in Datomic-style systems. Support for negative integer tempids as an alternative is possible in a later phase.
 
 ---
 
 ## 2. Built-in Partitions
 
-Three partitions are installed at bootstrap:
+At bootstrap (the setup of a new database), the system installs three partitions:
 
 | Partition | Number | Keyword           | Entity ID base    | Purpose                          |
 |-----------|--------|-------------------|-------------------|----------------------------------|
@@ -59,91 +59,88 @@ Three partitions are installed at bootstrap:
 
 ### 2.1 :db.part/db (partition 0)
 
-Schema attributes, value type enums, cardinality enums, and partition entities live here. See `SCHEMA.md` for the bootstrap entity definitions.
+This partition holds the schema attributes, the value type enums, the cardinality enums, and the partition entities. For the definitions of the bootstrap entities, see `SCHEMA.md`.
 
-Because partition 0 places no bits above the counter, entity IDs in this partition are small integers.
+Because partition 0 sets no bits above the counter, entity IDs in this partition are small integers.
 
 ### 2.2 :db.part/tx (partition 1)
 
-Each transaction is reified as an entity in this partition. The transaction entity carries the following attributes:
+The system reifies each transaction as an entity in this partition. To reify a transaction is to store it as a regular entity. The transaction entity has these attributes:
 
 | Attribute      | Value Type | Description                                                         |
 |----------------|------------|---------------------------------------------------------------------|
 | `db/txInstant` | instant    | Wall-clock time of the transaction                                  |
 | `db/txResult`  | ref        | `:db.tx/committed` or `:db.tx/aborted` (see `SCHEMA.md`)            |
-| `db/txId`      | long       | The sequential tx_id assigned by the log                            |
-| `db/txError`   | string     | Error message (present only when `db/txResult` is `:db.tx/aborted`) |
+| `db/txId`      | long       | The sequential tx_id that the log assigns                           |
+| `db/txError`   | string     | Error message (only if `db/txResult` is `:db.tx/aborted`)           |
 
-The transaction entity ID (`tx_eid`) is **not minted** by the partition map; it is a
-pure function of the log-assigned `tx_id`:
+The partition map does not allocate the transaction entity ID (`tx_eid`). The `tx_eid` is a pure function of the `tx_id` that the log assigns. A pure function always gives the same output for the same input:
 
 ```
 tx_eid = make_entity_id(TX_PARTITION, tx_id) = (1 << 42) | tx_id   (== mask ^ tx_id)
 tx_id  = extract_counter(tx_eid)
 ```
-This has the nice property that we don't need to look up a `tx_eid` for a given `TxKey` when
-querying; we can derive it with a mask instead. The indexer *sets* (rather than allocates) the `TX_PARTITION` counter
-from each incoming `tx_key.tx_id`. The semantics of the log assure that these ids are strictly increasing.
-`db/txId` is stored for queryability.
+
+This has a nice property. For a query, it is not necessary for us to look up the `tx_eid` of a given `TxKey`. We can derive it with a mask (a fixed bit pattern) instead.
+
+The indexer does not allocate the `TX_PARTITION` counter. It sets the counter from each incoming `tx_key.tx_id`. The semantics of the log make sure that these IDs strictly increase. The system stores `db/txId` so that queries can use it.
 
 ### 2.3 :db.part/user (partition 2)
 
-The default partition for application data. When a tempid does not specify a partition, the entity is allocated here.
+This is the default partition for application data. If a tempid does not specify a partition, the system allocates the entity in this partition.
 
 ---
 
 ## 3. The Global Counter
 
-Entity IDs are allocated from a single, monotonically increasing counter called **T**. Every allocation — whether for a schema entity in `:db.part/db`, a transaction entity in `:db.part/tx`, or a user entity in `:db.part/user` — advances the same counter.
+The system allocates entity IDs from one counter, called T. T is monotonically increasing, which means that it never decreases. Each allocation advances this same counter. This is true for a schema entity in `:db.part/db`, a transaction entity in `:db.part/tx`, and a user entity in `:db.part/user`.
 
-When an entity is allocated in partition P, its entity ID is `(P << 42) | T`, and T advances to `T + 1`.
+When the system allocates an entity in partition P, the entity ID is `(P << 42) | T`. Then T advances to `T + 1`.
 
 ### 3.1 Counter Semantics
 
-- T starts at 0 on a fresh database. The bootstrap transaction consumes the first batch of counter values for schema entities, enum entities, and partition entities.
-- T never rewinds, even if a transaction fails after allocating IDs.
-- Counter values may have gaps within a given partition. If T = 100 allocates a user entity and T = 101 allocates a tx entity, partition 2 (user) goes from counter 100 to counter 102.
-- This is acceptable: entity IDs are opaque handles, not dense sequences. The gaps do not affect storage efficiency because the indices store only entities that exist.
+- T starts at 0 in a new database. The bootstrap transaction uses the first batch of counter values for the schema entities, the enum entities, and the partition entities.
+- Even if a transaction fails after it allocates IDs, T never rewinds.
+- In a given partition, the counter values can have gaps. For example, T = 100 allocates a user entity and T = 101 allocates a tx entity. Then partition 2 (user) goes from counter 100 to counter 102.
+- The gaps are not a problem, because entity IDs are opaque handles, not dense sequences. An opaque handle is a value with no meaning of its own. The indices store only the entities that exist. Thus, the gaps do not affect storage efficiency.
 
 ### 3.2 Persistence
 
-T is stored durably as part of the **database root** — a small metadata record that is updated atomically on each committed transaction. The root contains:
+The database root is a small metadata record for the database. The system stores T durably in the database root. Each committed transaction updates the root atomically. The root contains these fields:
 
 | Field    | Type    | Description                             |
 |----------|---------|-----------------------------------------|
 | `next_t` | i64     | Next counter value to allocate          |
 | ...      |         | Index metadata (see `ENCODING.md`)      |
 
-The commit path is:
+The steps to commit a transaction are:
 
 1. Allocate counter values for all new entities in the transaction.
-2. Write index entries to the storage layer and update the root to reflect the new `next_t`
+2. Write the index entries to the storage layer, and update the root with the new `next_t`.
 
 
 ### Alternatives
 
-Another option is to have a counter per partition and just have these counters in memory. On initialization one
-reads the highest entity id of every partition and extracts the counter part. A simple reverse scan of the EAV index
-plus the partition bytes should be sufficient. Maybe 40 bits per partition makes more sense here.
+Another option is one counter per partition, with these counters only in memory. At initialization, the system reads the highest entity ID of each partition and extracts the counter part. A reverse scan (a read from the last key backward) of the EAV index with the partition bytes is probably sufficient. Possibly 40 bits per partition is a better choice for this option.
 
 ---
 
 ## 4. Index Locality
 
-Because entity IDs encode the partition in their upper bits, and because entity IDs are encoded with an order-preserving scheme (see `ENCODING.md`), all entities in the same partition are adjacent in the E-leading indices EAVT, and AEVT.
+Entity IDs hold the partition in their upper bits. Entity IDs also use an order-preserving encoding (see `ENCODING.md`). Thus, the encoded bytes sort in the same order as the numbers. As a result, all entities in the same partition are adjacent in the E-leading indices EAVT and AEVT.
 
 ---
 
 ## 5. User-Defined Partitions
 
-_This section covers a future phase. The details of partition creation and assignment are TBD._
+_This section is about a future phase. The details of how to create and assign partitions are TBD._
 
-The 20-bit partition field supports up to 1,048,575 partitions beyond the three built-in ones. In the future we will allow users to create named partitions and assign entities to them. This enables domain-specific locality. It allows for grouping all entities related to a particular tenant or dataset so they cluster together in the E-leading indices.
+The 20-bit partition field supports up to 1,048,575 partitions in addition to the three built-in ones. In the future, we will let users create named partitions and assign entities to them. This gives locality that fits the domain of the application. For example, a user can group all entities of one tenant or one dataset. Then these entities cluster together in the E-leading indices.
 
-Topics to be addressed:
+These topics are still open:
 
-- How user-defined partitions are created (likely via a `db.install/partition` transaction).
-- How entities are assigned to a specific partition (explicit partition directives on tempids, e.g. `db/force-partition` or `db/match-partition`).
-- Whether partition entities are modelled as regular entities in `:db.part/db` with a `db/ident`.
+- How a user creates user-defined partitions (probably with a `db.install/partition` transaction).
+- How a user assigns entities to a specific partition (explicit partition directives on tempids, for example `db/force-partition` or `db/match-partition`).
+- Whether we model partition entities as regular entities in `:db.part/db` with a `db/ident`.
 
-See [Datomic Partitions](https://docs.datomic.com/transactions/partitions.html) for reference.
+For reference, see [Datomic Partitions](https://docs.datomic.com/transactions/partitions.html).

@@ -4,15 +4,15 @@ Version 0.1
 
 ## Overview
 
-The `transact_tx_inner` pipeline processes a set of transaction operations into committed datoms. A cloned `PartitionMap` isolates counter mutations so they are only applied on successful commit.
+The `transact_tx_inner` pipeline changes a set of transaction operations into committed datoms. A datom is one entity-attribute-value fact. The pipeline changes the counters only in a clone of the `PartitionMap`. It applies the counter changes only if the commit succeeds.
 
 ## Threads
 
-Indexing never waits on the shared `tpx-rt-worker` runtime, which serves HTTP and incremental queries:
+Indexing never waits on the shared `tpx-rt-worker` runtime. This runtime serves HTTP and incremental queries. The runtimes split the work as follows:
 
-- `tpx-indexer` runs a current-thread runtime with the log subscriber loop and SlateDB's batch-writer (`DbBuilder::with_write_runtime`), so a commit is a task switch on one thread. Every SlateDB write and `Db::close` go through it, so `Node::close` stops it last.
-- `tpx-io` drives all S3 HTTP I/O (`SpawnedReqwestConnector`), so pooled connections don't tie the indexer to the runtime that opened them.
-- SlateDB's memtable flusher, compactor and GC stay on the shared runtime. Writes only wait on them under backpressure.
+- `tpx-indexer` runs a current-thread runtime (all its tasks run on one thread). This runtime holds the log subscriber loop and the batch writer of SlateDB (`DbBuilder::with_write_runtime`). Thus a commit is a task switch on one thread. Every SlateDB write and `Db::close` go through this runtime. Thus `Node::close` stops it last.
+- `tpx-io` drives all S3 HTTP I/O (`SpawnedReqwestConnector`). Thus a pooled connection does not tie the indexer to the runtime that opened the connection.
+- SlateDB keeps recent writes in a memtable (a write buffer in memory). The memtable flusher, the compactor, and the garbage collector of SlateDB stay on the shared runtime. Writes wait on these tasks only under backpressure (SlateDB blocks writes until flushes catch up).
 
 ---
 
@@ -81,11 +81,11 @@ Indexing never waits on the shared `tpx-rt-worker` runtime, which serves HTTP an
    - self.metadata.advance_generation()
 ```
 
-Note: You might be wondering why lookup refs are fully typed in entity position, but not in value position (a string could a string or a tempid). We wanted to avoid moving Schema to the client, so that checking and resolving needs to happen server side.
+Note: Why do lookup refs (`[attribute value]` pairs that name an entity) have their own type in the entity position, but not in the value position? In the value position, a string can be a string or a tempid (a placeholder name for an entity). We did not want to move the schema to the client. Thus validation and resolution must happen on the server.
 
 ## Type Pipeline
 
-Each stage narrows the types, eliminating one class of unresolved references:
+Each stage makes the types narrower and removes one kind of unresolved reference:
 
 ```
 TxOp (EntityRef + DataType)
@@ -101,18 +101,19 @@ Datom (i64 + DataType)                           fully concrete
 
 Triplox supports two unique modes:
 
-| Mode                  | Meaning                                                                           | Lookup refs | Tempid upsert |
-|-----------------------|-----------------------------------------------------------------------------------|-------------|---------------|
-| `:db.unique/value`    | At most one entity may have a given `[attribute value]`.                          | No          | No            |
-| `:db.unique/identity` | Same uniqueness constraint, plus tempids can adopt existing entities by identity. | Yes         | Yes           |
+| Mode                  | Meaning                                                                                                          | Lookup refs | Tempid upsert |
+|-----------------------|------------------------------------------------------------------------------------------------------------------|-------------|---------------|
+| `:db.unique/value`    | At most one entity can have a given `[attribute value]`.                                                         | No          | No            |
+| `:db.unique/identity` | It has the same uniqueness constraint. Also, a tempid can upsert (adopt the existing entity with that identity). | Yes         | Yes           |
 
-VAE has layout `[VAE][value][attribute][entity][tx_eid][op]` and is written
-only for attributes with `:db/unique`. It is used for unique checks, identity
-lookup refs, and identity upsert resolution.
+The VAE index (datoms sorted by value, attribute, entity) has the layout
+`[VAE][value][attribute][entity][tx_eid][op]`. Triplox writes VAE entries only
+for attributes with `:db/unique`. Triplox uses the VAE index for unique
+validation, identity lookup refs, and identity upsert resolution.
 
 ## Upsert Resolution
 
-`DatomWithTempids` is Triplox's equivalent of Mentat's `TermWithTempIds`:
+`DatomWithTempids` in Triplox is the equivalent of `TermWithTempIds` in Mentat:
 
 ```
 DatomWithTempids {
@@ -123,7 +124,7 @@ DatomWithTempids {
 }
 ```
 
-The resolver uses the same terminology as Mentat:
+The resolver uses the same terms as Mentat:
 
 ```rust
 struct UpsertE(String, Entid, DataType);   // [:db/add TEMPID unique-id-attr CONCRETE_V]
@@ -144,8 +145,9 @@ struct FinalPopulations {
 }
 ```
 
-Concrete datoms with no tempids are inert terms. They bypass evolution and are
-merged back after tempid resolution.
+An inert term is a concrete datom with no tempids. Inert terms do not go
+through evolution, the upsert loop in the section "Evolution Loop". The resolver
+merges them back after tempid resolution.
 
 ### Initial Classification
 
@@ -160,9 +162,10 @@ Each staged datom goes into exactly one bucket:
 | `(Id e, a, TempRef v)`     | any                                 | any    | `allocations` |
 | `(Id e, a, Data v)`        | any                                 | any    | inert         |
 
-Retractions are never upserts. A retraction that still mentions an unresolved
-tempid after evolution fails because the system cannot retract an entity that
-was neither resolved nor allocated by an assertion.
+Retractions are never upserts. After evolution, a retraction can still refer to
+an unresolved tempid. In this case, the retraction fails. The reason is that
+the system cannot retract an entity that an assertion did not resolve or
+allocate.
 
 ### Evolution Loop
 
@@ -177,52 +180,59 @@ while generation.can_evolve() {
 }
 ```
 
-`can_evolve()` is true only when `upserts_e` is non-empty. Each generation:
+`can_evolve()` is true only if `upserts_e` is not empty. A generation is one
+set of buckets, and each pass of the loop makes a new generation. Each
+generation has these steps:
 
-1. Collects candidate identity pairs from `UpsertE`: `(tempid, (attr, value))`.
-2. Batch-resolves those `[attr value]` pairs through VAE.
-3. Rewrites every population into a fresh `Generation`.
+1. The resolver collects the candidate identity pairs from `UpsertE`: `(tempid, (attr, value))`.
+2. The resolver resolves those `[attr value]` pairs through VAE in one batch.
+3. The resolver rewrites every bucket into a new `Generation`.
 
-Rewrite rules:
+The rewrite rules are:
 
-- `UpsertE` that hits VAE moves to `upserted` as a concrete datom.
-- `UpsertE` that misses VAE demotes to `allocations`.
-- `UpsertEV` whose value tempid resolved promotes to `UpsertE` for the next
-  generation. This happens even if the entity tempid also resolved, so the next
-  VAE lookup can detect conflicts.
-- `UpsertEV` whose entity tempid resolved but value tempid did not demotes to a
-  partially concrete allocation.
-- `UpsertEV` with neither side resolved remains in `upserts_ev`.
-- Existing `allocations` substitute newly resolved tempids; fully concrete
-  terms move to `resolved`.
-- Existing `resolved` terms remain resolved.
+- If an `UpsertE` hits VAE, it moves to `upserted` as a concrete datom.
+- If an `UpsertE` misses VAE, it demotes to `allocations`.
+- If the value tempid of an `UpsertEV` resolved, the `UpsertEV` promotes to
+  `UpsertE` for the next generation. This also occurs if the entity tempid
+  resolved. Thus the next VAE lookup can detect conflicts.
+- If the entity tempid of an `UpsertEV` resolved but the value tempid did not,
+  the `UpsertEV` demotes to a partly concrete allocation.
+- If neither tempid of an `UpsertEV` resolved, the `UpsertEV` stays in
+  `upserts_ev`.
+- In the existing `allocations`, the resolver substitutes the newly resolved
+  tempids. Terms that become fully concrete move to `resolved`.
+- Existing `resolved` terms stay resolved.
 
 The resolver tracks a global `resolved_tempids` map. If a tempid resolves to
-different entids in different generations, the transaction aborts with a
-conflicting-upsert error.
+different entids (entity IDs) in different generations, the transaction aborts
+with a conflicting-upsert error.
 
-The VAE lookups performed during upsert resolution are intentionally not reused
-by later validation in the initial implementation. A later optimization can
-cache them for uniqueness validation, but cardinality old-value lookup will
-still require its own `(entity, attribute) -> old value` EAV scan.
+In the initial implementation, later validation does not reuse the VAE lookups
+from upsert resolution. This is on purpose. A later optimization can cache
+these lookups for unique validation. But the old-value lookup for card-one
+attributes (one value per entity) will still need its own
+`(entity, attribute) -> old value` EAV scan. EAV is the index sorted by entity,
+attribute, value.
 
 ### Allocation After Evolution
 
-When no `upserts_e` remain, unresolved `upserts_ev` are drained into
-`allocations`. The resolver then:
+When no `upserts_e` remain, the resolver moves the unresolved `upserts_ev` into
+`allocations`. Then the resolver does these steps:
 
-1. Collects unresolved tempids in deterministic `BTreeSet` order.
-2. Builds a multimap `(identity_attr, value_or_tempid) -> Vec<tempid>` for
-   unresolved identity assertions.
-3. Uses union-find to coalesce tempids that assert the same new identity.
-4. Allocates one entid per union group.
-5. Uses DB partition if any tempid in the group asserts `:db/ident`, otherwise
-   USER partition.
-6. Substitutes all remaining tempids and returns `FinalPopulations`.
+1. It collects the unresolved tempids in deterministic `BTreeSet` order.
+2. It builds a multimap (a map from a key to many values)
+   `(identity_attr, value_or_tempid) -> Vec<tempid>` for the unresolved
+   identity assertions.
+3. It uses union-find (a structure that merges items into groups) to coalesce
+   the tempids that assert the same new identity.
+4. It allocates one entid for each union group.
+5. If a tempid in the group asserts `:db/ident`, it uses the DB partition.
+   Otherwise, it uses the USER partition. A partition is a range of entity IDs.
+6. It substitutes all remaining tempids and returns `FinalPopulations`.
 
 ### Worked Example
 
-Assume `:person/email` is `:db.unique/identity` and the store has no
+Assume that `:person/email` is `:db.unique/identity` and that the store has no
 `"a@x"` entry:
 
 ```clojure
@@ -230,23 +240,28 @@ Assume `:person/email` is `:db.unique/identity` and the store has no
  {:db/id "alice2" :person/email "a@x" :person/age 30}]
 ```
 
-Initial generation:
+The initial generation has these buckets:
 
 - `upserts_e`: `("alice", :person/email, "a@x")`,
   `("alice2", :person/email, "a@x")`
-- `allocations`: name and age datoms
+- `allocations`: the name datom and the age datom
 
-The VAE lookup misses, so both upserts demote to allocations. Post-loop
-union-find sees both tempids asserting the same unresolved identity and assigns
-them one new entid. The final transaction writes one entity with email, name,
-and age.
+The VAE lookup misses. Thus both upserts demote to `allocations`. After the
+loop, union-find sees that both tempids assert the same unresolved identity.
+It gives the two tempids one new entid. The final transaction writes one entity
+with email, name, and age.
 
 If the store already has entity `42` with `:person/email "a@x"`, both tempids
-resolve to `42`; name and age move to `resolved`, and no new entity is allocated.
+resolve to `42`. The name datom and the age datom move to `resolved`. The
+resolver allocates no new entity.
 
-## User facing types
+## User-Facing Types
 
-In the entity position we can use a strongly typed `EntityRef` (id, tempid, ident, lookup ref). The same thing doesn't
-work for value positions as things like `[:attr value]` could be considered a vector or a lookup-ref in Clojure and I didn't
-want to bring the schema to the client in non strongly typed languages. I think this is something to be revisited as it makes
-the Rust API look less convincing. The other option is to use special syntax for lookup refs vs Clojure vectors.
+In the entity position, we can use a strongly typed `EntityRef` (id, tempid,
+ident, lookup ref). An ident is a keyword that names an entity. A strongly
+typed reference does not work in the value position. In Clojure, a value such
+as `[:attr value]` can be a vector or a lookup ref. I did not want to bring the
+schema to the client in languages that are not strongly typed. I want to look
+at this decision again later, because it makes the Rust API look less
+convincing. The other option is a special syntax that tells lookup refs apart
+from Clojure vectors.
