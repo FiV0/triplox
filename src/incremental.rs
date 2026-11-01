@@ -1,18 +1,17 @@
 //! Writer-node incremental query service.
 
 use std::collections::HashMap;
-use std::io::ErrorKind;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use crate::partition::tx_eid_from_tx_id;
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{anyhow, Context, Result};
 use dbsp::{utils::Tup2, PoolConfig, RuntimePool, ZWeight};
 use slatedb::object_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tokio::task::{JoinError, JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
@@ -30,7 +29,7 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Circuit, Completion, Control, Worker};
+use worker::{Batch, Build, Circuit, Completion, Control, Message, Worker};
 mod worker;
 
 const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
@@ -342,7 +341,7 @@ impl IncrementalQueryService {
 }
 
 struct RegisteredQuery {
-    inbox: mpsc::Sender<Arc<Batch>>,
+    inbox: mpsc::Sender<Message>,
     sender: mpsc::Sender<IncrementalQueryDelta>,
     control: Arc<Control>,
     basis: TxKey,
@@ -352,56 +351,6 @@ struct RegisteredQuery {
 }
 
 type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
-
-// Finishes a registration on the dispatcher once its circuit has been built.
-type Built = Box<dyn FnOnce(&mut IncrementalQueryServiceInner) + Send>;
-
-// Builds a circuit on a blocking thread, primes it, and removes its storage if either fails.
-async fn prepare_query<C: Circuit>(
-    storage_path: PathBuf,
-    build: impl FnOnce(&Path) -> Result<C> + Send + 'static,
-    initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-) -> Result<(C, worker::Rows)> {
-    let build_path = storage_path.clone();
-    let built = tokio::task::spawn_blocking(move || build(&build_path))
-        .await
-        .context("Incremental query registration task panicked")
-        .and_then(|result| result);
-    let primed = match built {
-        Ok(mut circuit) => tokio::spawn(async move {
-            let rows = circuit.prime(initial_triples).await;
-            (circuit, rows)
-        })
-        .await
-        .context("Incremental query registration task panicked"),
-        Err(error) => Err(error),
-    };
-    let error = match primed {
-        Ok((circuit, Ok(rows))) => return Ok((circuit, rows)),
-        Ok((circuit, Err(error))) => {
-            // Circuit destruction waits on the pool.
-            let _ = tokio::task::spawn_blocking(move || drop(circuit)).await;
-            error
-        }
-        Err(error) => error,
-    };
-    // A panicked task has finished unwinding before storage can be removed.
-    let cleanup =
-        tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        })
-        .await
-        .context("Incremental query registration cleanup task panicked")
-        .and_then(|result| result.map_err(Error::from));
-    Err(match cleanup {
-        Ok(()) => error,
-        Err(cleanup) => error.context(format!(
-            "Incremental query registration cleanup failed: {cleanup:#}"
-        )),
-    })
-}
 
 struct IncrementalQueryServiceInner {
     pool: Option<RuntimePool>,
@@ -414,9 +363,6 @@ struct IncrementalQueryServiceInner {
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
     completions: mpsc::UnboundedReceiver<Completion>,
-    // Circuit builds in flight, so registration never blocks the dispatcher.
-    // The registration gate admits one at a time, but the dispatcher does not rely on it.
-    builds: JoinSet<Built>,
 }
 
 impl IncrementalQueryServiceInner {
@@ -435,7 +381,6 @@ impl IncrementalQueryServiceInner {
             options,
             completed,
             completions,
-            builds: JoinSet::new(),
         }
     }
 
@@ -467,7 +412,6 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                 }
-                Some(built) = self.builds.join_next() => self.finish_build(built),
                 command = receiver.recv() => match command {
                     Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
                         self.start_registration(*plan, tx_key, initial_triples, response).await;
@@ -492,10 +436,7 @@ impl IncrementalQueryServiceInner {
         }
         receiver.close();
         self.cancel.cancel();
-        // Builds cannot be interrupted; each finishes into a stopped query that retires below.
-        while let Some(built) = self.builds.join_next().await {
-            self.finish_build(built);
-        }
+        // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
             query.control.terminate(None);
         }
@@ -536,27 +477,37 @@ impl IncrementalQueryServiceInner {
         self.storage_root.join(format!("query-{id}"))
     }
 
-    fn install<C: Circuit>(
+    // Registers the query and starts its worker. Batches routed from now on queue behind Prime.
+    fn start_query<C: Circuit>(
         &mut self,
-        handle: IncrementalQueryHandle,
-        circuit: C,
-        tx_key: TxKey,
-        priming_rows: worker::Rows,
-    ) -> IncrementalQuerySubscription {
+        basis: TxKey,
+        build: Build<C>,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        response: Registration,
+    ) -> IncrementalQueryHandle {
+        let handle = self.allocate_query_id();
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                })
-                .expect("new subscription queue has room for priming");
-        }
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
+        let subscription = IncrementalQuerySubscription {
+            handle,
+            tx_key: basis,
+            deltas: SubscriptionDeltas::new(receiver, termination),
+        };
+        if inbox_sender
+            .try_send(Message::Prime {
+                basis,
+                triples,
+                subscription,
+                response,
+            })
+            .is_err()
+        {
+            unreachable!("new inbox has room for Prime");
+        }
         let worker = Worker {
-            circuit,
+            build,
             storage_path: self.query_storage_path(handle),
             inbox,
             sender: sender.clone(),
@@ -573,67 +524,11 @@ impl IncrementalQueryServiceInner {
                 inbox: inbox_sender,
                 sender,
                 control,
-                basis: tx_key,
+                basis,
                 unregister: None,
             },
         );
-        IncrementalQuerySubscription {
-            handle,
-            tx_key,
-            deltas: SubscriptionDeltas::new(receiver, termination),
-        }
-    }
-
-    fn finish_registration<C: Circuit>(
-        &mut self,
-        handle: IncrementalQueryHandle,
-        tx_key: TxKey,
-        prepared: Result<(C, worker::Rows)>,
-        response: Registration,
-    ) {
-        let result = match prepared {
-            Ok((circuit, rows)) => {
-                let subscription = self.install(handle, circuit, tx_key, rows);
-                if self.cancel.is_cancelled() {
-                    // Shutdown began during the build; retirement destroys the circuit.
-                    self.queries[&handle].control.terminate(None);
-                    Err(anyhow!("Incremental query service stopped"))
-                } else {
-                    Ok(subscription)
-                }
-            }
-            Err(error) => Err(error),
-        };
-        if let Err(Ok(subscription)) = response.send(result) {
-            if let Some(query) = self.queries.get(&subscription.handle) {
-                query.control.terminate(None);
-            }
-        }
-    }
-
-    // A build task fails to join only if it panicked outside prepare_query, which drops its registration.
-    fn finish_build(&mut self, built: Result<Built, JoinError>) {
-        match built {
-            Ok(built) => built(self),
-            Err(error) => warn!("Incremental query build task failed: {error}"),
-        }
-    }
-
-    fn spawn_build<C: Circuit>(
-        &mut self,
-        handle: IncrementalQueryHandle,
-        tx_key: TxKey,
-        response: Registration,
-        build: impl FnOnce(&Path) -> Result<C> + Send + 'static,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) {
-        let storage_path = self.query_storage_path(handle);
-        self.builds.spawn(async move {
-            let prepared = prepare_query(storage_path, build, initial_triples).await;
-            Box::new(move |inner: &mut IncrementalQueryServiceInner| {
-                inner.finish_registration(handle, tx_key, prepared, response)
-            }) as Built
-        });
+        handle
     }
 
     // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
@@ -674,13 +569,11 @@ impl IncrementalQueryServiceInner {
                 return;
             }
         };
-        let handle = self.allocate_query_id();
-        self.spawn_build(
-            handle,
+        self.start_query(
             tx_key,
-            response,
-            move |storage_path| QueryCircuit::build(plan, storage_path, pool),
+            Box::new(move |storage_path| QueryCircuit::build(plan, storage_path, pool)),
             initial_triples,
+            response,
         );
     }
 
@@ -696,7 +589,7 @@ impl IncrementalQueryServiceInner {
             let Some(batch) = batch.after(query.basis.tx_id) else {
                 continue;
             };
-            match query.inbox.try_send(batch.clone()) {
+            match query.inbox.try_send(Message::Apply(batch.clone())) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     query
@@ -837,8 +730,6 @@ mod tests {
         inner
             .start_registration(plan, tx_key, triples, response)
             .await;
-        let built = inner.builds.join_next().await.unwrap().unwrap();
-        built(inner);
         result.await.unwrap().unwrap()
     }
 

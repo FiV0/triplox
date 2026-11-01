@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::io::ErrorKind;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
@@ -13,7 +13,10 @@ use triplox_client::transaction::TxKey;
 
 use super::circuit::QueryCircuit;
 use super::subscription::Termination;
-use super::{EncodedTriple, IncrementalQueryDelta, IncrementalQueryHandle};
+use super::{
+    EncodedTriple, IncrementalQueryDelta, IncrementalQueryHandle, IncrementalQuerySubscription,
+    Registration,
+};
 use crate::ops::DataType;
 
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
@@ -142,10 +145,22 @@ pub(super) struct Completion {
     pub cleanup: Result<()>,
 }
 
+pub(super) enum Message {
+    Prime {
+        basis: TxKey,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+        subscription: IncrementalQuerySubscription,
+        response: Registration,
+    },
+    Apply(Arc<Batch>),
+}
+
+pub(super) type Build<C> = Box<dyn FnOnce(&Path) -> Result<C> + Send>;
+
 pub(super) struct Worker<C> {
-    pub circuit: C,
+    pub build: Build<C>,
     pub storage_path: PathBuf,
-    pub inbox: mpsc::Receiver<Arc<Batch>>,
+    pub inbox: mpsc::Receiver<Message>,
     pub sender: mpsc::Sender<IncrementalQueryDelta>,
     pub control: Arc<Control>,
 }
@@ -153,19 +168,55 @@ pub(super) struct Worker<C> {
 impl<C: Circuit> Worker<C> {
     pub async fn run(self) -> Result<()> {
         let Self {
-            mut circuit,
+            build,
             storage_path,
             mut inbox,
             sender,
             control,
         } = self;
+        let mut circuit = None;
+        // The registration that priming answers, while priming runs.
+        let mut registration = None;
         let execution = async {
+            let build_path = storage_path.clone();
+            let built = tokio::task::spawn_blocking(move || build(&build_path))
+                .await
+                .context("Incremental query build task panicked")??;
+            let circuit = circuit.insert(built);
             loop {
-                let batch = tokio::select! {
+                let message = tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,
                     _ = sender.closed() => break,
-                    batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+                    message = inbox.recv() => match message { Some(message) => message, None => break },
+                };
+                let batch = match message {
+                    Message::Prime {
+                        basis,
+                        triples,
+                        subscription,
+                        response,
+                    } => {
+                        registration = Some(response);
+                        let rows = circuit.prime(triples).await?;
+                        if control.stop.is_cancelled() {
+                            return Err(anyhow!("Incremental query service stopped"));
+                        }
+                        if !rows.is_empty() {
+                            sender
+                                .try_send(IncrementalQueryDelta {
+                                    tx_key: basis,
+                                    rows,
+                                })
+                                .expect("new subscription queue has room for priming");
+                        }
+                        let response = registration.take().expect("priming registration");
+                        if response.send(Ok(subscription)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Message::Apply(batch) => batch,
                 };
                 if !circuit.matches(&batch) {
                     continue;
@@ -193,11 +244,23 @@ impl<C: Circuit> Worker<C> {
             Ok(result) => result.err(),
             Err(_) => Some(anyhow!("Incremental query worker panicked")),
         };
-        control.terminate(error.map(Termination::Failed));
+        // A failure before the subscription exists fails the registration.
+        let rejection = match (error, registration) {
+            (Some(error), Some(response)) => Some((response, error)),
+            (Some(error), None) => match inbox.try_recv() {
+                Ok(Message::Prime { response, .. }) => Some((response, error)),
+                _ => {
+                    control.terminate(Some(Termination::Failed(error)));
+                    None
+                }
+            },
+            (None, _) => None,
+        };
+        control.terminate(None);
         drop(inbox);
         drop(sender);
         // Circuit destruction waits on the pool, so it runs on a blocking thread before storage removal.
-        tokio::task::spawn_blocking(move || {
+        let cleanup = tokio::task::spawn_blocking(move || {
             drop(circuit);
             match std::fs::remove_dir_all(&storage_path) {
                 Ok(()) => Ok(()),
@@ -211,7 +274,13 @@ impl<C: Circuit> Worker<C> {
             }
         })
         .await
-        .context("Incremental query cleanup task panicked")?
+        .context("Incremental query cleanup task panicked")
+        .and_then(|cleanup| cleanup);
+        // A failed registration returns only after its storage is gone.
+        if let Some((response, error)) = rejection {
+            let _ = response.send(Err(error));
+        }
+        cleanup
     }
 }
 

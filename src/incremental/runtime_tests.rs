@@ -7,14 +7,19 @@ struct Probe {
     started: mpsc::UnboundedSender<i64>,
     release: Option<mpsc::UnboundedReceiver<()>>,
     panic: bool,
+    prime_panic: bool,
     storage: PathBuf,
     dropped: sync_mpsc::Sender<bool>,
 }
 
 impl Circuit for Probe {
-    async fn prime(&mut self, _triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<worker::Rows> {
-        assert!(!self.panic, "injected priming panic");
-        Ok(vec![])
+    // Each priming triple becomes one row with its attribute as the value.
+    async fn prime(&mut self, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<worker::Rows> {
+        assert!(!self.prime_panic, "injected priming panic");
+        Ok(triples
+            .into_iter()
+            .map(|Tup2(triple, weight)| (vec![DataType::Long(triple.attribute)], weight as isize))
+            .collect())
     }
 
     fn matches(&self, _batch: &Batch) -> bool {
@@ -73,63 +78,74 @@ impl Fixture {
         }
     }
 
-    fn query(
+    // Starts a registration whose build creates the storage and then the probe.
+    fn register(
+        &mut self,
+        gate: Option<sync_mpsc::Receiver<()>>,
+        priming: Vec<Tup2<EncodedTriple, ZWeight>>,
+        probe: impl FnOnce(PathBuf, sync_mpsc::Sender<bool>) -> Probe + Send + 'static,
+    ) -> (
+        oneshot::Receiver<Result<IncrementalQuerySubscription>>,
+        PathBuf,
+    ) {
+        let (dropped, observed) = sync_mpsc::channel();
+        self.drops.push(observed);
+        let (response, registration) = oneshot::channel();
+        let handle = self.inner.start_query(
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            Box::new(move |storage| {
+                std::fs::create_dir(storage)?;
+                // The build runs on a blocking thread, so waiting here models a slow build.
+                if let Some(gate) = gate {
+                    let _ = gate.recv();
+                }
+                Ok(probe(storage.to_path_buf(), dropped))
+            }),
+            priming,
+            response,
+        );
+        (registration, self.inner.query_storage_path(handle))
+    }
+
+    async fn query(
         &mut self,
         release: Option<mpsc::UnboundedReceiver<()>>,
         panic: bool,
     ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
-        let handle = self.inner.allocate_query_id();
-        let storage = self.inner.query_storage_path(handle);
-        std::fs::create_dir(&storage).unwrap();
         let (started, events) = mpsc::unbounded_channel();
-        let (dropped, observed) = sync_mpsc::channel();
-        self.drops.push(observed);
-        let probe = Probe {
+        let (registration, _) = self.register(None, vec![], move |storage, dropped| Probe {
             started,
             release,
             panic,
+            prime_panic: false,
             storage,
             dropped,
-        };
-        let subscription =
-            self.inner
-                .install(handle, probe, *crate::bootstrap::BOOTSTRAP_TX_KEY, vec![]);
-        (subscription, events)
+        });
+        (registration.await.unwrap().unwrap(), events)
     }
 
     // Starts a registration whose build blocks until `release` is sent.
     fn gated_build(
         &mut self,
+        priming: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> (
         sync_mpsc::Sender<()>,
         oneshot::Receiver<Result<IncrementalQuerySubscription>>,
         PathBuf,
     ) {
-        let handle = self.inner.allocate_query_id();
-        let storage_path = self.inner.query_storage_path(handle);
         let (release, gate) = sync_mpsc::channel::<()>();
-        let (dropped, observed) = sync_mpsc::channel();
-        self.drops.push(observed);
-        let (response, registration) = oneshot::channel();
-        self.inner.spawn_build(
-            handle,
-            *crate::bootstrap::BOOTSTRAP_TX_KEY,
-            response,
-            move |storage| {
-                std::fs::create_dir(storage)?;
-                // The build runs on a blocking thread, so waiting here models a slow priming.
-                let _ = gate.recv();
+        let (registration, storage_path) =
+            self.register(Some(gate), priming, |storage, dropped| {
                 let (started, _) = mpsc::unbounded_channel();
-                Ok(Probe {
+                Probe {
                     started,
                     release: None,
                     panic: false,
-                    storage: storage.to_path_buf(),
+                    prime_panic: false,
+                    storage,
                     dropped,
-                })
-            },
-            vec![],
-        );
+                }
+            });
         (release, registration, storage_path)
     }
 
@@ -215,8 +231,8 @@ async fn next(query: &mut IncrementalQuerySubscription) -> Result<IncrementalQue
 async fn slow_query_preserves_fifo_while_other_query_advances() {
     let mut fixture = Fixture::new(8);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut fast, mut fast_steps) = fixture.query(None, false);
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut fast, mut fast_steps) = fixture.query(None, false).await;
     let first = fixture.apply(1);
     assert_eq!(started(&mut slow_steps).await, 1);
     assert_eq!(started(&mut fast_steps).await, 1);
@@ -244,7 +260,7 @@ async fn service_does_not_throttle_steps() {
     let mut queries = vec![];
     for _ in 0..3 {
         let (release, gate) = mpsc::unbounded_channel();
-        let (query, steps) = fixture.query(Some(gate), false);
+        let (query, steps) = fixture.query(Some(gate), false).await;
         queries.push((release, query, steps));
     }
     fixture.apply(1);
@@ -263,8 +279,8 @@ async fn service_does_not_throttle_steps() {
 async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
     let mut fixture = Fixture::new(1);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut slow_steps).await;
     next(&mut healthy).await.unwrap();
@@ -291,8 +307,8 @@ async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
 async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
     let mut fixture = Fixture::new(1);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut slow_steps).await, seq);
@@ -315,7 +331,7 @@ async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
 #[tokio::test]
 async fn full_output_can_resume_without_termination() {
     let mut fixture = Fixture::new(4);
-    let (mut query, mut steps) = fixture.query(None, false);
+    let (mut query, mut steps) = fixture.query(None, false).await;
     for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut steps).await, seq);
@@ -336,8 +352,8 @@ async fn full_output_can_resume_without_termination() {
 #[tokio::test]
 async fn panic_retires_only_affected_circuit() {
     let mut fixture = Fixture::new(4);
-    let (mut failing, _) = fixture.query(None, true);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut failing, _) = fixture.query(None, true).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     assert!(next(&mut failing)
         .await
@@ -354,7 +370,7 @@ async fn panic_retires_only_affected_circuit() {
 #[tokio::test]
 async fn disconnect_retires_without_another_transaction() {
     let mut fixture = Fixture::new(1);
-    let (query, _) = fixture.query(None, false);
+    let (query, _) = fixture.query(None, false).await;
     let handle = query.handle;
     drop(query);
     assert_eq!(fixture.retire().await, handle);
@@ -365,8 +381,8 @@ async fn disconnect_retires_without_another_transaction() {
 async fn unregister_waits_for_apply_without_blocking_dispatch() {
     let mut fixture = Fixture::new(4);
     let (release, gate) = mpsc::unbounded_channel();
-    let (query, mut steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (query, mut steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
@@ -420,7 +436,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
 async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     let mut fixture = Fixture::new(4);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
     fixture.apply(1);
     started(&mut steps).await;
     let control = fixture.inner.queries[&query.handle].control.clone();
@@ -449,8 +465,8 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
 async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing() {
     let mut fixture = Fixture::new(4);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
@@ -499,7 +515,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
 async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
     let mut fixture = Fixture::new(4);
     let (release, gate) = mpsc::unbounded_channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
     fixture.apply(1);
     started(&mut steps).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
@@ -527,7 +543,7 @@ async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
 #[tokio::test]
 async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
     let mut fixture = Fixture::new(4);
-    let (query, _) = fixture.query(None, false);
+    let (query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let (service, dispatcher, _storage) = fixture.start();
     let (release, gate) = oneshot::channel();
@@ -559,7 +575,7 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
 #[tokio::test]
 async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
     let mut fixture = Fixture::new(4);
-    let (mut query, _) = fixture.query(None, false);
+    let (mut query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
@@ -585,8 +601,8 @@ async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
 #[tokio::test]
 async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     let mut fixture = Fixture::new(4);
-    let (mut query, _) = fixture.query(None, false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut query, _) = fixture.query(None, false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
@@ -634,8 +650,8 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
 #[tokio::test]
 async fn unregister_is_not_blocked_by_registration() {
     let mut fixture = Fixture::new(4);
-    let (query, _) = fixture.query(None, false);
-    let (release, registration, _) = fixture.gated_build();
+    let (query, _) = fixture.query(None, false).await;
+    let (release, registration, _) = fixture.gated_build(vec![]);
     let (mut service, dispatcher, _storage) = fixture.start();
     service.retire_timeout = Duration::from_secs(5);
     // The build is still blocked, so this returns only if the dispatcher keeps serving.
@@ -662,7 +678,7 @@ async fn unregister_is_not_blocked_by_registration() {
 #[tokio::test]
 async fn shutdown_waits_for_pending_build_and_rejects_it() {
     let mut fixture = Fixture::new(4);
-    let (release, registration, storage_path) = fixture.gated_build();
+    let (release, registration, storage_path) = fixture.gated_build(vec![]);
     let (mut service, dispatcher, _storage) = fixture.start();
     service.retire_timeout = Duration::from_secs(5);
     let shutdown = tokio::spawn(async move { service.shutdown().await });
@@ -671,10 +687,8 @@ async fn shutdown_waits_for_pending_build_and_rejects_it() {
     assert!(!shutdown.is_finished());
     release.send(()).unwrap();
     shutdown.await.unwrap().unwrap();
-    let error = registration.await.unwrap().unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("Incremental query service stopped"));
+    // The worker stopped before it took Prime, so the response channel closed.
+    assert!(registration.await.is_err());
     assert!(!storage_path.exists());
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
@@ -686,38 +700,61 @@ async fn shutdown_waits_for_pending_build_and_rejects_it() {
 async fn registration_panics_remove_storage_after_unwinding() {
     let mut fixture = Fixture::new(1);
     for panic_during_build in [true, false] {
-        let handle = fixture.inner.allocate_query_id();
         let (dropped, observed) = sync_mpsc::channel();
-        let error = prepare_query(
-            fixture.inner.query_storage_path(handle),
-            move |storage| {
+        let (response, registration) = oneshot::channel();
+        let handle = fixture.inner.start_query(
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            Box::new(move |storage| {
                 std::fs::create_dir(storage)?;
                 assert!(!panic_during_build, "injected construction panic");
                 let (started, _) = mpsc::unbounded_channel();
                 Ok(Probe {
                     started,
                     release: None,
-                    panic: true,
+                    panic: false,
+                    prime_panic: true,
                     storage: storage.to_path_buf(),
                     dropped,
                 })
-            },
+            }),
             vec![],
-        )
-        .await
-        .err()
-        .expect("registration should fail");
-        assert!(error
-            .downcast_ref::<tokio::task::JoinError>()
-            .unwrap()
-            .is_panic());
+            response,
+        );
+        let error = registration.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("panicked"), "{error:#}");
+        // The registration fails only after its storage is gone.
+        assert!(!fixture.inner.query_storage_path(handle).exists());
+        assert_eq!(fixture.retire().await, handle);
         if !panic_during_build {
             assert_dropped(vec![observed]);
         }
-        assert!(!fixture.inner.query_storage_path(handle).exists());
     }
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut healthy, _) = fixture.query(None, false).await;
     let tx_key = fixture.apply(1);
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn batches_routed_during_build_follow_the_priming_delta() {
+    let mut fixture = Fixture::new(4);
+    let (release, registration, _) = fixture.gated_build(Fixture::batch(0).triples().to_vec());
+    let first = fixture.apply(1);
+    let second = fixture.apply(2);
+    release.send(()).unwrap();
+    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        next(&mut query).await.unwrap(),
+        IncrementalQueryDelta {
+            tx_key: *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            rows: vec![(vec![DataType::Long(0)], 1)],
+        }
+    );
+    assert_eq!(next(&mut query).await.unwrap().tx_key, first);
+    assert_eq!(next(&mut query).await.unwrap().tx_key, second);
     fixture.finish().await;
 }
