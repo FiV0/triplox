@@ -612,6 +612,7 @@ mod tests {
         TYPE_ATTR_ID as TYPE,
     };
     use crate::inc_query::{IncrementalQueryPlan, PatternSlot};
+    use crate::incremental::worker::test_support::single_batch;
     use crate::ops::{DataType, Entid};
 
     fn build_pattern_circuit(
@@ -864,13 +865,13 @@ mod tests {
         );
         let circuit = build_query_circuit(plan, storage.path());
         let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
-        assert!(!circuit.matches(&Batch::single(tx_key, vec![])));
-        assert!(!circuit.matches(&Batch::single(
+        assert!(!circuit.matches(&single_batch(tx_key, vec![])));
+        assert!(!circuit.matches(&single_batch(
             tx_key,
             vec![Tup2(triple(42, TYPE, "person".into()), 1)],
         )));
         for attribute in [NAME, AGE] {
-            assert!(circuit.matches(&Batch::single(
+            assert!(circuit.matches(&single_batch(
                 tx_key,
                 vec![Tup2(triple(42, attribute, 30_i64.into()), 1)],
             )));
@@ -894,12 +895,12 @@ mod tests {
             vec![(vec![DataType::Long(0)], 1)]
         );
         // An unrelated transaction leaves the primed count unchanged.
-        let batch = Batch::single(tx_key, vec![name.clone()]);
+        let batch = single_batch(tx_key, vec![name.clone()]);
         assert_eq!(
             futures::executor::block_on(circuit.apply(&batch)).unwrap(),
             vec![]
         );
-        let batch = Batch::single(tx_key, vec![name, age]);
+        let batch = single_batch(tx_key, vec![name, age]);
         let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
         rows.sort_by_key(|(_, weight)| *weight);
         assert_eq!(

@@ -53,13 +53,6 @@ impl Batch {
         }
     }
 
-    /// A batch holding a single transaction.
-    #[cfg(test)]
-    pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
-        let tx_ids = vec![tx_key.tx_id; triples.len()];
-        Self::new(tx_key, triples, tx_ids)
-    }
-
     pub fn triples(&self) -> &[Tup2<EncodedTriple, ZWeight>] {
         &self.triples
     }
@@ -314,7 +307,19 @@ impl<C: Circuit> Worker<C> {
 }
 
 #[cfg(test)]
+pub(super) mod test_support {
+    use super::*;
+
+    /// A batch holding a single transaction.
+    pub(crate) fn single_batch(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Batch {
+        let tx_ids = vec![tx_key.tx_id; triples.len()];
+        Batch::new(tx_key, triples, tx_ids)
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::single_batch;
     use super::*;
 
     fn triple(attribute: i64, entity: u8) -> Tup2<EncodedTriple, ZWeight> {
@@ -340,7 +345,7 @@ mod tests {
 
     #[test]
     fn batch_returns_each_attributes_triples() {
-        let batch = Batch::single(
+        let batch = single_batch(
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             vec![triple(3, 1), triple(1, 2), triple(3, 3), triple(2, 4)],
         );

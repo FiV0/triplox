@@ -336,13 +336,22 @@ pub(crate) mod test_support {
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::ops::Datom;
+    use crate::transaction::TxKey;
 
-    pub(crate) fn test_indexer(db: Arc<slatedb::Db>) -> Arc<RwLock<Indexer>> {
-        Arc::new(RwLock::new(Indexer::new(
+    // An indexer whose latest indexed transaction is `basis`.
+    pub(crate) fn indexer_at(db: Arc<slatedb::Db>, basis: TxKey) -> Indexer {
+        Indexer::new(
             db,
             Metadata::new(test_schema(), PartitionMap::new()),
-            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            basis,
             DEFAULT_TX_COMPLETION_CAPACITY,
+        )
+    }
+
+    pub(crate) fn test_indexer(db: Arc<slatedb::Db>) -> Arc<RwLock<Indexer>> {
+        Arc::new(RwLock::new(indexer_at(
+            db,
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
         )))
     }
 

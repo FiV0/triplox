@@ -115,13 +115,6 @@ enum IncrementalCommand {
         plan: Box<IncrementalQueryPlan>,
         response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
     },
-    // Registers at a given basis, so tests do not need indexed transactions.
-    #[cfg(test)]
-    RegisterAt {
-        plan: Box<IncrementalQueryPlan>,
-        basis: TxKey,
-        response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
-    },
     Unregister {
         handle: IncrementalQueryHandle,
         response: oneshot::Sender<Result<()>>,
@@ -240,23 +233,6 @@ impl IncrementalQueryService {
         result.await.context("Incremental query service stopped")?
     }
 
-    #[cfg(test)]
-    async fn register_prepared_query(
-        &self,
-        plan: IncrementalQueryPlan,
-        basis: TxKey,
-    ) -> Result<IncrementalQuerySubscription> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::RegisterAt {
-                plan: Box::new(plan),
-                basis,
-                response,
-            })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")?
-    }
-
     pub(crate) async fn unregister(&self, handle: IncrementalQueryHandle) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
@@ -269,18 +245,6 @@ impl IncrementalQueryService {
                 timeout: self.retire_timeout,
             })?
             .context("Incremental query service stopped")?
-    }
-
-    #[cfg(test)]
-    async fn apply_batch(&self, batch: Batch) -> Result<()> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::ApplyBatch {
-                batch: Arc::new(batch),
-                response,
-            })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -418,10 +382,6 @@ impl IncrementalQueryServiceInner {
                     Some(IncrementalCommand::Register { plan, response }) => {
                         // No batch is routed between this read and the registry insert, so no lock with CDC is needed.
                         let basis = self.indexer.read().await.latest_tx_key();
-                        self.start_registration(*plan, basis, response).await;
-                    }
-                    #[cfg(test)]
-                    Some(IncrementalCommand::RegisterAt { plan, basis, response }) => {
                         self.start_registration(*plan, basis, response).await;
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
@@ -644,6 +604,7 @@ mod tests {
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
     use crate::partition::tx_eid_from_tx_id;
     use crate::query::{FindPlan, Projection};
+    use worker::test_support::single_batch;
 
     #[track_caller]
     fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
@@ -748,14 +709,35 @@ mod tests {
         }
     }
 
-    async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
-        let slate = without_wal(slate_with_names(names).await);
-        IncrementalQueryService::new(
+    // The dispatcher reads the basis from the indexer, so a new indexer sets the basis of later registrations.
+    async fn set_basis(service: &IncrementalQueryService, db: Arc<slatedb::Db>, basis_tx_id: i64) {
+        *service.indexer.write().await =
+            cdc::test_support::indexer_at(db, test_tx_key_with_tx_id(basis_tx_id));
+    }
+
+    // The registrations of this service have basis 1 until `set_basis` changes it.
+    fn service_on(
+        slate: SlateComponents,
+        dir: &Path,
+        options: IncrementalQueryOptions,
+    ) -> IncrementalQueryService {
+        let slate = without_wal(slate);
+        let indexer = cdc::test_support::indexer_at(slate.db.clone(), test_tx_key_with_tx_id(1));
+        IncrementalQueryService::new_with_options(
             dir.to_path_buf(),
             CancellationToken::new(),
             &slate,
-            cdc::test_support::test_indexer(slate.db.clone()),
+            Arc::new(RwLock::new(indexer)),
             Duration::from_millis(10),
+            options,
+        )
+    }
+
+    async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
+        service_on(
+            slate_with_names(names).await,
+            dir,
+            IncrementalQueryOptions::default(),
         )
     }
 
@@ -763,22 +745,40 @@ mod tests {
         service_with_names(dir, &[]).await
     }
 
-    async fn register_at(
+    // Sends a planned query, as `register_query` does after planning.
+    async fn register_plan(
         service: &IncrementalQueryService,
         plan: IncrementalQueryPlan,
-        basis_tx_id: i64,
-    ) -> IncrementalQuerySubscription {
+    ) -> Result<IncrementalQuerySubscription> {
+        let (response, result) = oneshot::channel();
         service
-            .register_prepared_query(plan, test_tx_key_with_tx_id(basis_tx_id))
-            .await
-            .unwrap()
+            .commands
+            .send(IncrementalCommand::Register {
+                plan: Box::new(plan),
+                response,
+            })
+            .unwrap();
+        result.await.unwrap()
     }
 
     async fn register(
         service: &IncrementalQueryService,
         plan: IncrementalQueryPlan,
     ) -> IncrementalQuerySubscription {
-        register_at(service, plan, 1).await
+        register_plan(service, plan).await.unwrap()
+    }
+
+    // Routes a batch, as the CDC task does.
+    pub(super) async fn apply_batch(service: &IncrementalQueryService, batch: Batch) -> Result<()> {
+        let (response, result) = oneshot::channel();
+        service
+            .commands
+            .send(IncrementalCommand::ApplyBatch {
+                batch: Arc::new(batch),
+                response,
+            })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result.await.context("Incremental query service stopped")
     }
 
     async fn register_inline(
@@ -835,7 +835,7 @@ mod tests {
         assert!(!inner.query_storage_path(first.handle).exists());
         let mut old = name_triple(42, "Alice");
         old.1 = -1;
-        inner.apply_batch(Arc::new(Batch::single(
+        inner.apply_batch(Arc::new(single_batch(
             test_tx_key_with_tx_id(2),
             vec![old, name_triple(42, "Bob")],
         )));
@@ -870,14 +870,16 @@ mod tests {
     #[tokio::test]
     async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let slate = slate_with_names(&[(42, "Alice")]).await;
+        let db = slate.db.clone();
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
         let mut primed = register(&service, single_pattern_plan()).await;
         // Alice comes after this basis, so the priming result is empty.
-        let mut empty = register_at(&service, single_pattern_plan(), 0).await;
+        set_basis(&service, db, 0).await;
+        let mut empty = register(&service, single_pattern_plan()).await;
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(43, "Bob")]))
+        apply_batch(&service, single_batch(tx_key, vec![name_triple(43, "Bob")]))
             .await
             .unwrap();
         assert_eq!(
@@ -893,13 +895,12 @@ mod tests {
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
-        let error = service
-            .register_prepared_query(
-                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
-                test_tx_key_with_tx_id(1),
-            )
-            .await
-            .unwrap_err();
+        let error = register_plan(
+            &service,
+            aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+        )
+        .await
+        .unwrap_err();
         assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
         assert!(!dir.path().join("query-1").exists());
         service.shutdown().await.unwrap();
@@ -916,20 +917,18 @@ mod tests {
         .await;
         let mut names = register(&service, single_pattern_plan()).await;
         delta(&mut aggregate).await.unwrap();
-        service
-            .apply_batch(Batch::single(
-                test_tx_key_with_tx_id(2),
-                vec![age_triple(42, 10)],
-            ))
-            .await
-            .unwrap();
-        service
-            .apply_batch(Batch::single(
-                test_tx_key_with_tx_id(3),
-                vec![name_triple(43, "Alice")],
-            ))
-            .await
-            .unwrap();
+        apply_batch(
+            &service,
+            single_batch(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)]),
+        )
+        .await
+        .unwrap();
+        apply_batch(
+            &service,
+            single_batch(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")]),
+        )
+        .await
+        .unwrap();
         assert!(delta(&mut aggregate)
             .await
             .unwrap()
@@ -943,8 +942,7 @@ mod tests {
         assert!(aggregate.deltas.recv().await.is_none());
         delta(&mut names).await.unwrap();
         let tx_key = test_tx_key_with_tx_id(4);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(44, "Bob")]))
+        apply_batch(&service, single_batch(tx_key, vec![name_triple(44, "Bob")]))
             .await
             .unwrap();
         assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
@@ -955,38 +953,34 @@ mod tests {
     #[tokio::test]
     async fn history_before_registration_basis_does_not_fill_inbox() {
         let dir = tempfile::tempdir().unwrap();
-        let slate = without_wal(crate::slate::in_memory_slate().await);
-        let service = IncrementalQueryService::new_with_options(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            &slate,
-            cdc::test_support::test_indexer(slate.db.clone()),
-            Duration::from_millis(10),
+        let slate = crate::slate::in_memory_slate().await;
+        let db = slate.db.clone();
+        let service = service_on(
+            slate,
+            dir.path(),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
                 ..IncrementalQueryOptions::default()
             },
         );
-        let basis = test_tx_key_with_tx_id(1000);
-        let mut query = service
-            .register_prepared_query(single_pattern_plan(), basis)
+        set_basis(&service, db, 1000).await;
+        let mut query = register(&service, single_pattern_plan()).await;
+        for seq in 1..=1000 {
+            apply_batch(
+                &service,
+                single_batch(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")]),
+            )
             .await
             .unwrap();
-        for seq in 1..=1000 {
-            service
-                .apply_batch(Batch::single(
-                    test_tx_key_with_tx_id(seq),
-                    vec![name_triple(seq, "old")],
-                ))
-                .await
-                .unwrap();
         }
         assert!(query.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(1001);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(1001, "new")]))
-            .await
-            .unwrap();
+        apply_batch(
+            &service,
+            single_batch(tx_key, vec![name_triple(1001, "new")]),
+        )
+        .await
+        .unwrap();
         assert_eq!(delta(&mut query).await.unwrap().tx_key, tx_key);
         service.shutdown().await.unwrap();
     }
@@ -994,18 +988,17 @@ mod tests {
     #[tokio::test]
     async fn batch_straddling_basis_applies_only_later_transactions() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let mut before = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0))
-            .await
-            .unwrap();
-        let mut inside = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(2))
-            .await
-            .unwrap();
+        let slate = crate::slate::in_memory_slate().await;
+        let db = slate.db.clone();
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
+        set_basis(&service, db.clone(), 0).await;
+        let mut before = register(&service, single_pattern_plan()).await;
+        set_basis(&service, db, 2).await;
+        let mut inside = register(&service, single_pattern_plan()).await;
         let tx_key = test_tx_key_with_tx_id(3);
-        service
-            .apply_batch(Batch::new(
+        apply_batch(
+            &service,
+            Batch::new(
                 tx_key,
                 vec![
                     name_triple(1, "Alice"),
@@ -1013,9 +1006,10 @@ mod tests {
                     name_triple(3, "Cara"),
                 ],
                 vec![1, 2, 3],
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
 
         let mut whole = delta(&mut before).await.unwrap();
         whole.rows.sort_by_key(|row| format!("{:?}", row));
@@ -1063,14 +1057,12 @@ mod tests {
         drop(result);
         service
             .commands
-            .send(IncrementalCommand::RegisterAt {
+            .send(IncrementalCommand::Register {
                 plan: Box::new(single_pattern_plan()),
-                basis: test_tx_key_with_tx_id(1),
                 response,
             })
             .unwrap();
-        service
-            .apply_batch(Batch::single(test_tx_key_with_tx_id(2), vec![]))
+        apply_batch(&service, single_batch(test_tx_key_with_tx_id(2), vec![]))
             .await
             .unwrap();
         service.shutdown().await.unwrap();
