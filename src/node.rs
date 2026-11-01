@@ -94,8 +94,7 @@ impl<L: TxLog> Node<L> {
         let incremental = IncrementalQueryService::new_with_runtime(
             incremental_storage_path,
             cancel.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
+            &slate,
             cdc_poll_interval,
             incremental_config,
         );
@@ -148,8 +147,7 @@ impl Node<MemoryLog> {
                 crate::util::random_string(10)
             )),
             cancel.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
+            &slate,
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
             incremental_config,
         );
@@ -350,7 +348,7 @@ impl<L: TxLog> Node<L> {
         }
 
         self.incremental
-            .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
+            .register_query(query, self.indexer.clone())
             .await
     }
 

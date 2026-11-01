@@ -22,6 +22,7 @@ use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::indexer::Indexer;
 use crate::ops::DataType;
+use crate::slate::SlateComponents;
 use edn::query::ParsedQuery;
 
 pub(crate) mod cdc;
@@ -133,6 +134,7 @@ enum IncrementalCommand {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
+    db: Arc<slatedb::Db>,
     cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
     cdc_poll_interval: Duration,
@@ -149,15 +151,13 @@ impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
         cancel: CancellationToken,
-        cdc_object_path: String,
-        cdc_object_store: Arc<dyn ObjectStore>,
+        slate: &SlateComponents,
         cdc_poll_interval: Duration,
     ) -> Self {
         Self::new_with_runtime(
             storage_root,
             cancel,
-            cdc_object_path,
-            cdc_object_store,
+            slate,
             cdc_poll_interval,
             IncrementalConfig::default(),
         )
@@ -166,16 +166,14 @@ impl IncrementalQueryService {
     pub(crate) fn new_with_runtime(
         storage_root: PathBuf,
         cancel: CancellationToken,
-        cdc_object_path: String,
-        cdc_object_store: Arc<dyn ObjectStore>,
+        slate: &SlateComponents,
         cdc_poll_interval: Duration,
         config: IncrementalConfig,
     ) -> Self {
         Self::new_with_options(
             storage_root,
             cancel,
-            cdc_object_path,
-            cdc_object_store,
+            slate,
             cdc_poll_interval,
             IncrementalQueryOptions::for_config(config),
         )
@@ -185,8 +183,7 @@ impl IncrementalQueryService {
     fn new_with_options(
         storage_root: PathBuf,
         cancel: CancellationToken,
-        cdc_object_path: String,
-        cdc_object_store: Arc<dyn ObjectStore>,
+        slate: &SlateComponents,
         cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
     ) -> Self {
@@ -197,8 +194,9 @@ impl IncrementalQueryService {
 
         Self {
             commands: sender,
-            cdc_object_path,
-            cdc_object_store,
+            db: slate.db.clone(),
+            cdc_object_path: slate.object_path.clone(),
+            cdc_object_store: slate.object_store.clone(),
             cdc_poll_interval,
             cancel,
             cdc_task: Arc::new(StdMutex::new(None)),
@@ -209,7 +207,6 @@ impl IncrementalQueryService {
 
     pub(crate) async fn register_query(
         &self,
-        db: &slatedb::Db,
         query: ParsedQuery,
         indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
@@ -220,7 +217,7 @@ impl IncrementalQueryService {
         };
         let plan = plan_query(&query, &schema)?;
         let initial_triples =
-            scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
+            scan_current_triples(self.db.as_ref(), &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
         let subscription = self
             .register_prepared_query(plan, tx_key, initial_triples)
             .await?;
@@ -614,7 +611,6 @@ mod tests {
     use chrono::Utc;
     use dbsp::utils::Tup2;
     use edn::query::ToVariable;
-    use slatedb::object_store::memory::InMemory;
     use triplox_client::transaction::TxKey;
 
     use super::*;
@@ -699,12 +695,11 @@ mod tests {
         }
     }
 
-    fn service_at(dir: &Path) -> IncrementalQueryService {
+    async fn service_at(dir: &Path) -> IncrementalQueryService {
         IncrementalQueryService::new(
             dir.to_path_buf(),
             CancellationToken::new(),
-            "/test_circuit_runtime".to_owned(),
-            Arc::new(InMemory::new()),
+            &crate::slate::in_memory_slate().await,
             Duration::from_millis(10),
         )
     }
@@ -809,7 +804,7 @@ mod tests {
     #[tokio::test]
     async fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let subscription = register(
             &service,
             single_pattern_plan(),
@@ -826,7 +821,7 @@ mod tests {
     #[tokio::test]
     async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let mut primed = register(
             &service,
             single_pattern_plan(),
@@ -852,7 +847,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let error = service
             .register_prepared_query(
                 aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
@@ -869,7 +864,7 @@ mod tests {
     #[tokio::test]
     async fn live_aggregate_error_removes_only_the_affected_subscription() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let mut aggregate = register(
             &service,
             aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
@@ -920,8 +915,7 @@ mod tests {
         let service = IncrementalQueryService::new_with_options(
             dir.path().to_path_buf(),
             CancellationToken::new(),
-            "/test_history".into(),
-            Arc::new(InMemory::new()),
+            &crate::slate::in_memory_slate().await,
             Duration::from_millis(10),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
@@ -955,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn batch_straddling_basis_applies_only_later_transactions() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let mut before = service
             .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0), vec![])
             .await
@@ -1004,7 +998,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_last_service_handle_cleans_up_queries() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let mut query = register(&service, single_pattern_plan(), vec![]).await;
         drop(service);
         assert!(
@@ -1019,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn abandoned_registration_response_retires_query() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let (response, result) = oneshot::channel();
         drop(result);
         service
@@ -1042,13 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn await_cdc_task_returns_inner_loop_error() {
         let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_cdc_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
+        let service = service_at(dir.path()).await;
         let handle: JoinHandle<Result<()>> = tokio::spawn(async { Err(anyhow!("cdc failed")) });
         *service.cdc_task.lock().unwrap() = Some(handle);
 
@@ -1063,13 +1051,7 @@ mod tests {
     #[tokio::test]
     async fn await_cdc_task_returns_join_error() {
         let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_cdc_join_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
+        let service = service_at(dir.path()).await;
         let handle: JoinHandle<Result<()>> = tokio::spawn(async {
             panic!("cdc task panic");
             #[allow(unreachable_code)]
@@ -1087,13 +1069,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_removes_queries_after_cdc_task_error() {
         let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_shutdown_cdc_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
+        let service = service_at(dir.path()).await;
         let _subscription = service
             .register_prepared_query(
                 single_pattern_plan(),
@@ -1133,13 +1109,7 @@ mod tests {
     #[tokio::test]
     async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
         let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_registration_gate".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
+        let service = service_at(dir.path()).await;
         let query_tx_key = test_tx_key_with_tx_id(1);
         let apply_tx_key = test_tx_key_with_tx_id(2);
         let mut first_subscription = service

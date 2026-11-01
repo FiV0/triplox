@@ -534,8 +534,7 @@ mod tests {
         let service = IncrementalQueryService::new(
             tempfile::tempdir().unwrap().path().to_path_buf(),
             CancellationToken::new(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
+            &slate,
             Duration::from_micros(250),
         );
         let cancel = CancellationToken::new();
