@@ -546,7 +546,7 @@ The `[incremental]` configuration section sets the DBSP pool:
 
 - Each inbox holds 256 messages. The worker can also hold one message that it
   already took. Overflow stops the query.
-- `SUBSCRIPTION_CAPACITY` is 128 result batches. A full result queue applies
+- `SUBSCRIPTION_OUTPUT_CAPACITY` is 128 result batches. A full result queue applies
   backpressure to its own worker.
 - `retire_timeout` limits the waits of unregister and shutdown to 10 seconds.
 
@@ -586,12 +586,6 @@ The incremental query API is minimal at this time. A caller cannot specify the
 `TxKey` where a query starts. A caller cannot stop and restart a query without a
 new circuit. These features are possible, but the state management needs more
 analysis.
-
-I am also exploring an incremental join algorithm in Hooray. It uses parts of
-worst-case optimal joins (WCOJ). I want to bring these ideas to Triplox. The
-goal is to find out whether the incremental join on graph patterns improves at
-scale. A second goal is to find out whether Triplox needs this kind of
-algorithm.
 
 ### Further optimizations
 
