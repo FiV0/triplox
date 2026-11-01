@@ -444,8 +444,7 @@ The node has one CDC task for all incremental queries. The dispatcher starts it
 with the first query. The task uses the SlateDB `WalReader` through the
 `CdcStream` helper of Triplox. It reads the WAL from the beginning and turns
 each WAL file into one batch. It extracts EAV (entity, attribute, value) datoms
-with the current node schema. A future optimization can decode separately for
-each query.
+with the current node schema.
 
 The task does not wait for the writer indexer before it routes a WAL entry. On a
 writer node, each WAL entry that the task reads already went through the write
