@@ -2,6 +2,7 @@ use std::future::Future;
 use std::io::ErrorKind;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
@@ -119,6 +120,7 @@ impl Circuit for QueryCircuit {
 pub(super) struct Control {
     pub stop: CancellationToken,
     terminal: Mutex<Option<oneshot::Sender<Termination>>>,
+    lagged: AtomicBool,
 }
 
 impl Control {
@@ -126,6 +128,7 @@ impl Control {
         Self {
             stop,
             terminal: Mutex::new(Some(terminal)),
+            lagged: AtomicBool::new(false),
         }
     }
 
@@ -134,9 +137,17 @@ impl Control {
         self.stop.cancel();
         if let Some(sender) = terminal.take() {
             if let Some(reason) = reason {
-                let _ = sender.send(reason);
+                let lagged = matches!(reason, Termination::Lagged(_));
+                if sender.send(reason).is_ok() && lagged {
+                    self.lagged.store(true, Ordering::Release);
+                }
             }
         }
+    }
+
+    // The query stopped because its inbox overflowed, and the subscription got the lag error.
+    pub fn lagged(&self) -> bool {
+        self.lagged.load(Ordering::Acquire)
     }
 }
 
@@ -175,7 +186,7 @@ impl<C: Circuit> Worker<C> {
             control,
         } = self;
         let mut circuit = None;
-        // The registration that priming answers, while priming runs.
+        // The subscription and the registration that priming answers, while priming runs.
         let mut registration = None;
         let execution = async {
             let build_path = storage_path.clone();
@@ -197,10 +208,10 @@ impl<C: Circuit> Worker<C> {
                         subscription,
                         response,
                     } => {
-                        registration = Some(response);
+                        registration = Some((subscription, response));
                         let rows = circuit.prime(triples).await?;
                         if control.stop.is_cancelled() {
-                            return Err(anyhow!("Incremental query service stopped"));
+                            break;
                         }
                         if !rows.is_empty() {
                             sender
@@ -210,7 +221,8 @@ impl<C: Circuit> Worker<C> {
                                 })
                                 .expect("new subscription queue has room for priming");
                         }
-                        let response = registration.take().expect("priming registration");
+                        let (subscription, response) =
+                            registration.take().expect("priming registration");
                         if response.send(Ok(subscription)).is_err() {
                             break;
                         }
@@ -244,17 +256,27 @@ impl<C: Circuit> Worker<C> {
             Ok(result) => result.err(),
             Err(_) => Some(anyhow!("Incremental query worker panicked")),
         };
-        // A failure before the subscription exists fails the registration.
-        let rejection = match (error, registration) {
-            (Some(error), Some(response)) => Some((response, error)),
-            (Some(error), None) => match inbox.try_recv() {
-                Ok(Message::Prime { response, .. }) => Some((response, error)),
-                _ => {
-                    control.terminate(Some(Termination::Failed(error)));
-                    None
-                }
-            },
-            (None, _) => None,
+        // The registration is still open if the worker stopped before priming finished.
+        let pending = registration.or_else(|| match inbox.try_recv() {
+            Ok(Message::Prime {
+                subscription,
+                response,
+                ..
+            }) => Some((subscription, response)),
+            _ => None,
+        });
+        let answer = match (pending, error) {
+            (Some((_, response)), Some(error)) => Some((response, Err(error))),
+            // The first item of a lagged subscription is the lag error.
+            (Some((subscription, response)), None) if control.lagged() => {
+                Some((response, Ok(subscription)))
+            }
+            // Other stops close the response channel, so the registration fails.
+            (Some(_), None) => None,
+            (None, error) => {
+                control.terminate(error.map(Termination::Failed));
+                None
+            }
         };
         control.terminate(None);
         drop(inbox);
@@ -276,9 +298,9 @@ impl<C: Circuit> Worker<C> {
         .await
         .context("Incremental query cleanup task panicked")
         .and_then(|cleanup| cleanup);
-        // A failed registration returns only after its storage is gone.
-        if let Some((response, error)) = rejection {
-            let _ = response.send(Err(error));
+        // A registration that did not get its subscription returns only after the storage is gone.
+        if let Some((response, answer)) = answer {
+            let _ = response.send(answer);
         }
         cleanup
     }

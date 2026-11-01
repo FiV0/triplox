@@ -758,3 +758,24 @@ async fn batches_routed_during_build_follow_the_priming_delta() {
     assert_eq!(next(&mut query).await.unwrap().tx_key, second);
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn inbox_overflow_during_build_returns_lagged_subscription() {
+    let mut fixture = Fixture::new(1);
+    let (release, registration, _) = fixture.gated_build(vec![]);
+    // Prime fills the inbox while the build blocks.
+    let overflow = fixture.apply(1);
+    release.send(()).unwrap();
+    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let error = next(&mut query).await.unwrap_err();
+    let lagged = error.downcast_ref::<SubscriptionLagged>().unwrap();
+    assert_eq!(lagged.tx_key, overflow);
+    assert_eq!(lagged.capacity, 1);
+    assert_eq!(fixture.retire().await, query.handle);
+    assert!(query.deltas.recv().await.is_none());
+    fixture.finish().await;
+}
