@@ -2294,6 +2294,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_incremental_registration_after_cdc_progress_sees_each_tx_once() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = r#"{:find [?name]
+                        :where [[?e :name ?name]]}"#;
+        let name = |entity, name: &str| TxOp::Add {
+            entity: EntityRef::Id(entity),
+            attribute: kw!(:name),
+            value: DataType::String(name.to_string()),
+        };
+        let mut first = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        let mut first_rows = Vec::new();
+
+        let basis = execute_and_flush(&node, vec![name(100, "Alice")]).await;
+        assert_incremental_matches_db(&node, &mut first, &mut first_rows, basis, query).await;
+
+        // The WAL of this transaction stays unflushed, so the next basis is inside a WAL file.
+        let unflushed = match node.execute_tx(vec![name(101, "Bob")]).await.unwrap() {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let mut second = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        assert_eq!(second.tx_key, unflushed);
+        let priming = take_priming_delta(&mut second).await;
+        assert_eq!(priming.tx_key, unflushed);
+        let mut second_rows = Vec::new();
+        integrate_delta(&mut second_rows, priming);
+        assert_eq!(
+            second_rows,
+            vec![
+                vec![DataType::String("Alice".to_string())],
+                vec![DataType::String("Bob".to_string())],
+            ]
+        );
+
+        let basis = execute_and_flush(&node, vec![name(102, "Cara")]).await;
+        assert_incremental_matches_db(&node, &mut first, &mut first_rows, basis, query).await;
+        assert_incremental_matches_db(&node, &mut second, &mut second_rows, basis, query).await;
+        assert!(try_recv_incremental_delta(&mut first).await.is_none());
+        assert!(try_recv_incremental_delta(&mut second).await.is_none());
+    }
+
+    #[tokio::test]
     async fn test_incremental_cdc_groups_multi_entity_transaction() {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
