@@ -333,8 +333,23 @@ where
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
     use crate::inc_query::test_support::test_schema;
+    use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
+    use crate::metadata::{Metadata, PartitionMap};
     use crate::ops::Datom;
+
+    pub(crate) fn test_indexer(db: Arc<slatedb::Db>) -> Arc<RwLock<Indexer>> {
+        Arc::new(RwLock::new(Indexer::new(
+            db,
+            Metadata::new(test_schema(), PartitionMap::new()),
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            DEFAULT_TX_COMPLETION_CAPACITY,
+        )))
+    }
 
     // Writes the index entries of `datoms` as transaction entity `tx_eid` of the test schema.
     pub(crate) async fn write_scan_datoms(db: &slatedb::Db, tx_eid: i64, datoms: &[Datom]) {
@@ -558,12 +573,7 @@ mod tests {
     #[tokio::test]
     async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
-        let indexer = Arc::new(RwLock::new(Indexer::new(
-            slate.db.clone(),
-            Metadata::new(test_schema(), PartitionMap::new()),
-            *crate::bootstrap::BOOTSTRAP_TX_KEY,
-            DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
+        let indexer = test_support::test_indexer(slate.db.clone());
         let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
         cancel.cancel();

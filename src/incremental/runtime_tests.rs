@@ -197,14 +197,9 @@ impl Fixture {
 
     async fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
         let (commands, receiver) = mpsc::unbounded_channel();
-        let slate = crate::slate::in_memory_slate().await;
         let service = IncrementalQueryService {
             commands,
-            cdc_object_path: slate.object_path,
-            cdc_object_store: slate.object_store,
-            cdc_poll_interval: Duration::from_millis(10),
-            cancel: self.inner.cancel.clone(),
-            cdc_task: Arc::new(StdMutex::new(None)),
+            indexer: cdc::test_support::test_indexer(self.inner.db.clone()),
             registration_gate: Arc::new(Mutex::new(())),
             retire_timeout: Duration::from_millis(50),
         };
@@ -544,18 +539,16 @@ async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
 }
 
 #[tokio::test]
-async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
+async fn shutdown_stops_cdc_before_workers() {
     let mut fixture = Fixture::new(4).await;
-    let (query, _) = fixture.query(None, false).await;
+    let (mut query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (service, dispatcher, _storage) = fixture.start().await;
-    let (release, gate) = oneshot::channel();
-    let (finished, completion) = oneshot::channel();
-    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
+    let (release, gate) = oneshot::channel::<()>();
+    fixture.inner.cdc_task = Some(tokio::spawn(async move {
         let _ = gate.await;
-        let _ = finished.send(());
         Ok(())
     }));
+    let (service, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
@@ -565,36 +558,61 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
         error.downcast_ref::<RetirementTimeout>(),
         Some(RetirementTimeout::Shutdown { .. })
     ));
-    // The dispatcher must finish even though CDC has not returned.
+    // The dispatcher still waits for CDC, so the worker keeps its storage.
+    assert!(!dispatcher.is_finished());
+    assert!(storage_path.exists());
+    release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
         .unwrap()
         .unwrap();
     assert!(!storage_path.exists());
-    release.send(()).unwrap();
-    completion.await.unwrap();
+    assert!(query.deltas.recv().await.is_none());
 }
 
 #[tokio::test]
-async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
+async fn shutdown_reports_cdc_error_and_cleanup_failure() {
     let mut fixture = Fixture::new(4).await;
-    let (mut query, _) = fixture.query(None, false).await;
+    let (query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
+    fixture.inner.cdc_task = Some(tokio::spawn(async { Err(anyhow!("cdc failed")) }));
     let (mut service, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
-    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
-        // Hold shutdown in the CDC wait until the dispatcher has retired the query.
-        assert!(query.deltas.recv().await.is_none());
+
+    let message = format!("{:#}", service.shutdown().await.unwrap_err());
+    assert!(
+        message.contains("Incremental query CDC loop failed"),
+        "{message}"
+    );
+    assert!(message.contains("cdc failed"), "{message}");
+    assert!(
+        message.contains("Failed to remove incremental query storage"),
+        "{message}"
+    );
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_reports_cdc_task_panic() {
+    let mut fixture = Fixture::new(4).await;
+    fixture.inner.cdc_task = Some(tokio::spawn(async {
+        panic!("cdc task panic");
+        #[allow(unreachable_code)]
         Ok(())
     }));
+    let (mut service, dispatcher, _storage) = fixture.start().await;
+    service.retire_timeout = Duration::from_secs(5);
 
-    let error = service.shutdown().await.unwrap_err();
-    assert!(error.downcast_ref::<std::io::Error>().is_some());
-    assert!(error
-        .to_string()
-        .contains("Failed to remove incremental query storage"));
+    let message = format!("{:#}", service.shutdown().await.unwrap_err());
+    assert!(
+        message.contains("Incremental query CDC task failed to join"),
+        "{message}"
+    );
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
         .unwrap()

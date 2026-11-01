@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -132,13 +132,20 @@ enum IncrementalCommand {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
-    cdc_object_path: String,
-    cdc_object_store: Arc<dyn ObjectStore>,
-    cdc_poll_interval: Duration,
-    cancel: CancellationToken,
-    cdc_task: Arc<StdMutex<Option<JoinHandle<Result<()>>>>>,
+    indexer: Arc<RwLock<Indexer>>,
     registration_gate: Arc<Mutex<()>>,
     retire_timeout: Duration,
+}
+
+// What the CDC task reads, and how often it polls the WAL.
+struct CdcSource {
+    object_path: String,
+    object_store: Arc<dyn ObjectStore>,
+    poll_interval: Duration,
+    indexer: Arc<RwLock<Indexer>>,
+    registration_gate: Arc<Mutex<()>>,
+    // A weak sender, so the dispatcher stops when the last service handle drops.
+    commands: mpsc::WeakUnboundedSender<IncrementalCommand>,
 }
 
 // The two result levels in this service have two different meanings.
@@ -149,12 +156,14 @@ impl IncrementalQueryService {
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
     ) -> Self {
         Self::new_with_runtime(
             storage_root,
             cancel,
             slate,
+            indexer,
             cdc_poll_interval,
             IncrementalConfig::default(),
         )
@@ -164,6 +173,7 @@ impl IncrementalQueryService {
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
         config: IncrementalConfig,
     ) -> Self {
@@ -171,6 +181,7 @@ impl IncrementalQueryService {
             storage_root,
             cancel,
             slate,
+            indexer,
             cdc_poll_interval,
             IncrementalQueryOptions::for_config(config),
         )
@@ -181,27 +192,32 @@ impl IncrementalQueryService {
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
     ) -> Self {
-        let cancel = cancel.child_token();
         let (sender, receiver) = mpsc::unbounded_channel();
-        let inner = IncrementalQueryServiceInner::new(
+        let registration_gate = Arc::new(Mutex::new(()));
+        let mut inner = IncrementalQueryServiceInner::new(
             storage_root,
-            cancel.clone(),
+            cancel.child_token(),
             options,
             slate.db.clone(),
         );
+        inner.cdc = Some(CdcSource {
+            object_path: slate.object_path.clone(),
+            object_store: slate.object_store.clone(),
+            poll_interval: cdc_poll_interval,
+            indexer: indexer.clone(),
+            registration_gate: registration_gate.clone(),
+            commands: sender.downgrade(),
+        });
         tokio::spawn(inner.run(receiver));
 
         Self {
             commands: sender,
-            cdc_object_path: slate.object_path.clone(),
-            cdc_object_store: slate.object_store.clone(),
-            cdc_poll_interval,
-            cancel,
-            cdc_task: Arc::new(StdMutex::new(None)),
-            registration_gate: Arc::new(Mutex::new(())),
+            indexer,
+            registration_gate,
             retire_timeout: options.retire_timeout,
         }
     }
@@ -209,46 +225,14 @@ impl IncrementalQueryService {
     pub(crate) async fn register_query(
         &self,
         query: ParsedQuery,
-        indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
         let _registration_guard = self.registration_gate.lock().await;
         let (tx_key, schema) = {
-            let indexer = indexer.read().await;
+            let indexer = self.indexer.read().await;
             (indexer.latest_tx_key(), indexer.metadata().schema.clone())
         };
         let plan = plan_query(&query, &schema)?;
-        let subscription = self.register_prepared_query(plan, tx_key).await?;
-        self.start_cdc_once(indexer);
-        Ok(subscription)
-    }
-
-    fn start_cdc_once(&self, indexer: Arc<RwLock<Indexer>>) {
-        let mut cdc_task = self.cdc_task.lock().unwrap();
-        if cdc_task.is_some() {
-            return;
-        }
-
-        let handle = spawn_cdc_loop(
-            self.cdc_object_path.clone(),
-            self.cdc_object_store.clone(),
-            indexer,
-            self.commands.downgrade(),
-            self.registration_gate.clone(),
-            self.cancel.clone(),
-            self.cdc_poll_interval,
-        );
-        *cdc_task = Some(handle);
-    }
-
-    pub(crate) async fn await_cdc_task(&self) -> Result<()> {
-        let handle = self.cdc_task.lock().unwrap().take();
-        if let Some(handle) = handle {
-            let cdc_result = handle
-                .await
-                .context("Incremental query CDC task failed to join")?;
-            cdc_result.context("Incremental query CDC loop failed")?;
-        }
-        Ok(())
+        self.register_prepared_query(plan, tx_key).await
     }
 
     pub(crate) async fn register_prepared_query(
@@ -294,42 +278,16 @@ impl IncrementalQueryService {
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + self.retire_timeout;
-        self.cancel.cancel();
-        let cdc_result = tokio::time::timeout_at(deadline, self.await_cdc_task())
-            .await
-            .map_err(|_| {
-                RetirementTimeout::Shutdown {
-                    timeout: self.retire_timeout,
-                }
-                .into()
-            })
-            .and_then(|result| result);
-        // Request cleanup even when waiting for CDC used the entire deadline.
         let (response, result) = oneshot::channel();
-        let service_result = match self
-            .commands
+        self.commands
             .send(IncrementalCommand::Shutdown { response })
-        {
-            Ok(()) => match tokio::time::timeout_at(deadline, result).await {
-                Ok(result) => result
-                    .context("Incremental query service stopped")
-                    .and_then(|result| result),
-                Err(_) => Err(RetirementTimeout::Shutdown {
-                    timeout: self.retire_timeout,
-                }
-                .into()),
-            },
-            Err(_) => Err(anyhow!("Incremental query service stopped")),
-        };
-
-        match (cdc_result, service_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(cdc_err), Err(service_err)) => Err(cdc_err.context(format!(
-                "Incremental query service shutdown failed: {service_err:#}"
-            ))),
-        }
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        tokio::time::timeout(self.retire_timeout, result)
+            .await
+            .map_err(|_| RetirementTimeout::Shutdown {
+                timeout: self.retire_timeout,
+            })?
+            .context("Incremental query service stopped")?
     }
 }
 
@@ -354,6 +312,11 @@ struct IncrementalQueryServiceInner {
     options: IncrementalQueryOptions,
     // Workers scan this database to prime their circuits.
     db: Arc<slatedb::Db>,
+    // Without a source, as in tests, no CDC task starts.
+    cdc: Option<CdcSource>,
+    // A child of `cancel`, so shutdown can stop the CDC task before the workers.
+    cdc_cancel: CancellationToken,
+    cdc_task: Option<JoinHandle<Result<()>>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
@@ -373,12 +336,45 @@ impl IncrementalQueryServiceInner {
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
+            cdc_cancel: cancel.child_token(),
             cancel,
             options,
             db,
+            cdc: None,
+            cdc_task: None,
             completed,
             completions,
         }
+    }
+
+    // The CDC task starts with the first query and reads the WAL from its beginning.
+    fn start_cdc(&mut self) {
+        let Some(cdc) = &self.cdc else {
+            return;
+        };
+        if self.cdc_task.is_some() {
+            return;
+        }
+        self.cdc_task = Some(spawn_cdc_loop(
+            cdc.object_path.clone(),
+            cdc.object_store.clone(),
+            cdc.indexer.clone(),
+            cdc.commands.clone(),
+            cdc.registration_gate.clone(),
+            self.cdc_cancel.clone(),
+            cdc.poll_interval,
+        ));
+    }
+
+    async fn stop_cdc(&mut self) -> Result<()> {
+        self.cdc_cancel.cancel();
+        let Some(handle) = self.cdc_task.take() else {
+            return Ok(());
+        };
+        handle
+            .await
+            .context("Incremental query CDC task failed to join")?
+            .context("Incremental query CDC loop failed")
     }
 
     fn retire(&mut self, completion: Completion) -> Result<()> {
@@ -402,7 +398,7 @@ impl IncrementalQueryServiceInner {
                     if let Some(completion) = completion {
                         if let Err(error) = self.retire(completion) {
                             warn!("{error:#}");
-                            // Shutdown cancels workers before waiting for CDC and sending its command.
+                            // A cancel of the node stops the workers, so shutdown reports their cleanup.
                             if self.cancel.is_cancelled() && cleanup.is_ok() {
                                 cleanup = Err(error);
                             }
@@ -432,6 +428,7 @@ impl IncrementalQueryServiceInner {
             }
         }
         receiver.close();
+        let cdc_result = self.stop_cdc().await;
         self.cancel.cancel();
         // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
@@ -459,8 +456,15 @@ impl IncrementalQueryServiceInner {
                 cleanup = result;
             }
         }
+        let result = match (cdc_result, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(cdc_error), Err(cleanup_error)) => Err(cdc_error.context(format!(
+                "Incremental query service shutdown failed: {cleanup_error:#}"
+            ))),
+        };
         if let Some(response) = shutdown {
-            let _ = response.send(cleanup);
+            let _ = response.send(result);
         }
     }
 
@@ -563,6 +567,7 @@ impl IncrementalQueryServiceInner {
                 return;
             }
         };
+        self.start_cdc();
         let db = self.db.clone();
         let scans = initial_scans(&plan);
         self.start_query(
@@ -720,11 +725,21 @@ mod tests {
         slate
     }
 
+    // The CDC task of the service reads an empty WAL path, so only the tests route batches.
+    fn without_wal(slate: SlateComponents) -> SlateComponents {
+        SlateComponents {
+            object_path: "/without_wal".into(),
+            ..slate
+        }
+    }
+
     async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
+        let slate = without_wal(slate_with_names(names).await);
         IncrementalQueryService::new(
             dir.to_path_buf(),
             CancellationToken::new(),
-            &slate_with_names(names).await,
+            &slate,
+            cdc::test_support::test_indexer(slate.db.clone()),
             Duration::from_millis(10),
         )
     }
@@ -923,10 +938,12 @@ mod tests {
     #[tokio::test]
     async fn history_before_registration_basis_does_not_fill_inbox() {
         let dir = tempfile::tempdir().unwrap();
+        let slate = without_wal(crate::slate::in_memory_slate().await);
         let service = IncrementalQueryService::new_with_options(
             dir.path().to_path_buf(),
             CancellationToken::new(),
-            &crate::slate::in_memory_slate().await,
+            &slate,
+            cdc::test_support::test_indexer(slate.db.clone()),
             Duration::from_millis(10),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
@@ -1041,58 +1058,6 @@ mod tests {
             .unwrap();
         service.shutdown().await.unwrap();
         assert!(!dir.path().join("query-1").exists());
-    }
-
-    #[tokio::test]
-    async fn await_cdc_task_returns_inner_loop_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let handle: JoinHandle<Result<()>> = tokio::spawn(async { Err(anyhow!("cdc failed")) });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.await_cdc_task().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC loop failed"));
-        assert!(message.contains("cdc failed"));
-
-        service.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn await_cdc_task_returns_join_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let handle: JoinHandle<Result<()>> = tokio::spawn(async {
-            panic!("cdc task panic");
-            #[allow(unreachable_code)]
-            Ok(())
-        });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.await_cdc_task().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC task failed to join"));
-
-        service.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn shutdown_removes_queries_after_cdc_task_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
-        let _subscription = register(&service, single_pattern_plan()).await;
-        let storage_path = dir.path().join("query-1");
-        assert!(path_has_entries(&storage_path));
-
-        let handle: JoinHandle<Result<()>> =
-            tokio::spawn(async { Err(anyhow!("cdc shutdown failed")) });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.shutdown().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC loop failed"));
-        assert!(message.contains("cdc shutdown failed"));
-        assert!(!storage_path.exists());
     }
 
     // NOTE(coverage): this exercises the `registration_gate` mutual-exclusion

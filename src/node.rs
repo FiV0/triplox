@@ -95,6 +95,7 @@ impl<L: TxLog> Node<L> {
             incremental_storage_path,
             cancel.clone(),
             &slate,
+            indexer.clone(),
             cdc_poll_interval,
             incremental_config,
         );
@@ -148,6 +149,7 @@ impl Node<MemoryLog> {
             )),
             cancel.clone(),
             &slate,
+            indexer.clone(),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
             incremental_config,
         );
@@ -347,9 +349,7 @@ impl<L: TxLog> Node<L> {
             ));
         }
 
-        self.incremental
-            .register_query(query, self.indexer.clone())
-            .await
+        self.incremental.register_query(query).await
     }
 
     pub(crate) async fn unregister_incremental_query(
