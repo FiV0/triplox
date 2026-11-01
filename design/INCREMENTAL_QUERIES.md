@@ -4,68 +4,64 @@ Version 0.1
 
 ## Overview
 
-Incremental queries let a caller register a query once and then receive result
-deltas as new transactions are indexed. An incremental query does not return
-a static result set, but rather a stream of changes between two consecutive
-db values. The difference between these two db values is what affects the query
-(in case it affects the query at all).
+An incremental query is a query that a caller registers once. After
+registration, the caller gets result deltas as the node indexes new
+transactions. A delta is the change in the query result between two consecutive
+database values. A transaction that does not change the result produces no
+delta.
 
-Every client should support some version of `subscribe(node, query)` which
-registers an incremental query on the server. `subscribe` returns a stateful
-object from which deltas can be retrieved and which can be closed. The closing
-is important because an incremental query binds resources on the server that
-otherwise won't get released.
+Each client supports some form of `subscribe(node, query)`. This call registers
+an incremental query on the server. It returns a stateful object that gives the
+deltas and that the caller can close. The caller must close it, because an
+incremental query holds server resources until it closes.
 
-Whenever the term query by itself appears in the following, it most likely means a incremental
-query unless explicitly stated otherwise.
+In this document, "query" means an incremental query, unless the text says
+otherwise.
 
 ---
 
 ## Current Scope
 
-The incremental query engine will lag behind the standard query engine in features in most
-cases. The idea is to use the same validation logic for standard queries also for
-incremental queries and a further more retraining check for incremental queries
-that at some point should get removed when parity between the two query paths
-is reached.
+The incremental query engine supports fewer features than the standard query
+engine. Incremental queries use the same validation as standard queries. An
+additional rule rejects the query shapes that the incremental engine does not
+support yet. When the two engines have the same features, we will remove this
+rule.
 
-Any approach for incremental query compilation should be first tested in hooray
-(https://github.com/FiV0/hooray2), it is the test bed for new join algorithms
-in Triplox.
+Test each new approach for incremental query compilation in Hooray
+(https://github.com/FiV0/hooray2) first. Hooray is the test bed for new join
+algorithms in Triplox.
 
-Initially we are focusing on queries that are started at the newest (as in most recently visible)
-DB value. In theory nothing prevents us from replaying transactions from an arbitrary DB
-value in the past as all the old data sits in the covering indexes,
-but this requires a different approach of piping the old transactions through
-the circuits compared to just tailing the WAL files of SlateDB. I am not
-saying it is out of scope, it is just out of scope for now.
+A query starts at the latest visible database value at registration time. The
+covering indexes keep all old data, so in theory a query can also start at an
+older value. But an older start needs a different way to feed old transactions
+through the circuits. The current design only tails the SlateDB WAL files. Thus,
+older start points are out of scope at this time.
 
-A query starts at the latest visible database value captured during
-registration. A non-empty delta is emitted if the priming of the circuit produces results;
-each later delta describes the changes from the previous delta's `TxKey` up to its own,
-which may span several transactions.
+Priming is the first step of a circuit, on the data at the start of the query.
+If the priming result is not empty, it is the first delta. Each later delta
+describes the changes from the `TxKey` of the previous delta up to its own
+`TxKey`. One delta can cover several transactions.
 
 ---
 
 ## Architecture
 
-Incremental query planning and circuit construction are split across four
-modules:
+Four modules do the query planning and the circuit construction:
 
-- `src/inc_query.rs` validates the incremental query shape and coordinates
-  query planning.
-- `src/inc_query/descriptor.rs` describes the semantic structure and binding
+- `src/inc_query.rs` makes sure that the query shape is valid for incremental
+  queries. It also coordinates the query planning.
+- `src/inc_query/descriptor.rs` describes the semantic structure and the binding
   properties of the `:where` tree.
-- `src/inc_query/planner.rs` orders descriptors and lowers them to physical
+- `src/inc_query/planner.rs` orders the descriptors and lowers them to physical
   relation plans.
-- `src/incremental/circuit.rs` assembles the relation plans into a per-query
-  DBSP circuit. `src/incremental/circuit/aggregates.rs` builds aggregate result
-  streams.
+- `src/incremental/circuit.rs` assembles the relation plans into one DBSP
+  circuit for each query. `src/incremental/circuit/aggregates.rs` builds the
+  aggregate result streams.
 
-`src/incremental.rs` owns registered query handles, channels, per-query circuit
-instances, and the dedicated service thread. `src/incremental/cdc.rs` scans the
-triples at the registration tx-key and feeds decoded SlateDB WAL files to the
-service.
+`src/incremental.rs` contains the service handle, the dispatcher, and the
+registry of queries. `src/incremental/worker.rs` contains the query workers.
+`src/incremental/cdc.rs` contains the snapshot scan and the CDC task.
 
 ### Fact input and relation streams
 
@@ -79,22 +75,24 @@ EncodedTriple {
 }
 ```
 
-Values are encoded bytes rather than `DataType` keys because DBSP Z-set keys
-need ordering, and `DataType` contains values such as floats, maps, and vectors
-that do not form a simple total order.
+A DBSP Z-set is a collection in which each element has an integer weight. A
+positive weight adds the element, and a negative weight retracts it. Z-set keys
+must have an order. `DataType` contains floats, maps, and vectors, and these
+values do not have a simple total order. Thus, the values in the fact input are
+encoded bytes, not `DataType` keys.
 
-The fact input and an incoming relation are different inputs to plan-node
-assembly. The fact input is the shared stream of `EncodedTriple` changes. An
-incoming relation is the running `EncodedRow` stream produced while evaluating
-the enclosing `:where` scope. It is internal to circuit assembly and is
-unrelated to query `:in` bindings.
+The fact input and an incoming relation are different inputs to the assembly of
+a plan node. The fact input is the shared stream of `EncodedTriple` changes. An
+incoming relation is the running `EncodedRow` stream that the enclosing `:where`
+scope produces during evaluation. It is internal to circuit assembly. It has no
+relation to the `:in` bindings of the query.
 
-Every relation stream carries a variable layout alongside its rows. The layout
-maps each variable to its positional encoded value in `EncodedRow`.
+Each relation stream has a variable layout together with its rows. The layout
+maps each variable to the position of its encoded value in `EncodedRow`.
 
 ### Semantic descriptors
 
-The descriptor tree mirrors nested query scopes:
+The descriptor tree has the same nesting as the query scopes:
 
 ```text
 ScopeDescriptor {
@@ -114,34 +112,39 @@ Descriptor {
 }
 ```
 
-The top-level `:where` clauses form a scope. Each `or` is a descriptor whose
-branches are scopes. An `and` branch is represented by a scope containing its
-child descriptors and has no descriptor representation of its own. A `not` or
-`not-join` is a descriptor whose body is another scope.
+The top-level `:where` clauses form a scope. Each `or` is a descriptor, and its
+branches are scopes. An `and` branch is a scope that contains its child
+descriptors. It has no descriptor of its own. A `not` or a `not-join` is a
+descriptor, and its body is another scope.
 
-`variables` lists the variables visible at a descriptor boundary.
-`groundable` lists the variables that the descriptor can produce
-without receiving them from an incoming relation. A pattern can ground all of
-its variables. A function grounds its result variable unless the expression
-also reads that variable. An `or` can ground the intersection of variables
-groundable by all branches. Predicates and `not` ground no variables, so every
-variable they expose must already be available from the enclosing positive
-relation. A `not` exposes the variables its body mentions; a `not-join` exposes
-only its declared variables, and its body binds the rest locally.
+`variables` lists the variables that are visible at the boundary of a
+descriptor. `groundable` lists the variables that the descriptor can produce
+without an incoming relation. The descriptor kinds ground variables as follows:
 
-The planner derives a descriptor's required bindings as
-`variables - groundable`. A descriptor is eligible once all required variables
-are present in the running layout. Among eligible descriptors, the planner
-prefers the descriptor sharing the most variables with the running relation
-and uses scope order as the deterministic tie-breaker.
+- A pattern can ground all of its variables.
+- A function grounds its result variable, unless the expression also reads that
+  variable.
+- An `or` can ground the variables that all of its branches can ground.
+- Predicates and `not` ground no variables. Each variable that they expose must
+  come from the enclosing positive relation.
+- A `not` exposes the variables that its body mentions. A `not-join` exposes
+  only its declared variables, and its body binds the other variables locally.
 
-This check does not resolve dependencies inside OR branches before selecting
-the OR. It can select an OR with circular function dependencies before an
-outside clause that would supply a needed binding, rejecting an executable query.
+The planner calculates the required bindings of a descriptor as `variables -
+groundable`. When the running layout contains all required variables of a
+descriptor, the descriptor is eligible. The planner selects the eligible
+descriptor that shares the most variables with the running relation. If two
+descriptors share the same number of variables, the planner selects the
+descriptor that comes first in the scope.
+
+This selection does not resolve the dependencies inside OR branches before it
+selects the OR. Thus, the planner can select an OR with circular function
+dependencies before an outside clause that supplies a necessary binding. As a
+result, the planner rejects a query that the engine can run.
 
 ### Physical relation plans
 
-Every physical relation plan records:
+Each physical relation plan records:
 
 ```text
 RelPlan {
@@ -151,275 +154,331 @@ RelPlan {
 }
 ```
 
-`incoming_vars` is absent when the node starts a relation and present when it
-extends a running relation. This distinction also preserves a present
-zero-column relation.
+If the node starts a relation, `incoming_vars` is absent. If the node extends a
+running relation, `incoming_vars` is present. This difference also keeps a
+present relation that has zero columns.
 
-- `Pattern` filters the fact input by attribute and constants. With an incoming
-  relation, circuit assembly joins the filtered pattern rows to that relation
-  using the plan's incoming, pattern, and output layouts.
-- `Filter` evaluates one compiled predicate against each incoming row and
-  preserves the row and its weight only when the predicate returns true.
-- `Function` evaluates one compiled expression against each incoming row. It
-  appends a new result column or filters against an existing result binding.
-- `Chain` represents a scope with multiple descriptors and passes each child's
-  output relation to the next child.
-- `Difference` preserves the incoming relation and removes rows whose selected
-  key occurs in its negative subplan. The negative scope is seeded by projecting
-  the incoming relation to that key.
-- `Union` records its join variables separately from its full output layout.
-  Branches receive only incoming columns for those variables; local output
-  columns are projected away before union. Both `or` and `or-join` use this
-  operator.
+The plan kinds do these operations:
+
+- `Pattern` filters the fact input by attribute and by constants. If an incoming
+  relation is present, circuit assembly joins the filtered pattern rows to that
+  relation. The join uses the incoming, pattern, and output layouts of the plan.
+- `Filter` evaluates one compiled predicate on each incoming row. If the
+  predicate returns true, the filter keeps the row and its weight.
+- `Function` evaluates one compiled expression on each incoming row. It adds a
+  new result column, or it filters on an existing result binding.
+- `Chain` is a scope with more than one descriptor. It gives the output relation
+  of each child to the next child.
+- `Difference` keeps the incoming relation and removes the rows whose selected
+  key occurs in its negative subplan. The negative scope starts from the
+  incoming relation, projected to that key.
+- `Union` records its join variables separately from its full output layout. The
+  branches get only the incoming columns for those variables. The plan projects
+  away the local output columns before the union. Both `or` and `or-join` use
+  this operator.
 
 `Chain` records the evaluation order of its child plans. Circuit construction
-connects each child's output stream to the next child's input. It uses the
-existing `flat_map`, filter, join, projection, antijoin, sum, and distinct
-operators.
+connects the output stream of each child to the input of the next child. It uses
+the existing DBSP operators `flat_map`, filter, join, projection, antijoin, sum,
+and distinct. An antijoin keeps the rows of one input that have no match in the
+other input.
 
 ### Row layouts
 
-A standalone pattern outputs its pattern variable order. A node receiving an
-incoming relation preserves that layout and appends only newly produced
-variables in descriptor variable order. Join keys are the variables shared by
-both sides, in incoming-layout order. A join without shared variables is a
-Cartesian product over the empty key.
+A standalone pattern outputs its variables in pattern order. A node with an
+incoming relation keeps that layout. It adds only the new variables, in
+descriptor variable order. The join keys are the variables that both sides
+share, in the order of the incoming layout. If a join has no shared variables,
+it is a Cartesian product over the empty key.
 
-A chain's output layout is its last child's output layout. A standalone union
-uses its descriptor variable order. A union with an incoming relation preserves
-the incoming layout and appends its remaining descriptor variables; descriptor
-ordering guarantees that variables the union cannot ground are already part of
-the incoming layout. Because branches may naturally produce their columns in
-different orders, every branch is projected to the union's join variables
-before the branches are summed. Explicit `or-join` branches can also have local
-columns that disappear at this projection.
+The output layout of a chain is the output layout of its last child. A
+standalone union uses its descriptor variable order. A union with an incoming
+relation keeps the incoming layout and adds its other descriptor variables. The
+descriptor order makes sure that the incoming layout already contains each
+variable that the union cannot ground.
 
-The circuit verifies that the running relation layout matches each plan node's
-declared incoming layout. It does not derive a different variable order during
-assembly.
+Branches can produce their columns in different orders. Thus, the circuit
+projects each branch to the join variables of the union before it sums the
+branches. Explicit `or-join` branches can also have local columns, and this
+projection removes them.
+
+The circuit makes sure that the running relation layout matches the declared
+incoming layout of each plan node. It does not calculate a different variable
+order during assembly.
 
 ### Circuit assembly
 
-Circuit assembly recursively consumes the shared fact input, a relation plan,
-and the optional incoming relation:
+Circuit assembly is recursive. Its inputs are the shared fact input, a relation
+plan, and the optional incoming relation. Each plan kind assembles as follows:
 
-- a pattern creates matching rows with `flat_map` and joins them to the
-  incoming rows when present.
-- a filter decodes its referenced columns, evaluates the compiled expression,
-  and filters the incoming rows without changing their layout or weights.
-- a function decodes its inputs and either appends the encoded result with
-  `flat_map` or filters rows whose existing result binding differs. Failed
-  expression evaluation drops the row.
-- a chain folds the running relation through its children.
-- a difference projects the incoming rows to the negative key, evaluates the
-  negative scope from that raw projection, and antijoins the original incoming
-  rows against the resulting keys. Local `not-join` columns are not part of the
-  key.
-- a union projects incoming rows to the join variables that are already bound,
-  preserving their weights. It evaluates each branch with those rows, projects
-  results to all join variables, and applies `distinct` to their sum. It then
-  joins back to the original incoming stream on the shared variables to retain
-  outer columns and weights. With no incoming relation it returns the distinct
-  union directly.
+- A pattern creates matching rows with `flat_map`. If incoming rows are present,
+  it joins the matching rows to them.
+- A filter decodes the columns that it references and evaluates the compiled
+  expression. It filters the incoming rows, and it does not change their layout
+  or their weights.
+- A function decodes its inputs. It adds the encoded result with `flat_map`, or
+  it removes the rows whose existing result binding is different. If the
+  evaluation of the expression fails, the function removes the row.
+- A chain folds the running relation through its children.
+- A difference projects the incoming rows to the negative key and evaluates the
+  negative scope from that raw projection. Then it antijoins the original
+  incoming rows against the resulting keys. Local `not-join` columns are not
+  part of the key.
+- A union projects the incoming rows to the join variables that are already
+  bound, and it keeps their weights. It evaluates each branch with those rows,
+  projects the results to all join variables, and applies `distinct` to their
+  sum. Then it joins back to the original incoming stream on the shared
+  variables, to keep the outer columns and the weights. If there is no incoming
+  relation, the union returns the distinct union directly.
 
-The negative seed is not made distinct before evaluation. Its weights remain
-correlated with the positive input, while DBSP antijoin treats the resulting
-negative key relation by presence. This gives the expected add/retract behavior
-when a key has multiple negative matches.
+The circuit does not apply `distinct` to the negative seed before evaluation.
+The weights of the seed stay correlated with the positive input. DBSP antijoin
+uses only the presence of a key in the negative relation. If a key has more than
+one negative match, this gives the correct add and retract behavior.
 
-For a non-aggregate query, the completed `:where` relation is projected to the
-query's `:find` variable order. An aggregate query passes that relation to the
-aggregate assembly described below.
+For a query without aggregates, the circuit projects the full `:where` relation
+to the order of the `:find` variables. For an aggregate query, the circuit gives
+that relation to the aggregate assembly in the next section.
 
 ### Aggregate assembly
 
-The find plan identifies the non-aggregate find variables as the group key and
-records all find elements in projection order. Circuit assembly indexes the
-completed `:where` rows by that group key and builds one independent result
-stream for each aggregate expression. It then joins those streams by group and
-restores group values and aggregate values to find-clause order. Equivalent
-aggregate expressions are not deduplicated.
+The find plan uses the find variables that are not aggregates as the group key.
+It records all find elements in projection order. Circuit assembly indexes the
+full `:where` rows by that group key and builds one independent result stream
+for each aggregate expression. Then it joins those streams by group. It puts the
+group values and the aggregate values back in find-clause order. The circuit
+does not deduplicate equivalent aggregate expressions.
 
-A global aggregate has an empty group key. The circuit seeds that group so an
-empty input produces `0` for `count`, `count-distinct`, and `sum`. `avg`, `min`,
-and `max` produce no row for an empty input.
+A global aggregate has an empty group key. The circuit seeds that group, so an
+empty input produces `0` for `count`, `count-distinct`, and `sum`. For an empty
+input, `avg`, `min`, and `max` produce no row.
 
-`min` and `max` currently use a rather convoluted way to produce a result. The
-main reason is duplicated behaviour for dealing with different non-comparable
-types (i.e. "string" vs "int") and that the existing Min implementations from
-the DBSP crate do not carry errors through the circuits, because `min`/`max`
-can only produce a value from either left or right, without producing a
-new value (error) and the signatures for the standard implementation does not
-produce a `Result` value.
+`min` and `max` use a complex method to produce a result. There are two reasons.
+First, the implementation duplicates the handling of values with types that
+cannot be compared, for example a string and an integer. Second, the `Min`
+implementations of the DBSP crate do not carry errors through the circuit. They
+can only select the left value or the right value, and they cannot produce a new
+value such as an error. Their signatures also do not return a `Result`.
 
 ---
 
 ## Runtime Flow
 
-The main runtime boundary from a node to incremental queries is `IncrementalQueryService`.
-The node holds an `IncrementalQueryService`. It is the coordination boundary between the
-node and the threads/runtime/executor dealing with the state and the execution of incremental queries.
-
-Registration flows through the system as follows:
-
-```text
-Node::register_incremental_query
-    delegates to IncrementalQueryService::register_query
-
-IncrementalQueryService::register_query
-    captures the latest indexed TxKey and schema from the indexer
-    plans the query
-    scans the initial triples
-    sends Register to the dedicated service thread
-    starts the CDC loop after Register returns, if not already running
-
-tpx-iq-service thread
-    builds one QueryCircuit for the plan
-    primes it with the initial triples
-    queues the non-empty priming result at the registration basis
-    creates a bounded input queue and starts an async worker owning the circuit
-    stores the basis, routing state, and worker controls
-    returns an IncrementalQuerySubscription
-```
-
-`IncrementalQueryService` owns query registration and lifecycle management. Its
-service thread runs a dispatcher on a service-owned Tokio runtime. The dispatcher
-owns the registry, while each async query worker owns its circuit. Circuit build
-and priming use a blocking job, but the dispatcher still waits for registration
-to finish before accepting the next command.
-
-Live WAL application reaches the dedicated service thread through the same
-command channel, but it enters from the internal side rather than the node side.
-A spawned CDC task forwards triples as they arrive through WAL decoding.
-It drives circuits by calling `apply_batch` on a clone of the same
-`IncrementalQueryService` handle, which forwards an `ApplyBatch` command over
-the same channel:
+`IncrementalQueryService` is the boundary between a node and its incremental
+queries. The node holds one service handle. The handle sends commands to the
+dispatcher. The diagram that follows shows the tasks and the channels between
+them:
 
 ```text
-Tokio CDC task
-    reads one WAL file
-    decodes it to datoms using the node schema
-    converts datoms to weighted EncodedTriple tuples tagged with their tx id
-    sends ApplyBatch to IncrementalQueryService
-
-tpx-iq-service thread
-    loops over registered queries
-    drops the transactions at or before each query basis
-    enqueues the shared batch (or its trimmed remainder) into each relevant query's input queue
-    acknowledges ApplyBatch after fan-out
-
-async query worker
-    receives batches in FIFO order
-    acquires a shared execution permit
-    copies only triples with its patterns' attributes on the runtime's blocking pool
-    steps the circuit unless none of those attributes are present
-    releases the permit
-    sends non-empty IncrementalQueryDelta values to its subscription
+┌─ Tokio runtime (node or dedicated) ────────────────────────────────────────────────────────┐
+│                                                                                            │
+│  ┌─ register_query(query) ─────────────┐                ┌─ CDC task ─────────────────────┐ │
+│  │ plan_query                          │                │ loop:                          │ │
+│  │ send Register{plan}                 │                │  WAL next_batch → Batch        │ │
+│  │ await response                      │                │  send ApplyBatch ⇄ routed ack  │ │
+│  └──────┬─────────────────▲────────────┘                └───────────────┬────────────────┘ │
+│         │ Register        │ Ok(subscription) / Err                      │ ApplyBatch       │
+│         │ Unregister      │ (sent by the worker after priming)          │                  │
+│         ▼                 │                                             ▼                  │
+│  ┌─ Dispatcher task ──────┼────────────────────────────────────────────────────────────┐   │
+│  │ registry: handle → { inbox, basis, control }                                        │   │
+│  │ Register:   basis = latest indexed TxKey                                            │   │
+│  │             new inbox ← Prime{basis, response}; insert; spawn Worker                │   │
+│  │             (first query: start RuntimePool + CDC task)                             │   │
+│  │ ApplyBatch: per query batch.after(basis) → inbox ← Apply(batch)   (full ⇒ Lagged)   │   │
+│  │ Unregister: control.terminate; reply on Completion                                  │   │
+│  └───────────────┬────────┼───────────────────────────────────────────▲────────────────┘   │
+│                  │ inbox  │ [Prime, Apply, Apply, …], bounded FIFO    │ Completion         │
+│                  │        │ + control: stop, out of band              │                    │
+│                  ▼        │                                           │                    │
+│  ┌─ Worker task × N ──────┴───────────────────────────────────────────┴────────────────┐   │
+│  │ build circuit on the pool                       (spawn_blocking)                    │   │
+│  │ loop inbox:                                                                         │   │
+│  │   Prime{basis, response}  scan at basis → step → emit(basis) → response             │   │
+│  │   Apply(batch)            matches? → step → emit(batch.tx_key)                      │   │
+│  │ exit: drop circuit, rm storage (spawn_blocking) → Completion                        │   │
+│  └──────┬───────────────────────────────────┬──────────────────────────────────────────┘   │
+└─────────┼───────────────────────────────────┼──────────────────────────────────────────────┘
+          │ deltas: priming first, then WAL   │ transaction_async
+          ▼                                   ▼
+  ┌─────────────────────┐          ┌─ DBSP RuntimePool (shared, started once) ──┐
+  │ SubscriptionDeltas  │          │ `threads` foreground threads, each circuit │
+  └─────────────────────┘          │ pinned to one; `merger_threads` compaction │
+                                   └────────────────────────────────────────────┘
 ```
 
-Tokio channels carry commands into the dispatcher, WAL batches into
-workers, and results back to subscribers. Workers report cleanup completion on a
-separate channel so they do not keep the service command channel alive.
+The runtime has these parts:
 
-`ApplyBatch` acknowledges routing, not circuit completion. Each query has one
-FIFO consumer and at most one apply in flight; different queries advance
-independently. Registration-basis filtering happens before enqueueing, so WAL
-history already included in a snapshot cannot overflow a new query's inbox.
-Shared `Arc` batches avoid deep copies during fan-out. A batch is sorted by
-attribute once, and each blocking apply copies only its query's attributes'
-triples. A query with none of them skips the step:
-after the always-stepped priming, an empty input cannot change its result.
+- `register_query` runs on the task of the caller. It plans the query, sends
+  `Register{plan}` to the dispatcher, and waits for the response.
+- The dispatcher is one Tokio task that owns the registry of queries. It handles
+  one message at a time. It never builds a circuit, scans data, or steps a
+  circuit.
+- The CDC (change data capture) task reads the SlateDB WAL. It turns each WAL
+  file into one batch and sends the batch to the dispatcher.
+- Each query has one worker task that owns the circuit of the query. The inbox
+  of the worker is a bounded FIFO (first in, first out) queue of `Prime` and
+  `Apply` messages.
+- The DBSP `RuntimePool` runs the steps of all circuits on one shared set of
+  threads.
 
-A full result channel pauses only that query's worker, after releasing its
-execution permit. If its input queue fills, the dispatcher stops routing to that
-query and terminates it with a lag error. Pending inputs are discarded.
+At this time, the tasks run on the Tokio runtime of the node. A dedicated
+runtime for incremental queries is also possible.
 
-`IncrementalQueryDelta` is a subscriber-facing result batch emitted after a
-circuit step. The first delta is the non-empty priming result at the registration
-basis; later deltas describe the WAL batches after that basis, each carrying
-the `TxKey` of the last transaction it covers. A priming failure
-rejects registration. A live failure removes only the affected query.
+### Registration
 
-A separate terminal channel prevents a full output queue from hiding an error.
-Ordinary query errors follow previously queued results; lag errors take priority
-over buffered results. Both become terminal `QueryError` frames on the wire.
+The registration basis is the `TxKey` of the latest indexed transaction at
+registration. Registration has these steps:
 
-Registration is serialized against the application of CDC changes by a registration gate owned
-by `IncrementalQueryService`. `register_query` holds the gate across its whole
-body (basis capture, initial db capture, and the `Register` round-trip), and the
-CDC loop holds the same gate around each `apply_batch`. This makes the
-snapshot/register cutover atomic with respect to CDC application: a transaction
-after the registration basis cannot be consumed by the global CDC loop before the
-new query is present in the service registry. The cutover boundary itself is the
-registration `TxKey` — the global CDC loop reads the WAL from the beginning and
-each query drops the transactions at or before its own `tx_id`.
+1. `register_query` plans the query with the current schema and sends
+   `Register{plan}` to the dispatcher.
+2. The dispatcher reads the latest indexed `TxKey` under the indexer read lock.
+   This `TxKey` is the basis.
+3. The dispatcher creates the inbox and puts `Prime{basis, response}` in it as
+   the first message.
+4. The dispatcher adds the query to the registry and starts the worker. For the
+   first query, it also starts the `RuntimePool` and the CDC task.
+5. The worker builds the circuit on the pool, on a blocking thread.
+6. The worker takes `Prime` from the inbox. It scans the snapshot at the basis
+   and steps the circuit with the snapshot triples.
+7. If the priming result is not empty, the worker sends it as the first delta.
+8. The worker sends `Ok(subscription)` on the response channel, and
+   `register_query` returns the subscription.
 
----
+The response channel goes inside `Prime`. Thus, the worker replies to
+`register_query` directly, and the dispatcher does not wait for priming. If
+priming fails, the worker sends the error on the response channel, and the
+registration fails.
 
-## Registration Basis
+`register_query` plans with the schema at call time, and the dispatcher reads
+the basis later. Thus, the schema for the plan can be older than the basis. This
+order is correct on one condition: an attribute id does not change after the
+schema assigns it.
 
-Registration creates a cutover point:
+### Live batches
 
-1. Capture the latest indexed transaction basis from SlateDB.
-2. Plan the query against the current schema.
-3. Scan the current EAV index up to the captured transaction entity.
-4. Prime the DBSP circuit with positive triples from that snapshot.
-5. Insert the registered query into the incremental service.
-6. Start the CDC loop if it is not already running.
+A batch is the set of weighted triples from one WAL file. Each triple has the id
+of its transaction. A batch goes through these steps:
 
-If the initial query result is non-empty, registration queues it as the first
-delta with the registration `TxKey`. Empty priming results are omitted. Later
-deltas describe transactions after the returned basis.
+1. The CDC task reads one WAL file and decodes it to datoms with the current
+   schema. A datom is one asserted or retracted fact about an entity.
+2. The CDC task converts the datoms to a batch of weighted `EncodedTriple`
+   tuples.
+3. The CDC task sends `ApplyBatch` to the dispatcher and waits for the routing
+   acknowledgement.
+4. For each query, the dispatcher removes the transactions at or before the
+   basis of the query. If transactions remain, it puts `Apply(batch)` in the
+   inbox of the query.
+5. The worker takes the next message from its inbox. If the batch has no triples
+   with the attributes of the query, the worker skips the step.
+6. Otherwise, the worker copies those triples into the circuit input and awaits
+   the step.
+7. If the step result is not empty, the worker sends it as a delta.
 
-Registration is serialized against CDC application. This prevents a race where
-the global CDC loop consumes a transaction after the new query's snapshot basis
-but before that query has been inserted into the incremental service. Without
-that barrier, the new query could miss a future transaction.
+The acknowledgement of `ApplyBatch` tells the CDC task that the dispatcher
+routed the batch. It does not tell the CDC task that the circuits applied the
+batch. The acknowledgement paces the CDC task. Each query has one FIFO consumer
+and at most one step in progress. Different queries advance independently.
 
-The transaction basis may be in the middle of WAL availability. This is normal:
-transactions that are indexed but not yet flushed share a WAL file with the
-transactions that follow them, so the CDC loop may later read a WAL file
-containing both transactions at or before the registration basis and
-transactions after it. The dispatcher trims such a batch for that query so it skips entries at or before its
-registration basis and applies later ones.
+All queries share one `Arc` batch, so the dispatcher makes no deep copies. The
+CDC task sorts each batch by attribute once. Each step copies only the triples
+with the attributes of its query. After priming, an empty input cannot change
+the result of a circuit. Thus, a query without matching triples skips the step.
+
+### Ordering
+
+The dispatcher does three actions in one step: it reads the basis, it creates
+the inbox with `Prime`, and it adds the query to the registry. The dispatcher
+handles one message at a time. Thus, the dispatcher cannot route a batch between
+these three actions. No lock between registration and the CDC task is necessary.
+
+A batch that the dispatcher routed before this step does not go to the new
+query. This is correct, because the batch contains only transactions at or
+before the basis. The indexer writes a transaction to SlateDB and publishes its
+`TxKey` under one write lock. Thus, a basis that the dispatcher reads under the
+read lock covers each transaction in the WAL. The snapshot scan at the basis
+contains these transactions.
+
+The dispatcher trims each batch that it routes after this step against the
+basis. The remainder goes into the inbox behind `Prime`. The worker handles its
+inbox in FIFO order, and it sends all deltas of its query. Thus, the priming
+delta always comes before the deltas of WAL batches.
+
+The basis can be in the middle of a WAL file. Transactions that are indexed but
+not yet flushed share a WAL file with later transactions. Thus, the CDC task can
+read a WAL file with transactions on both sides of the basis. The dispatcher
+trims such a batch for the query, and the query applies only the later
+transactions.
+
+### Backpressure and errors
+
+A full result channel stops only the worker of that query. If the inbox of a
+query is full, the dispatcher stops routing to that query and stops the query
+with a lag error. The dispatcher discards the pending messages.
+
+During the circuit build and the snapshot scan, WAL batches wait in the inbox.
+If the priming is slow, the inbox can fill. The query then stops with a lag
+error before its first delta. `register_query` still returns the subscription,
+and the first item of the subscription is the lag error.
+
+`IncrementalQueryDelta` is a result batch for the subscriber. The worker sends
+it after a circuit step. Each delta has the `TxKey` of the last transaction that
+it covers. The priming delta has the basis as its `TxKey`.
+
+A priming failure makes the registration fail. A failure during a live step
+stops only the affected query.
+
+A separate terminal channel makes sure that a full output queue does not hide an
+error. An ordinary query error comes after the results that are already in the
+queue. A lag error comes before the buffered results. Both become terminal
+`QueryError` frames on the wire.
+
+The dispatcher stops a worker through its `Control`, not through the inbox. The
+dispatcher uses `Control` for unregister, lag, and shutdown. A full inbox is the
+condition for a lag stop. Thus, the stop signal cannot go through the inbox.
 
 ---
 
 ## CDC Flow
 
-The node has one CDC loop for all incremental queries. It uses SlateDB
-`WalReader` through Triplox's `CdcStream` helper. The loop turns each WAL file
-into one batch, extracts EAV datoms using the current node
-schema (future optimizations should apply decoding more fine-grained per query),
-and then routes the weighted triple delta through the incremental query
-service. It does not wait on the writer indexer before applying a WAL entry;
-in the current writer-node path, a WAL entry observed here has already passed
-through the write/indexing path that produced it. The schema still comes through
-the node boundary because CDC decoding needs the current ident and attribute
-maps.
+The node has one CDC task for all incremental queries. The dispatcher starts it
+with the first query. The task uses the SlateDB `WalReader` through the
+`CdcStream` helper of Triplox. It reads the WAL from the beginning and turns
+each WAL file into one batch. It extracts EAV (entity, attribute, value) datoms
+with the current node schema.
 
-The CDC cursor is the WAL read-position marker. It contains the WAL file id
-where reading should resume and the last SlateDB row sequence that should be
-skipped because it has already been read. In the current writer-node
-implementation this cursor is in-memory state owned by the live `CdcStream`;
-it lets the stream park on `next_batch().await` and continue with the next
-WAL file without rereading earlier rows.
+The task does not wait for the writer indexer before it routes a WAL entry. On a
+writer node, each WAL entry that the task reads already went through the write
+and index path. The task gets the schema from the indexer, because decoding
+needs the current ident and attribute maps.
 
-This CDC cursor is currently not saved anywhere persistently. If a node
-crashes the query needs to be registered anew and populated anew.
+The CDC cursor is the read position in the WAL. It contains the id of the WAL
+file where reading continues. It also contains the last SlateDB row sequence
+number that the stream already read. On the writer node, the cursor is in-memory
+state of the live `CdcStream`. With the cursor, the stream can wait in
+`next_batch().await` and continue with the next WAL file. The stream does not
+read earlier rows again.
 
-For each WAL file:
+The node does not persist the cursor. If a node crashes, each query must
+register and prime again.
 
-1. `CdcStream` yields all rows of the file after the cursor as one batch.
-2. EAV entries are decoded into datoms.
-3. The last transaction's metadata becomes the batch `TxKey`.
-4. Datoms become a weighted batch of encoded triples, each tagged with its
-   transaction id.
-5. The incremental service enqueues the batch, trimmed to the transactions after
-   each query's registration basis, terminating any query whose input queue overflows.
-6. CDC continues after routing; workers independently apply their queued batches
-   and send non-empty result deltas.
-7. The live stream cursor advances as rows are read, independently of worker progress.
+For each WAL file, the CDC flow has these steps:
+
+1. `CdcStream` gives all rows of the file after the cursor as one batch.
+2. The task decodes the EAV entries into datoms.
+3. The metadata of the last transaction becomes the `TxKey` of the batch.
+4. The datoms become a weighted batch of encoded triples. Each triple has the id
+   of its transaction.
+5. The task sends `ApplyBatch` to the dispatcher and waits for the routing
+   acknowledgement.
+6. The dispatcher trims the batch for each query and puts the remainder in each
+   inbox. If an inbox overflows, the dispatcher stops that query.
+7. The task continues with the next WAL file. The workers apply their messages
+   independently and send the deltas that are not empty.
+
+The cursor advances as the task reads rows. It does not depend on the progress
+of the workers. If the CDC task fails, the task stops, and shutdown reports the
+error.
 
 ---
 
@@ -427,104 +486,139 @@ For each WAL file:
 
 Each registration returns:
 
-- a query handle,
-- the registration `TxKey`, and
-- a result receiver combining a bounded delta channel with terminal notifications.
+- A query handle.
+- The registration `TxKey`.
+- A result receiver, which combines a bounded delta channel with terminal
+  notifications.
 
-DBSP query state is trace-backed and stored in a per-query directory instead of
-being accumulated in ordinary Rust memory. The service deletes that directory
-when registration fails, a query is explicitly unregistered, its receiver is
-dropped, its circuit returns an error, its input queue overflows, or the service
-shuts down. Circuit destruction and directory removal run on blocking threads,
-in that order. Unregister waits for cleanup without blocking the dispatcher;
-automatic cleanup failures are logged. Dropped receivers are detected even when
-no further transactions arrive.
+DBSP keeps the query state in traces. A trace is the indexed history of updates
+that a DBSP operator keeps. The traces are in one directory for each query, not
+in ordinary Rust memory. When its query stops, the worker removes that
+directory. A query stops for these reasons:
 
-Unregister and shutdown wait up to 10 seconds and return an explicit
-`RetirementTimeout` error if retirement has not finished. The deadline includes
-waiting for the dispatcher; shutdown uses one deadline for both CDC and worker
-cleanup and requests cleanup even if CDC exhausts that deadline.
+- The registration fails.
+- The caller unregisters the query.
+- The caller drops the receiver.
+- The circuit returns an error.
+- The inbox overflows.
+- The service shuts down.
 
-Timeouts only stop the caller's wait. The service runtime and retiring workers
-remain alive until in-flight applies and cleanup finish. Storage stays in place
-until circuit destruction completes, and late cleanup failures are logged.
-There are no execution timeouts or forced circuit kills; a circuit that never
-returns retains its runtime resources and storage.
+The worker destroys the circuit and then removes the directory, on a blocking
+thread. Then it sends `Completion` to the dispatcher. Unregister waits for this
+`Completion`, and the dispatcher does not block during the wait. The dispatcher
+logs the cleanup failures of queries that stopped for other reasons. If no new
+transactions arrive, the worker still detects a dropped receiver.
+
+Retirement is the stop and the cleanup of a query. `Shutdown` retires all
+queries in these steps:
+
+1. The dispatcher stops the CDC task and waits for it.
+2. The dispatcher stops all workers through their `Control`.
+3. The dispatcher waits for a `Completion` from each worker.
+4. The dispatcher shuts down the `RuntimePool` and sends the result.
+
+A worker cannot stop a circuit build that started. The build finishes, and then
+the worker stops. If a worker stops before priming finishes, the answer to the
+registration depends on the reason:
+
+- A build or priming error: the registration fails with the error.
+- A lag stop: the registration returns the subscription. Its first item is the
+  lag error.
+- A shutdown: the response channel closes, and the registration fails.
+
+For an error or a lag stop, the worker answers only after it removes the
+storage of the query.
+
+Unregister and shutdown wait up to 10 seconds. If retirement does not finish in
+that time, they return a `RetirementTimeout` error. Shutdown uses one deadline
+for all of its steps.
+
+A timeout only stops the wait of the caller. The dispatcher and the retiring
+workers continue until the steps in progress and the cleanup finish. The storage
+stays until the circuit destruction finishes. The dispatcher logs late cleanup
+failures. There are no execution timeouts and no forced stops of circuits. A
+circuit that never returns keeps its runtime resources and its storage.
 
 ---
 
 ## Threading and Tuning Knobs
 
-Internal defaults are provided by `IncrementalQueryOptions`; there are no new
-TOML settings:
+The `[incremental]` configuration section sets the DBSP pool:
 
-- Each input queue holds 256 WAL batches, plus at most one batch already
-  taken by its worker. Overflow terminates that subscription.
-- `SUBSCRIPTION_CAPACITY` remains 128 result batches. A full result queue applies
+- `threads` sets the number of foreground threads. The default is half of
+  `available_parallelism()`, rounded up.
+- `merger_threads` sets the number of merger threads, which merge traces in the
+  background. The default is 1.
+- `cache_mib` sets the size of the cache in MiB. The default is 256.
+
+`IncrementalQueryOptions` gives the other internal defaults:
+
+- Each inbox holds 256 messages. The worker can also hold one message that it
+  already took. Overflow stops the query.
+- `SUBSCRIPTION_OUTPUT_CAPACITY` is 128 result batches. A full result queue applies
   backpressure to its own worker.
-- `max_concurrent_steps` defaults to half of `available_parallelism()`, rounded
-  up, with a minimum of one. A shared semaphore bounds outstanding live apply
-  jobs; waiting for output holds no permit.
-- `retire_timeout` bounds unregister and shutdown waits to 10 seconds.
-- The service-owned Tokio runtime has two pools:
-  - **Async pool: 2 threads** (`worker_threads(2)`), shared by all query workers.
-    Waiting for input, a permit, or an apply result frees the thread to run other
-    workers.
-  - **Blocking (sync) pool: up to 512 threads**, Tokio's default limit. Threads
-    are created on demand to run synchronous jobs submitted via `spawn_blocking`;
-    jobs queue when all 512 threads are busy.
+- `retire_timeout` limits the waits of unregister and shutdown to 10 seconds.
 
-  **Apply scheduling:** the shared semaphore provides `max_concurrent_steps`
-  permits. Each worker acquires a permit, then calls `spawn_blocking` to submit
-  an apply job to the blocking pool. The following `.await` suspends the query
-  worker if the job is still pending, freeing its current async thread to run
-  other tasks. When the job finishes, Tokio schedules the query worker to resume
-  on either async thread. The job holds its permit through queueing and execution,
-  then releases it so another worker can proceed.
+The dispatcher, the CDC task, and the workers are Tokio tasks. The service owns
+no threads of its own. All circuits run on one shared DBSP `RuntimePool`, which
+the dispatcher starts with the first query. Each circuit is pinned to one
+foreground thread of the pool. The foreground threads queue the circuits that
+are ready. Thus, the number of foreground threads alone limits the number of
+concurrent steps.
 
-  DBSP also owns one runtime worker thread per circuit. The semaphore limits
-  outstanding apply jobs, not the total thread count.
-- WAL polling uses `cdc_poll_interval_us` for remote nodes (default 200ms) and a
-  fixed 10ms for local and memory nodes.
+For a step, a worker adds the triples to the circuit input and awaits
+`DBSPHandle::transaction_async`. The await does not hold a thread while the pool
+runs the step. Then the worker decodes the output on the Tokio runtime. The
+priming step uses the same path.
 
-These are count limits, not byte limits. Shared transaction payloads reduce
-copying, but queue references, variable batch sizes, in-flight copies, and result
-buffers still consume memory. Registration remains serialized under the existing
-CDC gate. Special scheduling for expensive circuits and execution timeouts are
-outside this change.
+Blocking threads (`spawn_blocking`) run only the lifecycle work that waits on
+the pool. This work is the pool start, the circuit build, the circuit
+destruction with storage removal, and the pool shutdown.
+
+Each snapshot scan runs at most 8 prefix scans at the same time
+(`MAX_CONCURRENT_INITIAL_SCANS`). There is no shared limit across queries. Thus,
+many registrations at the same time put a high read load on SlateDB.
+
+For remote nodes, WAL polling uses `cdc_poll_interval_us`, with a default of 200
+ms. For local and memory nodes, the interval is a fixed 10 ms.
+
+These limits are counts, not bytes. Shared batches reduce copies. But queue
+references, variable batch sizes, copies in progress, and result buffers still
+use memory. Special scheduling for expensive circuits and execution timeouts are
+out of scope.
 
 ---
 
 ## Direction
 
-Currently the incremental query API is very bare bones. There is no way to
-specify the `TxKey` that a query should start at. There is now way
-to stop and restart a query without reinitializing the circuit. All these
-things are possible, but need more thought and careful analysis for the
-state management.
-
-I have also been exploring an incremental join algorithm incorporating aspects
-of WCOJ in Hooray. I want to bring these ideas to Triplox to see if
-the incremental join on graph patterns could be improved at scale and if
-there is a need for this kind of algorithms.
+The incremental query API is minimal at this time. A caller cannot specify the
+`TxKey` where a query starts. A caller cannot stop and restart a query without a
+new circuit. These features are possible, but the state management needs more
+analysis.
 
 ### Further optimizations
 
-There are quite a few optimizations that can be done for incremental queries.
-These should be tracked in the issue Tracker. In no particular order, they are:
-- Filter relevant triples via fixed attributes and other constants for circuit initialization. Use the AVE index.
-- Initialize the circuits in batches. At scale the current approach won't work.
-- Make use of Triplox temporal indexes in base triple patterns. This will avoid
-save a lot of space in the incremental circuits.
-- Shared circuits or shared arrangements across equivalent queries.
-- Cost-based join ordering beyond the shared-variable heuristic.
-- Batching and scheduling policies for many active queries.
-- Storage cleanup and compaction policies for long-running query traces.
-- DBSP storage is file-backed per query. Cache sizing, storage roots,
-  compaction, and checkpoint/restore policy are future operational controls.
+Many optimizations are possible for incremental queries. The issue tracker
+records them. The optimizations, in no specific order, are:
+
+- Initialize the circuits in batches. The current approach does not scale.
+- Use the temporal indexes of Triplox in base triple patterns. This saves a lot
+  of space in the circuits.
+- Share circuits or arrangements across equivalent queries.
+- Use cost-based join ordering beyond the shared-variable heuristic.
+- Add batching and scheduling policies for many active queries.
+- Add storage cleanup and compaction policies for long-running query traces.
+- Add operational controls for the file-backed DBSP storage of each query: cache
+  size, storage roots, compaction, and checkpoint and restore policy.
+- If the CDC task fails, stop all subscriptions with the CDC error. At this
+  time, the subscriptions get no more deltas, and only shutdown reports the
+  error.
+- Prevent lag errors during slow priming, for example with a larger inbox or a
+  local buffer in the worker.
+- Add a shared limit for snapshot scans across queries.
 
 ### Cleanup
 
-Cleanup is currently event-driven; there is no separate process for detecting
-clients that are no longer responsive. A client heartbeat could provide that
-liveness signal and allow the service to close abandoned incremental queries.
+Cleanup is event-driven at this time. No separate process detects clients that
+do not respond. A client heartbeat can give that liveness signal. Then the
+service can close abandoned incremental queries.

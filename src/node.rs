@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use crate::clock;
 #[cfg(feature = "kafka")]
 use crate::config::KafkaLogConfig;
-use crate::config::RemoteStorageConfig;
+use crate::config::{IncrementalConfig, RemoteStorageConfig};
 use crate::error::TriploxError;
 use crate::file_log::FileLog;
 use crate::incremental::{
@@ -55,6 +55,7 @@ impl<L: TxLog> Node<L> {
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
         indexer_runtime: IndexerRuntime,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         let metadata = crate::bootstrap::init_db(&slate).await?;
 
@@ -90,12 +91,13 @@ impl<L: TxLog> Node<L> {
             indexer.clone(),
         )
         .await;
-        let incremental = IncrementalQueryService::new(
+        let incremental = IncrementalQueryService::new_with_runtime(
             incremental_storage_path,
             cancel.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
+            &slate,
+            indexer.clone(),
             cdc_poll_interval,
+            incremental_config,
         );
 
         // Wait for catch-up to complete if there are un-indexed transactions
@@ -116,6 +118,10 @@ impl<L: TxLog> Node<L> {
 
 impl Node<MemoryLog> {
     pub async fn memory_node() -> Self {
+        Self::memory_node_with_incremental(IncrementalConfig::default()).await
+    }
+
+    pub async fn memory_node_with_incremental(incremental_config: IncrementalConfig) -> Self {
         let indexer_runtime = IndexerRuntime::start().await.unwrap();
         let slate = in_memory_slate_with_write_runtime(&indexer_runtime.handle).await;
         let metadata = crate::bootstrap::init_db(&slate).await.unwrap();
@@ -136,15 +142,16 @@ impl Node<MemoryLog> {
             indexer.clone(),
         )
         .await;
-        let incremental = IncrementalQueryService::new(
+        let incremental = IncrementalQueryService::new_with_runtime(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
                 crate::util::random_string(10)
             )),
             cancel.clone(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
+            &slate,
+            indexer.clone(),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
+            incremental_config,
         );
 
         Node {
@@ -166,6 +173,7 @@ impl Node<FileLog> {
         incremental_storage_path: PathBuf,
         cdc_poll_interval: Duration,
         indexer_runtime: IndexerRuntime,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         let log = Arc::new(FileLog::new(log_file, Box::new(clock::SystemClock))?);
         Self::from_slate_and_tx_log(
@@ -174,11 +182,21 @@ impl Node<FileLog> {
             incremental_storage_path,
             cdc_poll_interval,
             indexer_runtime,
+            incremental_config,
         )
         .await
     }
 
     pub async fn local_node(storage_path: &Path, log_path: &Path) -> Result<Self, Error> {
+        Self::local_node_with_incremental(storage_path, log_path, IncrementalConfig::default())
+            .await
+    }
+
+    pub async fn local_node_with_incremental(
+        storage_path: &Path,
+        log_path: &Path,
+        incremental_config: IncrementalConfig,
+    ) -> Result<Self, Error> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(storage_path.join("db"))?;
         let db_path = storage_path.join("db");
@@ -195,6 +213,7 @@ impl Node<FileLog> {
             storage_path.join("dbsp"),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
             indexer_runtime,
+            incremental_config,
         )
         .await
     }
@@ -202,6 +221,14 @@ impl Node<FileLog> {
     pub async fn remote_node(
         storage: &RemoteStorageConfig,
         log_path: &Path,
+    ) -> Result<Self, Error> {
+        Self::remote_node_with_incremental(storage, log_path, IncrementalConfig::default()).await
+    }
+
+    pub async fn remote_node_with_incremental(
+        storage: &RemoteStorageConfig,
+        log_path: &Path,
+        incremental_config: IncrementalConfig,
     ) -> Result<Self, Error> {
         let indexer_runtime = IndexerRuntime::start().await?;
         if let Some(parent) = log_path
@@ -218,6 +245,7 @@ impl Node<FileLog> {
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
             indexer_runtime,
+            incremental_config,
         )
         .await
     }
@@ -229,6 +257,14 @@ impl Node<KafkaLog> {
         storage: &RemoteStorageConfig,
         log: &KafkaLogConfig,
     ) -> Result<Self, Error> {
+        Self::kafka_node_with_incremental(storage, log, IncrementalConfig::default()).await
+    }
+
+    pub async fn kafka_node_with_incremental(
+        storage: &RemoteStorageConfig,
+        log: &KafkaLogConfig,
+        incremental_config: IncrementalConfig,
+    ) -> Result<Self, Error> {
         let indexer_runtime = IndexerRuntime::start().await?;
         std::fs::create_dir_all(&storage.cache_path)?;
         let slate = remote_slate(storage, &indexer_runtime.handle).await?;
@@ -239,6 +275,7 @@ impl Node<KafkaLog> {
             storage.cache_path.join("dbsp"),
             Duration::from_micros(storage.cdc_poll_interval_us.get()),
             indexer_runtime,
+            incremental_config,
         )
         .await
     }
@@ -312,9 +349,7 @@ impl<L: TxLog> Node<L> {
             ));
         }
 
-        self.incremental
-            .register_query(self.slate.db.as_ref(), query, self.indexer.clone())
-            .await
+        self.incremental.register_query(query).await
     }
 
     pub(crate) async fn unregister_incremental_query(
@@ -2254,6 +2289,56 @@ mod tests {
         assert!(try_recv_incremental_delta(&mut subscription)
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_incremental_registration_after_cdc_progress_sees_each_tx_once() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = r#"{:find [?name]
+                        :where [[?e :name ?name]]}"#;
+        let name = |entity, name: &str| TxOp::Add {
+            entity: EntityRef::Id(entity),
+            attribute: kw!(:name),
+            value: DataType::String(name.to_string()),
+        };
+        let mut first = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        let mut first_rows = Vec::new();
+
+        let basis = execute_and_flush(&node, vec![name(100, "Alice")]).await;
+        assert_incremental_matches_db(&node, &mut first, &mut first_rows, basis, query).await;
+
+        // The WAL of this transaction stays unflushed, so the next basis is inside a WAL file.
+        let unflushed = match node.execute_tx(vec![name(101, "Bob")]).await.unwrap() {
+            TransactionResult::TxCommitted(basis) => basis,
+            TransactionResult::TxAborted(_, err) => panic!("transaction aborted: {err}"),
+        };
+        let mut second = node
+            .register_incremental_query(parse_query(query), &[])
+            .await
+            .unwrap();
+        assert_eq!(second.tx_key, unflushed);
+        let priming = take_priming_delta(&mut second).await;
+        assert_eq!(priming.tx_key, unflushed);
+        let mut second_rows = Vec::new();
+        integrate_delta(&mut second_rows, priming);
+        assert_eq!(
+            second_rows,
+            vec![
+                vec![DataType::String("Alice".to_string())],
+                vec![DataType::String("Bob".to_string())],
+            ]
+        );
+
+        let basis = execute_and_flush(&node, vec![name(102, "Cara")]).await;
+        assert_incremental_matches_db(&node, &mut first, &mut first_rows, basis, query).await;
+        assert_incremental_matches_db(&node, &mut second, &mut second_rows, basis, query).await;
+        assert!(try_recv_incremental_delta(&mut first).await.is_none());
+        assert!(try_recv_incremental_delta(&mut second).await.is_none());
     }
 
     #[tokio::test]
