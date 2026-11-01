@@ -139,7 +139,7 @@ async fn run_cdc_loop(
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct InitialScan {
+pub(crate) struct InitialScan {
     attribute: i64,
     entity: Option<Vec<u8>>,
     value: Option<Vec<u8>>,
@@ -191,7 +191,7 @@ impl InitialScan {
     }
 }
 
-fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
+pub(crate) fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
     let mut scans = plan
         .leaf_patterns()
         .into_iter()
@@ -280,13 +280,14 @@ const MAX_CONCURRENT_INITIAL_SCANS: usize = 8;
 
 pub(crate) async fn scan_current_triples<D>(
     db: &D,
-    plan: &IncrementalQueryPlan,
+    scans: &[InitialScan],
     as_of_tx_eid: i64,
 ) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>
 where
     D: slatedb::DbReadOps + Sync,
 {
-    let latest_by_triple = stream::iter(initial_scans(plan))
+    // Owned scans keep the stream future Send.
+    let latest_by_triple = stream::iter(scans.to_vec())
         .map(|scan| async move { scan_latest_triples(db, &scan, as_of_tx_eid).await })
         .buffer_unordered(MAX_CONCURRENT_INITIAL_SCANS)
         // Overlapping scans contribute each live triple only once.
@@ -308,6 +309,19 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use crate::inc_query::test_support::test_schema;
+    use crate::ops::Datom;
+
+    // Writes the index entries of `datoms` as transaction entity `tx_eid` of the test schema.
+    pub(crate) async fn write_scan_datoms(db: &slatedb::Db, tx_eid: i64, datoms: &[Datom]) {
+        let mut batch = slatedb::WriteBatch::new();
+        crate::indexer::write_index_entries(&mut batch, datoms, &test_schema(), tx_eid).unwrap();
+        db.write(batch).await.unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
@@ -315,18 +329,13 @@ mod tests {
     use tokio::sync::{Mutex, RwLock};
     use tokio_util::sync::CancellationToken;
 
+    use super::test_support::write_scan_datoms;
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::inc_query::test_support::{query_plan, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::partition::tx_eid_from_tx_id;
-
-    async fn write_scan_datoms(db: &slatedb::Db, tx: i64, datoms: &[Datom]) {
-        let mut batch = slatedb::WriteBatch::new();
-        crate::indexer::write_index_entries(&mut batch, datoms, &test_schema(), tx).unwrap();
-        db.write(batch).await.unwrap();
-    }
 
     fn scan_datom(entity: i64, attribute: edn::Keyword, value: DataType, op: DatomOp) -> Datom {
         Datom {
@@ -413,9 +422,10 @@ mod tests {
         ] {
             let plan = query_plan(query);
             for (basis, live) in by_basis.into_iter().enumerate() {
-                let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis as i64)
-                    .await
-                    .unwrap();
+                let mut actual =
+                    scan_current_triples(slate.db.as_ref(), &initial_scans(&plan), basis as i64)
+                        .await
+                        .unwrap();
                 actual.sort();
                 let live = live
                     .into_iter()

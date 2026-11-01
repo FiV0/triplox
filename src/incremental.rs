@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use crate::partition::tx_eid_from_tx_id;
 use anyhow::{anyhow, Context, Result};
-use dbsp::{utils::Tup2, PoolConfig, RuntimePool, ZWeight};
+use dbsp::{PoolConfig, RuntimePool};
 use slatedb::object_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -18,7 +17,7 @@ use triplox_client::transaction::TxKey;
 
 use crate::config::IncrementalConfig;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
-use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
+use crate::incremental::cdc::{initial_scans, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::indexer::Indexer;
 use crate::ops::DataType;
@@ -30,7 +29,7 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Build, Circuit, Completion, Control, Message, Worker};
+use worker::{Batch, Build, Circuit, Completion, Control, Message, SnapshotCircuit, Worker};
 mod worker;
 
 const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
@@ -115,7 +114,6 @@ enum IncrementalCommand {
         // The box here is purely an optimization to keep the enum stack size small.
         plan: Box<IncrementalQueryPlan>,
         tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
     },
     Unregister {
@@ -134,7 +132,6 @@ enum IncrementalCommand {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
-    db: Arc<slatedb::Db>,
     cdc_object_path: String,
     cdc_object_store: Arc<dyn ObjectStore>,
     cdc_poll_interval: Duration,
@@ -189,12 +186,16 @@ impl IncrementalQueryService {
     ) -> Self {
         let cancel = cancel.child_token();
         let (sender, receiver) = mpsc::unbounded_channel();
-        let inner = IncrementalQueryServiceInner::new(storage_root, cancel.clone(), options);
+        let inner = IncrementalQueryServiceInner::new(
+            storage_root,
+            cancel.clone(),
+            options,
+            slate.db.clone(),
+        );
         tokio::spawn(inner.run(receiver));
 
         Self {
             commands: sender,
-            db: slate.db.clone(),
             cdc_object_path: slate.object_path.clone(),
             cdc_object_store: slate.object_store.clone(),
             cdc_poll_interval,
@@ -216,11 +217,7 @@ impl IncrementalQueryService {
             (indexer.latest_tx_key(), indexer.metadata().schema.clone())
         };
         let plan = plan_query(&query, &schema)?;
-        let initial_triples =
-            scan_current_triples(self.db.as_ref(), &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
-        let subscription = self
-            .register_prepared_query(plan, tx_key, initial_triples)
-            .await?;
+        let subscription = self.register_prepared_query(plan, tx_key).await?;
         self.start_cdc_once(indexer);
         Ok(subscription)
     }
@@ -258,14 +255,12 @@ impl IncrementalQueryService {
         &self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<IncrementalQuerySubscription> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
                 plan: Box::new(plan),
                 tx_key,
-                initial_triples,
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -356,6 +351,8 @@ struct IncrementalQueryServiceInner {
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
+    // Workers scan this database to prime their circuits.
+    db: Arc<slatedb::Db>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
@@ -367,6 +364,7 @@ impl IncrementalQueryServiceInner {
         storage_root: PathBuf,
         cancel: CancellationToken,
         options: IncrementalQueryOptions,
+        db: Arc<slatedb::Db>,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
@@ -376,6 +374,7 @@ impl IncrementalQueryServiceInner {
             queries: HashMap::new(),
             cancel,
             options,
+            db,
             completed,
             completions,
         }
@@ -410,8 +409,8 @@ impl IncrementalQueryServiceInner {
                     }
                 }
                 command = receiver.recv() => match command {
-                    Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
-                        self.start_registration(*plan, tx_key, initial_triples, response).await;
+                    Some(IncrementalCommand::Register { plan, tx_key, response }) => {
+                        self.start_registration(*plan, tx_key, response).await;
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
                         match self.queries.get_mut(&handle) {
@@ -479,7 +478,6 @@ impl IncrementalQueryServiceInner {
         &mut self,
         basis: TxKey,
         build: Build<C>,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: Registration,
     ) -> IncrementalQueryHandle {
         let handle = self.allocate_query_id();
@@ -495,7 +493,6 @@ impl IncrementalQueryServiceInner {
         if inbox_sender
             .try_send(Message::Prime {
                 basis,
-                triples,
                 subscription,
                 response,
             })
@@ -552,7 +549,6 @@ impl IncrementalQueryServiceInner {
         &mut self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: Registration,
     ) {
         if self.cancel.is_cancelled() {
@@ -566,10 +562,17 @@ impl IncrementalQueryServiceInner {
                 return;
             }
         };
+        let db = self.db.clone();
+        let scans = initial_scans(&plan);
         self.start_query(
             tx_key,
-            Box::new(move |storage_path| QueryCircuit::build(plan, storage_path, pool)),
-            initial_triples,
+            Box::new(move |storage_path| {
+                Ok(SnapshotCircuit {
+                    circuit: QueryCircuit::build(plan, storage_path, pool)?,
+                    db,
+                    scans,
+                })
+            }),
             response,
         );
     }
@@ -610,6 +613,7 @@ mod tests {
 
     use chrono::Utc;
     use dbsp::utils::Tup2;
+    use dbsp::ZWeight;
     use edn::query::ToVariable;
     use triplox_client::transaction::TxKey;
 
@@ -617,6 +621,7 @@ mod tests {
     use crate::codec::Encode;
     use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
+    use crate::partition::tx_eid_from_tx_id;
     use crate::query::{FindPlan, Projection};
 
     #[track_caller]
@@ -695,36 +700,63 @@ mod tests {
         }
     }
 
-    async fn service_at(dir: &Path) -> IncrementalQueryService {
+    // An in-memory slate whose names are asserted in transaction 1.
+    async fn slate_with_names(names: &[(i64, &str)]) -> SlateComponents {
+        let slate = crate::slate::in_memory_slate().await;
+        let datoms = names
+            .iter()
+            .map(|&(entity, name)| crate::ops::Datom {
+                entity,
+                attribute: edn::kw!(:name),
+                value: DataType::String(name.to_string()),
+                op: crate::ops::DatomOp::Assert,
+            })
+            .collect::<Vec<_>>();
+        // SlateDB rejects an empty write batch.
+        if !datoms.is_empty() {
+            cdc::test_support::write_scan_datoms(&slate.db, tx_eid_from_tx_id(1), &datoms).await;
+        }
+        slate
+    }
+
+    async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
         IncrementalQueryService::new(
             dir.to_path_buf(),
             CancellationToken::new(),
-            &crate::slate::in_memory_slate().await,
+            &slate_with_names(names).await,
             Duration::from_millis(10),
         )
+    }
+
+    async fn service_at(dir: &Path) -> IncrementalQueryService {
+        service_with_names(dir, &[]).await
+    }
+
+    async fn register_at(
+        service: &IncrementalQueryService,
+        plan: IncrementalQueryPlan,
+        basis_tx_id: i64,
+    ) -> IncrementalQuerySubscription {
+        service
+            .register_prepared_query(plan, test_tx_key_with_tx_id(basis_tx_id))
+            .await
+            .unwrap()
     }
 
     async fn register(
         service: &IncrementalQueryService,
         plan: IncrementalQueryPlan,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> IncrementalQuerySubscription {
-        service
-            .register_prepared_query(plan, test_tx_key_with_tx_id(1), triples)
-            .await
-            .unwrap()
+        register_at(service, plan, 1).await
     }
 
     async fn register_inline(
         inner: &mut IncrementalQueryServiceInner,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> IncrementalQuerySubscription {
         let (response, result) = oneshot::channel();
-        inner
-            .start_registration(plan, tx_key, triples, response)
-            .await;
+        inner.start_registration(plan, tx_key, response).await;
         result.await.unwrap().unwrap()
     }
 
@@ -747,22 +779,11 @@ mod tests {
                 config: small_pool_config(),
                 ..Default::default()
             },
+            slate_with_names(&[(42, "Alice")]).await.db,
         );
         let basis = test_tx_key_with_tx_id(1);
-        let mut first = register_inline(
-            &mut inner,
-            single_pattern_plan(),
-            basis,
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
-        let mut second = register_inline(
-            &mut inner,
-            single_pattern_plan(),
-            basis,
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
+        let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
+        let mut second = register_inline(&mut inner, single_pattern_plan(), basis).await;
         let pool = inner.pool.as_ref().unwrap().clone();
         assert_eq!(pool.stats().registered_circuits, 2);
         assert_eq!(pool.stats().foreground_threads, 2);
@@ -804,13 +825,8 @@ mod tests {
     #[tokio::test]
     async fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let subscription = register(
-            &service,
-            single_pattern_plan(),
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let subscription = register(&service, single_pattern_plan()).await;
         assert!(path_has_entries(&dir.path().join("query-1")));
         service.unregister(subscription.handle).await.unwrap();
         assert!(!dir.path().join("query-1").exists());
@@ -821,14 +837,10 @@ mod tests {
     #[tokio::test]
     async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let mut primed = register(
-            &service,
-            single_pattern_plan(),
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
-        let mut empty = register(&service, single_pattern_plan(), vec![]).await;
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let mut primed = register(&service, single_pattern_plan()).await;
+        // Alice comes after this basis, so the priming result is empty.
+        let mut empty = register_at(&service, single_pattern_plan(), 0).await;
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
         service
@@ -847,12 +859,11 @@ mod tests {
     #[tokio::test]
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
         let error = service
             .register_prepared_query(
                 aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
                 test_tx_key_with_tx_id(1),
-                vec![name_triple(42, "Alice")],
             )
             .await
             .unwrap_err();
@@ -868,10 +879,9 @@ mod tests {
         let mut aggregate = register(
             &service,
             aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
-            vec![],
         )
         .await;
-        let mut names = register(&service, single_pattern_plan(), vec![]).await;
+        let mut names = register(&service, single_pattern_plan()).await;
         delta(&mut aggregate).await.unwrap();
         service
             .apply_batch(Batch::single(
@@ -924,7 +934,7 @@ mod tests {
         );
         let basis = test_tx_key_with_tx_id(1000);
         let mut query = service
-            .register_prepared_query(single_pattern_plan(), basis, vec![])
+            .register_prepared_query(single_pattern_plan(), basis)
             .await
             .unwrap();
         for seq in 1..=1000 {
@@ -951,11 +961,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path()).await;
         let mut before = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0), vec![])
+            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0))
             .await
             .unwrap();
         let mut inside = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(2), vec![])
+            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(2))
             .await
             .unwrap();
         let tx_key = test_tx_key_with_tx_id(3);
@@ -999,7 +1009,7 @@ mod tests {
     async fn dropping_last_service_handle_cleans_up_queries() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_at(dir.path()).await;
-        let mut query = register(&service, single_pattern_plan(), vec![]).await;
+        let mut query = register(&service, single_pattern_plan()).await;
         drop(service);
         assert!(
             tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())
@@ -1021,7 +1031,6 @@ mod tests {
             .send(IncrementalCommand::Register {
                 plan: Box::new(single_pattern_plan()),
                 tx_key: test_tx_key_with_tx_id(1),
-                initial_triples: vec![],
                 response,
             })
             .unwrap();
@@ -1069,15 +1078,8 @@ mod tests {
     #[tokio::test]
     async fn shutdown_removes_queries_after_cdc_task_error() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let _subscription = service
-            .register_prepared_query(
-                single_pattern_plan(),
-                test_tx_key_with_tx_id(1),
-                vec![name_triple(42, "Alice")],
-            )
-            .await
-            .unwrap();
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let _subscription = register(&service, single_pattern_plan()).await;
         let storage_path = dir.path().join("query-1");
         assert!(path_has_entries(&storage_path));
 
@@ -1113,7 +1115,7 @@ mod tests {
         let query_tx_key = test_tx_key_with_tx_id(1);
         let apply_tx_key = test_tx_key_with_tx_id(2);
         let mut first_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
+            .register_prepared_query(single_pattern_plan(), query_tx_key)
             .await
             .unwrap();
 
@@ -1129,7 +1131,7 @@ mod tests {
         assert!(first_subscription.deltas.try_recv().is_err());
 
         let mut second_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
+            .register_prepared_query(single_pattern_plan(), query_tx_key)
             .await
             .unwrap();
         assert!(second_subscription.deltas.try_recv().is_err());

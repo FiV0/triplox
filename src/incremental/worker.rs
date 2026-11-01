@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxKey;
 
+use super::cdc::{scan_current_triples, InitialScan};
 use super::circuit::QueryCircuit;
 use super::subscription::Termination;
 use super::{
@@ -19,6 +20,7 @@ use super::{
     Registration,
 };
 use crate::ops::DataType;
+use crate::partition::tx_eid_from_tx_id;
 
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
 
@@ -92,28 +94,35 @@ impl Batch {
 }
 
 pub(super) trait Circuit: Send + 'static {
-    fn prime(
-        &mut self,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> impl Future<Output = Result<Rows>> + Send;
+    fn prime(&mut self, basis: TxKey) -> impl Future<Output = Result<Rows>> + Send;
     fn matches(&self, batch: &Batch) -> bool;
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
 }
 
-impl Circuit for QueryCircuit {
-    fn prime(
-        &mut self,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> impl Future<Output = Result<Rows>> + Send {
-        self.prime(triples)
+// A query circuit that primes from a snapshot scan of SlateDB.
+pub(super) struct SnapshotCircuit {
+    pub circuit: QueryCircuit,
+    pub db: Arc<slatedb::Db>,
+    pub scans: Vec<InitialScan>,
+}
+
+impl Circuit for SnapshotCircuit {
+    async fn prime(&mut self, basis: TxKey) -> Result<Rows> {
+        let triples = scan_current_triples(
+            self.db.as_ref(),
+            &self.scans,
+            tx_eid_from_tx_id(basis.tx_id),
+        )
+        .await?;
+        self.circuit.prime(triples).await
     }
 
     fn matches(&self, batch: &Batch) -> bool {
-        self.matches(batch)
+        self.circuit.matches(batch)
     }
 
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send {
-        self.apply(batch)
+        self.circuit.apply(batch)
     }
 }
 
@@ -159,7 +168,6 @@ pub(super) struct Completion {
 pub(super) enum Message {
     Prime {
         basis: TxKey,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         subscription: IncrementalQuerySubscription,
         response: Registration,
     },
@@ -204,12 +212,11 @@ impl<C: Circuit> Worker<C> {
                 let batch = match message {
                     Message::Prime {
                         basis,
-                        triples,
                         subscription,
                         response,
                     } => {
                         registration = Some((subscription, response));
-                        let rows = circuit.prime(triples).await?;
+                        let rows = circuit.prime(basis).await?;
                         if control.stop.is_cancelled() {
                             break;
                         }
