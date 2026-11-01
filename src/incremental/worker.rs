@@ -88,11 +88,22 @@ impl Batch {
 }
 
 pub(super) trait Circuit: Send + 'static {
+    fn prime(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> impl Future<Output = Result<Rows>> + Send;
     fn matches(&self, batch: &Batch) -> bool;
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
 }
 
 impl Circuit for QueryCircuit {
+    fn prime(
+        &mut self,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> impl Future<Output = Result<Rows>> + Send {
+        self.prime(triples)
+    }
+
     fn matches(&self, batch: &Batch) -> bool {
         self.matches(batch)
     }

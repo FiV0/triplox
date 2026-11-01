@@ -566,11 +566,11 @@ impl QueryCircuit {
     }
 
     // Priming always steps, even when the initial input is empty.
-    pub(super) fn step_blocking(
+    pub(super) async fn prime(
         &mut self,
         triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> Result<Vec<(Vec<DataType>, isize)>> {
-        futures::executor::block_on(self.step(triples))
+        self.step(triples).await
     }
 
     pub(super) fn matches(&self, batch: &Batch) -> bool {
@@ -659,6 +659,13 @@ mod tests {
         QueryCircuit::build(plan, storage_path, pool).unwrap()
     }
 
+    fn step(
+        circuit: &mut QueryCircuit,
+        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
+    ) -> Result<Vec<(Vec<DataType>, isize)>> {
+        futures::executor::block_on(circuit.prime(triples))
+    }
+
     fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(EncodedRow, ZWeight)> {
         let mut rows = output
             .consolidate()
@@ -743,7 +750,7 @@ mod tests {
                 (vec![Tup2(second.clone(), -1)], vec![(row.clone(), -1)]),
                 (vec![Tup2(second, 1)], vec![(row, 1)]),
             ] {
-                assert_eq!(circuit.step_blocking(batch).unwrap(), expected, "{query}");
+                assert_eq!(step(&mut circuit, batch).unwrap(), expected, "{query}");
             }
         }
     }
@@ -782,7 +789,7 @@ mod tests {
             (vec![Tup2(second, -1), Tup2(age, 1)], vec![(a.clone(), 1)]),
             (vec![Tup2(first, -1)], vec![(a, -1)]),
         ] {
-            let mut actual = circuit.step_blocking(batch).unwrap();
+            let mut actual = step(&mut circuit, batch).unwrap();
             actual.sort_by_key(|row| format!("{row:?}"));
             assert_eq!(actual, expected);
         }
@@ -808,7 +815,7 @@ mod tests {
             (vec![Tup2(second, -1)], vec![(row.clone(), 1)]),
             (vec![Tup2(first, 1)], vec![(row, -1)]),
         ] {
-            assert_eq!(circuit.step_blocking(batch).unwrap(), expected);
+            assert_eq!(step(&mut circuit, batch).unwrap(), expected);
         }
     }
 
@@ -825,12 +832,14 @@ mod tests {
         );
 
         let mut circuit = build_query_circuit(plan, &storage_path);
-        let priming_rows = circuit
-            .step_blocking(vec![
+        let priming_rows = step(
+            &mut circuit,
+            vec![
                 Tup2(triple(42, NAME, DataType::String("Alice".to_string())), 1),
                 Tup2(triple(42, AGE, DataType::Long(30)), 1),
-            ])
-            .unwrap();
+            ],
+        )
+        .unwrap();
 
         assert_eq!(
             priming_rows,
@@ -881,7 +890,7 @@ mod tests {
         let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
 
         assert_eq!(
-            circuit.step_blocking(vec![]).unwrap(),
+            step(&mut circuit, vec![]).unwrap(),
             vec![(vec![DataType::Long(0)], 1)]
         );
         // An unrelated transaction leaves the primed count unchanged.

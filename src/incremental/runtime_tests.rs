@@ -12,6 +12,11 @@ struct Probe {
 }
 
 impl Circuit for Probe {
+    async fn prime(&mut self, _triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Result<worker::Rows> {
+        assert!(!self.panic, "injected priming panic");
+        Ok(vec![])
+    }
+
     fn matches(&self, _batch: &Batch) -> bool {
         true
     }
@@ -115,15 +120,15 @@ impl Fixture {
                 // The build runs on a blocking thread, so waiting here models a slow priming.
                 let _ = gate.recv();
                 let (started, _) = mpsc::unbounded_channel();
-                let probe = Probe {
+                Ok(Probe {
                     started,
                     release: None,
                     panic: false,
                     storage: storage.to_path_buf(),
                     dropped,
-                };
-                Ok((probe, vec![]))
+                })
             },
+            vec![],
         );
         (release, registration, storage_path)
     }
@@ -683,20 +688,22 @@ async fn registration_panics_remove_storage_after_unwinding() {
     for panic_during_build in [true, false] {
         let handle = fixture.inner.allocate_query_id();
         let (dropped, observed) = sync_mpsc::channel();
-        let error = prepare_query(fixture.inner.query_storage_path(handle), move |storage| {
-            std::fs::create_dir(storage)?;
-            assert!(!panic_during_build, "injected construction panic");
-            let (started, _) = mpsc::unbounded_channel();
-            let mut probe = Probe {
-                started,
-                release: None,
-                panic: true,
-                storage: storage.to_path_buf(),
-                dropped,
-            };
-            let rows = futures::executor::block_on(probe.apply(&Fixture::batch(1)))?;
-            Ok((probe, rows))
-        })
+        let error = prepare_query(
+            fixture.inner.query_storage_path(handle),
+            move |storage| {
+                std::fs::create_dir(storage)?;
+                assert!(!panic_during_build, "injected construction panic");
+                let (started, _) = mpsc::unbounded_channel();
+                Ok(Probe {
+                    started,
+                    release: None,
+                    panic: true,
+                    storage: storage.to_path_buf(),
+                    dropped,
+                })
+            },
+            vec![],
+        )
         .await
         .err()
         .expect("registration should fail");

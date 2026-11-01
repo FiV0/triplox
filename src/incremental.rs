@@ -356,21 +356,36 @@ type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
 // Finishes a registration on the dispatcher once its circuit has been built.
 type Built = Box<dyn FnOnce(&mut IncrementalQueryServiceInner) + Send>;
 
-// Builds a circuit on a blocking thread and removes its storage if that fails.
+// Builds a circuit on a blocking thread, primes it, and removes its storage if either fails.
 async fn prepare_query<C: Circuit>(
     storage_path: PathBuf,
-    prepare: impl FnOnce(&Path) -> Result<(C, worker::Rows)> + Send + 'static,
+    build: impl FnOnce(&Path) -> Result<C> + Send + 'static,
+    initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
 ) -> Result<(C, worker::Rows)> {
     let build_path = storage_path.clone();
-    let result = tokio::task::spawn_blocking(move || prepare(&build_path))
+    let built = tokio::task::spawn_blocking(move || build(&build_path))
         .await
         .context("Incremental query registration task panicked")
         .and_then(|result| result);
-    let error = match result {
-        Ok(prepared) => return Ok(prepared),
+    let primed = match built {
+        Ok(mut circuit) => tokio::spawn(async move {
+            let rows = circuit.prime(initial_triples).await;
+            (circuit, rows)
+        })
+        .await
+        .context("Incremental query registration task panicked"),
+        Err(error) => Err(error),
+    };
+    let error = match primed {
+        Ok((circuit, Ok(rows))) => return Ok((circuit, rows)),
+        Ok((circuit, Err(error))) => {
+            // Circuit destruction waits on the pool.
+            let _ = tokio::task::spawn_blocking(move || drop(circuit)).await;
+            error
+        }
         Err(error) => error,
     };
-    // The preparation task has finished unwinding before storage can be removed.
+    // A panicked task has finished unwinding before storage can be removed.
     let cleanup =
         tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
             Ok(()) => Ok(()),
@@ -609,11 +624,12 @@ impl IncrementalQueryServiceInner {
         handle: IncrementalQueryHandle,
         tx_key: TxKey,
         response: Registration,
-        prepare: impl FnOnce(&Path) -> Result<(C, worker::Rows)> + Send + 'static,
+        build: impl FnOnce(&Path) -> Result<C> + Send + 'static,
+        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) {
         let storage_path = self.query_storage_path(handle);
         self.builds.spawn(async move {
-            let prepared = prepare_query(storage_path, prepare).await;
+            let prepared = prepare_query(storage_path, build, initial_triples).await;
             Box::new(move |inner: &mut IncrementalQueryServiceInner| {
                 inner.finish_registration(handle, tx_key, prepared, response)
             }) as Built
@@ -659,11 +675,13 @@ impl IncrementalQueryServiceInner {
             }
         };
         let handle = self.allocate_query_id();
-        self.spawn_build(handle, tx_key, response, move |storage_path| {
-            let mut circuit = QueryCircuit::build(plan, storage_path, pool)?;
-            let rows = circuit.step_blocking(initial_triples)?;
-            Ok((circuit, rows))
-        });
+        self.spawn_build(
+            handle,
+            tx_key,
+            response,
+            move |storage_path| QueryCircuit::build(plan, storage_path, pool),
+            initial_triples,
+        );
     }
 
     fn apply_batch(&self, batch: Arc<Batch>) {
