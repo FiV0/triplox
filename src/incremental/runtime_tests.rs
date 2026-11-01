@@ -61,6 +61,7 @@ struct Fixture {
 impl Fixture {
     async fn new(capacity: usize) -> Self {
         let storage = tempfile::tempdir().unwrap();
+        let db = crate::slate::in_memory_slate().await.db;
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
             CancellationToken::new(),
@@ -68,7 +69,8 @@ impl Fixture {
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
                 ..IncrementalQueryOptions::default()
             },
-            crate::slate::in_memory_slate().await.db,
+            db.clone(),
+            cdc::test_support::test_indexer(db),
         );
         Self {
             inner,
@@ -199,8 +201,7 @@ impl Fixture {
         let (commands, receiver) = mpsc::unbounded_channel();
         let service = IncrementalQueryService {
             commands,
-            indexer: cdc::test_support::test_indexer(self.inner.db.clone()),
-            registration_gate: Arc::new(Mutex::new(())),
+            indexer: self.inner.indexer.clone(),
             retire_timeout: Duration::from_millis(50),
         };
         let dispatcher = tokio::spawn(async move {

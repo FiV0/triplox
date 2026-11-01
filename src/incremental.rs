@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use dbsp::{PoolConfig, RuntimePool};
 use slatedb::object_store::ObjectStore;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -113,7 +113,13 @@ enum IncrementalCommand {
     Register {
         // The box here is purely an optimization to keep the enum stack size small.
         plan: Box<IncrementalQueryPlan>,
-        tx_key: TxKey,
+        response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
+    },
+    // Registers at a given basis, so tests do not need indexed transactions.
+    #[cfg(test)]
+    RegisterAt {
+        plan: Box<IncrementalQueryPlan>,
+        basis: TxKey,
         response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
     },
     Unregister {
@@ -133,7 +139,6 @@ enum IncrementalCommand {
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
     indexer: Arc<RwLock<Indexer>>,
-    registration_gate: Arc<Mutex<()>>,
     retire_timeout: Duration,
 }
 
@@ -142,8 +147,6 @@ struct CdcSource {
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
     poll_interval: Duration,
-    indexer: Arc<RwLock<Indexer>>,
-    registration_gate: Arc<Mutex<()>>,
     // A weak sender, so the dispatcher stops when the last service handle drops.
     commands: mpsc::WeakUnboundedSender<IncrementalCommand>,
 }
@@ -197,19 +200,17 @@ impl IncrementalQueryService {
         options: IncrementalQueryOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let registration_gate = Arc::new(Mutex::new(()));
         let mut inner = IncrementalQueryServiceInner::new(
             storage_root,
             cancel.child_token(),
             options,
             slate.db.clone(),
+            indexer.clone(),
         );
         inner.cdc = Some(CdcSource {
             object_path: slate.object_path.clone(),
             object_store: slate.object_store.clone(),
             poll_interval: cdc_poll_interval,
-            indexer: indexer.clone(),
-            registration_gate: registration_gate.clone(),
             commands: sender.downgrade(),
         });
         tokio::spawn(inner.run(receiver));
@@ -217,34 +218,39 @@ impl IncrementalQueryService {
         Self {
             commands: sender,
             indexer,
-            registration_gate,
             retire_timeout: options.retire_timeout,
         }
     }
 
+    // The plan uses the schema at call time and the dispatcher reads the basis later.
+    // This is correct because an attribute id does not change after the schema assigns it.
     pub(crate) async fn register_query(
         &self,
         query: ParsedQuery,
     ) -> Result<IncrementalQuerySubscription> {
-        let _registration_guard = self.registration_gate.lock().await;
-        let (tx_key, schema) = {
-            let indexer = self.indexer.read().await;
-            (indexer.latest_tx_key(), indexer.metadata().schema.clone())
-        };
+        let schema = self.indexer.read().await.metadata().schema.clone();
         let plan = plan_query(&query, &schema)?;
-        self.register_prepared_query(plan, tx_key).await
-    }
-
-    pub(crate) async fn register_prepared_query(
-        &self,
-        plan: IncrementalQueryPlan,
-        tx_key: TxKey,
-    ) -> Result<IncrementalQuerySubscription> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
                 plan: Box::new(plan),
-                tx_key,
+                response,
+            })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result.await.context("Incremental query service stopped")?
+    }
+
+    #[cfg(test)]
+    async fn register_prepared_query(
+        &self,
+        plan: IncrementalQueryPlan,
+        basis: TxKey,
+    ) -> Result<IncrementalQuerySubscription> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(IncrementalCommand::RegisterAt {
+                plan: Box::new(plan),
+                basis,
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -312,6 +318,8 @@ struct IncrementalQueryServiceInner {
     options: IncrementalQueryOptions,
     // Workers scan this database to prime their circuits.
     db: Arc<slatedb::Db>,
+    // Gives the registration basis, and the schema that the CDC task decodes with.
+    indexer: Arc<RwLock<Indexer>>,
     // Without a source, as in tests, no CDC task starts.
     cdc: Option<CdcSource>,
     // A child of `cancel`, so shutdown can stop the CDC task before the workers.
@@ -329,6 +337,7 @@ impl IncrementalQueryServiceInner {
         cancel: CancellationToken,
         options: IncrementalQueryOptions,
         db: Arc<slatedb::Db>,
+        indexer: Arc<RwLock<Indexer>>,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
@@ -340,6 +349,7 @@ impl IncrementalQueryServiceInner {
             cancel,
             options,
             db,
+            indexer,
             cdc: None,
             cdc_task: None,
             completed,
@@ -358,9 +368,8 @@ impl IncrementalQueryServiceInner {
         self.cdc_task = Some(spawn_cdc_loop(
             cdc.object_path.clone(),
             cdc.object_store.clone(),
-            cdc.indexer.clone(),
+            self.indexer.clone(),
             cdc.commands.clone(),
-            cdc.registration_gate.clone(),
             self.cdc_cancel.clone(),
             cdc.poll_interval,
         ));
@@ -406,8 +415,14 @@ impl IncrementalQueryServiceInner {
                     }
                 }
                 command = receiver.recv() => match command {
-                    Some(IncrementalCommand::Register { plan, tx_key, response }) => {
-                        self.start_registration(*plan, tx_key, response).await;
+                    Some(IncrementalCommand::Register { plan, response }) => {
+                        // No batch is routed between this read and the registry insert, so no lock with CDC is needed.
+                        let basis = self.indexer.read().await.latest_tx_key();
+                        self.start_registration(*plan, basis, response).await;
+                    }
+                    #[cfg(test)]
+                    Some(IncrementalCommand::RegisterAt { plan, basis, response }) => {
+                        self.start_registration(*plan, basis, response).await;
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
                         match self.queries.get_mut(&handle) {
@@ -788,6 +803,7 @@ mod tests {
     #[tokio::test]
     async fn pooled_queries_share_workers_and_retire_independently() {
         let dir = tempfile::tempdir().unwrap();
+        let slate = slate_with_names(&[(42, "Alice")]).await;
         let mut inner = IncrementalQueryServiceInner::new(
             dir.path().into(),
             CancellationToken::new(),
@@ -795,7 +811,8 @@ mod tests {
                 config: small_pool_config(),
                 ..Default::default()
             },
-            slate_with_names(&[(42, "Alice")]).await.db,
+            slate.db.clone(),
+            cdc::test_support::test_indexer(slate.db),
         );
         let basis = test_tx_key_with_tx_id(1);
         let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
@@ -1046,9 +1063,9 @@ mod tests {
         drop(result);
         service
             .commands
-            .send(IncrementalCommand::Register {
+            .send(IncrementalCommand::RegisterAt {
                 plan: Box::new(single_pattern_plan()),
-                tx_key: test_tx_key_with_tx_id(1),
+                basis: test_tx_key_with_tx_id(1),
                 response,
             })
             .unwrap();
@@ -1058,69 +1075,6 @@ mod tests {
             .unwrap();
         service.shutdown().await.unwrap();
         assert!(!dir.path().join("query-1").exists());
-    }
-
-    // NOTE(coverage): this exercises the `registration_gate` mutual-exclusion
-    // contract at the service layer only — it feeds `basis`/triples to
-    // `register_prepared_query` directly and never drives the real
-    // indexer -> WAL -> CDC -> register pipeline. The full no-missed-transaction
-    // guarantee for a query registered against a *live* CDC loop also depends on
-    // invariants outside this file: the indexer publishes `latest_indexed_tx`
-    // only after issuing the slatedb write, both under the write lock (the write
-    // is not awaited for durability), and `register_query` reads the basis under
-    // the indexer read lock. Since CDC only ever reads transactions that were
-    // already written, the basis observed under the read lock always covers the
-    // CDC loop's position regardless of when the WAL flush happens. A
-    // regression in that lock ordering would NOT be caught here; it needs a
-    // node-level integration test that registers a second query after CDC has
-    // advanced.
-    #[tokio::test]
-    async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
-        let query_tx_key = test_tx_key_with_tx_id(1);
-        let apply_tx_key = test_tx_key_with_tx_id(2);
-        let mut first_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key)
-            .await
-            .unwrap();
-
-        let registration_guard = service.registration_gate.lock().await;
-        let applying_service = service.clone();
-        let apply = tokio::spawn(async move {
-            let _registration_guard = applying_service.registration_gate.lock().await;
-            applying_service
-                .apply_batch(Batch::single(apply_tx_key, vec![name_triple(43, "Bob")]))
-                .await
-        });
-        tokio::task::yield_now().await;
-        assert!(first_subscription.deltas.try_recv().is_err());
-
-        let mut second_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key)
-            .await
-            .unwrap();
-        assert!(second_subscription.deltas.try_recv().is_err());
-
-        drop(registration_guard);
-        apply.await.unwrap().unwrap();
-
-        assert_eq!(
-            expect_delta(first_subscription.deltas.recv().await.unwrap()),
-            IncrementalQueryDelta {
-                tx_key: apply_tx_key,
-                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
-        );
-        assert_eq!(
-            expect_delta(second_subscription.deltas.recv().await.unwrap()),
-            IncrementalQueryDelta {
-                tx_key: apply_tx_key,
-                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
-        );
-
-        service.shutdown().await.unwrap();
     }
 }
 

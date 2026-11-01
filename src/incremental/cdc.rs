@@ -10,7 +10,7 @@ use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
 use tokio::sync::mpsc::WeakUnboundedSender;
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -96,7 +96,6 @@ pub(super) fn spawn_cdc_loop(
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
     commands: WeakUnboundedSender<IncrementalCommand>,
-    registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> JoinHandle<Result<()>> {
@@ -105,7 +104,6 @@ pub(super) fn spawn_cdc_loop(
         object_store,
         indexer,
         commands,
-        registration_gate,
         cancel,
         poll_interval,
     ))
@@ -117,7 +115,6 @@ async fn run_cdc_loop(
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
     commands: WeakUnboundedSender<IncrementalCommand>,
-    registration_gate: Arc<Mutex<()>>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> Result<()> {
@@ -136,7 +133,6 @@ async fn run_cdc_loop(
             continue;
         }
         let batch = batch_from_datoms(&datoms, &schema)?;
-        let _registration_guard = registration_gate.lock().await;
         let (response, routed) = oneshot::channel();
         let command = IncrementalCommand::ApplyBatch {
             batch: Arc::new(batch),
@@ -154,7 +150,6 @@ async fn run_cdc_loop(
             _ = cancel.cancelled() => break,
             routed = routed => if routed.is_err() { break },
         }
-        // The registration gate is released before polling the next WAL file.
     }
 
     info!("Incremental query CDC stream exited normally");
@@ -364,7 +359,7 @@ mod tests {
     use std::sync::Arc;
 
     use edn::kw;
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 
     use super::test_support::write_scan_datoms;
@@ -583,7 +578,6 @@ mod tests {
             slate.object_store,
             indexer,
             commands.downgrade(),
-            Arc::new(Mutex::new(())),
             cancel,
             Duration::from_micros(250),
         )
@@ -625,7 +619,6 @@ mod tests {
             slate.object_store,
             indexer,
             commands.downgrade(),
-            Arc::new(Mutex::new(())),
             cancel.clone(),
             Duration::from_micros(250),
         ));
