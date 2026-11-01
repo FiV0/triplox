@@ -232,7 +232,7 @@ impl IncrementalQueryService {
             self.cdc_object_path.clone(),
             self.cdc_object_store.clone(),
             indexer,
-            self.clone(),
+            self.commands.downgrade(),
             self.registration_gate.clone(),
             self.cancel.clone(),
             self.cdc_poll_interval,
@@ -281,6 +281,7 @@ impl IncrementalQueryService {
             .context("Incremental query service stopped")?
     }
 
+    #[cfg(test)]
     async fn apply_batch(&self, batch: Batch) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
