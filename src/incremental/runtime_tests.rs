@@ -288,7 +288,7 @@ async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
     let (release, gate) = mpsc::unbounded_channel();
     let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
     let (mut healthy, _) = fixture.query(None, false);
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut slow_steps).await, seq);
         release.send(()).unwrap();
@@ -311,11 +311,11 @@ async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
 async fn full_output_can_resume_without_termination() {
     let mut fixture = Fixture::new(4);
     let (mut query, mut steps) = fixture.query(None, false);
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut steps).await, seq);
     }
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         assert_eq!(
             next(&mut query).await.unwrap().rows,
             vec![(vec![DataType::Long(seq)], 1)]

@@ -33,7 +33,7 @@ use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
 use worker::{Batch, Circuit, Completion, Control, Worker};
 mod worker;
 
-const SUBSCRIPTION_CAPACITY: usize = 128;
+const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy)]
 struct IncrementalQueryOptions {
@@ -528,7 +528,7 @@ impl IncrementalQueryServiceInner {
         tx_key: TxKey,
         priming_rows: worker::Rows,
     ) -> IncrementalQuerySubscription {
-        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
+        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
         if !priming_rows.is_empty() {
             sender
                 .try_send(IncrementalQueryDelta {
