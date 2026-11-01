@@ -418,7 +418,8 @@ with a lag error. The dispatcher discards the pending messages.
 
 During the circuit build and the snapshot scan, WAL batches wait in the inbox.
 If the priming is slow, the inbox can fill. The query then stops with a lag
-error before its first delta.
+error before its first delta. `register_query` still returns the subscription,
+and the first item of the subscription is the lag error.
 
 `IncrementalQueryDelta` is a result batch for the subscriber. The worker sends
 it after a circuit step. Each delta has the `TxKey` of the last transaction that
@@ -517,8 +518,16 @@ queries in these steps:
 4. The dispatcher shuts down the `RuntimePool` and sends the result.
 
 A worker cannot stop a circuit build that started. The build finishes, and then
-the worker stops. If a worker stops before it takes `Prime`, the response
-channel closes, and the registration fails.
+the worker stops. If a worker stops before priming finishes, the answer to the
+registration depends on the reason:
+
+- A build or priming error: the registration fails with the error.
+- A lag stop: the registration returns the subscription. Its first item is the
+  lag error.
+- A shutdown: the response channel closes, and the registration fails.
+
+For an error or a lag stop, the worker answers only after it removes the
+storage of the query.
 
 Unregister and shutdown wait up to 10 seconds. If retirement does not finish in
 that time, they return a `RetirementTimeout` error. Shutdown uses one deadline
