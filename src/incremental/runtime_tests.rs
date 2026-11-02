@@ -1,26 +1,36 @@
+use super::tests::apply_batch;
+use super::worker::test_support::single_batch;
 use super::*;
+use dbsp::utils::Tup2;
 use std::sync::mpsc as sync_mpsc;
 use std::time::Duration;
 use tempfile::TempDir;
 
 struct Probe {
     started: mpsc::UnboundedSender<i64>,
-    release: Option<sync_mpsc::Receiver<()>>,
+    release: Option<mpsc::UnboundedReceiver<()>>,
     panic: bool,
+    prime_panic: bool,
+    priming: worker::Rows,
     storage: PathBuf,
     dropped: sync_mpsc::Sender<bool>,
 }
 
 impl Circuit for Probe {
+    async fn prime(&mut self, _basis: TxKey) -> Result<worker::Rows> {
+        assert!(!self.prime_panic, "injected priming panic");
+        Ok(std::mem::take(&mut self.priming))
+    }
+
     fn matches(&self, _batch: &Batch) -> bool {
         true
     }
 
-    fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+    async fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
         let seq = batch.triples()[0].0.attribute;
         let _ = self.started.send(seq);
-        if let Some(release) = &self.release {
-            let _ = release.recv();
+        if let Some(release) = &mut self.release {
+            let _ = release.recv().await;
         }
         assert!(!self.panic, "injected circuit panic");
         Ok(vec![(vec![DataType::Long(seq)], 1)])
@@ -51,17 +61,18 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(capacity: usize, steps: usize) -> Self {
+    async fn new(capacity: usize) -> Self {
         let storage = tempfile::tempdir().unwrap();
+        let db = crate::slate::in_memory_slate().await.db;
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
-            Handle::current(),
             CancellationToken::new(),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
-                max_concurrent_steps: NonZeroUsize::new(steps).unwrap(),
                 ..IncrementalQueryOptions::default()
             },
+            db.clone(),
+            cdc::test_support::test_indexer(db),
         );
         Self {
             inner,
@@ -70,34 +81,84 @@ impl Fixture {
         }
     }
 
-    fn query(
+    // Starts a registration whose build creates the storage and then the probe.
+    fn register(
         &mut self,
-        release: Option<sync_mpsc::Receiver<()>>,
-        panic: bool,
-    ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
-        let handle = self.inner.allocate_query_id();
-        let storage = self.inner.query_storage_path(handle);
-        std::fs::create_dir(&storage).unwrap();
-        let (started, events) = mpsc::unbounded_channel();
+        gate: Option<sync_mpsc::Receiver<()>>,
+        priming: worker::Rows,
+        probe: impl FnOnce(PathBuf, sync_mpsc::Sender<bool>) -> Probe + Send + 'static,
+    ) -> (
+        oneshot::Receiver<Result<IncrementalQuerySubscription>>,
+        PathBuf,
+    ) {
         let (dropped, observed) = sync_mpsc::channel();
         self.drops.push(observed);
-        let probe = Probe {
+        let (response, registration) = oneshot::channel();
+        let handle = self.inner.start_query(
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            Box::new(move |storage| {
+                std::fs::create_dir(storage)?;
+                // The build runs on a blocking thread, so waiting here models a slow build.
+                if let Some(gate) = gate {
+                    let _ = gate.recv();
+                }
+                let mut probe = probe(storage.to_path_buf(), dropped);
+                probe.priming = priming;
+                Ok(probe)
+            }),
+            response,
+        );
+        (registration, self.inner.query_storage_path(handle))
+    }
+
+    async fn query(
+        &mut self,
+        release: Option<mpsc::UnboundedReceiver<()>>,
+        panic: bool,
+    ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
+        let (started, events) = mpsc::unbounded_channel();
+        let (registration, _) = self.register(None, vec![], move |storage, dropped| Probe {
             started,
             release,
             panic,
+            prime_panic: false,
+            priming: vec![],
             storage,
             dropped,
-        };
-        let subscription =
-            self.inner
-                .install(handle, probe, *crate::bootstrap::BOOTSTRAP_TX_KEY, vec![]);
-        (subscription, events)
+        });
+        (registration.await.unwrap().unwrap(), events)
     }
 
-    fn apply(&mut self, seq: i64) -> TxKey {
+    // Starts a registration whose build blocks until `release` is sent.
+    fn gated_build(
+        &mut self,
+        priming: worker::Rows,
+    ) -> (
+        sync_mpsc::Sender<()>,
+        oneshot::Receiver<Result<IncrementalQuerySubscription>>,
+        PathBuf,
+    ) {
+        let (release, gate) = sync_mpsc::channel::<()>();
+        let (registration, storage_path) =
+            self.register(Some(gate), priming, |storage, dropped| {
+                let (started, _) = mpsc::unbounded_channel();
+                Probe {
+                    started,
+                    release: None,
+                    panic: false,
+                    prime_panic: false,
+                    priming: vec![],
+                    storage,
+                    dropped,
+                }
+            });
+        (release, registration, storage_path)
+    }
+
+    fn batch(seq: i64) -> Arc<Batch> {
         let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
         tx_key.tx_id += seq;
-        self.inner.apply_batch(Arc::new(Batch::single(
+        Arc::new(single_batch(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -107,8 +168,13 @@ impl Fixture {
                 },
                 1,
             )],
-        )));
-        tx_key
+        ))
+    }
+
+    fn apply(&mut self, seq: i64) -> TxKey {
+        let batch = Self::batch(seq);
+        self.inner.apply_batch(batch.clone());
+        batch.tx_key
     }
 
     async fn retire(&mut self) -> IncrementalQueryHandle {
@@ -133,16 +199,11 @@ impl Fixture {
         assert_dropped(self.drops);
     }
 
-    fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
+    async fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
         let (commands, receiver) = mpsc::unbounded_channel();
         let service = IncrementalQueryService {
             commands,
-            cdc_object_path: "/test_retirement".into(),
-            cdc_object_store: Arc::new(slatedb::object_store::memory::InMemory::new()),
-            cdc_poll_interval: Duration::from_millis(10),
-            cancel: self.inner.cancel.clone(),
-            cdc_task: Arc::new(StdMutex::new(None)),
-            registration_gate: Arc::new(Mutex::new(())),
+            indexer: self.inner.indexer.clone(),
             retire_timeout: Duration::from_millis(50),
         };
         let dispatcher = tokio::spawn(async move {
@@ -169,10 +230,10 @@ async fn next(query: &mut IncrementalQuerySubscription) -> Result<IncrementalQue
 
 #[tokio::test]
 async fn slow_query_preserves_fifo_while_other_query_advances() {
-    let mut fixture = Fixture::new(8, 2);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut fast, mut fast_steps) = fixture.query(None, false);
+    let mut fixture = Fixture::new(8).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut fast, mut fast_steps) = fixture.query(None, false).await;
     let first = fixture.apply(1);
     assert_eq!(started(&mut slow_steps).await, 1);
     assert_eq!(started(&mut fast_steps).await, 1);
@@ -195,38 +256,32 @@ async fn slow_query_preserves_fifo_while_other_query_advances() {
 }
 
 #[tokio::test]
-async fn shared_semaphore_limits_simultaneous_applies() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release_a, gate_a) = sync_mpsc::channel();
-    let (release_b, gate_b) = sync_mpsc::channel();
-    let (mut a, mut steps_a) = fixture.query(Some(gate_a), false);
-    let (mut b, mut steps_b) = fixture.query(Some(gate_b), false);
-    fixture.apply(1);
-    let a_first =
-        tokio::select! { _ = started(&mut steps_a) => true, _ = started(&mut steps_b) => false };
-    assert_eq!(fixture.inner.steps.available_permits(), 0);
-    if a_first {
-        assert!(steps_b.try_recv().is_err());
-        release_a.send(()).unwrap();
-        assert_eq!(started(&mut steps_b).await, 1);
-        release_b.send(()).unwrap();
-    } else {
-        assert!(steps_a.try_recv().is_err());
-        release_b.send(()).unwrap();
-        assert_eq!(started(&mut steps_a).await, 1);
-        release_a.send(()).unwrap();
+async fn service_does_not_throttle_steps() {
+    let mut fixture = Fixture::new(4).await;
+    let mut queries = vec![];
+    for _ in 0..3 {
+        let (release, gate) = mpsc::unbounded_channel();
+        let (query, steps) = fixture.query(Some(gate), false).await;
+        queries.push((release, query, steps));
     }
-    next(&mut a).await.unwrap();
-    next(&mut b).await.unwrap();
+    fixture.apply(1);
+    // Every step starts before any is released; limiting concurrency is the pool's job.
+    for (_, _, steps) in &mut queries {
+        assert_eq!(started(steps).await, 1);
+    }
+    for (release, query, _) in &mut queries {
+        release.send(()).unwrap();
+        next(query).await.unwrap();
+    }
     fixture.finish().await;
 }
 
 #[tokio::test]
 async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
-    let mut fixture = Fixture::new(1, 2);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(1).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut slow_steps).await;
     next(&mut healthy).await.unwrap();
@@ -250,16 +305,15 @@ async fn overflow_suppresses_in_flight_result_and_discards_pending_work() {
 }
 
 #[tokio::test]
-async fn full_output_releases_permit_and_input_overflow_delivers_error() {
-    let mut fixture = Fixture::new(1, 1);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+async fn full_output_pauses_only_its_query_and_input_overflow_delivers_error() {
+    let mut fixture = Fixture::new(1).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut slow, mut slow_steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut slow_steps).await, seq);
         release.send(()).unwrap();
-        // With one permit, this also proves output delivery does not retain the permit.
         next(&mut healthy).await.unwrap();
     }
     fixture.apply(1000);
@@ -277,13 +331,13 @@ async fn full_output_releases_permit_and_input_overflow_delivers_error() {
 
 #[tokio::test]
 async fn full_output_can_resume_without_termination() {
-    let mut fixture = Fixture::new(4, 1);
-    let (mut query, mut steps) = fixture.query(None, false);
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+    let mut fixture = Fixture::new(4).await;
+    let (mut query, mut steps) = fixture.query(None, false).await;
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         fixture.apply(seq);
         assert_eq!(started(&mut steps).await, seq);
     }
-    for seq in 1..=SUBSCRIPTION_CAPACITY as i64 + 1 {
+    for seq in 1..=SUBSCRIPTION_OUTPUT_CAPACITY as i64 + 1 {
         assert_eq!(
             next(&mut query).await.unwrap().rows,
             vec![(vec![DataType::Long(seq)], 1)]
@@ -298,9 +352,9 @@ async fn full_output_can_resume_without_termination() {
 
 #[tokio::test]
 async fn panic_retires_only_affected_circuit() {
-    let mut fixture = Fixture::new(4, 1);
-    let (mut failing, _) = fixture.query(None, true);
-    let (mut healthy, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(4).await;
+    let (mut failing, _) = fixture.query(None, true).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     assert!(next(&mut failing)
         .await
@@ -316,8 +370,8 @@ async fn panic_retires_only_affected_circuit() {
 
 #[tokio::test]
 async fn disconnect_retires_without_another_transaction() {
-    let mut fixture = Fixture::new(1, 1);
-    let (query, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(1).await;
+    let (query, _) = fixture.query(None, false).await;
     let handle = query.handle;
     drop(query);
     assert_eq!(fixture.retire().await, handle);
@@ -325,40 +379,11 @@ async fn disconnect_retires_without_another_transaction() {
 }
 
 #[tokio::test]
-async fn cancellation_while_waiting_for_permit_does_not_apply() {
-    let mut fixture = Fixture::new(2, 1);
-    let permit = fixture.inner.steps.clone().acquire_owned().await.unwrap();
-    let (query, mut steps) = fixture.query(None, false);
-    fixture.apply(1);
-    let registered = &fixture.inner.queries[&query.handle];
-    // Wait for the worker to consume the batch while the only permit is held.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while registered.inbox.capacity() != registered.inbox.max_capacity() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("worker should consume the batch and wait for a permit");
-    assert!(matches!(
-        steps.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
-    fixture.inner.queries[&query.handle].control.terminate(None);
-    assert_eq!(fixture.retire().await, query.handle);
-    assert!(matches!(
-        steps.try_recv(),
-        Err(mpsc::error::TryRecvError::Disconnected)
-    ));
-    drop(permit);
-    fixture.finish().await;
-}
-
-#[tokio::test]
 async fn unregister_waits_for_apply_without_blocking_dispatch() {
-    let mut fixture = Fixture::new(4, 2);
-    let (release, gate) = sync_mpsc::channel();
-    let (query, mut steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(4).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (query, mut steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
@@ -384,7 +409,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     let (response, applied) = oneshot::channel();
     commands
         .send(IncrementalCommand::ApplyBatch {
-            batch: Arc::new(Batch::single(
+            batch: Arc::new(single_batch(
                 tx_key,
                 vec![Tup2(
                     EncodedTriple {
@@ -410,9 +435,9 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
 
 #[tokio::test]
 async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    let mut fixture = Fixture::new(4).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
     fixture.apply(1);
     started(&mut steps).await;
     let control = fixture.inner.queries[&query.handle].control.clone();
@@ -439,16 +464,16 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
 
 #[tokio::test]
 async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing() {
-    let mut fixture = Fixture::new(4, 2);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(4).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     fixture.apply(1);
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let control = fixture.inner.queries[&query.handle].control.clone();
-    let (service, dispatcher, _storage) = fixture.start();
+    let (service, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.unregister(query.handle))
         .await
@@ -460,8 +485,9 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     assert!(storage_path.exists());
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
-    service
-        .apply_batch(Batch::single(
+    apply_batch(
+        &service,
+        single_batch(
             tx_key,
             vec![Tup2(
                 EncodedTriple {
@@ -471,9 +497,10 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
                 },
                 1,
             )],
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
 
     release.send(()).unwrap();
@@ -489,13 +516,13 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
 
 #[tokio::test]
 async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
-    let mut fixture = Fixture::new(4, 1);
-    let (release, gate) = sync_mpsc::channel();
-    let (mut query, mut steps) = fixture.query(Some(gate), false);
+    let mut fixture = Fixture::new(4).await;
+    let (release, gate) = mpsc::unbounded_channel();
+    let (mut query, mut steps) = fixture.query(Some(gate), false).await;
     fixture.apply(1);
     started(&mut steps).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (service, dispatcher, _storage) = fixture.start();
+    let (service, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
@@ -517,18 +544,16 @@ async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
 }
 
 #[tokio::test]
-async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
-    let mut fixture = Fixture::new(4, 1);
-    let (query, _) = fixture.query(None, false);
+async fn shutdown_stops_cdc_before_workers() {
+    let mut fixture = Fixture::new(4).await;
+    let (mut query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (service, dispatcher, _storage) = fixture.start();
-    let (release, gate) = oneshot::channel();
-    let (finished, completion) = oneshot::channel();
-    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
+    let (release, gate) = oneshot::channel::<()>();
+    fixture.inner.cdc_task = Some(tokio::spawn(async move {
         let _ = gate.await;
-        let _ = finished.send(());
         Ok(())
     }));
+    let (service, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
@@ -538,36 +563,61 @@ async fn shutdown_timeout_includes_cdc_and_still_requests_cleanup() {
         error.downcast_ref::<RetirementTimeout>(),
         Some(RetirementTimeout::Shutdown { .. })
     ));
-    // The dispatcher must finish even though CDC has not returned.
+    // The dispatcher still waits for CDC, so the worker keeps its storage.
+    assert!(!dispatcher.is_finished());
+    assert!(storage_path.exists());
+    release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
         .unwrap()
         .unwrap();
     assert!(!storage_path.exists());
-    release.send(()).unwrap();
-    completion.await.unwrap();
+    assert!(query.deltas.recv().await.is_none());
 }
 
 #[tokio::test]
-async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
-    let mut fixture = Fixture::new(4, 1);
-    let (mut query, _) = fixture.query(None, false);
+async fn shutdown_reports_cdc_error_and_cleanup_failure() {
+    let mut fixture = Fixture::new(4).await;
+    let (query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
-    let (mut service, dispatcher, _storage) = fixture.start();
+    fixture.inner.cdc_task = Some(tokio::spawn(async { Err(anyhow!("cdc failed")) }));
+    let (mut service, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
-    *service.cdc_task.lock().unwrap() = Some(tokio::spawn(async move {
-        // Hold shutdown in the CDC wait until the dispatcher has retired the query.
-        assert!(query.deltas.recv().await.is_none());
+
+    let message = format!("{:#}", service.shutdown().await.unwrap_err());
+    assert!(
+        message.contains("Incremental query CDC loop failed"),
+        "{message}"
+    );
+    assert!(message.contains("cdc failed"), "{message}");
+    assert!(
+        message.contains("Failed to remove incremental query storage"),
+        "{message}"
+    );
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_reports_cdc_task_panic() {
+    let mut fixture = Fixture::new(4).await;
+    fixture.inner.cdc_task = Some(tokio::spawn(async {
+        panic!("cdc task panic");
+        #[allow(unreachable_code)]
         Ok(())
     }));
+    let (mut service, dispatcher, _storage) = fixture.start().await;
+    service.retire_timeout = Duration::from_secs(5);
 
-    let error = service.shutdown().await.unwrap_err();
-    assert!(error.downcast_ref::<std::io::Error>().is_some());
-    assert!(error
-        .to_string()
-        .contains("Failed to remove incremental query storage"));
+    let message = format!("{:#}", service.shutdown().await.unwrap_err());
+    assert!(
+        message.contains("Incremental query CDC task failed to join"),
+        "{message}"
+    );
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
         .await
         .unwrap()
@@ -576,13 +626,13 @@ async fn shutdown_reports_cleanup_failure_while_waiting_for_cdc() {
 
 #[tokio::test]
 async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
-    let mut fixture = Fixture::new(4, 1);
-    let (mut query, _) = fixture.query(None, false);
-    let (mut healthy, _) = fixture.query(None, false);
+    let mut fixture = Fixture::new(4).await;
+    let (mut query, _) = fixture.query(None, false).await;
+    let (mut healthy, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
-    let (mut service, dispatcher, _storage) = fixture.start();
+    let (mut service, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
     let error = service.unregister(query.handle).await.unwrap_err();
     assert!(error.downcast_ref::<std::io::Error>().is_some());
@@ -600,17 +650,20 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     tx_key.tx_id += 1;
     tokio::time::timeout(
         Duration::from_secs(5),
-        service.apply_batch(Batch::single(
-            tx_key,
-            vec![Tup2(
-                EncodedTriple {
-                    entity: vec![],
-                    attribute: 1,
-                    value: vec![],
-                },
-                1,
-            )],
-        )),
+        apply_batch(
+            &service,
+            single_batch(
+                tx_key,
+                vec![Tup2(
+                    EncodedTriple {
+                        entity: vec![],
+                        attribute: 1,
+                        value: vec![],
+                    },
+                    1,
+                )],
+            ),
+        ),
     )
     .await
     .unwrap()
@@ -624,51 +677,136 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
 }
 
 #[tokio::test]
+async fn unregister_is_not_blocked_by_registration() {
+    let mut fixture = Fixture::new(4).await;
+    let (query, _) = fixture.query(None, false).await;
+    let (release, registration, _) = fixture.gated_build(vec![]);
+    let (mut service, dispatcher, _storage) = fixture.start().await;
+    service.retire_timeout = Duration::from_secs(5);
+    // The build is still blocked, so this returns only if the dispatcher keeps serving.
+    service.unregister(query.handle).await.unwrap();
+    release.send(()).unwrap();
+    let mut registered = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let batch = Fixture::batch(1);
+    apply_batch(
+        &service,
+        single_batch(batch.tx_key, batch.triples().to_vec()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next(&mut registered).await.unwrap().tx_key, batch.tx_key);
+    service.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_pending_build_and_rejects_it() {
+    let mut fixture = Fixture::new(4).await;
+    let (release, registration, storage_path) = fixture.gated_build(vec![]);
+    let (mut service, dispatcher, _storage) = fixture.start().await;
+    service.retire_timeout = Duration::from_secs(5);
+    let shutdown = tokio::spawn(async move { service.shutdown().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A build cannot be interrupted, so shutdown waits for it.
+    assert!(!shutdown.is_finished());
+    release.send(()).unwrap();
+    shutdown.await.unwrap().unwrap();
+    // The worker stopped before it took Prime, so the response channel closed.
+    assert!(registration.await.is_err());
+    assert!(!storage_path.exists());
+    tokio::time::timeout(Duration::from_secs(5), dispatcher)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn registration_panics_remove_storage_after_unwinding() {
-    let mut fixture = Fixture::new(1, 1);
+    let mut fixture = Fixture::new(1).await;
     for panic_during_build in [true, false] {
-        let handle = fixture.inner.allocate_query_id();
         let (dropped, observed) = sync_mpsc::channel();
-        let error = fixture
-            .inner
-            .prepare_query(handle, move |storage| {
+        let (response, registration) = oneshot::channel();
+        let handle = fixture.inner.start_query(
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            Box::new(move |storage| {
                 std::fs::create_dir(storage)?;
                 assert!(!panic_during_build, "injected construction panic");
                 let (started, _) = mpsc::unbounded_channel();
-                let mut probe = Probe {
+                Ok(Probe {
                     started,
                     release: None,
-                    panic: true,
+                    panic: false,
+                    prime_panic: true,
+                    priming: vec![],
                     storage: storage.to_path_buf(),
                     dropped,
-                };
-                let rows = probe.apply(&Batch::single(
-                    *crate::bootstrap::BOOTSTRAP_TX_KEY,
-                    vec![Tup2(
-                        EncodedTriple {
-                            entity: vec![],
-                            attribute: 1,
-                            value: vec![],
-                        },
-                        1,
-                    )],
-                ))?;
-                Ok((probe, rows))
-            })
-            .await
-            .err()
-            .expect("registration should fail");
-        assert!(error
-            .downcast_ref::<tokio::task::JoinError>()
-            .unwrap()
-            .is_panic());
+                })
+            }),
+            response,
+        );
+        let error = registration.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("panicked"), "{error:#}");
+        // The registration fails only after its storage is gone.
+        assert!(!fixture.inner.query_storage_path(handle).exists());
+        assert_eq!(fixture.retire().await, handle);
         if !panic_during_build {
             assert_dropped(vec![observed]);
         }
-        assert!(!fixture.inner.query_storage_path(handle).exists());
     }
-    let (mut healthy, _) = fixture.query(None, false);
+    let (mut healthy, _) = fixture.query(None, false).await;
     let tx_key = fixture.apply(1);
     assert_eq!(next(&mut healthy).await.unwrap().tx_key, tx_key);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn batches_routed_during_build_follow_the_priming_delta() {
+    let mut fixture = Fixture::new(4).await;
+    let (release, registration, _) = fixture.gated_build(vec![(vec![DataType::Long(0)], 1)]);
+    let first = fixture.apply(1);
+    let second = fixture.apply(2);
+    release.send(()).unwrap();
+    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        next(&mut query).await.unwrap(),
+        IncrementalQueryDelta {
+            tx_key: *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            rows: vec![(vec![DataType::Long(0)], 1)],
+        }
+    );
+    assert_eq!(next(&mut query).await.unwrap().tx_key, first);
+    assert_eq!(next(&mut query).await.unwrap().tx_key, second);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn inbox_overflow_during_build_returns_lagged_subscription() {
+    let mut fixture = Fixture::new(1).await;
+    let (release, registration, _) = fixture.gated_build(vec![]);
+    // Prime fills the inbox while the build blocks.
+    let overflow = fixture.apply(1);
+    release.send(()).unwrap();
+    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let error = next(&mut query).await.unwrap_err();
+    let lagged = error.downcast_ref::<SubscriptionLagged>().unwrap();
+    assert_eq!(lagged.tx_key, overflow);
+    assert_eq!(lagged.capacity, 1);
+    assert_eq!(fixture.retire().await, query.handle);
+    assert!(query.deltas.recv().await.is_none());
     fixture.finish().await;
 }

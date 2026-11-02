@@ -1,29 +1,27 @@
 //! Writer-node incremental query service.
 
 use std::collections::HashMap;
-use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
-use std::thread;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::partition::tx_eid_from_tx_id;
-use anyhow::{anyhow, Context, Error, Result};
-use dbsp::{utils::Tup2, ZWeight};
+use anyhow::{anyhow, Context, Result};
+use dbsp::{PoolConfig, RuntimePool};
 use slatedb::object_store::ObjectStore;
-use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use triplox_client::transaction::TxKey;
 
+use crate::config::IncrementalConfig;
 use crate::inc_query::{plan_query, IncrementalQueryPlan};
-use crate::incremental::cdc::{scan_current_triples, spawn_cdc_loop};
+use crate::incremental::cdc::{initial_scans, spawn_cdc_loop};
 use crate::incremental::circuit::QueryCircuit;
 use crate::indexer::Indexer;
 use crate::ops::DataType;
+use crate::slate::SlateComponents;
 use edn::query::ParsedQuery;
 
 pub(crate) mod cdc;
@@ -31,27 +29,31 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Circuit, Completion, Control, Worker};
+use worker::{Batch, Build, Circuit, Completion, Control, Message, SnapshotCircuit, Worker};
 mod worker;
 
-const SUBSCRIPTION_CAPACITY: usize = 128;
+const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy)]
 struct IncrementalQueryOptions {
+    config: IncrementalConfig,
     inbox_capacity: NonZeroUsize,
-    max_concurrent_steps: NonZeroUsize,
     retire_timeout: Duration,
+}
+
+impl IncrementalQueryOptions {
+    fn for_config(config: IncrementalConfig) -> Self {
+        Self {
+            config,
+            inbox_capacity: NonZeroUsize::new(256).unwrap(),
+            retire_timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 impl Default for IncrementalQueryOptions {
     fn default() -> Self {
-        Self {
-            inbox_capacity: NonZeroUsize::new(256).unwrap(),
-            max_concurrent_steps: thread::available_parallelism()
-                .unwrap_or(NonZeroUsize::MIN)
-                .div_ceil(NonZeroUsize::new(2).unwrap()),
-            retire_timeout: Duration::from_secs(10),
-        }
+        Self::for_config(IncrementalConfig::default())
     }
 }
 
@@ -111,8 +113,6 @@ enum IncrementalCommand {
     Register {
         // The box here is purely an optimization to keep the enum stack size small.
         plan: Box<IncrementalQueryPlan>,
-        tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
         response: oneshot::Sender<Result<IncrementalQuerySubscription>>,
     },
     Unregister {
@@ -131,13 +131,17 @@ enum IncrementalCommand {
 #[derive(Clone)]
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
-    cdc_object_path: String,
-    cdc_object_store: Arc<dyn ObjectStore>,
-    cdc_poll_interval: Duration,
-    cancel: CancellationToken,
-    cdc_task: Arc<StdMutex<Option<JoinHandle<Result<()>>>>>,
-    registration_gate: Arc<Mutex<()>>,
+    indexer: Arc<RwLock<Indexer>>,
     retire_timeout: Duration,
+}
+
+// What the CDC task reads, and how often it polls the WAL.
+struct CdcSource {
+    object_path: String,
+    object_store: Arc<dyn ObjectStore>,
+    poll_interval: Duration,
+    // A weak sender, so the dispatcher stops when the last service handle drops.
+    commands: mpsc::WeakUnboundedSender<IncrementalCommand>,
 }
 
 // The two result levels in this service have two different meanings.
@@ -147,124 +151,82 @@ impl IncrementalQueryService {
     pub(crate) fn new(
         storage_root: PathBuf,
         cancel: CancellationToken,
-        cdc_object_path: String,
-        cdc_object_store: Arc<dyn ObjectStore>,
+        slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
+    ) -> Self {
+        Self::new_with_runtime(
+            storage_root,
+            cancel,
+            slate,
+            indexer,
+            cdc_poll_interval,
+            IncrementalConfig::default(),
+        )
+    }
+
+    pub(crate) fn new_with_runtime(
+        storage_root: PathBuf,
+        cancel: CancellationToken,
+        slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
+        cdc_poll_interval: Duration,
+        config: IncrementalConfig,
     ) -> Self {
         Self::new_with_options(
             storage_root,
             cancel,
-            cdc_object_path,
-            cdc_object_store,
+            slate,
+            indexer,
             cdc_poll_interval,
-            IncrementalQueryOptions::default(),
+            IncrementalQueryOptions::for_config(config),
         )
     }
 
+    // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
     fn new_with_options(
         storage_root: PathBuf,
         cancel: CancellationToken,
-        cdc_object_path: String,
-        cdc_object_store: Arc<dyn ObjectStore>,
+        slate: &SlateComponents,
+        indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
     ) -> Self {
-        let cancel = cancel.child_token();
-        let inner_cancel = cancel.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
-        thread::Builder::new()
-            .name("tpx-iq-service".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_name("tpx-iq-worker")
-                    .enable_all()
-                    .build()
-                    .expect("incremental query runtime should start");
-                let inner = IncrementalQueryServiceInner::new(
-                    storage_root,
-                    runtime.handle().clone(),
-                    inner_cancel,
-                    options,
-                );
-                runtime.block_on(inner.run(receiver));
-            })
-            .expect("incremental query service thread should start");
+        let mut inner = IncrementalQueryServiceInner::new(
+            storage_root,
+            cancel.child_token(),
+            options,
+            slate.db.clone(),
+            indexer.clone(),
+        );
+        inner.cdc = Some(CdcSource {
+            object_path: slate.object_path.clone(),
+            object_store: slate.object_store.clone(),
+            poll_interval: cdc_poll_interval,
+            commands: sender.downgrade(),
+        });
+        tokio::spawn(inner.run(receiver));
 
         Self {
             commands: sender,
-            cdc_object_path,
-            cdc_object_store,
-            cdc_poll_interval,
-            cancel,
-            cdc_task: Arc::new(StdMutex::new(None)),
-            registration_gate: Arc::new(Mutex::new(())),
+            indexer,
             retire_timeout: options.retire_timeout,
         }
     }
 
+    // The plan uses the schema at call time and the dispatcher reads the basis later.
+    // This is correct because an attribute id does not change after the schema assigns it.
     pub(crate) async fn register_query(
         &self,
-        db: &slatedb::Db,
         query: ParsedQuery,
-        indexer: Arc<RwLock<Indexer>>,
     ) -> Result<IncrementalQuerySubscription> {
-        let _registration_guard = self.registration_gate.lock().await;
-        let (tx_key, schema) = {
-            let indexer = indexer.read().await;
-            (indexer.latest_tx_key(), indexer.metadata().schema.clone())
-        };
+        let schema = self.indexer.read().await.metadata().schema.clone();
         let plan = plan_query(&query, &schema)?;
-        let initial_triples =
-            scan_current_triples(db, &plan, tx_eid_from_tx_id(tx_key.tx_id)).await?;
-        let subscription = self
-            .register_prepared_query(plan, tx_key, initial_triples)
-            .await?;
-        self.start_cdc_once(indexer);
-        Ok(subscription)
-    }
-
-    fn start_cdc_once(&self, indexer: Arc<RwLock<Indexer>>) {
-        let mut cdc_task = self.cdc_task.lock().unwrap();
-        if cdc_task.is_some() {
-            return;
-        }
-
-        let handle = spawn_cdc_loop(
-            self.cdc_object_path.clone(),
-            self.cdc_object_store.clone(),
-            indexer,
-            self.clone(),
-            self.registration_gate.clone(),
-            self.cancel.clone(),
-            self.cdc_poll_interval,
-        );
-        *cdc_task = Some(handle);
-    }
-
-    pub(crate) async fn await_cdc_task(&self) -> Result<()> {
-        let handle = self.cdc_task.lock().unwrap().take();
-        if let Some(handle) = handle {
-            let cdc_result = handle
-                .await
-                .context("Incremental query CDC task failed to join")?;
-            cdc_result.context("Incremental query CDC loop failed")?;
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn register_prepared_query(
-        &self,
-        plan: IncrementalQueryPlan,
-        tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<IncrementalQuerySubscription> {
         let (response, result) = oneshot::channel();
         self.commands
             .send(IncrementalCommand::Register {
                 plan: Box::new(plan),
-                tx_key,
-                initial_triples,
                 response,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
@@ -285,59 +247,22 @@ impl IncrementalQueryService {
             .context("Incremental query service stopped")?
     }
 
-    async fn apply_batch(&self, batch: Batch) -> Result<()> {
+    pub(crate) async fn shutdown(&self) -> Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
-            .send(IncrementalCommand::ApplyBatch {
-                batch: Arc::new(batch),
-                response,
-            })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        result.await.context("Incremental query service stopped")
-    }
-
-    pub(crate) async fn shutdown(&self) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + self.retire_timeout;
-        self.cancel.cancel();
-        let cdc_result = tokio::time::timeout_at(deadline, self.await_cdc_task())
-            .await
-            .map_err(|_| {
-                RetirementTimeout::Shutdown {
-                    timeout: self.retire_timeout,
-                }
-                .into()
-            })
-            .and_then(|result| result);
-        // Request cleanup even when waiting for CDC used the entire deadline.
-        let (response, result) = oneshot::channel();
-        let service_result = match self
-            .commands
             .send(IncrementalCommand::Shutdown { response })
-        {
-            Ok(()) => match tokio::time::timeout_at(deadline, result).await {
-                Ok(result) => result
-                    .context("Incremental query service stopped")
-                    .and_then(|result| result),
-                Err(_) => Err(RetirementTimeout::Shutdown {
-                    timeout: self.retire_timeout,
-                }
-                .into()),
-            },
-            Err(_) => Err(anyhow!("Incremental query service stopped")),
-        };
-
-        match (cdc_result, service_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-            (Err(cdc_err), Err(service_err)) => Err(cdc_err.context(format!(
-                "Incremental query service shutdown failed: {service_err:#}"
-            ))),
-        }
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        tokio::time::timeout(self.retire_timeout, result)
+            .await
+            .map_err(|_| RetirementTimeout::Shutdown {
+                timeout: self.retire_timeout,
+            })?
+            .context("Incremental query service stopped")?
     }
 }
 
 struct RegisteredQuery {
-    inbox: mpsc::Sender<Arc<Batch>>,
+    inbox: mpsc::Sender<Message>,
     sender: mpsc::Sender<IncrementalQueryDelta>,
     control: Arc<Control>,
     basis: TxKey,
@@ -346,15 +271,24 @@ struct RegisteredQuery {
     unregister: Option<oneshot::Sender<Result<()>>>,
 }
 
+type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
+
 struct IncrementalQueryServiceInner {
+    pool: Option<RuntimePool>,
     next_query_id: u64,
     storage_root: PathBuf,
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
-    runtime: Handle,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
-    // This is held to give to newly created workers.
-    steps: Arc<Semaphore>,
+    // Workers scan this database to prime their circuits.
+    db: Arc<slatedb::Db>,
+    // Gives the registration basis, and the schema that the CDC task decodes with.
+    indexer: Arc<RwLock<Indexer>>,
+    // Without a source, as in tests, no CDC task starts.
+    cdc: Option<CdcSource>,
+    // A child of `cancel`, so shutdown can stop the CDC task before the workers.
+    cdc_cancel: CancellationToken,
+    cdc_task: Option<JoinHandle<Result<()>>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
@@ -364,22 +298,56 @@ struct IncrementalQueryServiceInner {
 impl IncrementalQueryServiceInner {
     fn new(
         storage_root: PathBuf,
-        runtime: Handle,
         cancel: CancellationToken,
         options: IncrementalQueryOptions,
+        db: Arc<slatedb::Db>,
+        indexer: Arc<RwLock<Indexer>>,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
+            pool: None,
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
-            runtime,
+            cdc_cancel: cancel.child_token(),
             cancel,
             options,
-            steps: Arc::new(Semaphore::new(options.max_concurrent_steps.get())),
+            db,
+            indexer,
+            cdc: None,
+            cdc_task: None,
             completed,
             completions,
         }
+    }
+
+    // The CDC task starts with the first query and reads the WAL from its beginning.
+    fn start_cdc(&mut self) {
+        let Some(cdc) = &self.cdc else {
+            return;
+        };
+        if self.cdc_task.is_some() {
+            return;
+        }
+        self.cdc_task = Some(spawn_cdc_loop(
+            cdc.object_path.clone(),
+            cdc.object_store.clone(),
+            self.indexer.clone(),
+            cdc.commands.clone(),
+            self.cdc_cancel.clone(),
+            cdc.poll_interval,
+        ));
+    }
+
+    async fn stop_cdc(&mut self) -> Result<()> {
+        self.cdc_cancel.cancel();
+        let Some(handle) = self.cdc_task.take() else {
+            return Ok(());
+        };
+        handle
+            .await
+            .context("Incremental query CDC task failed to join")?
+            .context("Incremental query CDC loop failed")
     }
 
     fn retire(&mut self, completion: Completion) -> Result<()> {
@@ -403,7 +371,7 @@ impl IncrementalQueryServiceInner {
                     if let Some(completion) = completion {
                         if let Err(error) = self.retire(completion) {
                             warn!("{error:#}");
-                            // Shutdown cancels workers before waiting for CDC and sending its command.
+                            // A cancel of the node stops the workers, so shutdown reports their cleanup.
                             if self.cancel.is_cancelled() && cleanup.is_ok() {
                                 cleanup = Err(error);
                             }
@@ -411,17 +379,10 @@ impl IncrementalQueryServiceInner {
                     }
                 }
                 command = receiver.recv() => match command {
-                    Some(IncrementalCommand::Register { plan, tx_key, initial_triples, response }) => {
-                        let result = if self.cancel.is_cancelled() {
-                            Err(anyhow!("Incremental query service stopped"))
-                        } else {
-                            self.register(*plan, tx_key, initial_triples).await
-                        };
-                        if let Err(Ok(subscription)) = response.send(result) {
-                            if let Some(query) = self.queries.get(&subscription.handle) {
-                                query.control.terminate(None);
-                            }
-                        }
+                    Some(IncrementalCommand::Register { plan, response }) => {
+                        // No batch is routed between this read and the registry insert, so no lock with CDC is needed.
+                        let basis = self.indexer.read().await.latest_tx_key();
+                        self.start_registration(*plan, basis, response).await;
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
                         match self.queries.get_mut(&handle) {
@@ -442,7 +403,9 @@ impl IncrementalQueryServiceInner {
             }
         }
         receiver.close();
+        let cdc_result = self.stop_cdc().await;
         self.cancel.cancel();
+        // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
             query.control.terminate(None);
         }
@@ -456,8 +419,27 @@ impl IncrementalQueryServiceInner {
                 }
             }
         }
+        if let Some(pool) = self.pool.take() {
+            let result = tokio::task::spawn_blocking(move || {
+                pool.shutdown()
+                    .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
+            })
+            .await
+            .context("Incremental runtime pool shutdown task panicked")
+            .and_then(|result| result);
+            if cleanup.is_ok() {
+                cleanup = result;
+            }
+        }
+        let result = match (cdc_result, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(cdc_error), Err(cleanup_error)) => Err(cdc_error.context(format!(
+                "Incremental query service shutdown failed: {cleanup_error:#}"
+            ))),
+        };
         if let Some(response) = shutdown {
-            let _ = response.send(cleanup);
+            let _ = response.send(result);
         }
     }
 
@@ -471,35 +453,42 @@ impl IncrementalQueryServiceInner {
         self.storage_root.join(format!("query-{id}"))
     }
 
-    fn install<C: Circuit>(
+    // Registers the query and starts its worker. Batches routed from now on queue behind Prime.
+    fn start_query<C: Circuit>(
         &mut self,
-        handle: IncrementalQueryHandle,
-        circuit: C,
-        tx_key: TxKey,
-        priming_rows: worker::Rows,
-    ) -> IncrementalQuerySubscription {
-        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_CAPACITY);
-        if !priming_rows.is_empty() {
-            sender
-                .try_send(IncrementalQueryDelta {
-                    tx_key,
-                    rows: priming_rows,
-                })
-                .expect("new subscription queue has room for priming");
-        }
+        basis: TxKey,
+        build: Build<C>,
+        response: Registration,
+    ) -> IncrementalQueryHandle {
+        let handle = self.allocate_query_id();
+        let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
+        let subscription = IncrementalQuerySubscription {
+            handle,
+            tx_key: basis,
+            deltas: SubscriptionDeltas::new(receiver, termination),
+        };
+        if inbox_sender
+            .try_send(Message::Prime {
+                basis,
+                subscription,
+                response,
+            })
+            .is_err()
+        {
+            unreachable!("new inbox has room for Prime");
+        }
         let worker = Worker {
-            circuit,
+            build,
             storage_path: self.query_storage_path(handle),
             inbox,
             sender: sender.clone(),
             control: control.clone(),
-            steps: self.steps.clone(),
         };
         let completed = self.completed.clone();
-        self.runtime.spawn(async move {
+        tokio::spawn(async move {
             let cleanup = worker.run().await;
             let _ = completed.send(Completion { handle, cleanup });
         });
@@ -509,69 +498,64 @@ impl IncrementalQueryServiceInner {
                 inbox: inbox_sender,
                 sender,
                 control,
-                basis: tx_key,
+                basis,
                 unregister: None,
             },
         );
-        IncrementalQuerySubscription {
-            handle,
-            tx_key,
-            deltas: SubscriptionDeltas::new(receiver, termination),
+        handle
+    }
+
+    // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
+    async fn pool(&mut self) -> Result<RuntimePool> {
+        if let Some(pool) = &self.pool {
+            return Ok(pool.clone());
         }
-    }
-
-    async fn prepare_query<C: Circuit>(
-        &self,
-        handle: IncrementalQueryHandle,
-        prepare: impl FnOnce(&std::path::Path) -> Result<(C, worker::Rows)> + Send + 'static,
-    ) -> Result<(C, worker::Rows)> {
-        let storage_path = self.query_storage_path(handle);
-        let result = self
-            .runtime
-            .spawn_blocking(move || prepare(&storage_path))
-            .await
-            .context("Incremental query registration task panicked")
-            .and_then(|result| result);
-        let error = match result {
-            Ok(prepared) => return Ok(prepared),
-            Err(error) => error,
-        };
-        // The preparation task has finished unwinding before storage can be removed.
-        let storage_path = self.query_storage_path(handle);
-        let cleanup = self
-            .runtime
-            .spawn_blocking(move || match std::fs::remove_dir_all(storage_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            })
-            .await
-            .context("Incremental query registration cleanup task panicked")
-            .and_then(|result| result.map_err(Error::from));
-        Err(match cleanup {
-            Ok(()) => error,
-            Err(cleanup) => error.context(format!(
-                "Incremental query registration cleanup failed: {cleanup:#}"
-            )),
+        let config = self.options.config;
+        let pool = tokio::task::spawn_blocking(move || {
+            RuntimePool::start(
+                PoolConfig::with_threads(config.threads.get())
+                    .with_merger_threads(config.merger_threads.get().into())
+                    .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                    .with_cache_mib(config.cache_mib.get()),
+            )
         })
+        .await
+        .context("Incremental runtime pool startup task panicked")??;
+        self.pool = Some(pool.clone());
+        Ok(pool)
     }
 
-    async fn register(
+    async fn start_registration(
         &mut self,
         plan: IncrementalQueryPlan,
         tx_key: TxKey,
-        initial_triples: Vec<Tup2<EncodedTriple, ZWeight>>,
-    ) -> Result<IncrementalQuerySubscription> {
-        let handle = self.allocate_query_id();
-        // Registration remains serialized, but DBSP construction and destruction stay off async threads.
-        let (circuit, rows) = self
-            .prepare_query(handle, move |storage_path| {
-                let mut circuit = QueryCircuit::build(plan, storage_path)?;
-                let rows = circuit.step(initial_triples)?;
-                Ok((circuit, rows))
-            })
-            .await?;
-        Ok(self.install(handle, circuit, tx_key, rows))
+        response: Registration,
+    ) {
+        if self.cancel.is_cancelled() {
+            let _ = response.send(Err(anyhow!("Incremental query service stopped")));
+            return;
+        }
+        let pool = match self.pool().await {
+            Ok(pool) => pool,
+            Err(error) => {
+                let _ = response.send(Err(error));
+                return;
+            }
+        };
+        self.start_cdc();
+        let db = self.db.clone();
+        let scans = initial_scans(&plan);
+        self.start_query(
+            tx_key,
+            Box::new(move |storage_path| {
+                Ok(SnapshotCircuit {
+                    circuit: QueryCircuit::build(plan, storage_path, pool)?,
+                    db,
+                    scans,
+                })
+            }),
+            response,
+        );
     }
 
     fn apply_batch(&self, batch: Arc<Batch>) {
@@ -586,9 +570,9 @@ impl IncrementalQueryServiceInner {
             let Some(batch) = batch.after(query.basis.tx_id) else {
                 continue;
             };
-            match query.inbox.try_send(batch) {
+            match query.inbox.try_send(Message::Apply(batch.clone())) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(batch)) => {
+                Err(mpsc::error::TrySendError::Full(_)) => {
                     query
                         .control
                         .terminate(Some(Termination::Lagged(SubscriptionLagged {
@@ -610,15 +594,17 @@ mod tests {
 
     use chrono::Utc;
     use dbsp::utils::Tup2;
+    use dbsp::ZWeight;
     use edn::query::ToVariable;
-    use slatedb::object_store::memory::InMemory;
     use triplox_client::transaction::TxKey;
 
     use super::*;
     use crate::codec::Encode;
     use crate::inc_query::test_support::{parse_query, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
+    use crate::partition::tx_eid_from_tx_id;
     use crate::query::{FindPlan, Projection};
+    use worker::test_support::single_batch;
 
     #[track_caller]
     fn expect_delta(result: Result<IncrementalQueryDelta>) -> IncrementalQueryDelta {
@@ -688,25 +674,121 @@ mod tests {
             .is_some()
     }
 
-    fn service_at(dir: &Path) -> IncrementalQueryService {
-        IncrementalQueryService::new(
+    fn small_pool_config() -> IncrementalConfig {
+        IncrementalConfig {
+            threads: NonZeroUsize::new(2).unwrap(),
+            merger_threads: std::num::NonZeroU16::MIN,
+            cache_mib: NonZeroUsize::new(16).unwrap(),
+        }
+    }
+
+    // An in-memory slate whose names are asserted in transaction 1.
+    async fn slate_with_names(names: &[(i64, &str)]) -> SlateComponents {
+        let slate = crate::slate::in_memory_slate().await;
+        let datoms = names
+            .iter()
+            .map(|&(entity, name)| crate::ops::Datom {
+                entity,
+                attribute: edn::kw!(:name),
+                value: DataType::String(name.to_string()),
+                op: crate::ops::DatomOp::Assert,
+            })
+            .collect::<Vec<_>>();
+        // SlateDB rejects an empty write batch.
+        if !datoms.is_empty() {
+            cdc::test_support::write_scan_datoms(&slate.db, tx_eid_from_tx_id(1), &datoms).await;
+        }
+        slate
+    }
+
+    // The CDC task of the service reads an empty WAL path, so only the tests route batches.
+    fn without_wal(slate: SlateComponents) -> SlateComponents {
+        SlateComponents {
+            object_path: "/without_wal".into(),
+            ..slate
+        }
+    }
+
+    // The dispatcher reads the basis from the indexer, so a new indexer sets the basis of later registrations.
+    async fn set_basis(service: &IncrementalQueryService, db: Arc<slatedb::Db>, basis_tx_id: i64) {
+        *service.indexer.write().await =
+            cdc::test_support::indexer_at(db, test_tx_key_with_tx_id(basis_tx_id));
+    }
+
+    // The registrations of this service have basis 1 until `set_basis` changes it.
+    fn service_on(
+        slate: SlateComponents,
+        dir: &Path,
+        options: IncrementalQueryOptions,
+    ) -> IncrementalQueryService {
+        let slate = without_wal(slate);
+        let indexer = cdc::test_support::indexer_at(slate.db.clone(), test_tx_key_with_tx_id(1));
+        IncrementalQueryService::new_with_options(
             dir.to_path_buf(),
             CancellationToken::new(),
-            "/test_circuit_runtime".to_owned(),
-            Arc::new(InMemory::new()),
+            &slate,
+            Arc::new(RwLock::new(indexer)),
             Duration::from_millis(10),
+            options,
         )
+    }
+
+    async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
+        service_on(
+            slate_with_names(names).await,
+            dir,
+            IncrementalQueryOptions::default(),
+        )
+    }
+
+    async fn service_at(dir: &Path) -> IncrementalQueryService {
+        service_with_names(dir, &[]).await
+    }
+
+    // Sends a planned query, as `register_query` does after planning.
+    async fn register_plan(
+        service: &IncrementalQueryService,
+        plan: IncrementalQueryPlan,
+    ) -> Result<IncrementalQuerySubscription> {
+        let (response, result) = oneshot::channel();
+        service
+            .commands
+            .send(IncrementalCommand::Register {
+                plan: Box::new(plan),
+                response,
+            })
+            .unwrap();
+        result.await.unwrap()
     }
 
     async fn register(
         service: &IncrementalQueryService,
         plan: IncrementalQueryPlan,
-        triples: Vec<Tup2<EncodedTriple, ZWeight>>,
     ) -> IncrementalQuerySubscription {
+        register_plan(service, plan).await.unwrap()
+    }
+
+    // Routes a batch, as the CDC task does.
+    pub(super) async fn apply_batch(service: &IncrementalQueryService, batch: Batch) -> Result<()> {
+        let (response, result) = oneshot::channel();
         service
-            .register_prepared_query(plan, test_tx_key_with_tx_id(1), triples)
-            .await
-            .unwrap()
+            .commands
+            .send(IncrementalCommand::ApplyBatch {
+                batch: Arc::new(batch),
+                response,
+            })
+            .map_err(|_| anyhow!("Incremental query service stopped"))?;
+        result.await.context("Incremental query service stopped")
+    }
+
+    async fn register_inline(
+        inner: &mut IncrementalQueryServiceInner,
+        plan: IncrementalQueryPlan,
+        tx_key: TxKey,
+    ) -> IncrementalQuerySubscription {
+        let (response, result) = oneshot::channel();
+        inner.start_registration(plan, tx_key, response).await;
+        result.await.unwrap().unwrap()
     }
 
     async fn delta(
@@ -719,15 +801,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pooled_queries_share_workers_and_retire_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let slate = slate_with_names(&[(42, "Alice")]).await;
+        let mut inner = IncrementalQueryServiceInner::new(
+            dir.path().into(),
+            CancellationToken::new(),
+            IncrementalQueryOptions {
+                config: small_pool_config(),
+                ..Default::default()
+            },
+            slate.db.clone(),
+            cdc::test_support::test_indexer(slate.db),
+        );
+        let basis = test_tx_key_with_tx_id(1);
+        let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
+        let mut second = register_inline(&mut inner, single_pattern_plan(), basis).await;
+        let pool = inner.pool.as_ref().unwrap().clone();
+        assert_eq!(pool.stats().registered_circuits, 2);
+        assert_eq!(pool.stats().foreground_threads, 2);
+        assert_eq!(pool.stats().merger_threads, 1);
+        assert_eq!(
+            delta(&mut first).await.unwrap().rows,
+            delta(&mut second).await.unwrap().rows
+        );
+        inner.queries[&first.handle].control.terminate(None);
+        let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        inner.retire(completion).unwrap();
+        assert_eq!(pool.stats().registered_circuits, 1);
+        assert!(!inner.query_storage_path(first.handle).exists());
+        let mut old = name_triple(42, "Alice");
+        old.1 = -1;
+        inner.apply_batch(Arc::new(single_batch(
+            test_tx_key_with_tx_id(2),
+            vec![old, name_triple(42, "Bob")],
+        )));
+        let rows = delta(&mut second).await.unwrap().rows;
+        assert!(rows.contains(&(vec![DataType::String("Alice".into())], -1)));
+        assert!(rows.contains(&(vec![DataType::String("Bob".into())], 1)));
+        inner.queries[&second.handle].control.terminate(None);
+        let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        inner.retire(completion).unwrap();
+        assert_eq!(pool.stats().registered_circuits, 0);
+        assert!(!inner.query_storage_path(second.handle).exists());
+        tokio::task::spawn_blocking(move || pool.shutdown().unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let subscription = register(
-            &service,
-            single_pattern_plan(),
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let subscription = register(&service, single_pattern_plan()).await;
         assert!(path_has_entries(&dir.path().join("query-1")));
         service.unregister(subscription.handle).await.unwrap();
         assert!(!dir.path().join("query-1").exists());
@@ -738,18 +870,16 @@ mod tests {
     #[tokio::test]
     async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let mut primed = register(
-            &service,
-            single_pattern_plan(),
-            vec![name_triple(42, "Alice")],
-        )
-        .await;
-        let mut empty = register(&service, single_pattern_plan(), vec![]).await;
+        let slate = slate_with_names(&[(42, "Alice")]).await;
+        let db = slate.db.clone();
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
+        let mut primed = register(&service, single_pattern_plan()).await;
+        // Alice comes after this basis, so the priming result is empty.
+        set_basis(&service, db, 0).await;
+        let mut empty = register(&service, single_pattern_plan()).await;
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(43, "Bob")]))
+        apply_batch(&service, single_batch(tx_key, vec![name_triple(43, "Bob")]))
             .await
             .unwrap();
         assert_eq!(
@@ -764,15 +894,13 @@ mod tests {
     #[tokio::test]
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let error = service
-            .register_prepared_query(
-                aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
-                test_tx_key_with_tx_id(1),
-                vec![name_triple(42, "Alice")],
-            )
-            .await
-            .unwrap_err();
+        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let error = register_plan(
+            &service,
+            aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
+        )
+        .await
+        .unwrap_err();
         assert!(error.downcast_ref::<circuit::AggregateError>().is_some());
         assert!(!dir.path().join("query-1").exists());
         service.shutdown().await.unwrap();
@@ -781,29 +909,26 @@ mod tests {
     #[tokio::test]
     async fn live_aggregate_error_removes_only_the_affected_subscription() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let mut aggregate = register(
             &service,
             aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
-            vec![],
         )
         .await;
-        let mut names = register(&service, single_pattern_plan(), vec![]).await;
+        let mut names = register(&service, single_pattern_plan()).await;
         delta(&mut aggregate).await.unwrap();
-        service
-            .apply_batch(Batch::single(
-                test_tx_key_with_tx_id(2),
-                vec![age_triple(42, 10)],
-            ))
-            .await
-            .unwrap();
-        service
-            .apply_batch(Batch::single(
-                test_tx_key_with_tx_id(3),
-                vec![name_triple(43, "Alice")],
-            ))
-            .await
-            .unwrap();
+        apply_batch(
+            &service,
+            single_batch(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)]),
+        )
+        .await
+        .unwrap();
+        apply_batch(
+            &service,
+            single_batch(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")]),
+        )
+        .await
+        .unwrap();
         assert!(delta(&mut aggregate)
             .await
             .unwrap()
@@ -817,8 +942,7 @@ mod tests {
         assert!(aggregate.deltas.recv().await.is_none());
         delta(&mut names).await.unwrap();
         let tx_key = test_tx_key_with_tx_id(4);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(44, "Bob")]))
+        apply_batch(&service, single_batch(tx_key, vec![name_triple(44, "Bob")]))
             .await
             .unwrap();
         assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
@@ -829,38 +953,34 @@ mod tests {
     #[tokio::test]
     async fn history_before_registration_basis_does_not_fill_inbox() {
         let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new_with_options(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_history".into(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
+        let slate = crate::slate::in_memory_slate().await;
+        let db = slate.db.clone();
+        let service = service_on(
+            slate,
+            dir.path(),
             IncrementalQueryOptions {
                 inbox_capacity: NonZeroUsize::MIN,
-                max_concurrent_steps: NonZeroUsize::MIN,
                 ..IncrementalQueryOptions::default()
             },
         );
-        let basis = test_tx_key_with_tx_id(1000);
-        let mut query = service
-            .register_prepared_query(single_pattern_plan(), basis, vec![])
+        set_basis(&service, db, 1000).await;
+        let mut query = register(&service, single_pattern_plan()).await;
+        for seq in 1..=1000 {
+            apply_batch(
+                &service,
+                single_batch(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")]),
+            )
             .await
             .unwrap();
-        for seq in 1..=1000 {
-            service
-                .apply_batch(Batch::single(
-                    test_tx_key_with_tx_id(seq),
-                    vec![name_triple(seq, "old")],
-                ))
-                .await
-                .unwrap();
         }
         assert!(query.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(1001);
-        service
-            .apply_batch(Batch::single(tx_key, vec![name_triple(1001, "new")]))
-            .await
-            .unwrap();
+        apply_batch(
+            &service,
+            single_batch(tx_key, vec![name_triple(1001, "new")]),
+        )
+        .await
+        .unwrap();
         assert_eq!(delta(&mut query).await.unwrap().tx_key, tx_key);
         service.shutdown().await.unwrap();
     }
@@ -868,18 +988,17 @@ mod tests {
     #[tokio::test]
     async fn batch_straddling_basis_applies_only_later_transactions() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let mut before = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(0), vec![])
-            .await
-            .unwrap();
-        let mut inside = service
-            .register_prepared_query(single_pattern_plan(), test_tx_key_with_tx_id(2), vec![])
-            .await
-            .unwrap();
+        let slate = crate::slate::in_memory_slate().await;
+        let db = slate.db.clone();
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
+        set_basis(&service, db.clone(), 0).await;
+        let mut before = register(&service, single_pattern_plan()).await;
+        set_basis(&service, db, 2).await;
+        let mut inside = register(&service, single_pattern_plan()).await;
         let tx_key = test_tx_key_with_tx_id(3);
-        service
-            .apply_batch(Batch::new(
+        apply_batch(
+            &service,
+            Batch::new(
                 tx_key,
                 vec![
                     name_triple(1, "Alice"),
@@ -887,9 +1006,10 @@ mod tests {
                     name_triple(3, "Cara"),
                 ],
                 vec![1, 2, 3],
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
 
         let mut whole = delta(&mut before).await.unwrap();
         whole.rows.sort_by_key(|row| format!("{:?}", row));
@@ -917,8 +1037,8 @@ mod tests {
     #[tokio::test]
     async fn dropping_last_service_handle_cleans_up_queries() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
-        let mut query = register(&service, single_pattern_plan(), vec![]).await;
+        let service = service_at(dir.path()).await;
+        let mut query = register(&service, single_pattern_plan()).await;
         drop(service);
         assert!(
             tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())
@@ -932,170 +1052,21 @@ mod tests {
     #[tokio::test]
     async fn abandoned_registration_response_retires_query() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path());
+        let service = service_at(dir.path()).await;
         let (response, result) = oneshot::channel();
         drop(result);
         service
             .commands
             .send(IncrementalCommand::Register {
                 plan: Box::new(single_pattern_plan()),
-                tx_key: test_tx_key_with_tx_id(1),
-                initial_triples: vec![],
                 response,
             })
             .unwrap();
-        service
-            .apply_batch(Batch::single(test_tx_key_with_tx_id(2), vec![]))
+        apply_batch(&service, single_batch(test_tx_key_with_tx_id(2), vec![]))
             .await
             .unwrap();
         service.shutdown().await.unwrap();
         assert!(!dir.path().join("query-1").exists());
-    }
-
-    #[tokio::test]
-    async fn await_cdc_task_returns_inner_loop_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_cdc_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
-        let handle: JoinHandle<Result<()>> = tokio::spawn(async { Err(anyhow!("cdc failed")) });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.await_cdc_task().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC loop failed"));
-        assert!(message.contains("cdc failed"));
-
-        service.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn await_cdc_task_returns_join_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_cdc_join_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
-        let handle: JoinHandle<Result<()>> = tokio::spawn(async {
-            panic!("cdc task panic");
-            #[allow(unreachable_code)]
-            Ok(())
-        });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.await_cdc_task().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC task failed to join"));
-
-        service.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn shutdown_removes_queries_after_cdc_task_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_shutdown_cdc_error".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
-        let _subscription = service
-            .register_prepared_query(
-                single_pattern_plan(),
-                test_tx_key_with_tx_id(1),
-                vec![name_triple(42, "Alice")],
-            )
-            .await
-            .unwrap();
-        let storage_path = dir.path().join("query-1");
-        assert!(path_has_entries(&storage_path));
-
-        let handle: JoinHandle<Result<()>> =
-            tokio::spawn(async { Err(anyhow!("cdc shutdown failed")) });
-        *service.cdc_task.lock().unwrap() = Some(handle);
-
-        let err = service.shutdown().await.unwrap_err();
-        let message = format!("{:#}", err);
-        assert!(message.contains("Incremental query CDC loop failed"));
-        assert!(message.contains("cdc shutdown failed"));
-        assert!(!storage_path.exists());
-    }
-
-    // NOTE(coverage): this exercises the `registration_gate` mutual-exclusion
-    // contract at the service layer only — it feeds `basis`/triples to
-    // `register_prepared_query` directly and never drives the real
-    // indexer -> WAL -> CDC -> register pipeline. The full no-missed-transaction
-    // guarantee for a query registered against a *live* CDC loop also depends on
-    // invariants outside this file: the indexer publishes `latest_indexed_tx`
-    // only after issuing the slatedb write, both under the write lock (the write
-    // is not awaited for durability), and `register_query` reads the basis under
-    // the indexer read lock. Since CDC only ever reads transactions that were
-    // already written, the basis observed under the read lock always covers the
-    // CDC loop's position regardless of when the WAL flush happens. A
-    // regression in that lock ordering would NOT be caught here; it needs a
-    // node-level integration test that registers a second query after CDC has
-    // advanced.
-    #[tokio::test]
-    async fn registration_gate_blocks_cdc_apply_until_query_is_registered() {
-        let dir = tempfile::tempdir().unwrap();
-        let service = IncrementalQueryService::new(
-            dir.path().to_path_buf(),
-            CancellationToken::new(),
-            "/test_incremental_registration_gate".to_string(),
-            Arc::new(InMemory::new()),
-            Duration::from_millis(10),
-        );
-        let query_tx_key = test_tx_key_with_tx_id(1);
-        let apply_tx_key = test_tx_key_with_tx_id(2);
-        let mut first_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
-            .await
-            .unwrap();
-
-        let registration_guard = service.registration_gate.lock().await;
-        let applying_service = service.clone();
-        let apply = tokio::spawn(async move {
-            let _registration_guard = applying_service.registration_gate.lock().await;
-            applying_service
-                .apply_batch(Batch::single(apply_tx_key, vec![name_triple(43, "Bob")]))
-                .await
-        });
-        tokio::task::yield_now().await;
-        assert!(first_subscription.deltas.try_recv().is_err());
-
-        let mut second_subscription = service
-            .register_prepared_query(single_pattern_plan(), query_tx_key, Vec::new())
-            .await
-            .unwrap();
-        assert!(second_subscription.deltas.try_recv().is_err());
-
-        drop(registration_guard);
-        apply.await.unwrap().unwrap();
-
-        assert_eq!(
-            expect_delta(first_subscription.deltas.recv().await.unwrap()),
-            IncrementalQueryDelta {
-                tx_key: apply_tx_key,
-                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
-        );
-        assert_eq!(
-            expect_delta(second_subscription.deltas.recv().await.unwrap()),
-            IncrementalQueryDelta {
-                tx_key: apply_tx_key,
-                rows: vec![(vec![DataType::String("Bob".to_string())], 1)],
-            }
-        );
-
-        service.shutdown().await.unwrap();
     }
 }
 
