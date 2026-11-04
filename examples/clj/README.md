@@ -1,0 +1,58 @@
+# Live stock notebook
+
+This Clerk notebook shows the original low-stock query as sales and refills change its result.
+The example has three products, two warehouses, and six stock records.
+Each product has a reorder threshold.
+
+## Run
+
+Install Java 21 or newer and the Clojure CLI.
+From the repository root, start the default in-memory server:
+
+```bash
+cargo run
+```
+
+In another terminal, start the notebook:
+
+```bash
+cd examples/clj
+clojure -M:run
+```
+
+Open [localhost:7777](http://localhost:7777).
+Sales and refills start automatically, with one transaction every 500 ms.
+Press Ctrl-C to exit Clerk and close the subscription and connection.
+
+The server uses `config/triplox.toml` and listens on port 5490.
+Set `TRIPLOX_HOST` and `TRIPLOX_PORT` to use another server.
+Startup creates the schema and resets the example's six stock records.
+Use an in-memory server for this example.
+
+## What the notebook shows
+
+The notebook describes the query, products, and transactions before the live view.
+The live view contains All Stock followed by Low Stock.
+Low Stock starts with the subscription's initial result.
+The client then adds and removes rows using the received weights.
+It applies each batch in one update.
+It never reruns the low-stock query to refresh this table.
+Clerk sends changes in the client's view to the browser.
+
+A sale transaction creates a `:sale/id` record with a stock reference and quantity.
+The same transaction reduces `:stock/available` by that quantity.
+A refill transaction records the added quantity and increases stock.
+The example uses one writer and reads current stock before each transaction.
+The all-stock table shows quantities from these committed transactions.
+
+For Berlin coffee, the first cycle changes stock from `12` to `10`, `7`, `5`, and back to `12`.
+At `10`, the row stays outside the query result because the comparison is strictly less than `10`.
+At `7`, the subscription adds the row.
+At `5`, it removes the old row and adds the new row.
+The refill removes the row from the result.
+The loop then moves to another stock record and repeats.
+
+Hamburg tea starts below its threshold to show a nonempty initial result.
+Each received batch can combine several transactions.
+
+The notebook uses [Clerk](https://github.com/nextjournal/clerk) and the published Triplox Clojure client.
