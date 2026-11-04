@@ -1,0 +1,7 @@
+{:paths ["src" "notebooks"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.3"}
+        xyz.triplox/triplox {:mvn/version "0.1.0-alpha.8"}
+        io.github.nextjournal/clerk {:mvn/version "0.18.1158"}}
+ :aliases {:run {:main-opts ["-m" "stock-demo"]}
+           :test {:extra-paths ["test"]
+                  :main-opts ["-m" "stock-demo-test"]}}}

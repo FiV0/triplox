@@ -43,6 +43,8 @@ cargo run --bin streaming-example
 See `examples/clojure/src/simple_example.clj` and `streaming_example.clj` for REPL sessions
 showing how to interact with the server.
 
+For a live stock notebook with sales, refills, and incremental query changes, see [examples/clj](clj/README.md).
+
 ### Java
 
 From the `examples/java/` directory:
