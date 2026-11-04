@@ -76,7 +76,7 @@ def benchmark(args, benchmark_args):
         "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
         "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
         "server_sha256": digest,
-        "server_cpu_quota": 1.75, "server_memory_mib": 12288,
+        "server_cpu_quota": None, "server_memory_mib": 12288,
         "client_cpu_quota": 2.0, "client_memory_mib": 2048,
         "combined_memory_mib": 15104,
         "rustfs_cpu_quota": 0.25, "rustfs_memory_mib": 768,
@@ -124,7 +124,7 @@ def benchmark(args, benchmark_args):
                        "AUCTIONMARK_ENVIRONMENT": json.dumps(metadata)}
         with (directory / "server.log").open("w") as log:
             server_command = ["systemd-run", "--user", "--scope", "--quiet",
-                              "-p", "CPUQuota=175%", "-p", "MemoryMax=12G",
+                              "-p", "MemoryMax=12G",
                               "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
                               "nice", "-n", "10", str(binary), str(config)]
             server = subprocess.Popen(server_command, stdout=log, stderr=log,

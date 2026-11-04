@@ -37,9 +37,9 @@ configuration, JSON results, and local database files remain in
 `target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
 The default client timeout is 600 seconds, configurable with `--timeout`.
 
-Triplox runs in its own systemd scope with a 1.75-core CPU quota and **12 GiB hard
-memory limit**. The JVM client has a separate scope with a two-core quota and
-2 GiB memory limit; its heap remains capped at 768 MiB. RustFS has a separate
+Triplox runs in its own systemd scope with a **12 GiB hard memory limit** and no
+CPU quota set by the launcher. The JVM client has a separate scope with a two-core
+quota and 2 GiB memory limit; its heap remains capped at 768 MiB. RustFS has a separate
 0.25-core quota and 768 MiB memory limit. The total memory allowance is 14.75 GiB
 (15,104 MiB), which is also the launcher's combined sampled RSS threshold.
 Swapping is disabled in all three scopes/containers. Bucket creation uses a small
