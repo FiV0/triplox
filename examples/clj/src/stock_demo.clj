@@ -42,7 +42,7 @@
 (def products
   [{:product/sku "COF-01" :product/name "Coffee" :product/reorder-at 10}
    {:product/sku "TEA-02" :product/name "Tea" :product/reorder-at 8}
-   {:product/sku "OAT-03" :product/name "Oat milk" :product/reorder-at 6}])
+   {:product/sku "OAT-03" :product/name "Milk" :product/reorder-at 6}])
 
 (defn seed-data []
   (vec (for [location ["Berlin" "Hamburg"]
@@ -172,7 +172,7 @@
 (defn start!
   ([] (start! {}))
   ([{:keys [host port tick-ms automatic?]
-     :or {host "localhost" port 5490 tick-ms 1500 automatic? true}}]
+     :or {host "localhost" port 5490 tick-ms 500 automatic? true}}]
    (locking lifecycle-lock
      (stop!)
      (let [conn (t/connect host port)]

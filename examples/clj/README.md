@@ -21,11 +21,8 @@ clojure -M:run
 ```
 
 Open [localhost:7777](http://localhost:7777).
-Sales and refills start automatically, with one transaction every 1.5 seconds.
-Select Pause, then Next transaction, to follow one transaction at a time.
-Select Resume to continue the loop.
-Select Stop to close the subscription and connection.
-Press Ctrl-C to exit Clerk and release the same resources.
+Sales and refills start automatically, with one transaction every 500 ms.
+Press Ctrl-C to exit Clerk and close the subscription and connection.
 
 The server uses `config/triplox.toml` and listens on port 5490.
 Set `TRIPLOX_HOST` and `TRIPLOX_PORT` to use another server.
@@ -34,9 +31,11 @@ Use an in-memory server for this example.
 
 ## What the notebook shows
 
-The low-stock table starts with the subscription's initial result.
+The notebook describes the query, products, and transactions before the live view.
+The live view contains All Stock followed by Low Stock.
+Low Stock starts with the subscription's initial result.
 The client then adds and removes rows using the received weights.
-It applies each batch in one update and keeps the latest eight batches visible.
+It applies each batch in one update.
 It never reruns the low-stock query to refresh this table.
 Clerk sends changes in the client's view to the browser.
 
@@ -54,8 +53,7 @@ The refill removes the row from the result.
 The loop then moves to another stock record and repeats.
 
 Hamburg tea starts below its threshold to show a nonempty initial result.
-The change feed shows actual received batches, which can combine several transactions.
-Batch numbers count deliveries to the client, separately from transaction IDs.
+Each received batch can combine several transactions.
 
 ## Test
 

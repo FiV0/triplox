@@ -56,8 +56,7 @@
 (deftest automatic-workload-can-pause-and-stop
   (try
     (demo/start! {:host (or (System/getenv "TRIPLOX_HOST") "localhost")
-                  :port (parse-long (or (System/getenv "TRIPLOX_PORT") "5490"))
-                  :tick-ms 80})
+                  :port (parse-long (or (System/getenv "TRIPLOX_PORT") "5490"))})
     (is (eventually #(>= (count (:events @demo/!state)) 4)))
     (demo/pause!)
     (let [before (:events @demo/!state)]
