@@ -1,8 +1,6 @@
 (ns stock-demo
   (:require [xyz.triplox.api :as t])
-  (:import [java.time LocalTime]
-           [java.time.format DateTimeFormatter]
-           [java.util UUID]))
+  (:import [java.util UUID]))
 
 (def low-stock-query
   '{:find [?stock ?sku ?name ?location ?available ?threshold]
@@ -72,17 +70,10 @@
           weights delta))
 
 (defonce !state
-  (atom {:status :stopped :inventory [] :weights {} :events [] :batches []
-         :batch-count 0}))
+  (atom {:inventory [] :weights {}}))
 
 (defonce ^:private !session (atom nil))
 (defonce ^:private lifecycle-lock (Object.))
-
-(defn- timestamp []
-  (.format (LocalTime/now) (DateTimeFormatter/ofPattern "HH:mm:ss")))
-
-(defn- prepend [items item limit]
-  (vec (take limit (cons item items))))
 
 (defn- receive! [{:keys [sub running]}]
   (while @running
@@ -91,64 +82,32 @@
         (= delta ::t/timeout) nil
         (nil? delta) (when @running
                        (throw (ex-info "The subscription closed." {})))
-        :else (swap! !state
-                     (fn [state]
-                       (let [number (inc (:batch-count state))
-                             batch {:number number :time (timestamp) :rows delta}]
-                         (-> state
-                             (assoc :batch-count number)
-                             (update :weights apply-delta delta)
-                             (update :batches prepend batch 8)))))))))
+        :else (swap! !state update :weights apply-delta delta)))))
 
 (defn- advance! [{:keys [conn step write-lock running]}]
   (locking write-lock
     (when @running
       (let [inventory (read-inventory conn)
             n @step
-            [stock sku product location available threshold]
+            [stock _ _ _ available threshold]
             (nth inventory (mod (quot n 4) (count inventory)))
             refill? (= 3 (mod n 4))
             quantity (if refill?
                        (- (+ threshold 2) available)
                        (min available (nth [2 3 2] (mod n 4))))
             next-stock ((if refill? + -) available quantity)
-            kind (if refill? :refill :sale)
             record (if refill?
                      {:refill/id (str (UUID/randomUUID))
                       :refill/stock stock :refill/quantity quantity}
                      {:sale/id (str (UUID/randomUUID))
-                      :sale/stock stock :sale/quantity quantity})
-            result (transact! conn
-                              [record [:db/add stock :stock/available next-stock]])
-            event {:tx-id (:tx-id result) :time (timestamp) :kind kind
-                   :sku sku :product product :location location
-                   :quantity quantity :before available :after next-stock}]
+                      :sale/stock stock :sale/quantity quantity})]
+        (transact! conn [record [:db/add stock :stock/available next-stock]])
         (swap! step inc)
-        (swap! !state
-               (fn [state]
-                 (-> state
-                     (assoc :inventory
-                            (mapv (fn [row]
-                                    (if (= stock (first row))
-                                      (assoc row 4 next-stock)
-                                      row)) inventory))
-                     (update :events prepend event 10))))
-        event))))
-
-(defn step! []
-  (when-let [session @!session]
-    (advance! session)))
-
-(defn pause! []
-  (when-let [{:keys [paused write-lock]} @!session]
-    (locking write-lock
-      (reset! paused true)
-      (swap! !state assoc :status :paused))))
-
-(defn resume! []
-  (when-let [{:keys [paused]} @!session]
-    (reset! paused false)
-    (swap! !state assoc :status :running)))
+        (swap! !state assoc :inventory
+               (mapv (fn [row]
+                       (if (= stock (first row))
+                         (assoc row 4 next-stock)
+                         row)) inventory))))))
 
 (defn stop! []
   (locking lifecycle-lock
@@ -159,20 +118,19 @@
         (.close sub)
         (.close conn))
       (future-cancel reader)
-      (reset! !session nil))
-    (swap! !state assoc :status :stopped)))
+      (reset! !session nil))))
 
 (defn- fail! [session error]
   (when (compare-and-set! (:running session) true false)
     (locking (:write-lock session)
       (.close (:sub session))
       (.close (:conn session)))
-    (swap! !state assoc :status :error :error (.getMessage error))))
+    (.printStackTrace error)))
 
 (defn start!
   ([] (start! {}))
-  ([{:keys [host port tick-ms automatic?]
-     :or {host "localhost" port 5490 tick-ms 500 automatic? true}}]
+  ([{:keys [host port tick-ms]
+     :or {host "localhost" port 5490 tick-ms 500}}]
    (locking lifecycle-lock
      (stop!)
      (let [conn (t/connect host port)]
@@ -184,10 +142,8 @@
          (let [inventory (read-inventory conn)
                sub (t/subscribe conn low-stock-query)
                session {:conn conn :sub sub :step (atom 0) :write-lock (Object.)
-                        :running (atom true) :paused (atom (not automatic?))}]
-           (reset! !state {:status (if automatic? :running :paused)
-                           :inventory inventory :weights {} :events [] :batches []
-                           :batch-count 0})
+                        :running (atom true)}]
+           (reset! !state {:inventory inventory :weights {}})
            (reset! !session
                    (assoc session
                           :reader (future
@@ -197,9 +153,7 @@
                                     (try
                                       (while @(:running session)
                                         (Thread/sleep tick-ms)
-                                        (locking (:write-lock session)
-                                          (when-not @(:paused session)
-                                            (advance! session))))
+                                        (advance! session))
                                       (catch Exception error (fail! session error))))))
            :started)
          (catch Exception error
@@ -218,4 +172,7 @@
       (show! "notebooks/stock.clj")
       (println "Open http://localhost:7777 to watch stock changes. Press Ctrl-C to stop.")
       @(promise)
-      (finally (stop!) (halt!) (shutdown-agents)))))
+      (finally
+        (stop!)
+        (halt!)
+        (shutdown-agents)))))

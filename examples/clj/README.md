@@ -55,16 +55,4 @@ The loop then moves to another stock record and repeats.
 Hamburg tea starts below its threshold to show a nonempty initial result.
 Each received batch can combine several transactions.
 
-## Test
-
-Keep the example server running and stop the notebook before the test.
-From `examples/clj`, run:
-
-```bash
-clojure -M:test
-```
-
-The test compares the subscribed view with the standard query after sales and a refill.
-It also reads stored sale records and checks their quantities.
-
 The notebook uses [Clerk](https://github.com/nextjournal/clerk) and the published Triplox Clojure client.
