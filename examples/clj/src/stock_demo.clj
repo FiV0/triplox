@@ -73,7 +73,6 @@
   (atom {:inventory [] :weights {}}))
 
 (defonce ^:private !session (atom nil))
-(defonce ^:private lifecycle-lock (Object.))
 
 (defn- receive! [{:keys [sub running]}]
   (while @running
@@ -110,15 +109,14 @@
                          row)) inventory))))))
 
 (defn stop! []
-  (locking lifecycle-lock
-    (when-let [{:keys [conn sub running write-lock writer reader]} @!session]
-      (reset! running false)
-      (future-cancel writer)
-      (locking write-lock
-        (.close sub)
-        (.close conn))
-      (future-cancel reader)
-      (reset! !session nil))))
+  (when-let [{:keys [conn sub running write-lock writer reader]}
+             (first (reset-vals! !session nil))]
+    (reset! running false)
+    (future-cancel writer)
+    (locking write-lock
+      (.close sub)
+      (.close conn))
+    (future-cancel reader)))
 
 (defn- fail! [session error]
   (when (compare-and-set! (:running session) true false)
@@ -131,43 +129,43 @@
   ([] (start! {}))
   ([{:keys [host port tick-ms]
      :or {host "localhost" port 5490 tick-ms 500}}]
-   (locking lifecycle-lock
-     (stop!)
-     (let [conn (t/connect host port)]
-       (try
-         (transact! conn schema)
-         (transact! conn (concat products [{:warehouse/name "Berlin"}
-                                           {:warehouse/name "Hamburg"}]))
-         (transact! conn (seed-data))
-         (let [inventory (read-inventory conn)
-               sub (t/subscribe conn low-stock-query)
-               session {:conn conn :sub sub :step (atom 0) :write-lock (Object.)
-                        :running (atom true)}]
-           (reset! !state {:inventory inventory :weights {}})
-           (reset! !session
-                   (assoc session
-                          :reader (future
-                                    (try (receive! session)
-                                         (catch Exception error (fail! session error))))
-                          :writer (future
-                                    (try
-                                      (while @(:running session)
-                                        (Thread/sleep tick-ms)
-                                        (advance! session))
-                                      (catch Exception error (fail! session error))))))
-           :started)
-         (catch Exception error
-           (.close conn)
-           (throw error)))))))
+   (when @!session
+     (throw (ex-info "The stock demo is already running." {})))
+   (let [conn (t/connect host port)]
+     (try
+       (transact! conn schema)
+       (transact! conn (concat products [{:warehouse/name "Berlin"}
+                                         {:warehouse/name "Hamburg"}]))
+       (transact! conn (seed-data))
+       (let [inventory (read-inventory conn)
+             sub (t/subscribe conn low-stock-query)
+             session {:conn conn :sub sub :step (atom 0) :write-lock (Object.)
+                      :running (atom true)}]
+         (reset! !state {:inventory inventory :weights {}})
+         (reset! !session
+                 (assoc session
+                        :reader (future
+                                  (try (receive! session)
+                                       (catch Exception error (fail! session error))))
+                        :writer (future
+                                  (try
+                                    (while @(:running session)
+                                      (Thread/sleep tick-ms)
+                                      (advance! session))
+                                    (catch Exception error (fail! session error))))))
+         :started)
+       (catch Exception error
+         (.close conn)
+         (throw error))))))
 
 (defn -main [& _]
   (let [serve! (requiring-resolve 'nextjournal.clerk/serve!)
         show! (requiring-resolve 'nextjournal.clerk/show!)
         halt! (requiring-resolve 'nextjournal.clerk/halt!)]
-    (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable stop!))
     (try
       (start! {:host (or (System/getenv "TRIPLOX_HOST") "localhost")
                :port (parse-long (or (System/getenv "TRIPLOX_PORT") "5490"))})
+      (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable stop!))
       (serve! {:host "localhost" :port 7777})
       (show! "notebooks/stock.clj")
       (println "Open http://localhost:7777 to watch stock changes. Press Ctrl-C to stop.")
