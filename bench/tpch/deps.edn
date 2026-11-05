@@ -1,0 +1,8 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        xyz.triplox/triplox {:mvn/version "0.1.0-alpha.5"}
+        io.airlift.tpch/tpch {:mvn/version "0.10"}}
+ :aliases {:run {:main-opts ["-m" "tpch.main"]}
+           :ingest {:main-opts ["-m" "tpch.ingest"]}
+           ;; JVM client published from this checkout by scripts/run-ingest.sh
+           :local {:override-deps {xyz.triplox/triplox {:mvn/version "0.1.0-local-SNAPSHOT"}}}}}
