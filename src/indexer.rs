@@ -124,22 +124,6 @@ pub(crate) fn write_index_entries(
             key_buf.push(op_byte);
             batch.put(&key_buf, b"");
         }
-
-        // AE and AV are atemporal, purely additive indices.
-        // Retractions are not written to AE/AV.
-        if datom.op == DatomOp::Assert {
-            key_buf.clear();
-            key_buf.push(codec::AE);
-            key_buf.extend_from_slice(&attr_bytes);
-            key_buf.extend_from_slice(entity_bytes);
-            batch.put(&key_buf, b"");
-
-            key_buf.clear();
-            key_buf.push(codec::AV);
-            key_buf.extend_from_slice(&attr_bytes);
-            key_buf.extend_from_slice(value);
-            batch.put(&key_buf, b"");
-        }
     }
 
     Ok(())
@@ -712,21 +696,6 @@ fn strip_temporal_key<'a>(
     Ok((data, tx_eid, op))
 }
 
-/// Strip an atemporal index key, returning data bytes after the prefix.
-fn strip_atemporal_key<'a>(
-    key: &'a [u8],
-    expected_prefix: u8,
-    name: &str,
-) -> Result<&'a [u8], Error> {
-    if key.first() != Some(&expected_prefix) {
-        return Err(anyhow::anyhow!("Not a {} key", name));
-    }
-    if key.len() < 2 {
-        return Err(anyhow::anyhow!("Key too short"));
-    }
-    Ok(&key[1..])
-}
-
 pub fn eav_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8), Error> {
     let (data, tx_eid, op) = strip_temporal_key(key.as_ref(), codec::EAV, "EAV")?;
     let mut cursor = data;
@@ -761,22 +730,6 @@ pub fn vae_key_to_parts(key: Bytes) -> Result<(DataType, i64, DataType, i64, u8)
     let attribute = decode_i64(&mut cursor)?;
     let entity_id = decode_datatype(&mut cursor)?;
     Ok((value, attribute, entity_id, tx_eid, op))
-}
-
-pub fn ae_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
-    let data = strip_atemporal_key(key.as_ref(), codec::AE, "AE")?;
-    let mut cursor = data;
-    let attribute = decode_i64(&mut cursor)?;
-    let entity_id = decode_datatype(&mut cursor)?;
-    Ok((attribute, entity_id))
-}
-
-pub fn av_key_to_parts(key: Bytes) -> Result<(i64, DataType), Error> {
-    let data = strip_atemporal_key(key.as_ref(), codec::AV, "AV")?;
-    let mut cursor = data;
-    let attribute = decode_i64(&mut cursor)?;
-    let value = decode_datatype(&mut cursor)?;
-    Ok((attribute, value))
 }
 
 #[cfg(test)]
@@ -863,6 +816,73 @@ mod tests {
             }
         }
         Ok((add_count, retract_count))
+    }
+
+    #[tokio::test]
+    async fn writes_only_full_indexes_for_assertions_and_retractions() -> Result<()> {
+        let components = in_memory_slate().await;
+        let indexer = bootstrapped_indexer(&components).await;
+        let schema = &indexer.metadata().schema;
+        let target = in_memory_slate().await;
+        let mut batch = WriteBatch::new();
+        for (op, tx) in [(DatomOp::Assert, 10), (DatomOp::Retract, 20)] {
+            let datoms = [kw!(:name), kw!(:email)].map(|attribute| Datom {
+                entity: 1,
+                attribute,
+                value: "alice".into(),
+                op,
+            });
+            write_index_entries(&mut batch, &datoms, schema, tx)?;
+        }
+        target
+            .db
+            .write_with_options(batch, &DEFAULT_WRITE_OPTIONS)
+            .await?;
+        let mut iterator = target
+            .db
+            .scan_prefix_with_options(&[], .., &DEFAULT_SCAN_OPTIONS)
+            .await?;
+        let mut counts = BTreeMap::new();
+        while let Some(kv) = iterator.next().await? {
+            let index = kv.key[0];
+            *counts.entry(index).or_insert(0) += 1;
+            let (entity, attribute, value, tx, op) = match index {
+                codec::EAV => eav_key_to_parts(kv.key)?,
+                codec::AEV => {
+                    let (a, e, v, t, op) = aev_key_to_parts(kv.key)?;
+                    (e, a, v, t, op)
+                }
+                codec::AVE => {
+                    let (a, v, e, t, op) = ave_key_to_parts(kv.key)?;
+                    (e, a, v, t, op)
+                }
+                codec::VAE => {
+                    let (v, a, e, t, op) = vae_key_to_parts(kv.key)?;
+                    assert_eq!(a, schema.get_attribute(&kw!(:email)).unwrap().0);
+                    (e, a, v, t, op)
+                }
+                _ => panic!("Unexpected index prefix {index}"),
+            };
+            assert_eq!(entity, DataType::Long(1));
+            assert!([kw!(:name), kw!(:email)].iter().any(|ident| schema
+                .get_attribute(ident)
+                .unwrap()
+                .0
+                == attribute));
+            assert_eq!(value, "alice".into());
+            assert!(matches!((tx, op), (10, codec::ADD) | (20, codec::RETRACT)));
+            assert!(kv.value.is_empty());
+        }
+        assert_eq!(
+            counts,
+            BTreeMap::from([
+                (codec::EAV, 4),
+                (codec::AVE, 4),
+                (codec::AEV, 4),
+                (codec::VAE, 2)
+            ])
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1493,13 +1513,6 @@ mod tests {
         assert!(alice_add, "Expected ADD for alice");
         assert!(alice_retract, "Expected RETRACT for alice");
         assert!(bob_add, "Expected ADD for bob");
-
-        // Verify AE entry exists
-        let attr_bytes = encode_i64_bytes(name_id);
-        let entity_bytes = DataType::Long(entity_id).encode();
-        let ae_key = concat_bytes(&[&[codec::AE], &attr_bytes, &entity_bytes]);
-        let ae_val = slate.get(&ae_key).await?.expect("AE entry should exist");
-        assert!(ae_val.is_empty(), "AE should store empty bytes");
 
         Ok(())
     }
