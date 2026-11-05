@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+exec > >(tee /var/log/triplox-userdata.log) 2>&1
+
+# --- Base packages: Docker + ufw (+ xfsprogs for the cache volume) ---
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y docker.io ufw xfsprogs
+systemctl enable --now docker
+
+CACHE_PATH="${cache_path}"
+
+# --- Host firewall (the authoritative inbound control on OVH) ---
+# The Triplox wire protocol is unauthenticated, so the port must be locked to
+# admin_cidr. Security groups are unreliable on OVH's public network and Docker
+# port mapping bypasses them, so Triplox runs with --network host and ufw is the
+# real gate. Inter-node traffic (the load generator) flows over the private subnet.
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow from ${private_cidr}
+ufw allow from ${admin_cidr} to any port 22 proto tcp
+ufw allow from ${admin_cidr} to any port ${triplox_port} proto tcp
+ufw --force enable
+
+# --- Mount fast storage at $CACHE_PATH ---
+%{ if disk_mode == "volume" ~}
+# Dedicated Block Storage volume: the first non-root disk with no filesystem.
+ROOT_SRC="$(findmnt -no SOURCE /)"
+ROOT_DISK="/dev/$(lsblk -no PKNAME "$ROOT_SRC" | head -1)"
+DISK=""
+for d in $(lsblk -dno NAME -e 7); do
+  dev="/dev/$d"
+  [ "$dev" = "$ROOT_DISK" ] && continue
+  if [ -z "$(lsblk -no MOUNTPOINT "$dev" | tr -d '[:space:]')" ]; then
+    DISK="$dev"
+    break
+  fi
+done
+for i in $(seq 1 30); do [ -n "$DISK" ] && [ -b "$DISK" ] && break; sleep 2; done
+if [ -n "$DISK" ]; then
+  if ! blkid "$DISK" >/dev/null 2>&1; then mkfs.xfs -f "$DISK"; fi
+  mkdir -p "$CACHE_PATH"
+  mount "$DISK" "$CACHE_PATH"
+  echo "UUID=$(blkid -o value -s UUID "$DISK") $CACHE_PATH xfs defaults,nofail 0 2" >> /etc/fstab
+else
+  echo "WARN: no dedicated cache volume found; using root disk for cache"
+  mkdir -p "$CACHE_PATH"
+fi
+%{ else ~}
+# Local-disk mode: cache lives on the flavor's local disk (use an i1-* flavor).
+mkdir -p "$CACHE_PATH"
+%{ endif ~}
+mkdir -p "$CACHE_PATH/cache" "$CACHE_PATH/dbsp"
+# Container runs as uid 20000 (the image's triplox user).
+chown -R 20000:20000 "$CACHE_PATH"
+
+# --- Render the Triplox config (only the fields config.rs accepts) ---
+mkdir -p /etc/triplox
+cat > /etc/triplox/triplox.toml <<EOF
+[storage]
+type = "remote"
+endpoint = "${s3_endpoint}"
+bucket = "${triplox_bucket}"
+access_key = "${s3_access_key}"
+secret_key = "${s3_secret_key}"
+region = "${s3_region}"
+cache_path = "${cache_path}"
+
+[log]
+type = "kafka"
+bootstrap_servers = "${automq_private_ip}:9092"
+topic = "${kafka_topic}"
+
+[server]
+host = "0.0.0.0"
+port = ${triplox_port}
+EOF
+chown 20000:20000 /etc/triplox/triplox.toml
+chmod 600 /etc/triplox/triplox.toml
+
+# --- Pull + run Triplox (public GHCR image, no login). --network host so ufw
+#     governs the port. Restart loops until AutoMQ + the topic are ready. ---
+docker pull '${triplox_image}'
+docker run -d --name triplox --restart unless-stopped \
+  --network host \
+  -v /etc/triplox/triplox.toml:/etc/triplox/triplox.toml:ro \
+  -v "$CACHE_PATH":"$CACHE_PATH" \
+  '${triplox_image}' /etc/triplox/triplox.toml
+
+echo "Triplox provisioning complete."
