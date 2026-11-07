@@ -102,55 +102,46 @@
 
 (defonce ^:private !session (atom nil))
 
-(defn- receive! [{:keys [sub running]}]
-  (while @running
-    (let [delta (t/take! sub 200)]
-      (cond
-        (= delta ::t/timeout) nil
-        (nil? delta) (when @running
-                       (throw (ex-info "The subscription closed." {})))
-        :else (swap! !state update :weights apply-delta delta)))))
+(defn- receive! [{:keys [sub]}]
+  (while true
+    (if-let [delta (t/take! sub)]
+      (swap! !state update :weights apply-delta delta)
+      (throw (ex-info "The subscription closed." {})))))
 
-(defn- advance! [{:keys [conn step write-lock running]}]
-  (locking write-lock
-    (when @running
-      (let [inventory (read-inventory conn)
-            n @step
-            [stock _ _ _ available threshold]
-            (nth inventory (mod (quot n 4) (count inventory)))
-            refill? (= 3 (mod n 4))
-            quantity (if refill?
-                       (- (+ threshold 2) available)
-                       (min available (nth [2 3 2] (mod n 4))))
-            next-stock ((if refill? + -) available quantity)
-            record (if refill?
-                     {:refill/id (str (UUID/randomUUID))
-                      :refill/stock stock :refill/quantity quantity}
-                     {:sale/id (str (UUID/randomUUID))
-                      :sale/stock stock :sale/quantity quantity})]
-        (transact! conn [record [:db/add stock :stock/available next-stock]])
-        (swap! step inc)
-        (swap! !state assoc :inventory
-               (mapv (fn [row]
-                       (if (= stock (first row))
-                         (assoc row 4 next-stock)
-                         row)) inventory))))))
+(defn- advance! [{:keys [conn step]}]
+  (let [inventory (read-inventory conn)
+        n @step
+        [stock _ _ _ available threshold]
+        (nth inventory (mod (quot n 4) (count inventory)))
+        refill? (= 3 (mod n 4))
+        quantity (if refill?
+                   (- (+ threshold 2) available)
+                   (min available (nth [2 3 2] (mod n 4))))
+        next-stock ((if refill? + -) available quantity)
+        record (if refill?
+                 {:refill/id (str (UUID/randomUUID))
+                  :refill/stock stock :refill/quantity quantity}
+                 {:sale/id (str (UUID/randomUUID))
+                  :sale/stock stock :sale/quantity quantity})]
+    (transact! conn [record [:db/add stock :stock/available next-stock]])
+    (swap! step inc)
+    (swap! !state assoc :inventory
+           (mapv (fn [row]
+                   (if (= stock (first row))
+                     (assoc row 4 next-stock)
+                     row)) inventory))))
 
 (defn stop! []
-  (when-let [{:keys [conn sub running write-lock writer reader]}
-             (first (reset-vals! !session nil))]
-    (reset! running false)
+  (when-let [{:keys [conn sub writer reader]} (first (reset-vals! !session nil))]
     (future-cancel writer)
-    (locking write-lock
-      (.close sub)
-      (.close conn))
-    (future-cancel reader)))
+    (future-cancel reader)
+    (.close sub)
+    (.close conn)
+    :stopped))
 
-(defn- fail! [session error]
-  (when (compare-and-set! (:running session) true false)
-    (locking (:write-lock session)
-      (.close (:sub session))
-      (.close (:conn session)))
+;; Errors raised after stop! has run are shutdown noise, so only the first failure is printed.
+(defn- fail! [error]
+  (when (stop!)
     (.printStackTrace error)))
 
 (defn start!
@@ -167,20 +158,19 @@
        (transact! conn (seed-data))
        (let [inventory (read-inventory conn)
              sub (t/subscribe conn low-stock-query)
-             session {:conn conn :sub sub :step (atom 0) :write-lock (Object.)
-                      :running (atom true)}]
+             session {:conn conn :sub sub :step (atom 0)}]
          (reset! !state {:inventory inventory :weights {}})
          (reset! !session
                  (assoc session
                         :reader (future
                                   (try (receive! session)
-                                       (catch Exception error (fail! session error))))
+                                       (catch Exception error (fail! error))))
                         :writer (future
                                   (try
-                                    (while @(:running session)
+                                    (while true
                                       (Thread/sleep tick-ms)
                                       (advance! session))
-                                    (catch Exception error (fail! session error))))))
+                                    (catch Exception error (fail! error))))))
          :started)
        (catch Exception error
          (.close conn)
