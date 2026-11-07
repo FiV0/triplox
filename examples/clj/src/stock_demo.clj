@@ -17,25 +17,53 @@
   (update low-stock-query :where pop))
 
 (def schema
-  (mapv (fn [[ident value-type unique?]]
-          (cond-> {:db/ident ident
-                   :db/valueType value-type
-                   :db/cardinality :db.cardinality/one}
-            unique? (assoc :db/unique :db.unique/identity)))
-        [[:product/sku :db.type/string true]
-         [:product/name :db.type/string]
-         [:product/reorder-at :db.type/long]
-         [:warehouse/name :db.type/string true]
-         [:stock/id :db.type/string true]
-         [:stock/product :db.type/ref]
-         [:stock/warehouse :db.type/ref]
-         [:stock/available :db.type/long]
-         [:sale/id :db.type/string true]
-         [:sale/stock :db.type/ref]
-         [:sale/quantity :db.type/long]
-         [:refill/id :db.type/string true]
-         [:refill/stock :db.type/ref]
-         [:refill/quantity :db.type/long]]))
+  [{:db/ident :product/sku
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :product/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :product/reorder-at
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :warehouse/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :stock/id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :stock/product
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :stock/warehouse
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :stock/available
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :sale/id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :sale/stock
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :sale/quantity
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :refill/id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :refill/stock
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :refill/quantity
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}])
 
 (def products
   [{:product/sku "COF-01" :product/name "Coffee" :product/reorder-at 10}
