@@ -9,10 +9,9 @@ use anyhow::{anyhow, Result};
 use dbsp::circuit::{
     CircuitConfig, CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions,
 };
-use dbsp::{
-    typed_batch::IndexedZSetReader, utils::Tup2, DBSPHandle, OrdZSet, OutputHandle, RootCircuit,
-    Runtime, Stream, ZSetHandle, ZWeight,
-};
+use dbsp::{DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight};
+use dbsp::utils::Tup2;
+use dbsp::typed_batch::{IndexedZSetReader, SpineSnapshot};
 use edn::query::Variable;
 
 pub(super) use aggregates::AggregateError;
@@ -510,7 +509,7 @@ fn storage_circuit_config(storage_path: &Path) -> Result<CircuitConfig> {
 pub(super) struct QueryCircuit {
     handle: DBSPHandle,
     input: ZSetHandle<EncodedTriple>,
-    output: OutputHandle<dbsp::typed_batch::SpineSnapshot<OutputZSet>>,
+    output: OutputHandle<SpineSnapshot<OutputZSet>>,
     attribute_ids: Vec<i64>,
 }
 
