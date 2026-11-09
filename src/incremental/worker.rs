@@ -2,7 +2,6 @@ use std::future::Future;
 use std::io::ErrorKind;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
@@ -119,37 +118,42 @@ impl Circuit for SnapshotCircuit {
     }
 }
 
+enum Terminal {
+    Open(oneshot::Sender<Termination>),
+    // The query stopped because its inbox overflowed, and the subscription got the lag error.
+    Lagged,
+    Closed,
+}
+
 pub(super) struct Control {
     pub stop: CancellationToken,
-    terminal: Mutex<Option<oneshot::Sender<Termination>>>,
-    lagged: AtomicBool,
+    terminal: Mutex<Terminal>,
 }
 
 impl Control {
     pub fn new(stop: CancellationToken, terminal: oneshot::Sender<Termination>) -> Self {
         Self {
             stop,
-            terminal: Mutex::new(Some(terminal)),
-            lagged: AtomicBool::new(false),
+            terminal: Mutex::new(Terminal::Open(terminal)),
         }
     }
 
     pub fn terminate(&self, reason: Option<Termination>) {
         let mut terminal = self.terminal.lock().unwrap();
         self.stop.cancel();
-        if let Some(sender) = terminal.take() {
+        if let Terminal::Open(sender) = std::mem::replace(&mut *terminal, Terminal::Closed) {
             if let Some(reason) = reason {
                 let lagged = matches!(reason, Termination::Lagged(_));
                 if sender.send(reason).is_ok() && lagged {
-                    self.lagged.store(true, Ordering::Release);
+                    *terminal = Terminal::Lagged;
                 }
             }
         }
     }
 
-    // The query stopped because its inbox overflowed, and the subscription got the lag error.
+    // Holding the lock waits for a concurrent terminate, which cancels before it records the lag.
     pub fn lagged(&self) -> bool {
-        self.lagged.load(Ordering::Acquire)
+        matches!(*self.terminal.lock().unwrap(), Terminal::Lagged)
     }
 }
 
