@@ -118,46 +118,27 @@ impl Circuit for SnapshotCircuit {
     }
 }
 
-enum Terminal {
-    Open(oneshot::Sender<Termination>),
-    // The query stopped because its inbox overflowed, and the subscription got the lag error.
-    Lagged,
-    Closed,
+// Stops a query once and sends the first stop reason to its subscription.
+pub(super) struct StopSignal {
+    pub token: CancellationToken,
+    terminal: Mutex<Option<oneshot::Sender<Termination>>>,
 }
 
-pub(super) struct Control {
-    pub stop: CancellationToken,
-    terminal: Mutex<Terminal>,
-}
-
-impl Control {
-    pub fn new(stop: CancellationToken, terminal: oneshot::Sender<Termination>) -> Self {
+impl StopSignal {
+    pub fn new(token: CancellationToken, terminal: oneshot::Sender<Termination>) -> Self {
         Self {
-            stop,
-            terminal: Mutex::new(Terminal::Open(terminal)),
+            token,
+            terminal: Mutex::new(Some(terminal)),
         }
     }
 
+    // Sends the reason before it cancels, so a worker that sees the stop can read the reason.
     pub fn terminate(&self, reason: Option<Termination>) {
         let mut terminal = self.terminal.lock().unwrap();
-        self.stop.cancel();
-        match std::mem::replace(&mut *terminal, Terminal::Closed) {
-            Terminal::Open(sender) => {
-                if let Some(reason) = reason {
-                    let lagged = matches!(reason, Termination::Lagged(_));
-                    if sender.send(reason).is_ok() && lagged {
-                        *terminal = Terminal::Lagged;
-                    }
-                }
-            }
-            // Only the first terminate sets the state, so a later stop keeps a recorded lag.
-            state => *terminal = state,
+        if let (Some(sender), Some(reason)) = (terminal.take(), reason) {
+            let _ = sender.send(reason);
         }
-    }
-
-    // Holding the lock waits for a concurrent terminate, which cancels before it records the lag.
-    pub fn lagged(&self) -> bool {
-        matches!(*self.terminal.lock().unwrap(), Terminal::Lagged)
+        self.token.cancel();
     }
 }
 
@@ -173,7 +154,7 @@ pub(super) struct Worker<C> {
     pub storage_path: PathBuf,
     pub inbox: mpsc::Receiver<Arc<Batch>>,
     pub sender: mpsc::Sender<IncrementalQueryDelta>,
-    pub control: Arc<Control>,
+    pub stop: Arc<StopSignal>,
 }
 
 impl<C: Circuit> Worker<C> {
@@ -187,7 +168,7 @@ impl<C: Circuit> Worker<C> {
             storage_path,
             mut inbox,
             sender,
-            control,
+            stop,
         } = self;
         let mut circuit = None;
         let basis = subscription.tx_key;
@@ -198,11 +179,11 @@ impl<C: Circuit> Worker<C> {
                 .await
                 .context("Incremental query build task panicked")??;
             let circuit = circuit.insert(built);
-            if control.stop.is_cancelled() {
+            if stop.token.is_cancelled() {
                 return Ok(());
             }
             let rows = circuit.prime(basis).await?;
-            if control.stop.is_cancelled() {
+            if stop.token.is_cancelled() {
                 return Ok(());
             }
             if !rows.is_empty() {
@@ -220,7 +201,7 @@ impl<C: Circuit> Worker<C> {
             loop {
                 let batch = tokio::select! {
                     biased;
-                    _ = control.stop.cancelled() => break,
+                    _ = stop.token.cancelled() => break,
                     _ = sender.closed() => break,
                     batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
                 };
@@ -229,7 +210,7 @@ impl<C: Circuit> Worker<C> {
                 }
                 // A started step always finishes; stopping takes effect between steps.
                 let rows = circuit.apply(&batch).await?;
-                if control.stop.is_cancelled() {
+                if stop.token.is_cancelled() {
                     break;
                 }
                 if rows.is_empty() {
@@ -237,7 +218,7 @@ impl<C: Circuit> Worker<C> {
                 }
                 tokio::select! {
                     biased;
-                    _ = control.stop.cancelled() => break,
+                    _ = stop.token.cancelled() => break,
                     result = sender.send(IncrementalQueryDelta { tx_key: batch.tx_key, rows }) => {
                         if result.is_err() { break; }
                     }
@@ -251,20 +232,20 @@ impl<C: Circuit> Worker<C> {
             Err(_) => Some(anyhow!("Incremental query worker panicked")),
         };
         // The registration is still open if the worker stopped before priming finished.
-        let answer = match (registration, error) {
-            (Some((_, response)), Some(error)) => Some((response, Err(error))),
-            // The first item of a lagged subscription is the lag error.
-            (Some((subscription, response)), None) if control.lagged() => {
-                Some((response, Ok(subscription)))
-            }
-            // Other stops close the response channel, so the registration fails.
-            (Some(_), None) => None,
+        let failure = match (registration, error) {
+            (Some((_, response)), Some(error)) => Some((response, error)),
+            // A lag fails the registration with the lag error, which waits in the subscription.
+            (Some((mut subscription, response)), None) => match subscription.deltas.try_recv() {
+                Ok(Err(lag)) => Some((response, lag)),
+                // Other stops close the response channel, so the registration fails.
+                _ => None,
+            },
             (None, error) => {
-                control.terminate(error.map(Termination::Failed));
+                stop.terminate(error.map(Termination::Failed));
                 None
             }
         };
-        control.terminate(None);
+        stop.terminate(None);
         drop(inbox);
         drop(sender);
         // Circuit destruction waits on the pool, so it runs on a blocking thread before storage removal.
@@ -285,8 +266,8 @@ impl<C: Circuit> Worker<C> {
         .context("Incremental query cleanup task panicked")
         .and_then(|cleanup| cleanup);
         // A registration that did not get its subscription returns only after the storage is gone.
-        if let Some((response, answer)) = answer {
-            let _ = response.send(answer);
+        if let Some((response, error)) = failure {
+            let _ = response.send(Err(error));
         }
         cleanup
     }

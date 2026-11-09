@@ -192,7 +192,7 @@ impl Fixture {
 
     async fn finish(mut self) {
         for query in self.inner.queries.values() {
-            query.control.terminate(None);
+            query.stop.terminate(None);
         }
         while !self.inner.queries.is_empty() {
             self.retire().await;
@@ -356,8 +356,8 @@ async fn full_output_can_resume_without_termination() {
         );
     }
     assert!(!fixture.inner.queries[&query.handle]
-        .control
         .stop
+        .token
         .is_cancelled());
     fixture.finish().await;
 }
@@ -399,7 +399,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     fixture.apply(1);
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
-    let control = fixture.inner.queries[&query.handle].control.clone();
+    let stop = fixture.inner.queries[&query.handle].stop.clone();
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let (commands, command_receiver) = mpsc::unbounded_channel();
     let (batches, batch_receiver) = mpsc::unbounded_channel();
@@ -411,7 +411,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
             response,
         })
         .unwrap();
-    control.stop.cancelled().await;
+    stop.token.cancelled().await;
     assert!(matches!(
         result.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
@@ -453,7 +453,7 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     let (mut query, mut steps) = fixture.query(Some(gate), false).await;
     fixture.apply(1);
     started(&mut steps).await;
-    let control = fixture.inner.queries[&query.handle].control.clone();
+    let stop = fixture.inner.queries[&query.handle].stop.clone();
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let (commands, command_receiver) = mpsc::unbounded_channel();
     let (_batches, batch_receiver) = mpsc::unbounded_channel();
@@ -462,7 +462,7 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     commands
         .send(IncrementalCommand::Shutdown { response })
         .unwrap();
-    control.stop.cancelled().await;
+    stop.token.cancelled().await;
     assert!(matches!(
         result.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
@@ -486,7 +486,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     started(&mut steps).await;
     next(&mut healthy).await.unwrap();
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let control = fixture.inner.queries[&query.handle].control.clone();
+    let stop = fixture.inner.queries[&query.handle].stop.clone();
     let (service, batches, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.unregister(query.handle))
@@ -495,7 +495,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
         .unwrap_err();
     assert!(matches!(error.downcast_ref::<RetirementTimeout>(),
         Some(RetirementTimeout::Unregister { handle, .. }) if *handle == query.handle));
-    assert!(control.stop.is_cancelled());
+    assert!(stop.token.is_cancelled());
     assert!(storage_path.exists());
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
@@ -786,7 +786,7 @@ async fn batches_routed_during_build_follow_the_priming_delta() {
     let (release, registration, _) = fixture.gated_build(vec![(vec![DataType::Long(0)], 1)]);
     let first = fixture.apply(1);
     let second = fixture.apply(2);
-    assert!(!fixture.inner.queries[&1].control.stop.is_cancelled());
+    assert!(!fixture.inner.queries[&1].stop.token.is_cancelled());
     release.send(()).unwrap();
     let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
         .await
@@ -806,24 +806,24 @@ async fn batches_routed_during_build_follow_the_priming_delta() {
 }
 
 #[tokio::test]
-async fn inbox_overflow_during_build_returns_lagged_subscription() {
+async fn inbox_overflow_during_build_fails_registration_with_lag() {
     let mut fixture = Fixture::new(1).await;
-    let (release, registration, _) = fixture.gated_build(vec![]);
+    let (release, registration, storage_path) = fixture.gated_build(vec![]);
     fixture.apply(1);
-    assert!(!fixture.inner.queries[&1].control.stop.is_cancelled());
+    assert!(!fixture.inner.queries[&1].stop.token.is_cancelled());
     let overflow = fixture.apply(2);
     release.send(()).unwrap();
-    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+    let error = tokio::time::timeout(Duration::from_secs(5), registration)
         .await
         .unwrap()
         .unwrap()
-        .unwrap();
-    let error = next(&mut query).await.unwrap_err();
+        .unwrap_err();
     let lagged = error.downcast_ref::<SubscriptionLagged>().unwrap();
     assert_eq!(lagged.tx_key, overflow);
     assert_eq!(lagged.capacity, 1);
-    assert_eq!(fixture.retire().await, query.handle);
-    assert!(query.deltas.recv().await.is_none());
+    // The registration fails only after its storage is gone.
+    assert!(!storage_path.exists());
+    assert_eq!(fixture.retire().await, 1);
     fixture.finish().await;
 }
 
@@ -834,18 +834,17 @@ async fn stop_after_lag_during_build_keeps_the_lag() {
     fixture.apply(1);
     let overflow = fixture.apply(2);
     // A shutdown stops the query again before the worker reads the lag.
-    fixture.inner.queries[&1].control.terminate(None);
+    fixture.inner.queries[&1].stop.terminate(None);
     release.send(()).unwrap();
-    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+    let error = tokio::time::timeout(Duration::from_secs(5), registration)
         .await
         .unwrap()
         .unwrap()
-        .unwrap();
-    let error = next(&mut query).await.unwrap_err();
+        .unwrap_err();
     assert_eq!(
         error.downcast_ref::<SubscriptionLagged>().unwrap().tx_key,
         overflow
     );
-    assert_eq!(fixture.retire().await, query.handle);
+    assert_eq!(fixture.retire().await, 1);
     fixture.finish().await;
 }

@@ -28,7 +28,7 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Build, Circuit, Completion, Control, SnapshotCircuit, Worker};
+use worker::{Batch, Build, Circuit, Completion, SnapshotCircuit, StopSignal, Worker};
 mod worker;
 
 const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
@@ -308,7 +308,7 @@ impl Drop for IncrementalQueryService {
 struct RegisteredQuery {
     inbox: mpsc::Sender<Arc<Batch>>,
     sender: mpsc::Sender<IncrementalQueryDelta>,
-    control: Arc<Control>,
+    stop: Arc<StopSignal>,
     basis: TxKey,
     // A caller wants to unregister the query. The dispatcher tells the worker to stop.
     // Once finished, the dispatcher sends the cleanup result to the original caller via this channel.
@@ -406,8 +406,8 @@ impl IncrementalQueryServiceInner {
                     }
                     Some(IncrementalCommand::Unregister { handle, response }) => {
                         match self.queries.get_mut(&handle) {
-                            Some(query) if !query.sender.is_closed() && !query.control.stop.is_cancelled() => {
-                                query.control.terminate(None);
+                            Some(query) if !query.sender.is_closed() && !query.stop.token.is_cancelled() => {
+                                query.stop.terminate(None);
                                 query.unregister = Some(response);
                             }
                             _ => { let _ = response.send(Err(anyhow!("Unknown incremental query handle: {handle:?}"))); }
@@ -423,7 +423,7 @@ impl IncrementalQueryServiceInner {
         self.cancel.cancel();
         // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
-            query.control.terminate(None);
+            query.stop.terminate(None);
         }
         while !self.queries.is_empty() {
             if let Some(completion) = self.completions.recv().await {
@@ -473,7 +473,7 @@ impl IncrementalQueryServiceInner {
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
         // reason for termination channel.
         let (terminal, termination) = oneshot::channel();
-        let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
+        let stop = Arc::new(StopSignal::new(self.cancel.child_token(), terminal));
         // inbox channel
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
         let subscription = IncrementalQuerySubscription {
@@ -486,7 +486,7 @@ impl IncrementalQueryServiceInner {
             storage_path: self.query_storage_path(handle),
             inbox,
             sender: sender.clone(),
-            control: control.clone(),
+            stop: stop.clone(),
         };
         let completed = self.completed.clone();
         tokio::spawn(async move {
@@ -498,7 +498,7 @@ impl IncrementalQueryServiceInner {
             RegisteredQuery {
                 inbox: inbox_sender,
                 sender,
-                control,
+                stop,
                 basis,
                 unregister: None,
             },
@@ -534,11 +534,11 @@ impl IncrementalQueryServiceInner {
 
     fn apply_batch(&self, batch: Arc<Batch>) {
         for query in self.queries.values() {
-            if query.control.stop.is_cancelled() {
+            if query.stop.token.is_cancelled() {
                 continue;
             }
             if query.sender.is_closed() {
-                query.control.terminate(None);
+                query.stop.terminate(None);
                 continue;
             }
             let Some(batch) = batch.after(query.basis.tx_id) else {
@@ -548,13 +548,13 @@ impl IncrementalQueryServiceInner {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     query
-                        .control
+                        .stop
                         .terminate(Some(Termination::Lagged(SubscriptionLagged {
                             tx_key: batch.tx_key,
                             capacity: self.options.inbox_capacity.get(),
                         })));
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => query.control.terminate(None),
+                Err(mpsc::error::TrySendError::Closed(_)) => query.stop.terminate(None),
             }
         }
     }
@@ -798,7 +798,7 @@ mod tests {
             delta(&mut first).await.unwrap().rows,
             delta(&mut second).await.unwrap().rows
         );
-        inner.queries[&first.handle].control.terminate(None);
+        inner.queries[&first.handle].stop.terminate(None);
         let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
             .await
             .unwrap()
@@ -815,7 +815,7 @@ mod tests {
         let rows = delta(&mut second).await.unwrap().rows;
         assert!(rows.contains(&(vec![DataType::String("Alice".into())], -1)));
         assert!(rows.contains(&(vec![DataType::String("Bob".into())], 1)));
-        inner.queries[&second.handle].control.terminate(None);
+        inner.queries[&second.handle].stop.terminate(None);
         let completion = tokio::time::timeout(Duration::from_secs(5), inner.completions.recv())
             .await
             .unwrap()

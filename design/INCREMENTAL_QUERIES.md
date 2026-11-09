@@ -282,14 +282,14 @@ channel. The diagram that follows shows the tasks and the channels between them:
 │         │ Unregister      │ (sent by the worker after priming)          │                  │
 │         ▼                 │                                             ▼                  │
 │  ┌─ Dispatcher task ──────┼────────────────────────────────────────────────────────────┐   │
-│  │ registry: handle → { inbox, basis, control }                                        │   │
+│  │ registry: handle → { inbox, basis, stop }                                           │   │
 │  │ Register:   basis = latest indexed TxKey                                            │   │
 │  │             new inbox; insert; spawn Worker{basis, response}                        │   │
 │  │ CdcBatch:   per query batch.after(basis) → inbox ← batch   (full ⇒ Lagged)          │   │
-│  │ Unregister: control.terminate; reply on Completion                                  │   │
+│  │ Unregister: stop.terminate; reply on Completion                                     │   │
 │  └───────────────┬────────┼───────────────────────────────────────────▲────────────────┘   │
 │                  │ inbox  │ [batch, batch, …], bounded FIFO           │ Completion         │
-│                  │        │ + control: stop, out of band              │                    │
+│                  │        │ + stop signal, out of band                │                    │
 │                  ▼        │                                           │                    │
 │  ┌─ Worker task × N ──────┴───────────────────────────────────────────┴────────────────┐   │
 │  │ build circuit on the pool                       (spawn_blocking)                    │   │
@@ -418,8 +418,7 @@ with a lag error. The dispatcher discards the pending batches.
 
 During the circuit build and the snapshot scan, WAL batches wait in the inbox.
 If the priming is slow, the inbox can fill. The query then stops with a lag
-error before its first delta. `register_query` still returns the subscription,
-and the first item of the subscription is the lag error.
+error before its first delta, and `register_query` fails with the lag error.
 
 `IncrementalQueryDelta` is a result batch for the subscriber. The worker sends
 it after a circuit step. Each delta has the `TxKey` of the last transaction that
@@ -433,9 +432,15 @@ error. An ordinary query error comes after the results that are already in the
 queue. A lag error comes before the buffered results. Both become terminal
 `QueryError` frames on the wire.
 
-The dispatcher stops a worker through its `Control`, not through the inbox. The
-dispatcher uses `Control` for unregister, lag, and shutdown. A full inbox is the
-condition for a lag stop. Thus, the stop signal cannot go through the inbox.
+The dispatcher stops a worker through its `StopSignal`, not through the inbox.
+The dispatcher uses `StopSignal` for unregister, lag, and shutdown. A full inbox
+is the condition for a lag stop. Thus, the stop signal cannot go through the
+inbox.
+
+`StopSignal` has a cancellation token and the sending end of the terminal
+channel. The first stop with a reason sends that reason to the subscription.
+Then it cancels the token. Thus, a worker that sees the cancelled token can
+read the reason from the subscription that it holds.
 
 ---
 
@@ -521,7 +526,7 @@ queries in these steps:
 
 1. The service cancels the CDC task and waits for it.
 2. The service sends `Shutdown` to the dispatcher.
-3. The dispatcher stops all workers through their `Control`.
+3. The dispatcher stops all workers through their `StopSignal`.
 4. The dispatcher waits for a `Completion` from each worker.
 5. The dispatcher shuts down the `RuntimePool` and sends the result.
 6. If the CDC task or the cleanup failed, the service returns that error. If
@@ -532,8 +537,7 @@ the worker stops. If a worker stops before priming finishes, the answer to the
 registration depends on the reason:
 
 - A build or priming error: the registration fails with the error.
-- A lag stop: the registration returns the subscription. Its first item is the
-  lag error.
+- A lag stop: the registration fails with the lag error.
 - A shutdown: the response channel closes, and the registration fails.
 
 For an error or a lag stop, the worker answers only after it removes the
