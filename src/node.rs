@@ -91,7 +91,7 @@ impl<L: TxLog> Node<L> {
             indexer.clone(),
         )
         .await;
-        let incremental = IncrementalQueryService::new_with_runtime(
+        let incremental = IncrementalQueryService::new(
             incremental_storage_path,
             cancel.clone(),
             &slate,
@@ -143,7 +143,7 @@ impl Node<MemoryLog> {
             indexer.clone(),
         )
         .await;
-        let incremental = IncrementalQueryService::new_with_runtime(
+        let incremental = IncrementalQueryService::new(
             std::env::temp_dir().join(format!(
                 "triplox-dbsp-incremental-{}",
                 crate::util::random_string(10)
