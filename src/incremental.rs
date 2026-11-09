@@ -286,8 +286,6 @@ struct IncrementalQueryServiceInner {
     indexer: Arc<RwLock<Indexer>>,
     // Without a source, as in tests, no CDC task starts.
     cdc: Option<CdcSource>,
-    // A child of `cancel`, so shutdown can stop the CDC task before the workers.
-    cdc_cancel: CancellationToken,
     cdc_task: Option<JoinHandle<Result<()>>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
@@ -309,7 +307,6 @@ impl IncrementalQueryServiceInner {
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
-            cdc_cancel: cancel.child_token(),
             cancel,
             options,
             db,
@@ -334,13 +331,12 @@ impl IncrementalQueryServiceInner {
             cdc.object_store.clone(),
             self.indexer.clone(),
             cdc.commands.clone(),
-            self.cdc_cancel.clone(),
+            self.cancel.clone(),
             cdc.poll_interval,
         ));
     }
 
-    async fn stop_cdc(&mut self) -> Result<()> {
-        self.cdc_cancel.cancel();
+    async fn join_cdc(&mut self) -> Result<()> {
         let Some(handle) = self.cdc_task.take() else {
             return Ok(());
         };
@@ -403,8 +399,8 @@ impl IncrementalQueryServiceInner {
             }
         }
         receiver.close();
-        let cdc_result = self.stop_cdc().await;
         self.cancel.cancel();
+        let cdc_result = self.join_cdc().await;
         // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
             query.control.terminate(None);
