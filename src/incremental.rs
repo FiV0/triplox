@@ -176,46 +176,11 @@ fn shutdown_result(cdc_result: Result<()>, cleanup: Result<()>) -> Result<()> {
 // The first level is about the communication of this service.
 // The second level reports errors while processing a command.
 impl IncrementalQueryService {
-    pub(crate) async fn new(
-        storage_root: PathBuf,
-        cancel: CancellationToken,
-        slate: &SlateComponents,
-        indexer: Arc<RwLock<Indexer>>,
-        cdc_poll_interval: Duration,
-    ) -> Result<Self> {
-        Self::new_with_runtime(
-            storage_root,
-            cancel,
-            slate,
-            indexer,
-            cdc_poll_interval,
-            IncrementalConfig::default(),
-        )
-        .await
-    }
-
-    pub(crate) async fn new_with_runtime(
-        storage_root: PathBuf,
-        cancel: CancellationToken,
-        slate: &SlateComponents,
-        indexer: Arc<RwLock<Indexer>>,
-        cdc_poll_interval: Duration,
-        config: IncrementalConfig,
-    ) -> Result<Self> {
-        Self::new_with_options(
-            storage_root,
-            cancel,
-            slate,
-            indexer,
-            cdc_poll_interval,
-            IncrementalQueryOptions::for_config(config),
-        )
-        .await
-    }
-
+    // Split from `new` mainly for tests: they need a service without a CDC task
+    // and send batches on the returned sender themselves. Production attaches CDC in `new`.
     // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
     // The dispatcher routes the batches sent on the returned sender.
-    async fn new_without_cdc(
+    async fn new_with_batch_sender(
         storage_root: PathBuf,
         cancel: &CancellationToken,
         db: Arc<slatedb::Db>,
@@ -246,20 +211,20 @@ impl IncrementalQueryService {
     }
 
     // The CDC task starts with the service and reads the WAL from its beginning.
-    async fn new_with_options(
+    pub(crate) async fn new(
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
         indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
-        options: IncrementalQueryOptions,
+        config: IncrementalConfig,
     ) -> Result<Self> {
-        let (mut service, batches) = Self::new_without_cdc(
+        let (mut service, batches) = Self::new_with_batch_sender(
             storage_root,
             &cancel,
             slate.db.clone(),
             indexer.clone(),
-            options,
+            IncrementalQueryOptions::for_config(config),
         )
         .await?;
         service.cdc_task = Some(spawn_cdc_loop(
@@ -733,7 +698,7 @@ mod tests {
         options: IncrementalQueryOptions,
     ) -> (IncrementalQueryService, Batches) {
         let indexer = cdc::test_support::indexer_at(slate.db.clone(), test_tx_key_with_tx_id(1));
-        IncrementalQueryService::new_without_cdc(
+        IncrementalQueryService::new_with_batch_sender(
             dir.to_path_buf(),
             &CancellationToken::new(),
             slate.db.clone(),
